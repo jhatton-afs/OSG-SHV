@@ -1,0 +1,220 @@
+*  AUTHOR: David R Friend
+*    DATE: April 28, 2005 - Program to take spreadsheet of service
+*                           refund for FedEx Ground and modify the
+*                           files.
+*  REVISIONS: 06/19/06 : JCW01 : USE EDI.BILLS.HIST,CLIENT.ID
+*             12/07/12 : DRF   : MODIFIED TO READ SALT LAKE CITY FILE
+*             11/18/15 : GRB   : 21196 RENAME AFS.REFUNDS.TXT WHEN DONE SO WRONG FILE NOT PROCESSED ON NEXT RUN
+********************************************************************
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+* INITIALIZE VARIABLES
+*
+* 080508 - NPR01 If all else fails Check for Client # on FB.BILLS.CRX file.
+*        - NPR01 NB Multiple CASE statements left as they are for now. I'm not daring enough to remove them.
+*
+      SEQ=0
+      PROMPT''
+      CALL GET.USER(USER)
+      UPL.VIN = 'EDIBP' ; UPL.VIN<2> = 'EDI.1.5' ; UPL.VIN<7> = 'S' ; UPL.VOUT = ''        ; * NPR_UPL 05/11/2011
+      CALL UPD.PROGRAM.LOG2(UPL.VIN,UPL.VOUT)      ; * NPR_UPL 05/11/2011
+*
+********************************************************************
+*
+*  TABLE TO CHANGE FIELD NUMBERS (VALUES) OF DATA
+*
+********************************************************************
+*
+* ASK FOR CLIENT
+*
+      PROG.NAME='REFUND.LOGISITICS.EMAIL'
+      PROG.DESC="Update Email for Refund Logictics from spreadsheet"
+      PACK.NAME="Freight Billing"
+      TODAY=DATE()
+      IMPORT.ERRORS=''
+
+      CALL AFS.SCR.HEAD(CO.ID, FILE.ID, '', PROG.NAME, PROG.DESC, PACK.NAME, CO.NAME, TIME.DATE, 1)
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT("FB.TABLES",PROG.NAME)
+      END
+      OPEN '','EDI.REMITTANCE' TO F.REMITTANCE ELSE
+         CALL OPEN.ABORT("EDI.REMITTANCE",PROG.NAME)
+      END
+      OPEN '','&SAVEDLISTS&' TO F.SL ELSE          ; * DRF15
+         CALL OPEN.ABORT("&SAVEDLISTS&",PROG.NAME)           ; * DRF15
+      END                                ; * DRF15
+*     OPEN '','EDI.BILLS.HIST' TO F.EDI.BILLS.HIST ELSE ; * JCW01
+*        CALL OPEN.ABORT("EDI.BILLS.HIST",PROG.NAME)    ; * JCW01
+*     END                                               ; * JCW01
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         CALL OPEN.ABORT("FB.BILLS.CRX",PROG.NAME)
+      END
+      OPEN '','VOC' TO F.VOC ELSE
+         CALL OPEN.ABORT("VOC",PROG.NAME)
+      END
+
+      CRT @(0,03):@(-3):
+      CRT @(0,07):'Instructions for use BEFORE Continuing:'
+      CRT @(0,08):'Step  1 Copy the Spreadsheet from CMR to your U:\':USER:'\ Drive'
+      CRT @(0,09):'Step  2 On the Excel Text Import Wizard CLICK [Next] then [Next] again'
+      CRT @(0,12):"Step  5 CLICK the 'Text' Button at the top right of the screen"
+      CRT @(0,13):'Step  6 Select Finish'
+      CRT @(0,14):'Step  7 Remove all PAID bills from the Sreadsheet (they will cause an error)'
+      CRT @(0,15):'Step  8 Remove all bills EXCEPT the bills you want to select for payment'
+      CRT @(0,16):'Step  9 When finished you have a list of the bills to be SELECTED for payment'
+      CRT @(0,17):"Step 10 CLICK File, CLICK Save As, 'Change Save as type:' to:"
+      CRT @(0,18):'        Text (Tab Delimited)(*.txt)'
+      CRT @(0,19):'Step 11 Name the file CLIENT#-select.txt (Example: 99999-select.txt)'
+      CRT @(0,20):"        Ignore the 'Not Compatible' messages you receive and click OK, then YES"
+
+
+*
+* Return to continue
+*
+100:  CRT @(0,22):@(-3)
+      HELP="Enter [Y] to begin or [EX] to exit"
+      LN='Press [Y] to begin.   '
+      CALL GEN.IN(0,22,LN,'',Q,0,2,'','',0,-2,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX' OR QI='X'
+            STOP
+         CASE QI='Y'
+         CASE 1
+            CALL ELINE('Invalid Entry')
+            GOTO 100
+      END CASE
+      CRT @(0,22):@(-3):
+      READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')
+         STOP
+      END
+
+      BILLDATA.REC<2>:='\':USER
+      WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER ELSE
+         CALL ELINE('UNABLE TO WRITE VOC "BILLDATA.":USER')
+         GOSUB CALL.NET.ADMIN
+         STOP
+      END
+      OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE
+         CALL ELINE(USER:" is not a folder in U:\Billdata. Add the folder and try again")
+         GOSUB CALL.NET.ADMIN
+         STOP
+      END
+
+*
+* READ RAW.DATA
+*
+      RAW.ID="Refund Logistics Client DAta 9-5-19.txt"
+      READ RAW.DATA FROM F.BILLDATA,RAW.ID ELSE
+         CALL ELINE('U:\':USER:'\':RAW.ID:' is not on file.  Must be present to select bills')
+         STOP
+      END
+      RAW.DATA=CHANGE(RAW.DATA,CHAR(9),@VM)        ; * Replace Tabs with Values
+*
+* GET INFO AND WRITE TO FILE
+*
+      NUM.LINES=DCOUNT(RAW.DATA,@AM)
+
+*
+* Verify selection criteria is correct.
+*
+VERIFY.SELECTION:***
+      CRT @(0,20):"By typing [I-UNDERSTAND] I am selecting ":NUM.LINES-5:" Freight Bills for refund"
+      HELP="X=Change. EX=Exit. [I-UNDERSTAND]=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. ------------','',Q,0,12,'','',0,-12,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,19):@(-3):
+            GOTO 100
+         CASE QI='EX'
+            STOP
+         CASE QI='I-UNDERSTAND'
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be [X], [EX], or [I-UNDERSTAND].')
+            GOTO VERIFY.SELECTION
+      END CASE
+      CRT @(0,22)
+
+      READ CLIENT.LIST FROM F.TABLES,'FEDEX.REFUND.CLIENTS' ELSE CLIENT.LIST=''
+      FIRST.TIME=1
+GO.THRU.AGAIN:***
+
+      OLD.CLIENT='*****'
+      FOR X = 1 TO NUM.LINES
+*DF      IF X < 6 THEN GO SKIP.LINE
+         IF X < 4 THEN GO SKIP.LINE
+         LINE=RAW.DATA<1>
+         AFS.CLIENT=LINE<1,3>
+*DFIF AFS.CLIENT='06221' THEN CALL ELINE('PRESS BREAK')
+         AFS.CLIENT=AFS.CLIENT'R%5'
+*df         IF CLIENT.LIST#'' THEN
+*df            LOCATE AFS.CLIENT IN CLIENT.LIST SETTING POS ELSE
+*df               GO SKIP.LINE
+*df            END
+*df         END
+         IF TRIM(LINE)='' THEN GO SKIP.LINE
+         EMAIL.ADDRESS=LINE<1,4>
+*DF         EMAIL.CC.ADDRESS=LINE<1,12>
+*DF         CRT AFS.CLIENT:' ':EMAIL.ADDRESS:' ':EMAIL.CC.ADDRESS
+         CRT AFS.CLIENT:' ':EMAIL.ADDRESS
+         READ DCLIENTS FROM F.CLIENTS,AFS.CLIENT ELSE
+            CALL ELINE('On Line ':X:' Clients ':AFS.CLIENT:' could not be found. Skipping')
+            GO SKIP.LINE
+         END
+         IF TRIM(EMAIL.ADDRESS)#'' THEN 
+            IF DCLIENTS<125>='' THEN 
+               DCLIENTS<125>=TRIM(EMAIL.ADDRESS)
+         WRITE DCLIENTS ON F.CLIENTS,AFS.CLIENT
+         IF AFS.CLIENT[1,2]#'99' THEN
+            SAGE.VIN=''
+            SAGE.VIN<1>='NEW.SAGE.CLIENT'
+            SAGE.VIN<2>=AFS.CLIENT
+            SAGE.VOUT=''
+            CALL UPD.SAGE.CHANGE.REC(SAGE.VIN,SAGE.VOUT,F.SL)
+         END
+            END ELSE
+               UPPER.EMAIL.ADDRESS=OCONV(EMAIL.ADDRESS,'MCU')
+               UPPER.EMAIL.ADDRESS=TRIM(UPPER.EMAIL.ADDRESS)
+               TEMP=OCONV(DCLIENTS<125>,'MCU')
+               TEMP=TRIM(TEMP)
+               LOCATE UPPER.EMAIL.ADDRESS IN TEMP<1> SETTING POS ELSE
+*DF                 DCLIENTS<125,-1>=EMAIL.ADDRESS
+               END
+            END
+         END
+*DF         IF TRIM(EMAIL.CC.ADDRESS)#'' THEN
+*DF            DCLIENTS<126>=TRIM(EMAIL.CC.ADDRESS)
+*DF            IF DCLIENTS<126>='' THEN 
+*DF               DCLIENTS<126>=TRIM(EMAIL.CC.ADDRESS)
+*DF            END ELSE
+*DF               UPPER.EMAIL.CC.ADDRESS=OCONV(EMAIL.CC.ADDRESS,'MCU')
+*DF               UPPER.EMAIL.CC.ADDRESS=TRIM(UPPER.EMAIL.CC.ADDRESS)
+*DF               TEMP=OCONV(DCLIENTS<126>,'MCU')
+*DF               TEMP=TRIM(TEMP)
+*DF               LOCATE UPPER.EMAIL.CC.ADDRESS IN TEMP<1> SETTING POS ELSE
+*DF                 DCLIENTS<126,-1>=EMAIL.ADDRESS
+*DF               END
+*DF            END
+*DF         END
+SKIP.LINE:*
+         DEL RAW.DATA<1>
+      NEXT X
+      CRT
+      CRT 'Press [ENTER] to Continue':
+      INPUT NUL
+      GO EXIT.PROGRAM
+CALL.NET.ADMIN:***
+      CALL ELINE("CALL NETWORK ADMINISTRATOR!")
+      CALL ELINE("CALL NETWORK ADMINISTRATOR!!!!!")
+      RETURN
+*
+EXIT.PROGRAM:*
+*
+      STOP

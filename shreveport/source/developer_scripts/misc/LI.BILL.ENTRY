@@ -1,0 +1,796 @@
+$OPTIONS HEADER.EJECT
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+ERRMSG=''
+* PROGRAM LI.BILL.ENTRY
+* PROGRAM TO CREATE OR MODIFY BILLS FOR LOGISTICS INVOICING
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: VALERIE DOTY
+* DATE:   FEBRUARY 2, 1994
+*
+***********************************************************************
+*
+* Initialize variables
+*
+      PROMPT''
+      ADD.FLAG = 0
+      PROG.NAME = 'LI.BILL.ENTRY'
+      PROG.DESC = 'INVOICE MAINTENANCE'
+      PACK.NAME = 'LOGISTICS INVOICING'
+      YEAR = OCONV(DATE(),'D2Y')
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'LI.BILL.ENTRY' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      YES = 1
+      NO = 0
+      NIL = ''
+      LINES.PER.PAGE = 7
+      FIRST.LINE = 14
+      ASS.FIELDS = 5
+*      USER=SYSTEM(19)
+*      USER=OCONV(USER,'MCU')
+      CALL GET.USER(USER)
+*
+* Open files
+*
+      OPEN '', 'LI.BILLS' TO LI.BILLS ELSE
+        CALL OPEN.ABORT("LI.BILLS", PROG.NAME)
+      END
+      OPEN '', 'LI.CLIENTS' TO LI.CLIENTS ELSE
+        CALL OPEN.ABORT("LI.CLIENTS", PROG.NAME)
+      END
+      OPEN '', 'LI.INVENTORY' TO LI.INV ELSE
+        CALL OPEN.ABORT("LI.INVENTORY", PROG.NAME)
+      END
+      OPEN '', 'FB.CONTROL' TO CONTROL ELSE
+        CALL OPEN.ABORT("FB.CONTROL", PROG.NAME)
+      END
+*
+* Display page heading
+*
+      CALL AFS.SCR.HEAD(CO.ID, FILE.ID, PERIOD, PROG.NAME, PROG.DESC, PACK.NAME, CO.NAME, TIME.DATE, 1)
+*
+      SCREEN  = @(0,3)  : 'Invoice Number:' : @(42,3) : '  1. Date:'
+      SCREEN := @(0,4)  : '  2. Shipper:'
+      SCREEN := @(58,5) : 'Entry Date:'
+      SCREEN := @(0,8)  : '  3. Consignee:'
+      SCREEN := @(0,9)  : '  4.   Address:'
+      SCREEN := @(0,10) : '  5.      City:'
+      SCREEN := @(0,11) : '  6.     State:' : @(20,11) : '  7. Zip:'
+      SCREEN := @(42,8) : '  8. Shipper Number:'
+      SCREEN := @(42,9) : '  9. PO Number     :'
+      SCREEN := @(42,10) : ' 10. 1 - Prepaid or 2 - Collect:'
+      SCREEN := @(42,11) : ' 11. Discount:  %' : @(64,11) : 'Amount'
+      SCREEN := @(0,13) : '12. Ln    Qty   Description':SPACE(17):'Weight'
+      SCREEN := SPACE(6) : 'Rate' : SPACE(5) : 'Total Charges'
+*
+***********************************************************************
+* Enter invoice number,  if not on file then create if desired
+***********************************************************************
+*
+100   CRT @(0, 3):@(-3):SCREEN
+      ADD.FLAG = 0
+      HELP = "Enter invoice number. [N] = New. [cr] = Exit."
+      CALL GEN.IN(16,3,'--------------','',Q,0,14,'','',0,-14,3,0,QI,HELP,0,23)
+      QI = OCONV(QI, 'MCU')
+      BEGIN CASE
+        CASE QI = '' OR QI='EX'
+          STOP
+        CASE QI = 'N'
+          READU NEXT.NUM FROM CONTROL, 'LI.NEXT.BILL' ELSE
+            NEXT.NUM = 136827
+          END
+          LOOP
+            NEXT.NUM = NEXT.NUM + 1
+            IF NEXT.NUM > 999999 THEN NEXT.NUM = 136828
+            READ XX FROM LI.BILLS, YEAR : NEXT.NUM ELSE XX = '**'
+          UNTIL XX = '**' DO REPEAT
+          Q = YEAR : NEXT.NUM
+          WRITE NEXT.NUM ON CONTROL, 'LI.NEXT.BILL'
+*DF        CASE QI MATCHES "2N'-'1N0N"
+*DF          Q = QI[1,2] : QI[4,99]
+*DF        CASE NUM(QI)
+*DF          Q = QI
+        CASE 1
+          STR.POS=INDEX(QI,' ',1)
+          IF STR.POS THEN
+            CALL ELINE('Not allowed spaces in the invoice')
+            GOTO 100
+          END
+      END CASE
+*
+* Read invoice item
+*
+*DF      IF LEN(Q) < 7 AND Q[1,2] # YEAR THEN Q = YEAR : Q
+      BILL.ID = Q
+      READU BILL.REC FROM LI.BILLS, BILL.ID THEN
+        SHIP.ID = BILL.REC<3>
+        CRT @(70,5):BILL.REC<21>'D2/'
+        GOSUB READ.SHIPPER
+      END ELSE
+        HELP = "Enter either Y for Yes or N for No."
+        LN = 'Invoice number ':Q:' not on file. Do you want to create.? N'
+        CALL GEN.IN(0,22,LN,'',ACK,0,1,'','',1,-1,22,1,QI,HELP,0,23)
+        QI = OCONV(QI, 'MCU')
+        IF QI # 'Y' THEN
+          RELEASE
+          GOTO 100
+        END
+*DF        IF BILL.ID[1,2] # YEAR THEN BILL.ID = YEAR : BILL.ID
+        BILL.REC = ''
+        SHIP.ID = ''
+        SHIP.REC = ''
+        ADD.FLAG = 1
+        CRT @(70,5):DATE()'D2/'
+      END
+      OLD.BILL.REC = BILL.REC
+*DF      CRT @(16,3) : BILL.ID 'L##-######' :
+      CRT @(16,3) : BILL.ID 'L#14' :
+*
+* Display invoice
+*
+        X.BACK=0
+      PAGE.NO = 1
+      DISPLAY.ARRAY = ''
+      NUM.PARTS = 0
+      IF ADD.FLAG THEN
+BACK.TO.DATE:***
+        GOSUB GET.DATE
+BACK.TO.SHIPPER:***
+        GOSUB GET.SHIPPER
+        IF X.BACK THEN GOTO BACK.TO.DATE
+BACK.TO.1000:***
+        GOSUB 1000
+        IF X.BACK THEN GOTO BACK.TO.SHIPPER
+BACK.TO.2000:***
+        GOSUB 2000
+        IF X.BACK THEN GOTO BACK.TO.1000
+BACK.TO.3000:***
+        GOSUB 3000
+        IF X.BACK THEN GOTO BACK.TO.2000
+BACK.TO.4000:***
+        GOSUB 4000
+        IF X.BACK THEN GOTO BACK.TO.3000
+BACK.TO.5000:***
+        GOSUB 5000
+        IF X.BACK THEN GOTO BACK.TO.4000
+BACK.TO.SHIP.NUM:***
+        GOSUB GET.SHIP.NUM
+        IF X.BACK THEN GOTO BACK.TO.5000
+BACK.TO.PO.NUM:***
+        GOSUB GET.PO.NUM
+        IF X.BACK THEN GOTO BACK.TO.SHIP.NUM
+BACK.TO.PREPAID.COLLECT:***
+        GOSUB GET.PREPAID.COLLECT
+        IF X.BACK THEN GOTO BACK.TO.PO.NUM
+        GOSUB GET.DISCOUNT
+        IF X.BACK THEN GOTO BACK.TO.PREPAID.COLLECT
+        GOSUB GET.LINE.ITEMS
+      END ELSE
+        GOSUB LOAD.SCREEN
+        GOSUB FILL.IN.SCREEN
+      END
+*
+* Get selection from operator
+*
+200   HELP = "Enter number of information to change. (1 to 12),  [D] = Delete,  '' = Accept"
+      CALL GEN.IN(0,22,'Enter Selection Number ##','',Q,0,2,'','',1,-2,22,1,QI,HELP,0,23)
+      QI = OCONV(QI, 'MCU')
+      IF QI='EX' THEN STOP
+      IF QI = '' THEN GOTO 99000
+      IF QI = 'D' THEN
+        HELP = 'Enter Y to delete or N not to delete.'
+        CALL GEN.IN(0,22,'Are you sure? N','',Q,0,1,'','',1,-1,22,1,QI,HELP,0,23)
+        QI = OCONV(QI, 'MCU')
+        IF QI = 'Y' THEN
+          DELETE LI.BILLS, BILL.ID
+          GOTO 100
+        END ELSE
+          GOTO 200
+        END
+      END
+      IF NUM(QI) THEN ON QI GOSUB GET.DATE, GET.SHIPPER, 1000, 2000, 3000, 4000, 5000, GET.SHIP.NUM, GET.PO.NUM, GET.PREPAID.COLLECT, GET.DISCOUNT, GET.LINE.ITEMS
+      GOTO 200
+*
+***********************************************************************
+GET.DATE:*  GET THE INVOICE DATE
+***********************************************************************
+*
+      HELP="Enter invoice date. nn=Day. nn/nn=Month & Day. EX=Exit."
+      LN = DATE()'D2/'
+      CALL GEN.IN(53,3,LN,'DATE',Q,0,8,'','',0,-8,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI = ''
+          Q = DATE()
+          BILL.REC<1> = Q
+          CRT @(53,3) : BILL.REC<1> 'D2/' :
+        CASE QI='EX'
+          STOP
+        CASE 1
+          BILL.REC<1> = Q
+          CRT @(53,3) : BILL.REC<1> 'D2/' :
+      END CASE
+*
+      RETURN
+*
+***********************************************************************
+GET.SHIPPER:*  GET THE SHIPPER ID
+***********************************************************************
+*
+      GOOD.ANSWER = NO
+      X.BACK=0
+      HELP = "Enter shipper number. [X]-Back. [EX] = Exit."
+      LOOP UNTIL GOOD.ANSWER DO
+      MASK = BILL.REC<3>:STR('#', 5-LEN(BILL.REC<3>))
+        CALL GEN.IN(20,4,MASK,'',Q,0,5,'','',0,-5,4,0,QI,HELP,0,23)
+        QI = OCONV(QI, 'MCU')
+        IF QI = 'EX' THEN STOP
+        IF ADD.FLAG AND QI = 'X' THEN
+           X.BACK=1
+           CRT @(20,4):BILL.REC<3>'L#5'
+           RETURN
+        END
+        IF QI='' THEN QI=BILL.REC<3>
+        IF QI='' THEN 
+           CALL ELINE('Entry is required')
+           GOTO GET.SHIPPER
+        END
+        SHIP.ID = QI
+        GOSUB READ.SHIPPER
+        IF SHIP.REC = '' THEN
+          HELP = "Enter either Y for Yes or N for No."
+          LN = 'Shipper ':QI:' not on file. Do you want to create.? N'
+          CALL GEN.IN(0,22,LN,'',ACK,0,1,'','',1,-1,22,1,QI,HELP,0,23)
+          QI = OCONV(QI, 'MCU')
+          IF QI = 'Y' THEN
+            EXECUTE 'LI.CLIENT.ENTRY'
+            CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,3) : SCREEN
+            GOSUB LOAD.SCREEN
+            PAGE.NO = 1
+            GOSUB FILL.IN.SCREEN
+          END
+        END ELSE
+          GOOD.ANSWER = YES
+          TEXT=SHIP.ID:'   ':SHIP.REC<1>
+          CRT @(20,4) : TEXT'L#30' :
+          CRT @(20,5) : SHIP.REC<2>'L#30'
+          CRT @(20,6) : SHIP.REC<3>'L#30'
+          TEXT=SHIP.REC<4>:', ':SHIP.REC<5>:' ':SHIP.REC<6>
+          CRT @(20,7):TEXT'L#30'
+          BILL.REC<3> = SHIP.ID
+          BILL.REC<12> = SHIP.REC<1>
+          BILL.REC<13> = SHIP.REC<2>
+          BILL.REC<14> = SHIP.REC<3>
+          BILL.REC<15> = SHIP.REC<4>
+          BILL.REC<16> = SHIP.REC<5>
+          BILL.REC<17> = SHIP.REC<6>
+        END
+      REPEAT
+*
+      RETURN
+*
+***********************************************************************
+* Change consignee name
+***********************************************************************
+*
+1000  HELP = "Enter Consignee name. [space] = Clear. [X]-Back. [EX]it."
+      MASK = BILL.REC<6>:STR('-', 25-LEN(BILL.REC<6>))
+      X.BACK=0
+      CALL GEN.IN(16,8,MASK,'',Q,0,25,'','',2,-25,8,0,QI,HELP,0,23)
+      IF QI='EX' THEN STOP
+      IF ADD.FLAG AND QI='X' THEN
+         X.BACK=1
+         CRT @(16,8):BILL.REC<6>'L#25'
+         RETURN
+      END
+      IF Q#'' THEN BILL.REC<6> = Q[1,25]
+      IF Q = ' ' THEN BILL.REC<6> = ''
+      CRT @(16, 8):BILL.REC<6>'L#25':
+*
+      RETURN
+*
+***********************************************************************
+* Change consignee address
+***********************************************************************
+*
+2000  HELP = "Enter address. [space] = Clear. [X]-Back. [EX]it."
+      MASK = BILL.REC<7>:STR('-', 25-LEN(BILL.REC<7>))
+      X.BACK=0
+      CALL GEN.IN(16,9,MASK,'',Q,0,25,'','',2,-25,9,0,QI,HELP,0,23)
+      IF QI='EX' THEN STOP
+      IF ADD.FLAG AND QI='X' THEN
+         X.BACK=1
+         CRT @(16,9):BILL.REC<7>'L#25'
+         RETURN
+      END
+      IF Q#'' THEN BILL.REC<7> = Q[1,25]
+      IF Q = ' ' THEN BILL.REC<7> = ''
+      CRT @(16, 9):BILL.REC<7>'L#25':
+*
+      RETURN
+*
+***********************************************************************
+* Change consignee zip code
+***********************************************************************
+*
+5000  HELP = "Enter zip code. [space] = Clear. [X]-Back. [EX]it."
+      MASK = BILL.REC<11>:STR('#', 5-LEN(BILL.REC<11>))
+      X.BACK=0
+      CALL GEN.IN(30,11,MASK,'',Q,0,5,'','',1,-5,11,0,QI,HELP,0,23)
+      IF QI='EX' THEN STOP
+      IF ADD.FLAG AND QI='X' THEN
+         X.BACK=1
+         CRT @(30,11):BILL.REC<11>'L#5'
+         RETURN
+      END
+      IF QI = ' ' THEN Q = ''
+      BILL.REC<11> = Q[1,5]
+      CRT @(30, 11):BILL.REC<11>'L#5'
+*
+      RETURN
+*
+***********************************************************************
+* Change consignee state
+***********************************************************************
+*
+4000  HELP = "Enter state code. [space] = Clear. [X]-Back. [EX]it."
+      MASK = BILL.REC<10>:STR('-', 2-LEN(BILL.REC<10>))
+      X.BACK=0
+      CALL GEN.IN(16,11,MASK,'',Q,0,2,'','',1,-2,11,0,QI,HELP,0,23)
+      IF QI='EX' THEN STOP
+      IF ADD.FLAG AND QI='X' THEN
+         X.BACK=1
+         CRT @(16,11):BILL.REC<10>'L#2'
+         RETURN
+      END
+      IF Q#'' THEN BILL.REC<10> = Q[1,2]
+      IF Q = ' ' THEN BILL.REC<10> = ''
+      CRT @(16, 11):BILL.REC<10>'L#2':
+*
+      RETURN
+*
+***********************************************************************
+* Change consignee city
+***********************************************************************
+*
+3000  HELP = "Enter city. [space] = Clear. [X]-Back. [EX]it."
+      MASK = BILL.REC<9>:STR('-', 25-LEN(BILL.REC<9>))
+      X.BACK=0
+      CALL GEN.IN(16,10,MASK,'',Q,0,25,'','',2,-25,10,0,QI,HELP,0,23)
+      IF QI='EX' THEN STOP
+      IF ADD.FLAG AND QI='X' THEN
+         X.BACK=1
+         CRT @(16,10):BILL.REC<9>'L#25'
+         RETURN
+      END
+      IF Q#'' THEN BILL.REC<9> = Q[1,25]
+      IF Q = ' ' THEN BILL.REC<9> = ''
+      CRT @(16, 10):BILL.REC<9>'L#25'
+*
+      RETURN
+*
+***********************************************************************
+GET.SHIP.NUM:*
+***********************************************************************
+*
+      HELP = "Enter shipper's number. [space] = Clear. [X]-Back. [EX]it."
+      MASK = BILL.REC<4>:STR('-', 15-LEN(BILL.REC<4>))
+      X.BACK=0
+      CALL GEN.IN(63,8,MASK,'',Q,0,15,'','',2,-15,8,0,QI,HELP,0,23)
+      IF QI='EX' THEN STOP
+      IF ADD.FLAG AND QI='X' THEN
+         X.BACK=1
+         CRT @(63,8):BILL.REC<4>'L#15'
+         RETURN
+      END
+      IF Q#'' THEN BILL.REC<4> = Q[1,15]
+      IF Q = ' ' THEN BILL.REC<4> = ''
+      CRT @(63, 8):BILL.REC<4>'L#15':
+*
+      RETURN
+*
+***********************************************************************
+GET.PO.NUM:*
+***********************************************************************
+*
+      HELP = "Enter purchase order number. [space] = Clear. [X]-Back. [EX]it."
+      MASK = BILL.REC<5>:STR('-', 15-LEN(BILL.REC<5>))
+      X.BACK=0
+      CALL GEN.IN(63,9,MASK,'',Q,0,15,'','',2,-15,9,0,QI,HELP,0,23)
+      IF QI='EX' THEN STOP
+      IF ADD.FLAG AND QI='X' THEN
+         X.BACK=1
+         CRT @(63,9):BILL.REC<5>'L#15'
+         RETURN
+      END
+      IF Q#'' THEN BILL.REC<5> = Q[1,15]
+      IF Q = ' ' THEN BILL.REC<5> = ''
+      CRT @(63, 9):BILL.REC<5>'L#15':
+*
+      RETURN
+*
+***********************************************************************
+GET.PREPAID.COLLECT:*
+***********************************************************************
+*
+      HELP = "Enter 1 for prepaid or 2 for collect. [X]-Back. [EX]it."
+      MASK = BILL.REC<18>
+      IF MASK = '' THEN MASK = 1
+      X.BACK=0
+      LOOP
+        CALL GEN.IN(76,10,MASK,'',Q,0,1,'','',2,-1,10,0,QI,HELP,0,23)
+      UNTIL Q = '' OR Q = 1 OR Q = 2 OR (QI = 'X' AND ADD.FLAG) OR QI = 'EX' DO REPEAT
+      BEGIN CASE
+        CASE QI='EX'
+          STOP
+        CASE ADD.FLAG AND QI='X'
+          X.BACK=1
+          CRT @(76,10):BILL.REC<18>'L#2'
+          RETURN
+        CASE Q # ''
+          BILL.REC<18> = Q
+        CASE BILL.REC<18> = ''
+          BILL.REC<18> = 1
+        CASE 1
+          NULL
+      END CASE
+      CRT @(76, 10):BILL.REC<18>:
+*
+      RETURN
+*
+***********************************************************************
+GET.DISCOUNT:*
+***********************************************************************
+*
+      HELP = "Enter discount percentage between 0 and 100. [X]-Back. [EX]it."
+      MASK = BILL.REC<19> : STR('-',3-LEN(BILL.REC<19>))
+      X.BACK=0
+      LOOP
+        CALL GEN.IN(60,11,MASK,'',Q,0,3,'','',2,-3,11,0,QI,HELP,0,23)
+      UNTIL Q = '' OR (Q GE 0 AND Q LE 100) OR (QI='X' AND ADD.FLAG) OR QI='EX' DO REPEAT
+      IF QI='EX' THEN STOP
+      IF ADD.FLAG AND QI='X' THEN
+         X.BACK=1
+         CRT @(60,11):BILL.REC<19>'L#3'
+         RETURN
+      END
+      Q = INT(Q)
+      IF Q#'' THEN BILL.REC<19> = Q
+      IF BILL.REC<19> = 0 THEN BILL.REC<19> = ''
+      CRT @(60, 11):BILL.REC<19>:
+*
+      HELP = "Enter discount amount. [X]-Back. [EX]it."
+      MASK = OCONV(BILL.REC<20>,'MD2') 'R#8'
+      X.BACK=0
+      LOOP
+        CALL GEN.IN(71,11,MASK,'AMT2',Q,0,8,'','',2,-8,11,0,QI,HELP,0,23)
+      UNTIL NUM(Q) OR QI='EX' OR (QI='X' AND ADD.FLAG) DO REPEAT
+      IF QI='EX' THEN STOP
+      IF ADD.FLAG AND QI='X' THEN
+         X.BACK=1
+         CRT @(71,11) : OCONV(BILL.REC<20>,'MD2') 'R#8' :
+         GOTO GET.DISCOUNT
+      END
+      IF Q # '' THEN BILL.REC<20> = ICONV(QI,'MD2')
+      IF BILL.REC<20> = 0 THEN BILL.REC<20> = ''
+      CRT @(71,11) : OCONV(BILL.REC<20>,'MD2') 'R#8' :
+*
+      RETURN
+*
+***********************************************************************
+GET.LINE.ITEMS:*  GET DETAILS ON INVENTORY BEING SHIPPED
+***********************************************************************
+*
+      NUM.PAGES = 0
+      NUM.LINES = 0
+      IF BILL.REC<25> # '' THEN
+        GOSUB LOAD.SCREEN
+        PAGE.NO = 1
+        GOSUB PRINT.SCREEN
+      END
+*
+      DONE = NO
+      LOOP
+        HELP = "Enter number to change. [A] = Add. [D] = Delete. '' = Page. [X] = Exit."
+        CALL GEN.IN(0,22,'Enter Selection Number ##','',Q,0,2,'','',1,-2,22,1,QI,HELP,0,23)
+        QI = OCONV(QI, 'MCU')
+        IF QI = 'X' THEN DONE = YES
+      UNTIL DONE DO
+        BEGIN CASE
+          CASE QI = 'A'
+            CUR.LINE = NUM.LINES + 1
+            LOOP
+              GOSUB CHANGE.LINE
+            UNTIL DISPLAY.ARRAY<CUR.LINE,2> = '' DO
+              CUR.LINE += 1
+            REPEAT
+          CASE QI = 'D'
+            HELP = "Enter line number to delete."
+            CALL GEN.IN(0,22,'Line Number ##','AMT0',Q,0,2,'','',2,-2,22,0,QI,HELP,0,23)
+            CUR.LINE = QI
+            IF CUR.LINE > 0 AND CUR.LINE LE NUM.LINES THEN
+              DISPLAY.ARRAY = DELETE(DISPLAY.ARRAY,CUR.LINE,0,0)
+              NUM.PARTS = DCOUNT(DISPLAY.ARRAY,CHAR(254))
+              NUM.PAGES = INT(NUM.PARTS/LINES.PER.PAGE)
+              NUM.PAGES += ( MOD(NUM.PARTS,LINES.PER.PAGE) # 0 )
+              NUM.LINES = NUM.PARTS
+              PAGE.NO = 1
+              GOSUB PRINT.SCREEN
+            END ELSE
+              CALL ELINE('Not a valid line number.')
+            END
+          CASE QI = '' AND NUM.PAGES = 0
+            CALL ELINE('No items to page through.')
+          CASE QI = ''
+            PAGE.NO += 1
+            IF PAGE.NO > NUM.PAGES THEN PAGE.NO = 1
+            GOSUB PRINT.SCREEN
+          CASE QI GE 1 AND QI LE NUM.LINES
+            CUR.LINE = QI
+            GOSUB CHANGE.LINE
+          CASE 1
+            CALL ELINE('Invalid answer.')
+        END CASE
+      REPEAT
+*
+      GOSUB REBUILD.RECORD
+*
+      RETURN
+*
+***********************************************************************
+PRINT.SCREEN:*  PRINT THE LINE ITEM SCREEN
+***********************************************************************
+*
+      FIRST.TO.PRINT = ((PAGE.NO-1)*7) + 1
+      FOR I = 1 TO LINES.PER.PAGE
+        ROW = FIRST.LINE + I - 1
+        ARRAY.NO = FIRST.TO.PRINT + I - 1
+        CRT @(0,ROW) : @(-4) :
+        IF DISPLAY.ARRAY<ARRAY.NO,1> # '' THEN
+          CRT @(4,ROW) : ARRAY.NO 'R#2' :
+          CRT @(10,ROW) : DISPLAY.ARRAY<ARRAY.NO,2> 'R#3' :
+          CRT @(16,ROW) : DISPLAY.ARRAY<ARRAY.NO,1> 'L#28' :
+          CRT @(44,ROW) : DISPLAY.ARRAY<ARRAY.NO,3> 'R#6' :
+          CRT @(52,ROW) : DISPLAY.ARRAY<ARRAY.NO,4> 'R#8' :
+          CRT @(64,ROW) : DISPLAY.ARRAY<ARRAY.NO,5> 'R#13' :
+        END
+      NEXT I
+      CRT @(60,21) : 'PAGE ' : PAGE.NO : ' OF ' : NUM.PAGES :
+*
+      RETURN
+*
+***********************************************************************
+CHANGE.LINE:*  CHANGE A LINE ITEM
+***********************************************************************
+*
+      LINE.NO = MOD(CUR.LINE,LINES.PER.PAGE)
+      CUR.PAGE = INT( CUR.LINE / LINES.PER.PAGE )
+      CUR.PAGE += ( LINE.NO # 0 )
+      IF LINE.NO = 0 THEN LINE.NO = 7
+      IF CUR.LINE > NUM.PARTS THEN
+        NUM.PAGES = INT(CUR.LINE/LINES.PER.PAGE)
+        NUM.PAGES += ( MOD(CUR.LINE,LINES.PER.PAGE) # 0 )
+      END
+      IF CUR.PAGE # PAGE.NO THEN
+        PAGE.NO = CUR.PAGE
+        GOSUB PRINT.SCREEN
+      END
+      LINE.NO += ( FIRST.LINE - 1 )
+*
+      CRT @(4,LINE.NO) : CUR.LINE 'R#2' :
+*
+GET.QUANTITY:***
+      MASK = DISPLAY.ARRAY<CUR.LINE,2>:STR('#', 3-LEN(DISPLAY.ARRAY<CUR.LINE,2>))
+      HELP = "Enter quantity of item. [EX]it."
+      CALL GEN.IN(10,LINE.NO,MASK,'AMT0',Q,0,3,'','',2,-3,LINE.NO,0,QI,HELP,0,23)
+      IF QI='EX' THEN STOP
+      IF QI = '' AND DISPLAY.ARRAY<CUR.LINE,2> = '' THEN RETURN
+      IF QI # '' THEN DISPLAY.ARRAY<CUR.LINE,2> = Q
+      CRT @(10,LINE.NO) : DISPLAY.ARRAY<CUR.LINE,2> 'R#3' :
+*
+GET.PART:***
+      GOSUB READ.INVENTORY
+*
+GET.WEIGHT:***
+      HELP = "Enter weight. [X]-Back. [EX]it."
+      MASK = DISPLAY.ARRAY<CUR.LINE,3>:STR('#', 6-LEN(DISPLAY.ARRAY<CUR.LINE,3>))
+      CALL GEN.IN(44,LINE.NO,MASK,'AMT0',Q,0,6,'','',2,-6,LINE.NO,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='EX' THEN STOP
+      IF QI='X' THEN
+         CRT @(44,LINE.NO):DISPLAY.ARRAY<CUR.LINE,3>'R#6'
+         GOTO GET.PART
+      END
+      IF QI # '' THEN DISPLAY.ARRAY<CUR.LINE,3> = Q
+      CRT @(44,LINE.NO) : DISPLAY.ARRAY<CUR.LINE,3> 'R#6' :
+*
+GET.RATE:***
+      HELP = "Enter rate. [X]-Back. [EX]it."
+      MASK = DISPLAY.ARRAY<CUR.LINE,4>:STR('-', 8-LEN(DISPLAY.ARRAY<CUR.LINE,4>))
+*OH   CALL GEN.IN(52,LINE.NO,'        ','AMT2',Q,0,8,'','',2,-8,LINE.NO,0,QI,HELP,0,23)
+      CALL GEN.IN(52,LINE.NO,MASK,'',Q,0,8,'','',2,-8,LINE.NO,0,QI,HELP,0,23)
+      IF QI='EX' THEN STOP
+      IF QI='X' THEN
+         CRT @(52,LINE.NO):DISPLAY.ARRAY<CUR.LINE,4>'R#8'
+         GOTO GET.WEIGHT
+      END
+      IF QI # '' THEN
+        IF NUM(QI) THEN
+          DISPLAY.ARRAY<CUR.LINE,4> = OCONV(ICONV(QI,'MD2'),'MD2')
+        END ELSE
+          DISPLAY.ARRAY<CUR.LINE,4>=QI
+        END
+      END
+      CRT @(52,LINE.NO) : DISPLAY.ARRAY<CUR.LINE,4> 'R#8' :
+*
+      HELP = "Enter total charges. [X]-Back. [EX]it."
+      MASK = DISPLAY.ARRAY<CUR.LINE,5>:STR('#', 13-LEN(DISPLAY.ARRAY<CUR.LINE,5>))
+      CALL GEN.IN(64,LINE.NO,MASK,'AMT2',Q,0,13,'','',2,-13,LINE.NO,0,QI,HELP,0,23)
+      IF QI='EX' THEN STOP
+      IF QI='X' THEN
+         CRT @(64,LINE.NO) : DISPLAY.ARRAY<CUR.LINE,5> 'R#13' :
+         GOTO GET.RATE
+      END
+      IF QI # '' THEN DISPLAY.ARRAY<CUR.LINE,5> = OCONV(ICONV(QI,'MD2'),'MD2')
+      CRT @(64,LINE.NO) : DISPLAY.ARRAY<CUR.LINE,5> 'R#13' :
+*
+      NUM.PARTS = DCOUNT(DISPLAY.ARRAY,CHAR(254))
+      NUM.PAGES = INT(NUM.PARTS/LINES.PER.PAGE)
+      NUM.PAGES += ( MOD(NUM.PARTS,LINES.PER.PAGE) # 0 )
+      NUM.LINES = NUM.PARTS
+*
+      RETURN
+*
+***********************************************************************
+READ.INVENTORY:*  READ THE INVENTORY RECORD
+***********************************************************************
+*
+      GOOD.ANSWER = NO
+      LOOP UNTIL GOOD.ANSWER DO
+        HELP = "Enter part number. [X]-Back. [EX]it."
+        MASK = DISPLAY.ARRAY<CUR.LINE,1> : STR(' ',28-LEN(DISPLAY.ARRAY<CUR.LINE,1>))
+        CALL GEN.IN(16,LINE.NO,MASK,'',Q,0,28,'','',2,-28,LINE.NO,0,QI,HELP,0,23)
+        QI=OCONV(QI,'MCU')
+        IF QI='EX' THEN STOP
+        IF QI='X' THEN
+           CRT @(16,LINE.NO):DISPLAY.ARRAY<CUR.LINE,1>'L#28'
+           GOTO GET.QUANTITY
+        END
+        IF QI = '' THEN
+          LI.SKU = FIELD(DISPLAY.ARRAY<CUR.LINE,1>,' ',1)
+        END ELSE
+          DISPLAY.ARRAY<CUR.LINE,1> = Q
+          LI.SKU = Q
+        END
+        READV DESC FROM LI.INV, SHIP.ID:'*':LI.SKU, 1 THEN
+          DISPLAY.ARRAY<CUR.LINE,1> = LI.SKU : ' ' : DESC
+          GOOD.ANSWER = YES
+        END ELSE
+          HELP = "Enter either Y for Yes or N for No."
+          LN = 'Part ':QI:' not on file. Do you want to create.? N'
+          CALL GEN.IN(0,22,LN,'',ACK,0,1,'','',1,-1,22,1,QI,HELP,0,23)
+          QI = OCONV(QI, 'MCU')
+          IF QI = 'Y' THEN
+            CALL LI.INV.ENTRY( SHIP.ID )
+            CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,3) : SCREEN
+            GOSUB FILL.IN.SCREEN
+          END
+        END
+      REPEAT
+      CRT @(16,LINE.NO) : DISPLAY.ARRAY<CUR.LINE,1> 'L#28' :
+*
+      RETURN
+*
+***********************************************************************
+LOAD.SCREEN:*  BUILD SCREEN WITH DATA
+***********************************************************************
+*
+      NUM.PARTS = DCOUNT(BILL.REC<25>,CHAR(253))
+      FOR I = 1 TO NUM.PARTS
+        FOR J = 1 TO ASS.FIELDS
+          IF J = 4 OR J = 5 THEN
+            DISPLAY.ARRAY<I,J> = OCONV(BILL.REC<24+J,I>,'MD2')
+          END ELSE
+            DISPLAY.ARRAY<I,J> = BILL.REC<24+J,I>
+          END
+        NEXT J
+      NEXT I
+      NUM.PAGES = INT(NUM.PARTS/LINES.PER.PAGE)
+      NUM.PAGES += ( MOD(NUM.PARTS,LINES.PER.PAGE) # 0 )
+      NUM.LINES = NUM.PARTS
+*
+      RETURN
+*
+***********************************************************************
+REBUILD.RECORD:*  LOAD THE DISPLAY ARRAY BACK INTO THE INVOICE RECORD
+***********************************************************************
+*
+      NEW.NUM.PARTS = DCOUNT(DISPLAY.ARRAY<1>,CHAR(254))
+      FOR I = 1 TO ASS.FIELDS
+        BILL.REC<24+I> = ''
+      NEXT I
+*
+      FOR I = 1 TO NUM.PARTS
+        FOR J = 1 TO ASS.FIELDS
+          IF J = 4 OR J = 5 THEN
+            IF J = 4 AND NOT(NUM(DISPLAY.ARRAY<I,J>)) THEN
+              BILL.REC<24+J,I> = DISPLAY.ARRAY<I,J>
+            END ELSE
+              BILL.REC<24+J,I> = ICONV(DISPLAY.ARRAY<I,J>,'MD2')
+            END
+          END ELSE
+            BILL.REC<24+J,I> = DISPLAY.ARRAY<I,J>
+          END
+        NEXT J
+      NEXT I
+      NUM.PAGES = INT(NEW.NUM.PARTS/LINES.PER.PAGE)
+      NUM.PAGES += ( MOD(NEW.NUM.PARTS,LINES.PER.PAGE) # 0 )
+      NUM.LINES = NEW.NUM.PARTS
+*
+      RETURN
+*
+***********************************************************************
+READ.SHIPPER:*  READ THE SHIPPER'S RECORD
+***********************************************************************
+*
+      READ SHIP.REC FROM LI.CLIENTS, SHIP.ID ELSE
+        SHIP.REC = ''
+      END
+*
+      RETURN
+*
+***********************************************************************
+FILL.IN.SCREEN:*  PUT ALL THE DATA ON THE SCREEN
+***********************************************************************
+*
+      CRT @(16,3) : BILL.ID 'L#14' : @(53,3) : BILL.REC<1> 'D2/'
+      TEXT=SHIP.ID:'   ':SHIP.REC<1>
+      CRT @(20,4) : TEXT'L#30' :
+      CRT @(20,5) : SHIP.REC<2>'L#30'
+      CRT @(20,6) : SHIP.REC<3>'L#30'
+      TEXT=SHIP.REC<4>:', ':SHIP.REC<5>:' ':SHIP.REC<6>
+      CRT @(20,7):TEXT'L#30'
+      CRT @(16,8) : BILL.REC<6> :
+      CRT @(16,9) : BILL.REC<7> :
+      CRT @(16,10) : BILL.REC<9> :
+      CRT @(16,11) : BILL.REC<10> : @(30,11) : BILL.REC<11> :
+      CRT @(63,8) : BILL.REC<4> :
+      CRT @(63,9) : BILL.REC<5> :
+      CRT @(75,10) : 'PC'[BILL.REC<18>,1] :
+      CRT @(60,11) : BILL.REC<19> :
+      CRT @(71,11) : OCONV(BILL.REC<20>,'MD2') 'R#8' :
+      GOSUB PRINT.SCREEN
+*
+      RETURN
+*
+***********************************************************************
+* Check for changes and update file
+***********************************************************************
+*
+99000 IF OLD.BILL.REC # BILL.REC THEN
+        HELP = "Enter either Y or N."
+        LN = 'Invoice information changed. Update? -'
+        CALL GEN.IN(0,22,LN,'',Q,1,1,'','',1,-1,22,1,QI,HELP,0,23)
+        QI = OCONV(QI, 'MCU')
+        BEGIN CASE
+          CASE QI = 'Y'
+            BILL.REC<21>=DATE()
+            BILL.REC<22>=TIME()
+            BILL.REC<23>=USER
+            WRITE BILL.REC ON LI.BILLS, BILL.ID
+          CASE QI = 'N'
+            NULL
+          CASE 1
+            GOTO 99000
+        END CASE
+      END
+*
+      GOTO 100
+*
+***********************************************************************
+*
+   END

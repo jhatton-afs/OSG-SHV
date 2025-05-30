@@ -1,0 +1,1014 @@
+*******************************************************
+* Program name : FB.5.1
+* Author       : Brian M. Queen
+* Date written : April 14, 1992
+* Library      : FBBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* PROGRAM TO SELECT OPEN FREIGHT BILLS FOR PAYMENT
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 09:22:51 on 03/22/2019.
+*
+* Start modification history
+* 08/29/05 - JMK01 - ADD PRE SELECT FOR PERFORMANCE GAINS
+* 05/08/06 - JCW01 - CHANGES TO '@SELECTED', 'CLEARSELECT', AND 'STMT<X>'
+* 10/12/07 - NPR01 - If default pay type does not match actual pay type - re-instated send email to various parties
+* 11/29/07 - DRF01 - Added Rene Whitt to the email address for selected
+*                    carriers.
+* 01/10/08 - NPR02 - If default pay type does not match actual pay type send email to Myra & Mary also
+* 01/16/08 - JMK02 - T080153 - Task 1 Client check remittance for ACH Carriers delay adjustment
+* 11/23/09 - NPR03 - T091376 - Add option to select a particular PRO Number
+* 01/15/10 - NPR04 - Changes to Subject and body of "Payment Method Conflict" Email.
+* 04/29/10 - NPR05 - ADDED UPDATING FOR NEW UPS.SCHED AND UPS.SCHED.HIST FILES
+* 09/22/10 - NPR06 - Added Karen and Brian P Barker to email sent out when pay type selected does not match CLIENTS file  pay type (As per Owen)
+* 09/23/10 - NPR07 - Moved Payment type conflict email generation to AR Cash receipts . Re-Instate call to SEND.CONFLICT.EMAIL if necessary in future
+* 09/29/10 - JMK03 - REMOVE THE 2 ADDITIONAL DAYS FOR THE CHECK TO ACH PAYMENT REMITTANCE TIME EFFECTIVE 10/01/10
+* 01/17/12 - SWB01 - Modified to determine if a Client is inactive and if so, ask if user is sure they want to proceed
+* 03/22/19 - NKH01 - ACCU-316 Modified CREATE-FILE file sizes
+* End modification history
+*
+*******************************************************
+$OPTIONS HEADER.EJECT
+      ERRMSG=''
+*
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+*
+* Initialize variables.
+*
+      CALL GET.USER(USER)
+      TESTING=0
+      TODAY=DATE()
+      PROMPT''
+      TYPE.OF.PAYMENT=''
+      TYPE.OF.PAYMENT.TEXT=''
+      PROG.NAME='FB.5.1'
+      PROG.DESC="SELECT FREIGHT BILLS FOR PAYMENT"
+      IF TESTING THEN PROG.DESC:=" TEST MODE!!"
+      PACK.NAME="Freight Billing"
+*
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.5.1' ; UPL.VOUT = ''         ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+* Open general files
+*
+* AUTO Mode is used from Process Bills to Select Vouchers
+      GET (ARG.,1) AUTO ELSE AUTO=0
+      IF AUTO='AUTO' THEN AUTO=1 ELSE AUTO=0
+      GET (ARG.,2) CLIENT ELSE AUTO=0
+      CALL CHANNEL(CH.NUM)
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT    
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+         END
+      END
+      OPEN '','FB.OPEN.BILLS' TO F.OPEN ELSE CALL OPEN.ABORT("FB.OPEN.BILLS",PROG.NAME)
+      OPEN '','FB.PAY' TO F.PAY ELSE CALL OPEN.ABORT("FB.PAY",PROG.NAME)
+      OPEN '','BCTRL' TO F.BCTRL ELSE CALL OPEN.ABORT("BCTRL",PROG.NAME)
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      OPEN '','TC.HOLIDAYS' TO F.TC.HOLIDAYS ELSE CALL OPEN.ABORT("TC.HOLIDAYS",PROG.NAME)
+      OPEN '','FB.TABLES' TO F.TABLES ELSE CALL OPEN.ABORT("FB.TABLES",PROG.NAME)
+      OPEN '','AR.SLSMAN.1000.1' TO F.SLSMAN ELSE CALL OPEN.ABORT("AR.SLSMAN.1000.1",PROG.NAME)      ; * NPR01
+
+*NPR05 Start changes
+      OPEN '','UPS.SCHED' TO F.UPS.SCHED ELSE
+         CALL OPEN.ABORT('UPS.SCHED',PROG.NAME)
+      END
+
+      OPEN '','UPS.SCHED.HIST' TO F.UPS.SCHED.HIST ELSE
+         CALL OPEN.ABORT('UPS.SCHED.HIST',PROG.NAME)
+      END
+*NPR05 End changes
+
+      READ DDEFAULT FROM F.TABLES,'DEFAULT.PAYMENT.SCH' ELSE
+         CALL ELINE('Default payment schedule is not setup')
+         STOP
+      END
+      IF AUTO THEN
+         READ CLIENT.REC FROM F.CLIENTS,CLIENT ELSE
+            AUTO=0
+            GO 100
+         END
+         OPEN '','FB.UNPROCESS,':CLIENT TO F.UP ELSE
+            AUTO=0
+            GO 100
+         END
+         READ DDATES FROM F.UP,'PROCESS.DATES' ELSE
+            CALL ELINE('PROCESS.DATES missing from FB.UNPROCESS,':CLIENT:' Auto mode is now disabled!')
+            AUTO=0
+            GO 100
+         END
+         PROCESS.DATE=DDATES<2>
+         OPEN '','FB.OPEN.DATE.XREF,':CLIENT TO F.OPEN.DATE.XREF ELSE
+            EXECUTE 'CREATE-FILE DATA FB.OPEN.DATE.XREF,':CLIENT:' 23,2' CAPTURING OUTPUT    ; * NKH01
+            OPEN '','FB.OPEN.DATE.XREF,':CLIENT TO F.OPEN.DATE.XREF ELSE
+               CALL ELINE("Cannot Create FB.OPEN.DATE.XREF,":CLIENT)
+               GO 100
+            END
+         END
+         CARRIER='All'
+         EXECUTE 'SELECT FB.UNPROCESS,':CLIENT:' WITH FILE.NAME = "FB.BILLS,':CLIENT:'" ITEM.NAME' PASSLIST CAPTURING OUTPUT
+         IF CLIENT.REC<146>='NW' THEN
+            EXECUTE 'SELECT FB.BILLS.HIST,':CLIENT:' WITH 39 = "O" AND WITH VERSION = "0" AND WITH 37' PASSLIST CAPTURING OUTPUT
+         END ELSE
+            EXECUTE 'SELECT FB.BILLS.HIST,':CLIENT:' WITH 39 = "V" AND WITH VERSION = "0" AND WITH 37' PASSLIST CAPTURING OUTPUT
+         END
+* Only Pick up Non Rejected bills (Be careful on "Approved" Rejects ....thats what the and with 37 is for) and only pickup Original bills.
+         NUM.ITMS = @SELECTED
+         SELECTED.PROCESS.WEEK.TOTAL=0
+         CLIENT.PROCESS.WEEK.TOTAL=0
+      END
+      CASH.RECEIPT.DATE=TODAY
+50:   CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      IF AUTO THEN GO 1000               ; * Do the Deed (After the screen is drawn)
+*
+* Enter cash receipt date.
+*
+      HELP="Enter cash receipt date. nn=Day. nn/nn=Month & Day. X or EX=Exit."
+      LN='Enter Cash Receipt date.   ':CASH.RECEIPT.DATE'D2/'
+      CALL GEN.IN(0,3,LN,'DATE',Q,0,8,'','',0,-8,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI=''
+            Q=CASH.RECEIPT.DATE
+         CASE QI='EX' OR QI='X'
+            STOP
+      END CASE
+      IF Q='' THEN
+         CALL ELINE('You Must Enter a Cash Receipt Date')
+         GO 50
+      END
+      IF Q > TODAY THEN
+         CALL ELINE('You Cannot Enter a Date in the Future')
+         GO 50
+      END
+      IF Q < TODAY-7 THEN
+         CALL ELINE('You Cannot Enter a Date more than 7 days in the Past')
+         GO 50
+      END
+      CASH.RECEIPT.DATE=Q
+      CRT @(27,3):CASH.RECEIPT.DATE'D2/'
+*
+* Enter client number.
+*
+100:  CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,3):"Enter Cash Receipt Date.   ":CASH.RECEIPT.DATE'D2/'
+      HELP="Enter the client number. One word of name for search. ''=Exit."
+      CALL GEN.IN(0,4,'Enter Client Number.       #####','',Q,0,20,'','',1,-5,4,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='' ! QI='EX'
+            STOP
+         CASE QI='X'
+            CRT @(0,4):@(-3):
+            GOTO 50
+         CASE NUM(QI)
+            Q=QI'R%5'
+         CASE ALPHA(QI)
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            IF ITEM.LIST='' ! DCOUNT(ITEM.LIST<1>,@VM) > 1 THEN GOTO 100
+            IF NOT(NUM(ITEM.LIST<1,1>)) THEN GOTO 100
+            Q=ITEM.LIST<1,1>'R%5'
+      END CASE
+      CLIENT=Q
+      READ CLIENT.REC FROM F.CLIENTS,Q ELSE
+         CALL ELINE('ERROR - Client ':CLIENT:' not on file.')
+         GOTO 100
+      END
+      IF CLIENT.REC<30>#'A' THEN         ; * SWB01
+*There are statuses of 'A', 'I', null and 'O'. Only 'A' is considered Active.
+         HELP='WARNING: Client is inactive. Enter "I UNDERSTAND" to accept.'     ; * SWB01
+         CALL GEN.IN(0,23,'ENTER "I UNDERSTAND" to accept Or ENTER to reject ------------','',Q2,0,12,'','',2,-12,23,1,Q3,HELP,0,22)         ; * SWB01
+         IF Q2#'I UNDERSTAND' THEN       ; * SWB01
+            GOTO 100                     ; * SWB01
+         END                             ; * SWB01
+      END                                ; * SWB01
+      CRT @(27,4):CLIENT:' - ':CLIENT.REC<2>'L#30':@(-4)
+      OPEN '','FB.OPEN.DATE.XREF,':CLIENT TO F.OPEN.DATE.XREF ELSE
+         EXECUTE 'CREATE-FILE DATA FB.OPEN.DATE.XREF,':CLIENT:' 23,2' CAPTURING OUTPUT    ; * NKH01
+         OPEN '','FB.OPEN.DATE.XREF,':CLIENT TO F.OPEN.DATE.XREF ELSE
+            CALL ELINE("Cannot Create FB.OPEN.DATE.XREF,":CLIENT)
+            GO 100
+         END
+      END
+      SELECTED.PROCESS.WEEK.TOTAL=0
+      CLIENT.PROCESS.WEEK.TOTAL=0
+      PROCESS.DATE=''
+*Moved to Top Of Program - Owen 10-03-02      TYPE.OF.PAYMENT=''
+*Moved to Top Of Program - Owen 10-03-02      TYPE.OF.PAYMENT.TEXT=''
+      DEPOSIT.DATE=''
+*
+* Enter type of payment.
+*
+200:  CRT @(0,5):@(-3)
+      HELP="Enter Type of Payment. 1-[W]ire, 2-[D]DS, 3-[C]heck"
+*DF      IF CLIENT.REC<81>#'N' AND CLIENT.REC<81>#'F' AND CLIENT.REC<81>#'V' THEN
+*DF        TYPE.OF.PAYMENT='C'
+*DF      END
+*
+* Removed per Owen on 10/26/04. DRF
+*
+      IF TYPE.OF.PAYMENT='' THEN
+         LN='Enter type of payment.     ##'
+         CALL GEN.IN(0,5,LN,'',Q,0,2,'','',0,-2,5,0,QI,HELP,0,23)
+      END ELSE
+         LN="Enter type of payment.     ":TYPE.OF.PAYMENT'L#1'
+         CALL GEN.IN(0,5,LN,'',Q,0,2,'','',0,-1,5,0,QI,HELP,0,23)
+      END
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI=1
+            QI='W'
+            CRT @(27,5):QI:
+         CASE QI=2
+            QI='D'
+            CRT @(27,5):QI:
+         CASE QI=3
+            QI='C'
+            CRT @(27,5):QI:
+      END CASE
+      IF QI='' THEN
+         QI=TYPE.OF.PAYMENT
+         Q=QI
+      END
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,5):@(-3):
+            GOTO 100
+         CASE QI='EX'
+            STOP
+         CASE QI='D'
+            TYPE.OF.PAYMENT.TEXT='DDS'
+         CASE QI='W'
+            TYPE.OF.PAYMENT.TEXT='Wire'
+         CASE QI='C'
+            TYPE.OF.PAYMENT.TEXT='Check'
+         CASE 1
+            CALL ELINE('Invalid Entry')
+            GO 200
+      END CASE
+*DF      IF CLIENT.REC<81>#'N' AND CLIENT.REC<81>#'F' AND CLIENT.REC<81>#'V' AND CLIENT.REC<81>#'H' THEN
+*DF        IF QI#'C' THEN
+*DF          CALL ELINE('Client is marked to alway be a check')
+*DF          GOTO 200
+*DF        END
+*DF      END
+*
+* Removed the above lines per Owen on 10/26/04. DRF
+*
+      TYPE.OF.PAYMENT=QI
+      IF DEPOSIT.DATE='' THEN DEPOSIT.DATE=CASH.RECEIPT.DATE
+      CRT @(27,5):TYPE.OF.PAYMENT'L#1':" -":TYPE.OF.PAYMENT.TEXT'L#7'
+      CRT @(45,5):"Deposit Date. ":DEPOSIT.DATE'D2/'
+      GO 300
+*
+* Enter deposit date.
+*
+250:  HELP="Enter deposit date. nn=Day. nn/nn=Month & Day. X=Back to client. EX=Exit."
+      LN='Deposit Date. ':DEPOSIT.DATE'D2/'
+      CALL GEN.IN(45,5,LN,'DATE',Q,0,8,'','',0,-8,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI=''
+            Q=DEPOSIT.DATE
+         CASE QI='X'
+            CRT @(45,5):@(-3):
+            GOTO 200
+         CASE QI='EX'
+            STOP
+      END CASE
+      IF Q='' THEN
+         CALL ELINE('You Must Enter a Deposit Date')
+         GO 250
+      END
+      IF Q > TODAY THEN
+         CALL ELINE('You Cannot have a Deposit Date in the Future')
+         GO 250
+      END
+      IF Q < TODAY-7 THEN
+         GOSUB VERIFY.WARNING
+         IF WARNING.OK # 'Y' THEN GO 250
+      END
+      DEPOSIT.DATE=Q
+      CRT @(59,5):DEPOSIT.DATE'D2/'
+*
+* Enter processing date.
+*
+300:  IF CLIENT.REC<10> NE 'Y' OR 1 THEN           ; * Always Assume Process Date
+         HELP="Enter processed date. nn=Day. nn/nn=Month & Day. X=Back to client. EX=Exit."
+         IF PROCESS.DATE='' THEN
+            LN='Enter the process date.    ':'MM/DD/YY'
+         END ELSE
+            LN='Enter the process date.    ':PROCESS.DATE'D2/'
+         END
+         CALL GEN.IN(0,6,LN,'DATE',Q,0,8,'','',0,-8,6,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI=''
+               Q=PROCESS.DATE
+            CASE QI='X'
+               CRT @(0,6):@(-3):
+               GOTO 250
+            CASE QI='EX'
+               STOP
+         END CASE
+         IF Q='' THEN
+            CALL ELINE('You Must Enter a Process Date')
+            GO 300
+         END
+         PROCESS.DATE=Q
+         CRT @(27,6):PROCESS.DATE'D2/'
+      END ELSE
+         HELP="Enter due date. nn=Day. nn/nn=Month & Day. X=Back to client. EX=Exit."
+         LN='Enter the due date.        ':DATE()'D2/'
+         CALL GEN.IN(0,6,LN,'DATE',Q,0,8,'','',0,-8,6,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI=''
+               Q=PROCESS.DATE
+            CASE QI='X'
+               CRT @(0,6):@(-3):
+               GOTO 200
+            CASE QI='EX'
+               STOP
+         END CASE
+         DUE.DATE=Q
+         CRT @(27,6):DUE.DATE'D2/'
+      END
+*** See if there are any bills out there for that Process Date ***
+      PREC="QSELECT FB.OPEN.DATE.XREF,":CLIENT:" '":PROCESS.DATE:"'"
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+      TOT.ITEMS.AVAIL=@SELECTED
+      IF @SELECTED < 1 THEN              ; * JCW01
+         CALL ELINE("No Open Bills for the Process Date: ":PROCESS.DATE'D2/')
+         GOTO 300
+      END
+*** Get Client Proccess Date Bills Total ***
+      EXECUTE "SUM FB.OPEN.BILLS 8" PASSLIST CAPTURING OUTPUT
+      TOTAL.POS=INDEX(OUTPUT,"TOTALS",1)
+      ATT=DCOUNT(OUTPUT[1,TOTAL.POS],@AM)
+      LINE=OUTPUT<ATT>
+      LINE=CHANGE(LINE,'TOTALS',"")
+      CLIENT.PROCESS.WEEK.TOTAL=ICONV(TRIM(LINE),'MR2')
+      SELECTED.PROCESS.WEEK.TOTAL=0      ; * Initialize the Running Selection to Zero
+*
+* Enter carrier.
+*
+400:  CRT @(0,7):@(-3)
+      HELP="Enter carrier number. [ENTER]=All. 'X'=Back to process date. 'EX'=Exit."
+      LN='Enter the carrier number.  #####'
+      CALL GEN.IN(0,7,LN,'',Q,0,5,'','',0,-5,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,7):@(-3):
+            GOSUB UPDATE.DAYS.TO.PAY
+            GOTO 300
+         CASE QI='EX'
+            GOSUB UPDATE.DAYS.TO.PAY
+            STOP
+         CASE QI='A' OR QI=''
+            Q='All'
+         CASE NUM(QI)
+            Q=Q'R%5'
+      END CASE
+      CARRIER=Q
+      CRT @(27,7):CARRIER:
+      IF CARRIER='All' THEN
+         CARRIER.NAME='All Carriers'
+      END ELSE
+         READ DCARRIERS FROM F.CARRIERS,CARRIER ELSE
+            CALL ELINE(CARRIER:' Is not a valid Carrier Number')
+            GO 400
+         END
+         CARRIER.NAME=DCARRIERS<1>
+      END
+      CRT @(33,7):"- ":CARRIER.NAME[1,30]:
+*
+* Enter division.
+*
+500:  CRT @(0,8):@(-3)
+      HELP="Enter division. [ENTER]=All. 'X'=Back to carrier number. 'EX'=Exit."
+      LN='Enter the division number. #####'
+      CALL GEN.IN(0,8,LN,'',Q,0,5,'','',0,-5,8,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+* No Need to Update.Days.To.Pay Here, Its done in the 300 Routine
+            CRT @(0,8):@(-3):
+            GOTO 400
+         CASE QI='EX'
+            STOP
+         CASE QI='A' OR QI=''
+            Q='All'
+         CASE NUM(QI)
+            Q=Q'R%5'
+      END CASE
+      DIVISION=Q
+      CRT @(27,8):DIVISION
+
+*&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+*
+* Enter Specific Pro Numbers.
+*
+550:  CRT @(0,9):@(-3)
+      HELP="Enter Pro Nos. Seperated by a SPACE. [ENTER]=All. 'X'=Back to Div. 'EX'=Exit."
+      LN='Enter the Pro Nos. number..'
+      LEN.LN = LEN(LN) + 1
+      CALL GEN.IN(0,9,LN,'',Q,0,75,'','',0,LEN.LN,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,9):@(-3):
+            GOTO 500
+         CASE QI='EX'
+            STOP
+         CASE QI='A' OR QI=''
+            Q='All'
+      END CASE
+
+      PRO.NOS = Q
+      CRT @(27,9):PRO.NOS
+*
+*&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+*
+* Return to continue
+*
+600:  CRT @(0,22):@(-3)
+*DF      HELP="Press Return to Continue"
+      HELP=""
+      LN='Press Return to continue.   '
+      CALL GEN.IN(0,22,LN,'',Q,0,2,'','',0,-2,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            GOTO 500
+         CASE QI='EX'
+            STOP
+         CASE QI=''
+         CASE 1
+            CALL ELINE('Invalid Entry')
+            GOTO 600
+      END CASE
+      CRT @(0,22):@(-3):
+*
+* Build selection
+*     CALL ELINE('OWEN PRESS BREAK, ALL OTHERS PRESS RETURN')
+      NUM.OF.DAYS=''
+      BEGIN CASE
+         CASE TYPE.OF.PAYMENT='C'
+            IF CLIENT.REC<121>#'' AND NUM(CLIENT.REC<121>) THEN
+               NUM.OF.DAYS=CLIENT.REC<121>
+            END
+         CASE TYPE.OF.PAYMENT='D'
+            IF CLIENT.REC<120>#'' AND NUM(CLIENT.REC<120>) THEN
+               NUM.OF.DAYS=CLIENT.REC<120>
+            END
+         CASE TYPE.OF.PAYMENT='W'
+            IF CLIENT.REC<119>#'' AND NUM(CLIENT.REC<119>) THEN
+               NUM.OF.DAYS=CLIENT.REC<119>
+            END
+      END CASE
+      IF NUM.OF.DAYS='' THEN
+         LOCATE TYPE.OF.PAYMENT IN DDEFAULT<1> SETTING POS THEN
+            NUM.OF.DAYS=DDEFAULT<3,POS>
+         END ELSE
+            CALL ELINE('Type of payment ':TYPE.OF.PAYMENT:' is not setup in the DEFAULT.PAYMENT.SCH Table')
+            STOP
+         END
+      END
+
+      CL.PMT.TYPE = CLIENT.REC<152>      ; * NPR07
+
+      IF CLIENT.REC<92>#'00002' THEN
+         IF CL.PMT.TYPE#TYPE.OF.PAYMENT THEN
+* NPR07            GOSUB SEND.CONFLICT.EMAIL                ;* NPR07
+         END
+      END
+
+SKIPIT:
+
+      VIN=DEPOSIT.DATE
+      VIN<2>=NUM.OF.DAYS
+      CALL CALC.DATE(VIN,VOUT,F.TC.HOLIDAYS)
+      CHECK.PRINT.DATE=VOUT<1>
+*     IF USER='MKERBOW' THEN DEBUG
+*DF   IF CHECK.PRINT.DATE > 12843 THEN
+*DF     CALL ELINE('Call David Check Print Date is after 03/01/03')
+*DF     GOTO 100
+*DF   END
+      PREC="QSELECT FB.OPEN.DATE.XREF,":CLIENT:" '":PROCESS.DATE:"'"
+*OH      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+
+      EXECUTE PREC RTNLIST CAPTURING OUTPUT
+      TOT.ITEMS.AVAIL=@SELECTED
+      IF @SELECTED < 1 THEN              ; * JCW01
+*       CALL ELINE("Error! Missing FB.OPEN.DATE.XREF item.... Call Programming")
+*       CALL ELINE("Press [Enter] to select the slow way....")
+         CALL ELINE("No Items Present.")
+         GOTO 100
+      END
+
+*
+* Its going to happen!  Update the Client Record
+** Look for Checks Flagged NOT to print from the Carrier **
+      PREC='SELECT FB.OPEN.BILLS WITH CLIENT# = "':CLIENT
+      IF CLIENT.REC<10>='Y' AND 0 THEN
+         PREC=PREC:'" AND WITH 38 LE "':DUE.DATE'D2/':'"'
+      END ELSE
+         PREC=PREC:'" AND WITH 37 = "':PROCESS.DATE'D2/':'"'
+      END
+      IF CARRIER NE 'All' THEN PREC=PREC:' AND WITH CARRIER# EQ "':CARRIER:'"'
+      IF DIVISION NE 'All' THEN PREC=PREC:' AND WITH 9 EQ "':DIVISION:'"'
+
+      PREC:=' AND WITH PRINT.CHECKS EQ "N"'
+
+*OH      EXECUTE PREC RTNLIST TRASH CAPTURING OUTPUT
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+      NUM.ITMS = @SELECTED
+
+*NPR03
+
+      IF NUM.ITMS GT 1 AND PRO.NOS NE 'All' THEN
+         PREC2 = 'SELECT FB.OPEN.BILLS WITH CLIENT# = "':CLIENT:'" '
+         NO.PROS = DCOUNT(PRO.NOS," ")
+         PRO.STRING = \"\ : FIELD(PRO.NOS," ",1) : \"\
+         PREC2 = PREC2 :' AND WITH PRO.NUM = ' : PRO.STRING
+         FOR PR = 2 TO NO.PROS
+            PRO.STRING = \"\ : FIELD(PRO.NOS," ",PR) : \"\
+            PREC2 = PREC2 : ' OR WITH PRO.NUM = ' : PRO.STRING
+         NEXT PR
+         EXECUTE PREC2 PASSLIST CAPTURING OUTPUT
+         NUM.ITMS = @SELECTED
+      END
+
+*NPR03
+
+      IF @SELECTED > 0 THEN              ; * JCW01
+         CALL ELINE("Some Checks Will Not Be Printed Due To No Check Flag")
+      END
+
+** Do the REAL selection **
+
+      PREC='QSELECT FB.OPEN.DATE.XREF,':CLIENT:' "':PROCESS.DATE:'"'   ; * JMK01
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT       ; * JMK01
+
+      PREC='SELECT FB.OPEN.BILLS WITH CLIENT# = "':CLIENT
+      IF CLIENT.REC<10>='Y' THEN
+         PREC=PREC:'" AND WITH 38 LE "':DUE.DATE'D2/':'"'
+      END ELSE
+         PREC=PREC:'" AND WITH 37 = "':PROCESS.DATE'D2/':'"'
+      END
+      IF CARRIER NE 'All' THEN PREC=PREC:' AND WITH CARRIER# EQ "':CARRIER:'"'
+      IF DIVISION NE 'All' THEN PREC=PREC:' AND WITH 9 EQ "':DIVISION:'"'
+
+      PREC:=' AND WITH PRINT.CHECKS NE "N"'
+      IF CLIENT = '00846' AND DATE()='12337' THEN
+         PREC:=' AND WITH 11 # "0"'
+      END
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+      NUM.ITMS = @SELECTED
+
+*NPR03
+
+      IF NUM.ITMS GT 1 AND PRO.NOS NE 'All' THEN
+         PREC2 = 'SELECT FB.OPEN.BILLS WITH CLIENT# = "':CLIENT:'" '
+         NO.PROS = DCOUNT(PRO.NOS," ")
+         PRO.STRING = \"\ : FIELD(PRO.NOS," ",1) : \"\
+         PREC2 = PREC2 : ' AND WITH PRO.NUM = ' : PRO.STRING
+         FOR PR = 2 TO NO.PROS
+            PRO.STRING = \"\ : FIELD(PRO.NOS," ",PR) : \"\
+            PREC2 = PREC2 : ' OR WITH PRO.NUM = ' : PRO.STRING
+         NEXT PR
+         EXECUTE PREC2 PASSLIST CAPTURING OUTPUT
+         NUM.ITMS = @SELECTED
+      END
+
+*
+1000: * Post to pay file
+*
+      READ DOPEN.LIST FROM F.OPEN.DATE.XREF,PROCESS.DATE ELSE DOPEN.LIST=''
+      SAVE.DOPEN.LIST=DOPEN.LIST
+      IF NOT(AUTO) AND NOT(TESTING) THEN
+         CLEARFILE F.WORK
+*       WRITE SAVE.DOPEN.LIST ON F.WORK,'SAVE.OPEN.LIST'
+*       WRITE SAVE.CLIENT.REC ON F.WORK,'SAVE.CLIENT.REC'
+      END
+      COUNTER=0
+      EDI.CNT=0
+      EDI.FEDEX.CNT=0
+      EDI.AMT=0
+      EDI.FEDEX.AMT=0
+      CAR.CNT=0
+      CAR.AMT=0
+      LOOP
+         READNEXT ID ELSE ID='DONE'
+      UNTIL ID='DONE' DO
+         COUNTER=COUNTER+1
+         CALL PROG.BAR(22,COUNTER,NUM.ITMS,PER)
+         IF AUTO THEN ID=CLIENT:"*":ID   ; * Used Bill Id's (Need to Add client*)
+         READ REC FROM F.OPEN,ID THEN
+            IF REC<88>#'' OR REC<53>='EBILL.IMPORT' THEN
+               IF REC<20> = "00015" OR REC<20> = "00365" OR REC<20>="00041" THEN
+                  EDI.FEDEX.CNT+=1
+                  EDI.FEDEX.AMT+=REC<8>
+               END ELSE
+                  EDI.CNT+=1
+                  EDI.AMT+=REC<8>
+               END
+            END ELSE
+               CAR.CNT+=1
+               CAR.AMT+=REC<8>
+            END
+            SELECTED.PROCESS.WEEK.TOTAL+=REC<8>    ; * Add Each Bill to Total Selected
+            IF NOT(TESTING) THEN
+               DELETE F.OPEN,ID
+               IF NOT(AUTO) THEN
+                  REC<133>=CASH.RECEIPT.DATE
+                  REC<134>=CHECK.PRINT.DATE
+                  REC<135>=DEPOSIT.DATE
+                  REC<216>=TYPE.OF.PAYMENT         ; * JMK02
+                  IF TYPE.OF.PAYMENT='C' THEN      ; * JMK02
+                     CARRIER.ID=FIELD(ID,'*',2)    ; * JMK02
+                     READV ACH.STATUS FROM F.CARRIERS,CARRIER.ID,102 ELSE ACH.STATUS=''    ; * JMK02
+*                    IF ACH.STATUS='A' THEN        ; * JMK02 ; * JMK03
+                     IF ACH.STATUS='A' AND CASH.RECEIPT.DATE <= ICONV('09/30/2010','D') THEN         ; * JMK02 ; * JMK03
+                        VIN=DEPOSIT.DATE           ; * JMK02
+                        VIN<2>=NUM.OF.DAYS+2       ; * JMK02
+                        CALL CALC.DATE(VIN,VOUT,F.TC.HOLIDAYS)         ; * JMK02
+                        REC<134>=VOUT<1>           ; * JMK02
+                     END                 ; * JMK02
+                  END                    ; * JMK02
+               END
+               WRITE REC ON F.PAY,ID
+               IF NOT(AUTO) THEN WRITE REC ON F.WORK,ID
+
+*NPR05 Start changes
+               CARRIER.ID = FIELD(ID,"*",2)
+               IF CARRIER.ID = '00041' THEN
+                  ACTIVITY.CODE = 4
+                  ACT.TRANS.DATE = CASH.RECEIPT.DATE
+                  GOSUB UPD.UPS.SCHED
+
+                  ACTIVITY.CODE = 5
+                  ACT.TRANS.DATE = REC<134>        ; * Changed from CHECK.PRINT.DATE if ACH
+                  GOSUB UPD.UPS.SCHED
+               END
+*NPR05 End Changes
+
+            END
+         END
+         LOCATE ID IN DOPEN.LIST SETTING POS THEN
+            DEL DOPEN.LIST<POS>
+         END
+      REPEAT
+      IF DOPEN.LIST = '' THEN
+         IF NOT(TESTING) THEN DELETE F.OPEN.DATE.XREF,PROCESS.DATE
+      END ELSE
+         IF NOT(TESTING) THEN WRITE DOPEN.LIST ON F.OPEN.DATE.XREF,PROCESS.DATE
+      END
+*
+595:  ***
+      IF AUTO THEN STOP
+      CRT @(0,10):@(-3):CAR.CNT'R04,(#6 )':"Carrier Charges Due      : ":CAR.AMT'R26,#12':
+      CRT @(0,11):EDI.CNT'R04,(#6 )':"EDI Carrier Charges Due  : ":EDI.AMT'R26,#12':
+      CRT @(0,12):EDI.FEDEX.CNT'R04,(#6 )':"EDI FedEx Carrier Chg Due: ":EDI.FEDEX.AMT'R26,#12':
+      CRT @(0,13):"                                  ------------"
+      CRT @(0,14):(EDI.CNT+EDI.FEDEX.CNT+CAR.CNT)'R04,(#6 )':"Tot Carrier Charges Due  : ":(CAR.AMT+EDI.AMT+EDI.FEDEX.AMT)'R26,#12':
+      IF CLIENT.PROCESS.WEEK.TOTAL+0=0 THEN
+         SEL.PERC=0
+      END ELSE
+         SEL.PERC=SELECTED.PROCESS.WEEK.TOTAL/CLIENT.PROCESS.WEEK.TOTAL*10000
+      END
+      CRT @(0,16):"Total  -Unpaid- Carrier Charges for Week Ending ":PROCESS.DATE'D2-':': ':CLIENT.PROCESS.WEEK.TOTAL'R26,#10'
+      CRT @(0,17):"Total Carrier Charges  Selected for Week Ending ":PROCESS.DATE'D2-':': ':SELECTED.PROCESS.WEEK.TOTAL'R26,#10'
+      CRT @(0,18):"Percentage Selected (Client Gets a Paymnt Date when 95%): ":SEL.PERC'R26(#10)':"%"
+
+*
+* Verify Amount
+*
+650:  HELP="Enter Y if correct or N if incorrect or D to De-select a carrier/division."
+      DESELECT=0
+      CALL GEN.IN(0,22,'Correct?  ','',Q,0,1,'','',0,-1,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='Y'
+            IF CARRIER='All' AND DIVISION='All' THEN
+               GOSUB UPDATE.DAYS.TO.PAY
+               GO 100
+            END ELSE
+               GO 400
+            END
+         CASE QI='N'
+            GOTO BACKOUT.BILLS
+         CASE QI='D'
+            DESELECT = 1
+*
+* Enter deselect carrier.
+*
+700:        CRT @(0,19):@(-3)
+            HELP="Enter carrier number to deselect. [ENTER]=All. 'X'=Back to verify amounts."
+            LN='Enter the carrier number. #####'
+            CALL GEN.IN(0,19,LN,'',Q,0,5,'','',0,-5,19,0,QI,HELP,0,23)
+            QI=OCONV(QI,'MCU')
+            BEGIN CASE
+               CASE QI='X'
+                  CRT @(0,19):@(-3):
+                  GOTO 650
+*DF            CASE QI='EX'
+*DF              STOP
+               CASE QI='A' OR QI=''
+                  Q='All'
+               CASE NUM(QI)
+                  Q=Q'R%5'
+            END CASE
+            DE.CARRIER=Q
+            CRT @(26,19):DE.CARRIER
+*
+* Enter division.
+*
+800:        CRT @(0,21):@(-3)
+            HELP="Enter division to deselect. [ENTER]=All. 'X'=Back to carrier number."
+            LN='Enter the division number. #####'
+            CALL GEN.IN(0,21,LN,'',Q,0,5,'','',0,-5,21,0,QI,HELP,0,23)
+            QI=OCONV(QI,'MCU')
+            BEGIN CASE
+               CASE QI='X'
+                  CRT @(0,21):@(-3):
+                  GOTO 700
+*DF            CASE QI='EX'
+*DF              STOP
+               CASE QI='A' OR QI=''
+                  Q='All'
+               CASE NUM(QI)
+                  Q=Q'R%5'
+            END CASE
+            DE.DIVISION=Q
+            CRT @(27,21):DE.DIVISION
+*
+* Return to continue
+*
+900:        CRT @(0,22):@(-3)
+*DF          HELP="Press Return to Continue"
+            HELP=""
+            LN='Press Return to continue.   '
+            CALL GEN.IN(0,22,LN,'',Q,0,2,'','',0,-2,22,0,QI,HELP,0,23)
+            QI=OCONV(QI,'MCU')
+            BEGIN CASE
+               CASE QI='X'
+                  CRT @(0,22):@(-3):
+                  GOTO 800
+*DF            CASE QI='EX'
+*DF              STOP
+               CASE QI=''
+               CASE 1
+                  CALL ELINE('Invalid Entry')
+                  GOTO 900
+            END CASE
+            CRT @(0,22):@(-3):
+            GOSUB DESELECT.INFO
+            CAR.CNT=CAR.CNT+DE.CAR.CNT
+            CAR.AMT=CAR.AMT+DE.CAR.AMT
+            EDI.CNT=EDI.CNT+DE.EDI.CNT
+            EDI.AMT=EDI.AMT+DE.EDI.AMT
+            EDI.FEDEX.CNT=EDI.FEDEX.CNT+DE.EDI.FEDEX.CNT
+            EDI.FEDEX.AMT=EDI.FEDEX.AMT+DE.EDI.FEDEX.AMT
+            GO 595
+         CASE 1
+            CALL ELINE('You Must ENTER <Y>es , <N>o or <D>eselect')
+            GOTO 650
+      END CASE
+      IF DOPEN.LIST#'' AND NOT(TESTING) THEN WRITE DOPEN.LIST ON F.OPEN.DATE.XREF,PROCESS.DATE
+      IF CARRIER='All' THEN GO 100 ELSE GO 300
+      STOP
+BACKOUT.BILLS:***
+      CRT @(0,22):@(-3):
+*DF     GOSUB RESTORE.CLIENT.FILE
+*
+* RESTORE THE DOPEN RECORD
+*
+      IF NOT(TESTING) THEN WRITE SAVE.DOPEN.LIST ON F.OPEN.DATE.XREF,PROCESS.DATE
+      GOSUB DESELECT.INFO
+      IF NOT(TESTING) THEN WRITE SAVE.DOPEN.LIST ON F.OPEN.DATE.XREF,PROCESS.DATE
+      IF CARRIER='All' THEN GO 100 ELSE GO 300
+      STOP
+*
+* RESTORE THE CLIENT FILE
+*
+RESTORE.CLIENT.FILE:***
+TRY.AGAIN.1:***
+      READU CLIENT.REC FROM F.CLIENTS,CLIENT LOCKED
+         CALL ELINE("Client ":CLIENT:" is locked by another user! [Enter] to try again")
+         GO TRY.AGAIN.1
+      END ELSE
+         CALL ELINE('Serious Error Client Record ':CLIENT:' is Missing!')
+         ABORT
+      END
+      IF TESTING THEN RELEASE F.CLIENTS,CLIENT
+      IF CLIENT.REC<117>#'' AND SAVE.CLIENT.REC<117>='' THEN
+         CALL ELINE("Disregard if this is the 1st check received ever!")
+         CALL ELINE("Call Owen SAVE.CLIENT.REC<117> is null and CLIENT.REC<117> is not")
+      END
+      CLIENT.REC<117>=SAVE.CLIENT.REC<117>
+      CLIENT.REC<118>=SAVE.CLIENT.REC<118>
+      IF NOT(TESTING) THEN WRITE CLIENT.REC ON F.CLIENTS,CLIENT
+      RETURN
+*
+* DE-SELECT THE BILLS
+*
+DESELECT.INFO:***
+      DE.EDI.CNT=0
+      DE.EDI.AMT=0
+      DE.EDI.FEDEX.CNT=0
+      DE.EDI.FEDEX.AMT=0
+      DE.CAR.CNT=0
+      DE.CAR.AMT=0
+      PREC='SELECT FBWORK':CH.NUM
+      IF DESELECT THEN
+         PREC=PREC:' USING DICT FB.OPEN.BILLS'
+         IF DE.CARRIER#'All' THEN PREC=PREC:' WITH CARRIER# EQ "':DE.CARRIER:'"'
+         IF DE.DIVISION#'All' AND DE.CARRIER#'All' THEN PREC=PREC:' AND'
+         IF DE.DIVISION#'All' THEN PREC=PREC:' WITH 9 EQ "':DE.DIVISION:'"'
+      END
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+      NUM.ITMS = @SELECTED
+      COUNTER=0
+      LOOP
+         READNEXT ID ELSE ID='DONE'
+      UNTIL ID='DONE' DO
+         COUNTER=COUNTER+1
+         CALL PROG.BAR(22,COUNTER,NUM.ITMS,PER)
+         READ REC FROM F.WORK,ID THEN
+            IF REC<88>#'' THEN
+               IF REC<20>='00015' OR REC<20>='00365' THEN
+                  DE.EDI.FEDEX.CNT-=1
+                  DE.EDI.FEDEX.AMT-=REC<8>
+               END ELSE
+                  DE.EDI.CNT-=1
+                  DE.EDI.AMT-=REC<8>
+               END
+            END ELSE
+               DE.CAR.CNT-=1
+               DE.CAR.AMT-=REC<8>
+            END
+            SELECTED.PROCESS.WEEK.TOTAL-=REC<8>    ; * Remove Each Bill from the Total Selected
+            IF NOT(TESTING) THEN
+               DELETE F.PAY,ID
+               REC<133>=''
+               REC<134>=''
+               REC<135>=''
+               WRITE REC ON F.OPEN,ID
+
+*NPR05 Start changes
+               CARRIER.ID = FIELD(ID,"*",2)
+               IF CARRIER.ID = '00041' THEN
+                  ACTIVITY.CODE = 4
+                  ACT.TRANS.DATE = ""    ; * Receipt Date - Remove
+                  GOSUB UPD.UPS.SCHED
+                  ACTIVITY.CODE = 5
+                  ACT.TRANS.DATE = ""    ; * Scheduled Payment Date - Remove
+                  GOSUB UPD.UPS.SCHED
+               END
+*NPR05 End Changes
+
+               IF DESELECT THEN
+                  IF DOPEN.LIST='' THEN
+*DF               GOSUB RESTORE.CLIENT.FILE
+                  END
+                  LOCATE ID IN DOPEN.LIST BY 'AR' SETTING POS ELSE
+                     INS ID BEFORE DOPEN.LIST<POS>
+                  END
+               END
+            END
+         END
+      REPEAT
+      IF DOPEN.LIST#'' THEN
+         IF NOT(TESTING) THEN WRITE DOPEN.LIST ON F.OPEN.DATE.XREF,PROCESS.DATE
+      END
+      CRT @(0,10):@(-3):DE.CAR.CNT'R04,(#6 )':"Carrier Charges Due      : ":DE.CAR.AMT'R26,#12':
+      CRT @(0,11):DE.EDI.CNT'R04,(#6 )':"EDI Carrier Charges Due  : ":DE.EDI.AMT'R26,#12':
+      CRT @(0,12):DE.EDI.FEDEX.CNT'R04,(#6 )':"EDI FedEx Carrier Chg Due: ":DE.EDI.FEDEX.AMT'R26,#12':
+      CRT @(0,13):"                                  ------------"
+      CRT @(0,14):(DE.EDI.CNT+DE.EDI.FEDEX.CNT+DE.CAR.CNT)'R04,(#6 )':"Tot Carrier Charges Due  : ":(DE.CAR.AMT+DE.EDI.FEDEX.AMT+DE.EDI.AMT)'R26,#12':
+      CALL ELINE('These totals were DE-SELECTED!')
+
+      RETURN
+
+UPDATE.DAYS.TO.PAY:***
+      IF USER='OWEN' THEN
+         CRT @(0,22):"Going in to the Date Routine....":
+         INPUT NUL:
+      END
+*
+* Update the Client Record If the amount selected is GE 95% of the STARTING Total
+*
+******************************************************************************************
+**** Compare the two amounts.  If the total is 0 or amt selected is < 95% Don't update ***
+      IF CLIENT.PROCESS.WEEK.TOTAL = 0 THEN RETURN
+      IF SELECTED.PROCESS.WEEK.TOTAL/CLIENT.PROCESS.WEEK.TOTAL LT .95 THEN RETURN
+******************************************************************************************
+TRY.AGAIN:***
+      READU CLIENT.REC FROM F.CLIENTS,CLIENT LOCKED
+         CALL ELINE("Client ":CLIENT:" is locked by another user! [Enter] to try again")
+         GO TRY.AGAIN
+      END ELSE
+         CALL ELINE('Serious Error Client Record ':CLIENT:' is Missing!')
+         ABORT
+      END
+      IF TESTING THEN RELEASE F.CLIENTS,CLIENT
+      LAST.CHECK.DATES=CLIENT.REC<117>
+      LAST.PROC.DATES=CLIENT.REC<118>
+******************************************************************************************
+**** Check for this Process Date.  If its there then Skip the update Only Happens Once ***
+      LOCATE PROCESS.DATE IN LAST.PROC.DATES<1> SETTING POS THEN
+         RELEASE F.CLIENTS,CLIENT
+         RETURN
+      END
+******************************************************************************************
+* Stick them in front, They will be resorted
+*DF       CHECK.DATE=DATE() ; * Make Check Date Equal to Today
+      CHECK.DATE=CHECK.PRINT.DATE
+      INS CHECK.DATE BEFORE LAST.CHECK.DATES<1,1>
+      INS PROCESS.DATE BEFORE LAST.PROC.DATES<1,1>
+* Build Array and Resort Check At the Same Time
+      CHECK.SORT.ARRAY=''
+      NUMB.CHECKS=DCOUNT(LAST.CHECK.DATES<1>,@VM)
+      FOR X = 1 TO NUMB.CHECKS
+         CHECK.STR=LAST.CHECK.DATES<1,X>:"*":LAST.PROC.DATES<1,X>
+         LOCATE CHECK.STR IN CHECK.SORT.ARRAY BY 'DR' SETTING POS ELSE
+            INS CHECK.STR BEFORE CHECK.SORT.ARRAY<POS>
+         END
+      NEXT X
+* Explode the Sorted Array
+      LAST.CHECK.DATES=''
+      LAST.PROC.DATES=''
+      NUMB.CHECKS=DCOUNT(CHECK.SORT.ARRAY,@AM)
+* Put back in "Client Rec" Format but Limit to 1st 26 (1/2 Year)
+      FOR X = 1 TO NUMB.CHECKS UNTIL X > 26
+         LAST.CHECK.DATES<1,X>=FIELD(CHECK.SORT.ARRAY<X>,"*",1)
+         LAST.PROC.DATES<1,X>=FIELD(CHECK.SORT.ARRAY<X>,"*",2)
+      NEXT X
+      SAVE.CLIENT.REC=CLIENT.REC
+      CLIENT.REC<117>=LAST.CHECK.DATES<1>
+      CLIENT.REC<118>=LAST.PROC.DATES<1>
+      IF NOT(TESTING) THEN WRITE CLIENT.REC ON F.CLIENTS,CLIENT
+*DF       CALL ELINE("Added a paid date of ":DATE()'D2-':" to process week of ":PROCESS.DATE'D2-':" which is ":CHECK.DATE-PROCESS.DATE:" days.")
+      CALL ELINE("Added a paid date of ":CHECK.DATE'D2-':" to process week of ":PROCESS.DATE'D2-':" which is ":CHECK.DATE-PROCESS.DATE:" days.")
+      RETURN
+VERIFY.WARNING:
+      HELP='WARNING: Deposit Date is at least 7 days prior today'
+      CALL GEN.IN(0,23,'ENTER I UNDERSTAND to accept Or ENTER to reject ------------','',Q2,0,12,'','',2,-12,23,1,Q3,HELP,0,22)
+      IF Q2='I UNDERSTAND' THEN
+         WARNING.OK='Y'
+      END ELSE
+         IF Q2#'' THEN
+            CALL ELINE('Entry Not Changed')
+         END
+         WARNING.OK='N'
+      END
+      RETURN
+
+UPD.UPS.SCHED:*** NPR05 Added subroutine
+
+      UPS.VIN = '' ; UPS.VOUT = ''
+
+      UPS.VIN<1> = ID
+      UPS.VIN<2> = ACTIVITY.CODE
+      UPS.VIN<3> = ACT.TRANS.DATE
+      UPS.VIN<4> = ""                    ; * No longer used
+      UPS.VIN<5> = USER
+      UPS.VIN<6> = DATE()
+      UPS.VIN<7> = TIME()
+
+      CALL FB.UPD.UPS.SCHED(UPS.VIN,UPS.VOUT,F.UPS.SCHED,F.UPS.SCHED.HIST)
+
+      RETURN
+
+*NPR07 Start changes
+
+SEND.CONFLICT.EMAIL:
+
+      READV USER.NAME FROM F.BCTRL, USER,13 ELSE USER.NAME = ""
+
+      CLIENT.NAME = CLIENT.REC<2>
+      SERV.SLSMAN = CLIENT.REC<115>
+*
+      PC.VIN = '' ; PC.VOUT = ''
+
+      PC.VIN<1> = CLIENT                 ; * Client #
+      PC.VIN<2> = CLIENT.REC<2>          ; * Client Name
+      PC.VIN<3> = CL.PMT.TYPE            ; * Payment type agreed to by client (CLIENT.REC<152>)
+      PC.VIN<4> = TYPE.OF.PAYMENT        ; * Payment type keyed by user
+      PC.VIN<5> = USER
+      PC.VIN<6> = USER.NAME
+      PC.VIN<7> = SERV.SLSMAN
+      PC.VIN<8> = PROG.NAME
+
+*NPR07 CALL BUILD.PMT.METH.EMAIL(PC.VIN,PC.VOUT,F.SLSMAN)
+
+*NPR07 End changes
+*
+      RETURN

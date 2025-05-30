@@ -1,0 +1,317 @@
+***********************************************************************
+* Program name : COUNT.OCR.QUEUE.RPT
+* Author       : Greg Bino
+* Date written : 10-11-2019
+* Library      : FBBP
+* COPYRIGHT (C) 2019 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* generate OCR queue count report
+*
+* Last updated by afs (AFSLOGISTICS\gbino) at 07:52:42 on 10/11/2019.
+*
+* Start modification history
+* Mod 00 10-11-19, grb, 21092.0000  New program
+* End modification history
+*
+************************************************************************
+*
+* Initialize variables
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE UNIVERSE.INCLUDE UDO.H
+
+      STATUS = 0
+      TOT.CNT = 0
+      TAB = ","
+      FILE.DATE = DATE()
+      CNT=0
+      FILE.DATE = OCONV(FILE.DATE,"D4-")
+      RESP.CNT=1
+      RESP = ''
+      VOUT=''
+      TIME.LINE=''
+      ST.TIME = TIME()
+      TIME.LINE<1,1,1>=TIME()            ; * start time
+      PROMPT ''
+      PROG.NAME='COUNT.OCR.QUEUE.RPT'
+       CALL GET.USER.NEW(USER,CH.NUM)
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'COUNT.OCR.QUEUE' ; UPL.VOUT = ''
+      ***    CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+      OPEN 'CONTROL' TO FILE.CNTL ELSE
+         CALL ELINE('UNABLE TO OPEN CONTROL FILE')
+         RETURN
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT2("CLIENTS",PROG.NAME)
+         RETURN
+      END
+
+      FILE.ID2 = 'OCR.QUEUE.CNT.XLS'
+      OPENSEQ "GRB",FILE.ID2 TO FILE.OUT ELSE CREATE FILE.OUT
+         ELSE ABORT
+      WEOFSEQ FILE.OUT
+      GOSUB BUILD.HEADER
+      READ XMLPARAMS FROM FILE.CNTL,"CLIENT.OCR" THEN
+         URL = XMLPARAMS<1>
+         SERVER = XMLPARAMS<2>
+         SOAPACTION = XMLPARAMS<3>
+         LOGGING = XMLPARAMS<4>          ; * Y/N
+         LOGFILE = XMLPARAMS<5>
+         EMAIL.RECIP = XMLPARAMS<6>
+         TEST.FLG = XMLPARAMS<7>
+      END ELSE
+         **       URL = 'https://imagingws.afs.net/images/list?clientFolder=':CLIENT.ID:'&underReview=null&excludeImported=true&limit=4000'
+         LOGFILE="COUNT.OCR.QUEUE.LOG"
+         LOGGING = "N"
+         EMAIL.RECIP = 'gbino@afs.net'
+         TEST.FLG = @FALSE
+      END
+
+      IF LOGGING = "Y" OR LOGGING = 1 THEN
+         LOGGING = @TRUE
+      END ELSE
+         LOGGING = @FALSE
+      END
+      IF LOGGING THEN
+         STAT = PROTOCOLLOGGING(LOGFILE, "ON", 10)
+      END
+      CRT @(-1)
+      CRT @(5,2):"OCR IMAGE QUEUE COUNT REPORT"
+      CMD ='SSELECT CLIENTS WITH OCR = "Y" AND WITH STATUS = "A"'
+      EXECUTE CMD CAPTURING STUFF RETURNING JUNK
+      EOJ=0
+      LOOP
+         READNEXT CLIENT ELSE EOJ = 1
+      UNTIL EOJ DO
+         CNT+=1
+         IF NOT(REM(CNT,10)) THEN
+         CRT@(10,10):CNT
+         END
+         RESP.CNT=1
+         RESP = ''
+         VOUT=''
+         CLIENT.ID = CLIENT"R%5"
+         READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE CLIENT.REC = "NOF"
+         	CLIENT.NAME = CLIENT.REC<2>
+         	PROC.DAY = CLIENT.REC<151>
+         	
+         URL = 'http://imagingws.afs.net/images/list?clientFolder=':CLIENT.ID:'&underReview=null&excludeImported=true&limit=15000'
+         GOSUB SEND.REST.REQUEST
+         GOSUB PARSE.RESULTS
+      REPEAT
+      TIME.LINE<1,1,1>=TIME()            ; * finish time
+
+9999: * THE END
+      IF LOGGING THEN
+         LOG.RET = PROTOCOLLOGGING(LOGFILE,"OFF",10)
+      END
+      DATALINE = "":CHAR(9):"":CHAR(9):TOT.CNT
+      WRITESEQ DATALINE TO FILE.OUT THEN NULL
+      CLOSESEQ FILE.OUT
+      GOSUB SEND.EMAIL
+      RETURN
+***********************************************************************
+SEND.REST.REQUEST:
+***********************************************************************
+      METHOD="GET"
+*
+      STAT = SETHTTPDEFAULT("VERSION", "1.1")
+***      STAT = CREATESECURITYCONTEXT(CTX, "TLSv1.2")
+***      STAT = CREATESECUREREQUEST(URL, METHOD, RESTGET,CTX)
+STAT = CREATEREQUEST(URL, METHOD, RESTGET)
+      STAT = SETREQUESTHEADER(RESTGET, "Content-Type", "application/json;charset=utf-8")
+      STAT = SUBMITREQUEST(RESTGET, 60000, "", HEADER, RESTDATA, HTTPSTATUS)
+
+      RETURN
+
+************************************************************************
+PARSE.RESULTS:
+************************************************************************
+ARRY = ''
+      UDOHANDLE = ""
+      RESP = ''
+      RESP.CNT = 1
+      STATUS =UDORead(RESTDATA, UDOFORMAT_JSON, UDOHANDLE )
+      NEW.LINE =""
+      ST = UDOArrayGetSize(UDOHANDLE, ITEM_SIZE)
+     
+      FOR I = 1 TO ITEM_SIZE
+         ST = UDOArrayGetItem(UDOHANDLE, I, result_udo, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         ST = UDOGetProperty(result_udo, "imageKey", IMAGE.NO, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN IMAGE.NO = ""
+       
+         ST = UDOGetProperty(result_udo, "batchNo", BATCH.NO, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+       	IF UDOTYPE = UDO_NULL THEN BATCH.NO = ""  	
+         ST = UDOGetProperty(result_udo, "clientKey", CLIENTKEY, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN CLIENTKEY = ""
+         	LOCATE(BATCH.NO,ARRY<1>,1;QQ) THEN
+             ARRY<2,QQ> +=1
+          END ELSE
+             ARRY<1,QQ> = BATCH.NO
+             ARRY<2,QQ> = 1
+          END
+      
+      NEXT I
+     
+      GOSUB BUILD.DETAIL
+      IF RESP # "" THEN
+         VOUT = RESP
+      END
+      RETURN
+         ST = UDOGetProperty(result_udo, "imagePath", IMAGE.PATH, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+       	IF UDOTYPE = UDO_NULL THEN IMAGE.PATH = ""
+         ST = UDOGetProperty(result_udo, "scac", SCAC, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN SCAC = ""
+         ST = UDOGetProperty(result_udo, "field1", FIELD1, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN FIELD1 = ""
+         ST = UDOGetProperty(result_udo, "field2", PRONUM, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN PRONUM = ""
+         ST = UDOGetProperty(result_udo, "field3",FIELD3, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN FIELD3 = ""
+         ST = UDOGetProperty(result_udo, "carrierName",CARRIERNAME, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN CARRIERNAME = ""
+         ST = UDOGetProperty(result_udo, "importedIntoPick", UPDT.DT, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN UPDT.DT = ""
+         IF UPDT.DT # "" THEN
+            UPDT.DT = ICONV(UPDT.DT,'D')
+         END
+         ST = UDOGetProperty(result_udo, "clientFolder", CLIENTFOLDER, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN CLIENTFOLDER = ""
+
+         ST = UDOGetProperty(result_udo,"reviewId", REVIEWID, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN REVIEWID = ""
+
+         ST = UDOGetProperty(result_udo,"needsReview", NEEDSREVIEW, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN NEEDSREVIEW = "0"
+         IF UDOTYPE = UDO_FALSE THEN NEEDSREVIEW = "0"
+         IF UDOTYPE = UDO_TRUE THEN NEEDSREVIEW = "1"
+
+         ST = UDOGetProperty(result_udo, "failedVerification", FAIL.VERIFY, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN FAIL.VERIFY = "0"
+         IF UDOTYPE = UDO_FALSE THEN FAIL.VERIFY = "0"
+         IF UDOTYPE = UDO_TRUE THEN FAIL.VERIFY = "1"
+****************************************************
+ERR.HANDLER:
+*****************************************************
+
+      ERRCODE = "" ; ERRMSG = ""
+      S = UDOGetLastError(ERRCODE, ERRMSG)
+      ERROR = "UDO ERROR: (":ERRCODE:") ":ERRMSG
+      VOUT<1> =ERROR
+
+      RETURN
+
+************************************************************************
+REPORT.INTERNAL.ERROR:
+************************************************************************
+      EMAIL.START.TIME = TIME()
+      EMAIL.OUT<1,-1> = 'gbino@afs.net'
+      EMAIL.OUT<6, -1> = 'URL = ':URL
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = 'CLIENT = ':CLIENT.ID
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = 'ERROR = ':ERROR
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = ' '
+
+      EVIN=EMAIL.OUT
+      EVOUT=''
+      CALL SENDMAIL(EVIN,EVOUT)
+
+      VOUT<1> = 0
+      RETURN
+************************************************************************
+REPORT.FATAL.ERROR:
+************************************************************************
+      EMAIL.START.TIME = TIME()
+      EMAIL.OUT<1>=EMAIL.RECIP
+      EMAIL.OUT<1,-1> = 'gbino@afs.net'
+      EMAIL.OUT<1,-1> = 'dfriend@afs.net'
+      EMAIL.OUT<1,-1> = 'nmeddaugh@afs.net'
+      FATAL.ERROR.SUBJ = 'REST REQUEST ERROR'
+      EMAIL.OUT<5>=FATAL.ERROR.SUBJ
+      EMAIL.OUT<6,-1> = 'URL = ':URL
+      EVIN=EMAIL.OUT
+      EVOUT=''
+      CALL SENDMAIL(EVIN,EVOUT)
+      IDATE=DATE()
+      ITIME=TIME()
+      TIME.BLOCK=INT(ITIME/600)
+    
+      RETURN
+******************************************************
+BUILD.DETAIL:
+******************************************************
+NEW.LINE =''
+         NEW.LINE<1> = CLIENT.ID
+         NEW.LINE<2> = CLIENT.NAME
+         NEW.LINE<3> = ITEM_SIZE
+         NEW.LINE<4> = PROC.DAY
+         BATCH.CNT = DCOUNT(ARRY<1>,@VM)
+         IF ITEM_SIZE = 0 THEN
+         	 DATALINE = NEW.LINE<1>:CHAR(9):NEW.LINE<2>:CHAR(9):NEW.LINE<3>:CHAR(9):NEW.LINE<4>
+         	  WRITESEQ DATALINE TO FILE.OUT THEN NULL
+         END
+         FOR J = 1 TO BATCH.CNT
+        	IF J = 1 THEN
+         NEW.LINE<5> = ARRY<1,J>
+         NEW.LINE<6> = ARRY<2,J>
+         DATALINE = NEW.LINE<1>:CHAR(9):NEW.LINE<2>:CHAR(9):NEW.LINE<3>:CHAR(9):NEW.LINE<4>:CHAR(9):NEW.LINE<5>:CHAR(9):NEW.LINE<6>
+         END ELSE
+***       	NEW.LINE<1>=''
+***       	NEW.LINE<2>=''
+       	NEW.LINE<3>=''
+****       	NEW.LINE<4>=''
+       	NEW.LINE<5> = ARRY<1,J>
+        NEW.LINE<6> = ARRY<2,J>
+        DATALINE = NEW.LINE<1>:CHAR(9):NEW.LINE<2>:CHAR(9):NEW.LINE<3>:CHAR(9):NEW.LINE<4>:CHAR(9):NEW.LINE<5>:CHAR(9):NEW.LINE<6>
+       END
+       WRITESEQ DATALINE TO FILE.OUT THEN NULL
+        NEXT J
+         TOT.CNT = TOT.CNT + ITEM_SIZE
+      
+RETURN
+**********************************************
+BUILD.HEADER:
+**********************************************
+      HDR2 ='CLIENT':TAB:"CLIENT NAME":TAB:"TOTAL COUNT":TAB:"PROCESS DAY":TAB:"BATCH NUMBER":TAB:"BATCH COUNT"
+      HDR1='Daily OCR Queue Count for ':FILE.DATE
+      NULL = ""
+      CONVERT TAB TO CHAR(9) IN HDR1
+      WRITESEQ HDR1 TO FILE.OUT THEN NULL
+
+      CONVERT TAB TO CHAR(9) IN HDR2
+      WRITESEQ HDR2 ON FILE.OUT THEN NULL
+      RETURN
+**********************************************
+SEND.EMAIL:
+**********************************************
+      PDFVIN =''
+      IF USER = "GBINO" THEN
+DEBUG
+      PDFVIN<1> = 'gbino@afs.net'   	
+      END ELSE
+      PDFVIN<1> = 'mary@afs.net'
+      PDFVIN<1,-1> = 'RTAMBURRINO@afs.net'
+      PDFVIN<1,-1> = 'LCOOK@afs.net'
+      PDFVIN<1,-1> = 'CDUNGAN@afs.net'
+      PDFVIN<2> = 'gbino@afs.net'
+    END
+      PDFVIN<4> = 'reports@afs.net'
+      PDFVIN<5> = 'Daily OCR Queue Counts Report'
+      BODY = ''
+      BODY<1,-1> = ' '
+      BODY<1,-1> = 'Here is the OCR Count report for ':FILE.DATE
+      BODY<1,-1> = ' '
+      BODY<1,-1> = ' '
+      BODY<1,-1> = ' '
+      PDFVIN<6> = BODY
+      PDFVIN<11> = ''
+      FILE.ID2 = 'OCR.QUEUE.CNT.XLS'
+      PDFVIN<11,-1> = 'e:\Ardent\accounts\afs\GRB\':FILE.ID2
+      BODY<1,-1> = 'Note : ':FILE.ID2
+      PDFVOUT=''
+      CALL SENDMAIL(PDFVIN,PDFVOUT)
+      RETURN
+   END

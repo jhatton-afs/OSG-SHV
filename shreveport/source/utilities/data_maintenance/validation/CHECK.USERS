@@ -1,0 +1,428 @@
+***********************************************************************
+* Program name : CHECK.USERS
+* Author       : Owen Holman
+* Date written : Febuary 07 2005
+* Library      : FBBP
+* COPYRIGHT (C) 2019 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* Program to evaluate the number of available ports for access to
+* Universe system 
+*
+* Last updated by afs (AFSLOGISTICS\gbino) at 06:29:28 on 01/28/2020.
+*
+* Start modification history
+* 020705 - BOH01 - Pool The OLDEB Users togethers so we can have different logins to troublshoot what is happening
+* 020805 - BOH02 - Add the new Service User names SV. to the pool
+* 040208 - JMK01 - Disable update of LOGIN.LOG file - no longer used
+* 052008 - JMK02 - Adjust email addresses for alerts
+* 120408 - JMK03 - BLOCK INACTIVE USERS FROM LOGGING ON
+* 040709 - JMK04 - REMOVE PHANTOM AND CONSOLE USERS FROM USER MAX LOGIN TEST
+* 090910 - NPR01 - SEND EMAILS TO PEOPLE LOGGED ON MORE THAN ONCE
+* 062211 - JMK05 - DO NOT SEND EMAILS IF USER IS ALREADY LOGGED ON ONCE BEFORE
+* 083011 - JMK06 - ADJUST LOGIC FOR EMAILS IN STEP JMK05
+* 092311 - JMK07 - C111273 - URGENT!! Universe user limit has been reached (not the usual error)
+* 072312 - RLM01 - Sysaid #3073 - Replace former employees' email addresses with those of current employees
+* 100312 - JMK08 - Add device licensing considerations for user limit
+* 040214 - JMK09 - Allow Kayli 3 sessions on Friday for SLC Parcel Processing
+* 010715 - DRF01 - Allow LaJuanyka 3 sessions on Friday for SLC Parcel Processing
+* 082117 - NKH01 - Replaced Tom Gorton with Greg Bino
+* 012920 - GRB01 - Added code to make additional friday process table driven BCTRL(27) = 1
+* End modification history
+*
+************************************************************************
+*
+      CALL GET.USER.NEW(USER,CH.NUM)
+      USER=OCONV(USER,'MCU')
+      IF USER='VBAFS' THEN STOP
+*
+      OPEN 'BCTRL' TO F.BCTRL ELSE
+         CALL OPEN.ABORT("BCTRL","CHECK.USERS")
+      END
+      READV LOCKOUT FROM F.BCTRL,"LOCKOUT",1 ELSE LOCKOUT = ""
+      IF LOCKOUT = 1 THEN
+         IF USER='GBINO' OR USER='DAVID' OR USER='GSHAFER' OR USER='ADOWD' OR USER='EXTERNALAPPS' OR USER='KWILLOUGHBY' OR USER = 'NMEDDAUGH' THEN     ; * NKH01
+
+         END ELSE
+
+            CRT @(0,22):"All Users are currently Locked out. wait for notification before logging in"
+            CHAIN 'LO'
+         END
+      END
+
+      OPEN 'LAST.LOGINS' TO F.LAST.LOGINS THEN
+**         CALL CHANNEL(CH.NUM)
+         DA=USER
+         DA<2>=DATE()
+         DA<3>=TIME()
+         WRITE DA ON F.LAST.LOGINS,CH.NUM
+      END
+      DOW = OCONV(DATE(),'DW')           ; * JMK09
+      USER.OLEDB=0                       ; * JMK04
+      USER.SV=0                          ; * JMK04
+      USER.CONSOLE=0                     ; * JMK04
+      USER.PHANTOM=0                     ; * JMK04
+      IF USER[1,5]='OLEDB' THEN USER.OLEDB=1       ; * JMK04
+      IF USER[1,3]='SV.' THEN USER.SV=1  ; * JMK04
+      IF @TTY='console' THEN USER.CONSOLE=1        ; * JMK04
+      IF @TTY='phantom' THEN USER.PHANTOM=1        ; * JMK04
+      IF USER.OLEDB OR USER.SV OR USER.CONSOLE OR USER.PHANTOM THEN    ; * JMK04
+         MAX.USER.TIMES=106
+      END ELSE
+         READ DBCTRL FROM F.BCTRL,USER ELSE
+* Add Code here to send an email for an unknown user........
+            STOP
+         END
+         MAX.USER.TIMES=DBCTRL<3>
+         * Begin GRB01
+         IF DOW = 5 AND DBCTRL<27> = 1 THEN
+         	MAX.USER.TIMES+=1  
+        END
+   ***      IF USER='LCOOK' AND DOW=5 THEN  ; * DRF01
+    ***        MAX.USER.TIMES+=1            ; * DRF01
+    ***     END                             ; * DRF01
+    ***     IF USER='CDUNGAN' AND DOW=5 THEN  ; * DRF01
+     **       MAX.USER.TIMES+=1            ; * DRF01
+     **    END                             ; * DRF01
+       * End GRB01
+
+         LONG.USER.NAME=DBCTRL<13>
+         IF MAX.USER.TIMES='N' THEN MAX.USER.TIMES=1
+         IF NOT(NUM(MAX.USER.TIMES)) THEN MAX.USER.TIMES=1
+         STATUS=DBCTRL<16>               ; * JMK03
+
+         IF STATUS='I' THEN              ; * JMK03
+            EXCLUDE=1                    ; * JMK03
+            IF USER[LEN(USER)-4,5] # "AUDIT" THEN EXCLUDE=0  ; * JMK03
+            IF USER[LEN(USER)-1,2] # "FP" THEN EXCLUDE=0     ; * JMK03
+            IF EXCLUDE THEN              ; * JMK03
+               SUBJ='WARNING! ':USER:' (':LONG.USER.NAME:') was denied access to Universe!'          ; * JMK03
+               TEXT=USER:' attempted to login to Universe and was denied access'           ; * JMK03
+               TEXT<1,-1>='due to Inactive Status in Employee File (BCTRL).'     ; * JMK03
+               TEXT<1,-1>='Login Date: ':DATE()'D2/'         ; * JMK03
+               TEXT<1,-1>='Login Time: ':OCONV(TIME(),'MTHS')          ; *JMK03
+               MVIN=''                   ; * JMK03
+               MVIN<1>='HelpDesk@afs.net'          ; * JMK03
+               MVIN<2,-1>='NMEDDAUGH@afs.net'      ; * JMK08
+               MVIN<2,-1>='DFriend@afs.net'        ; * JMK03
+               MVIN<2,-1>='nmeddaugh@afs.net'          ; * JMK03
+             
+               MVIN<5>=SUBJ              ; * JMK03
+               MVIN<6>=TEXT              ; * JMK03
+               CALL SENDMAIL(MVIN,MVOUT)           ; * JMK03
+               CHAIN 'LOGOUT'            ; * JMK03
+            END
+         END                             ; * JMK03
+      END
+********************************************************************
+
+      CALL GET.SERVER.INFO(SVR.VIN,SVR.VOUT)
+      SVR.NAME=SVR.VOUT<1>
+      U2.LIC=SVR.VOUT<2>-2
+      SANDBOX=0
+      WEB.USERS=12
+      BEGIN CASE
+         CASE SVR.NAME='AFS'
+
+            AFS.LIC.LIMIT=U2.LIC-WEB.USERS         ; * JMK08
+            OLEDB.USER.LIMIT=10          ; ** Warning Level
+            MAX.OLEDB.USERS=8            ; ** Absolute Maximum Users... Nextone get bumped off
+         CASE SVR.NAME='PLAUVPROD'
+
+            AFS.LIC.LIMIT=U2.LIC-WEB.USERS         ; * JMK08
+            OLEDB.USER.LIMIT=10          ; ** Warning Level
+            MAX.OLEDB.USERS=10           ; ** Absolute Maximum Users... Nextone get bumped off
+         CASE SVR.NAME='PLAUVDEV'
+            WEB.USERS = 0
+            AFS.LIC.LIMIT=U2.LIC-WEB.USERS         ; * JMK08
+            OLEDB.USER.LIMIT=2           ; ** Warning Level
+            MAX.OLEDB.USERS=2            ; ** Absolute Maximum Users...
+         CASE SVR.NAME='PLAUVDEV'
+            WEB.USERS = 0
+
+            AFS.LIC.LIMIT=U2.LIC-WEB.USERS         ; * JMK08
+            OLEDB.USER.LIMIT=2           ; ** Warning Level
+            MAX.OLEDB.USERS=2            ; ** Absolute Maximum Users... Nextone get bumped off
+         CASE SVR.NAME='AFSDEV'
+            WEB.USERS=4
+
+            AFS.LIC.LIMIT=U2.LIC-WEB.USERS         ; * JMK08
+            OLEDB.USER.LIMIT=3           ; ** Warning Level
+            MAX.OLEDB.USERS=5            ; ** Absolute Maximum Users... Nextone get bumped off
+         CASE SVR.NAME='AFS-FS'
+            WEB.USERS=4
+
+            AFS.LIC.LIMIT=U2.LIC-WEB.USERS         ; * JMK08
+            OLEDB.USER.LIMIT=3           ; ** Warning Level
+            MAX.OLEDB.USERS=5            ; ** Absolute Maximum Users... Nextone get bumped off
+
+         CASE 1
+
+            AFS.LIC.LIMIT=U2.LIC-WEB.USERS         ; * JMK08
+            OLEDB.USER.LIMIT=0           ; ** Warning Level
+            MAX.OLEDB.USERS=0            ; ** Absolute Maximum Users... Nextone get bumped off
+            SANDBOX=1
+      END CASE
+*********************************************************************
+* The REAL limit is 106 but lets leave 12 for OLEDBAFS
+* I have the Ceiling for OLEDBAFS set for 12 Users
+      EXECUTE "LISTU NOPAGE" CAPTURING OUTPUT
+      LISTU.OUTPUT=CHANGE(OUTPUT,@AM,@VM)
+      EXECUTE 'dos /c e:\Ardent\UV\bin\uvlictool.exe report_lic' CAPTURING LIC.OUTPUT      ; * JMK08
+      TIMES=DCOUNT(LISTU.OUTPUT,@VM)
+      USERS=0
+
+      LICENSES=''                        ; * JMK09
+      LIC.NATT=DCOUNT(LIC.OUTPUT,@AM)    ; * JMK09
+      LIC.SATT=LIC.NATT-1                ; * JMK09
+      FOR LIC.ATT=LIC.SATT TO LIC.NATT   ; * JMK09
+         LIC.LINE=LIC.OUTPUT<LIC.ATT>    ; * JMK09
+         IF OCONV(LIC.LINE,'G1 5')='license seats are in use.' THEN    ; * JMK09
+            LICENSES=FIELD(LIC.LINE,' ',1)         ; * JMK09
+         END                             ; * JMK09
+      NEXT LIC.ATT                       ; * JMK08
+      ISON=''
+* ISON <1> NAME
+* ISON <2> PORT
+* ISON <3> TIME
+
+      FOR X = 5 TO TIMES-3
+         LINE=OUTPUT<X>
+         SHV.POS=INDEX(LINE,'AFSLOGISTICS',1)
+         NAME.POS=SHV.POS+13
+         NAME.LENGTH=9
+         IF SHV.POS=0 THEN
+            NAME.POS=23
+            NAME.LENGTH=20
+         END
+         NAME=TRIM(LINE[NAME.POS,NAME.LENGTH])
+         IF INDEX(NAME,'\',1) THEN
+            NAME=FIELD(NAME,'\',2)
+         END
+         IF NAME#'system' AND NAME # "SYSTEM" THEN
+            USERS+=1
+            PORT=TRIM(LINE[17,4])
+            TIME=TRIM(LINE[62,12])
+            LOCATE NAME IN ISON<1> BY 'AL' SETTING POS THEN
+               ISON<2,POS>:=@SVM:PORT
+               ISON<3,POS>:=@SVM:TIME
+            END ELSE
+               INS NAME BEFORE ISON<1,POS>
+               INS PORT BEFORE ISON<2,POS>
+               INS TIME BEFORE ISON<3,POS>
+            END
+         END
+      NEXT X
+      IF LICENSES='' THEN LICENSES=USERS           ; * JMK09
+      TIMES=DCOUNT(ISON<1>,@VM)
+      TWO.HEAD=0
+      MULTIPLE.USER.EMAILS = ''
+      FOR X = 1 TO TIMES
+         TIMES.ON=DCOUNT(ISON<2,X>,@SVM)
+         IF TIMES.ON > 1 THEN
+            IF TWO.HEAD=0 THEN
+               TWO.HEAD=1
+               WHOISONDA= "The Following User(s) are logged on more than once"
+               WHOISONDA<1,-1>= ""
+               WHOISONDA<1,-1>= "PORT  NAME         TIME"
+            END
+            FOR Y = 1 TO TIMES.ON
+               WHOISONDA<1,-1>= ISON<2,X,Y>'R#5 ':ISON<1,X>'L#12 ':ISON<3,X,Y>
+            NEXT Y
+
+            EMAIL.PREFIX = ISON<1,X>
+            READV EMAIL.ADDR FROM F.BCTRL, EMAIL.PREFIX,20 ELSE EMAIL.ADDR = ''
+
+            IF EMAIL.ADDR NE '' THEN
+               MULTIPLE.USER.EMAILS<1,-1> = EMAIL.ADDR
+            END ELSE
+               LEN.PREFIX = LEN(EMAIL.PREFIX) ; PST = LEN.PREFIX - 4
+               IF EMAIL.PREFIX[PST,5] = "AUDIT" THEN
+                  NCHRS = LEN.PREFIX - 5
+                  EMAIL.PREFIX = EMAIL.PREFIX[1,NCHRS]
+               END
+
+               IF EMAIL.PREFIX NE '' THEN
+                  EMAIL.ADDR = EMAIL.PREFIX:"@afs.net"
+                  EMAIL.ADDR = OCONV(EMAIL.ADDR,'MCT')
+                  MULTIPLE.USER.EMAILS<1,-1> = EMAIL.ADDR
+               END
+            END
+         END
+      NEXT X
+
+      IF TWO.HEAD=0 THEN WHOISONDA='There are no users logged on twice'
+
+      LOOK.STRING="There are currently"
+      LOOK.POS=INDEX(OUTPUT,LOOK.STRING,1)
+      IF LOOK.POS=0 THEN STOP
+      ATT=COUNT(OUTPUT[1,LOOK.POS],@AM)+1
+      LAST.LINE=OUTPUT<ATT>
+      LOOK.POS=INDEX(LAST.LINE,LOOK.STRING,1)
+      IF LOOK.POS=0 THEN STOP
+      SHORT.LINE=LAST.LINE[LOOK.POS+LEN(LOOK.STRING)+1,9999]
+      LOOK.POS=INDEX(SHORT.LINE,'users',1)
+      IF LOOK.POS=0 THEN STOP
+      SHORT.LINE=SHORT.LINE[1,LOOK.POS-2]
+      IF NOT(NUM(USERS)) THEN STOP
+      UP.OUTPUT=OCONV(OUTPUT,'MCU')
+      OLEDB.CNT=COUNT(UP.OUTPUT,'OLEDB'[1,8])      ; * BOH01
+      SV.CNT=COUNT(UP.OUTPUT,'SV'[1,8])  ; * BOH01
+      OLEDB.COUNT=OLEDB.CNT+SV.CNT       ; * BOH02
+      IF USER.OLEDB OR USER.SV THEN      ; * Check for excessive OLEDBAFS users and report if found
+
+         IF OLEDB.COUNT > OLEDB.USER.LIMIT THEN
+            SUBJ='WARNING! OLEDBAFS/Sv. User Count is ':OLEDB.COUNT:' Which is Greater than ':OLEDB.USER.LIMIT
+            TEXT=USER:' logged in and OLEDBAFS/Sv. User count of ':OLEDB.COUNT:' Which is greater than ':OLEDB.USER.LIMIT
+            TEXT<1,-1>='Login Date: ':DATE()'D2/'
+            TEXT<1,-1>='Login Time: ':OCONV(TIME(),'MTHS')
+            TEXT<1,-1>='Check for and Clear any STALE OLEDBAFS user sessions!'
+            TEXT<1,-1>='by running the following command on the server:'
+            TEXT<1,-1>='E:\Ardent\uv\bin\uvlictool clean_lic -a'
+            TEXT<1,-1>=' '
+            TEXT<1,-1>=WHOISONDA
+            TEXT<1,-1>=' '
+            TEXT<1,-1>='Below are the users on the system at the time of the problem:'
+            TEXT<1,-1>=LISTU.OUTPUT
+            MVIN=''
+            MVIN<1>='HelpDesk@afs.net'   ; * JMK02
+            MVIN<2,-1>='DFriend@afs.net'           ; * JMK02
+            MVIN<2,-1>='nmeddaugh@afs.net'   ; * JMK02
+            MVIN<2,-1>='LJuneau@afs.net'           ; * JMK02
+            MVIN<4>='FBBP_CHECK.USERS@afs.net'
+            MVIN<5>=SUBJ
+            MVIN<6>=TEXT
+            CALL SENDMAIL(MVIN,MVOUT)
+         END
+
+         **     OPEN 'LOGIN.LOG' TO F.LOGIN THEN
+         **         LOGIN.ID=DATE():'*':TIME()
+         **        LOGIN.REC=OLEDB.COUNT        ; * Total OLEDBAFS users INCLUDING this one
+         **    END
+         IF OLEDB.COUNT > MAX.OLEDB.USERS THEN EXECUTE 'LOGOUT'
+         EXECUTE 'AUTOLOGOUT 1'
+         STOP
+      END
+      LOOKUP.USER=USER[1,7]
+      USER.COUNT=COUNT(UP.OUTPUT,'\':LOOKUP.USER:" ")
+
+      CURRENT.DATE=DATE()
+      CURRENT.TIME=TIME()
+      DAY=REM(CURRENT.DATE,7)
+      IF DAY > 0 AND DAY < 6 THEN        ; * Only Look on Week Days Mon=1 Fri=5
+         IF CURRENT.TIME GE 28800 AND CURRENT.TIME LE 61200 THEN       ; * Only Look from 8:00am till 5:00pm
+            IF USER.COUNT > MAX.USER.TIMES AND USER#"BRIAN" AND USER.OLEDB=0 AND USER.SV=0 THEN      ; * JMK04
+               CRT
+               CRT "-- Access to Universe is Denied --"
+               IF MAX.USER.TIMES=1 THEN
+                  CRT "You are limited to 1 Universe Session."
+               END ELSE
+                  CRT "You are limited to ":MAX.USER.TIMES:" Universe Sessions."
+               END
+               CRT "Universe is reporting that you are requesting ":USER.COUNT:" Sessions."
+               IF USER.COUNT-1=1 THEN
+                  CRT "If you do not have 1 Session open (on any computer)"
+               END ELSE
+                  CRT "If you do not have ":USER.COUNT-1:" Sessions open (total on all computers)"
+               END
+               CRT "or if you feel that you have a session being reported as open that was not"
+               CRT "closed properly, contact the IS Department immediately."
+               RQM
+               RQM
+** Add Stops for the user exceptions
+
+               IF USER='GBINO' THEN STOP           ; * Let Mike Go ahead
+               IF USER='NMEDDAUGH' THEN STOP       ; * Let Mike Go ahead
+               IF USER='BPBARKER' THEN STOP        ; * Let BPB Go ahead
+               IF USER='DAVID' THEN STOP           ; * Let David Go ahead
+               IF USER='GSHAFER' THEN STOP         ; * Let Greg Go ahead
+               CHAIN 'LO'
+            END
+         END
+      END
+      IF LICENSES-OLEDB.COUNT > AFS.LIC.LIMIT THEN           ; * JMK08
+         CRT "AFS UniVerse license limit of ":AFS.LIC.LIMIT:" licenses has been reached, try again later."     ; * JMK08
+         SUBJ='WARNING! -- ':USER:' (':LONG.USER.NAME:') was denied access to Universe!'
+         TEXT=USER:' attempted to login to Universe and was denied access'
+         TEXT<1,-1>='due to Insufficient procomm user licenses.'
+         TEXT<1,-1>='The License Limit is ':AFS.LIC.LIMIT:' this would have been the ':LICENSES-OLEDB.COUNT:' license.'  ; * JMK08
+         TEXT<1,-1>=' '
+         TEXT<1,-1>='Login Date: ':DATE()'D2/'
+         TEXT<1,-1>='Login Time: ':OCONV(TIME(),'MTHS')
+         TEXT<1,-1>=' '
+         TEXT<1,-1>='Check for and Clear any STALE user sessions!'
+         TEXT<1,-1>='by running the following command on the server:'
+         TEXT<1,-1>='E:\Ardent\uv\bin\uvlictool clean_lic -a'
+         TEXT<1,-1>=' '
+         TEXT<1,-1>='Also check for Double Users who may not need their extra session'
+         TEXT<1,-1>=' '
+         TEXT<1,-1>=WHOISONDA
+         TEXT<1,-1>=' '
+         TEXT<1,-1>='Below are the users on the system at the time of the DENIAL:'
+         TEXT<1,-1>=' '
+         TEXT<1,-1>=LISTU.OUTPUT
+         MVIN=''
+         MVIN<1>='HelpDesk@afs.net'      ; * JMK02
+         MVIN<2,-1>='NMEDDAUGH@afs.net'  ; * JMK08
+         MVIN<2,-1>='HelpDesk@afs.net'
+         MVIN<2,-1>='DFriend@afs.net'    ; * JMK02
+         MVIN<2,-1>='nmeddaugh@afs.net'      ; * JMK02
+         MVIN<4>='FBBP_CHECK.USERS@afs.net'
+         MVIN<5>=SUBJ
+         MVIN<6>=TEXT
+         CALL SENDMAIL(MVIN,MVOUT)
+
+         IF TWO.HEAD AND USER.COUNT<2 THEN         ; * JMK05 ; * JMK06
+            GOSUB SEND.MULTIU.EMAILS
+         END
+         RQM
+         RQM
+** Add Stops for the user exceptions
+         IF USER='BPBARKER' THEN STOP    ; * Let BPB Go ahead
+        
+         IF USER='GBINO' THEN STOP       ; * Let Mike Go ahead
+         IF USER='DAVID' THEN STOP       ; * Let David Go ahead
+         IF USER='GSHAFER' THEN STOP     ; * Let Greg Go ahead
+         CHAIN 'LO'
+      END
+      IF NOT(USER.PHANTOM) THEN
+         IF DBCTRL<26> # DATE() THEN
+            WRITEV DATE() ON F.BCTRL,USER,26
+         END
+      END
+      STOP
+
+*****************************************************************
+SEND.MULTIU.EMAILS:* Send message to all users with multiple sessions open as well as the person trying to log on. ;* NPR01
+*****************************************************************
+      LOGON.USER = USER
+      READ LOGON.USER.REC FROM F.BCTRL, LOGON.USER ELSE LOGON.USER.REC = ''
+      LONGON.USER.NAME = LOGON.USER.REC<13>
+      LOGON.EMAIL.ADDR = LOGON.USER.REC<20>
+      IF LOGON.EMAIL.ADDR = '' THEN
+         LOGON.EMAIL.ADDR = LOGON.USER:"@afs.net"
+         LOGON.EMAIL.ADDR = OCONV(LOGON.EMAIL.ADDR,'MCT')
+      END
+      MVIN=''
+      MVIN<1> = MULTIPLE.USER.EMAILS
+      MVIN<2> = LOGON.EMAIL.ADDR
+      SUBJ='RE: Multiple Universe sessions used by yourselves.'
+      TEXT=' '
+      TEXT<1,-1> = 'Attention : '
+      TEXT<1,-1> = ' '
+      R.LOGIN.NAME = FIELD(LONGON.USER.NAME,' ',1)
+      TEXT<1,-1> = LONGON.USER.NAME:' was unable to login to ACCUTERM because all of our user licenses have been used up.'
+      TEXT<1,-1> = 'If you are not using one of your sessions heavily please close it so that ':R.LOGIN.NAME:' can log into the system.'
+      TEXT<1,-1> = 'Also,  please "Reply to all" and inform them that a session is now available for use.'
+      TEXT<1,-1>=' '
+      TEXT<1,-1>='Thank you,'
+      TEXT<1,-1>=' '
+      TEXT<1,-1>='IT Department.'
+      MVIN<2,-1>='NMEDDAUGH@afs.net'     ; * JMK08
+      MVIN<2,-1>='HelpDesk@afs.net'
+      MVIN<2,-1>='DFriend@afs.net'       ; * JMK02
+      MVIN<2,-1>='nmeddaugh@afs.net'         ; * JMK02
+      MVIN<4>='FBBP_CHECK.USERSn@afs.net'
+      MVIN<5>=SUBJ
+      MVIN<6>=TEXT
+      CALL SENDMAIL(MVIN,MVOUT)
+      RETURN

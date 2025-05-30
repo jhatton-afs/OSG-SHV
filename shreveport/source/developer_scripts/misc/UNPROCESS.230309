@@ -1,0 +1,887 @@
+******************************************************************
+* Program : UNPROCESS
+* Author  : UNKNOWN
+* Date    : UNKNOWN
+* Library : FBBP
+* Copyright (c) 2016 by AFS Logistics, LLC. - All Rights Reserved
+* UNPROCESS Client INVOICING
+*
+* Last updated by afs (AFSLOGISTICS\gbino) at 13:34:31 on 12/11/2017.
+*
+* Start modification history
+* 091205 - JMK01 - ALLOW UNPROCESS IF AR POSTED WITH EMAIL TO AR DEPARTMENT
+* 012506 - BOH01 - ADD 'D'ELETE RECORD(S) TO COGNOS.ADD
+* 101206 - JMK02 - REMOVE RECORDS FROM FB.BILLS.SUMMARY FILE
+* 121907 - JMK03 - C070443 - Create process to update SQL data tables from Universe
+* 051508 - JMK04 - T081322 - Account 01179 Unprocessed Where AR
+* 101608 - JMK05 - C082344 - Prevent running the AR Posting Process while FP Processing is active.
+* 012309 - JMK06 - T090015 - Unprocess File Contention Issues
+* 021009 - NPR01 - T090197 - Add prompt for reason when Unprocessing a client that has been posted to AR.
+* 072909 - JMK07 - ADJUST POSTED AR TO LOOK AT THE AR.BRIDGE.LAST WHICH IS CREATED DURING AR POSTING
+* 102611 - JMK08 - SysAid#196 - 01863 PROCESS ABORTED, PLEASE UNPROCESS-CORRECTED THE DATE USED FOR THE AR CHECK.
+* 102811 - JMK09 - REMOVE FROM SQL IF THE UNPROCESS DATE IS AFTER AR HAS BEEN POSTED.
+* 040312 - SWB01 - PROJ 182 - Update FB.TIMELINE.SUMMARY file
+* 031214 - DRF01 - SysAid 8694 Corrected the update to the ACCESS file
+*                  for non troubleshooting process
+* 010715 - DRF02 - SysAid 14548 - Gave LaJuankya access to this program
+* 120715 - GRB01 - SysAid 21322 - Check for process block and add block while unprocessing
+* 060616 - GRB03 - SysAid 25054 - Add CDUNGAN
+* 101016 - DRF03 - SysAid 26541 - Add log time to the PROCESS.LOG file
+* 052217 - DRF04 - SysAid 30370 - Client notification of unprocess
+* End modification history
+**********************************************************************
+
+*$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Initialize variables
+*
+      TESTING=0 ; TESTING.TEXT=''
+
+      PROG.NAME='UNPROCESS':TESTING.TEXT
+      PROG.DESC='UNPROCESS BILLS':TESTING.TEXT
+      PACK.NAME='FREIGHT BILLING'
+      CALL GET.USER.NEW(USER,CH.NUM)
+
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'UNPROCESS' ; UPL.VOUT = ''      ; * NPR_UPL 04/23/2010
+      UPL.VIN<3> = USER
+      UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+*
+      PROMPT''
+      CO.NAME = 'AFS Logistics, LLC'     ; * SWB01
+      TR.ERROR.CNT = 0                   ; * SWB01
+      TR.ERRORS = ''                     ; * SWB01
+      TR.EMAIL.OUT = ''                  ; * SWB01
+      TR.ERROR.MAX = 50                  ; * SWB01
+*
+* Open files
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE        ; * SWB01
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)     ; * SWB01
+      END                                ; * SWB01
+      OPEN '','AR.SLSMAN.1000.1' TO F.SLSMAN ELSE  ; * DRF04
+         CALL OPEN.ABORT('AR.SLSMAN.1000.1',PROG.NAME)       ; * DRF04
+      END                                ; * DRF04
+      OPEN '','FB.OPEN.BILLS' TO F.OPEN ELSE
+         CALL OPEN.ABORT('FB.OPEN.BILLS',PROG.NAME)
+      END
+      OPEN '','FB.PRE.OPEN.BILLS' TO F.PRE.OPEN ELSE
+         CALL OPEN.ABORT('FB.PRE.OPEN.BILLS',PROG.NAME)
+      END
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         CALL OPEN.ABORT('FB.BILLS.CRX',PROG.NAME)
+      END
+      OPEN '','FB.AR.SUMMARY' TO F.SUMMARY ELSE
+         CALL OPEN.ABORT('FB.AR.SUMMARY',PROG.NAME)
+      END
+      OPEN '','AR-BRIDGE' TO F.BDG ELSE  ; * JMK01
+         CALL OPEN.ABORT('AR-BRIDGE',PROG.NAME)    ; * JMK01
+      END                                ; * JMK01
+      OPEN '','AR.BRIDGE.LAST' TO F.BDG.LST ELSE   ; * JMK07
+         CALL OPEN.ABORT('AR.BRIDGE.LAST',PROG.NAME)         ; * JMK07
+      END                                ; * JMK07
+      OPEN '','PROCESS.LOG' TO F.PROCESS.LOG ELSE  ; * DRF03
+         CALL OPEN.ABORT('PROCESS.LOG',PROG.NAME)  ; * DRF03
+      END                                ; * DRF03
+      OPEN '','FB.TABLES' TO F.TABLES ELSE         ; * JMK05
+         CALL OPEN.ABORT("FB.TABLES",PROG.NAME)    ; * JMK05
+      END                                ; * JMK05
+      OPEN '','FB.TIMELINE.SUMMARY' TO F.TIMELINE.SUMMARY ELSE         ; * SWB01
+         CALL OPEN.ABORT("FB.TIMELINE.SUMMARY",PROG.NAME)    ; * SWB01
+      END                                ; * SWB01
+      OPEN '','BCTRL' TO F.BCTRL ELSE    ; * SWB01
+         CALL OPEN.ABORT('BCTRL',PROG.NAME)        ; * SWB01
+      END                                ; * SWB01
+      READ DBCTRL FROM F.BCTRL, USER ELSE          ; * SWB01
+         CALL ELINE('Cannot read Users information. Call I.T.')        ; * SWB01
+         STOP                            ; * SWB01
+      END                                ; * SWB01
+      OPEN '','OPERATOR' TO F.OP ELSE CALL OPEN.ABORT("OPERATOR",PROG.NAME)      ; * GRB01
+      READV OP.FLG FROM F.OP,USER,55 ELSE
+         OP.FLG = "N"
+      END
+      IF OP.FLG = "Y" THEN
+      END ELSE
+         CALL FB.PRINT.CENT(1,80,10,USER:' DOES NOT HAVE ACCESS TO PROCESS!')    ; * JMK05
+         CALL FB.PRINT.CENT(1,80,12,'Restricted Access Application')   ; * JMK05
+         CALL ELINE('Access Denied! - See Help Desk')        ; * JMK05
+         STOP                            ; * JMK05
+      END
+
+
+      USER.TYPE = DBCTRL<14>             ; * SWB01
+      IF USER.TYPE # 'A' THEN USER.TYPE = ''       ; * SWB01
+      USER.DPT = DBCTRL<15>              ; * SWB01
+      IN.OPEN=0
+
+      IF 0 THEN
+         OPEN 'TEMP' TO F.COGNOS ELSE ABORT
+      END ELSE
+         OPEN '','COGNOS.ADD' TO F.COGNOS ELSE     ; * BOH01
+            CALL OPEN.ABORT('COGNOS.ADD',PROG.NAME)          ; * BOH01
+         END                             ; * BOH01
+      END
+      AR.BRIDGE.FLAG=0
+      UNPROCESS.SQL=0                    ; * JMK09
+      INT.TODAY = DATE()                 ; * SWB01
+
+      READ AR.POST.REC FROM F.TABLES,'AR_POSTING' THEN       ; * JMK05
+         CALL ELINE('AR is currently being posted by ':AR.POST.REC<1>:'. Please try again later.')   ; * JMK05
+         STOP                            ; * JMK05
+      END                                ; * JMK05
+
+*
+* Display screen heading
+*
+10:   CALL AFS.SCR.HEAD('','','',PROG.NAME,PROG.DESC,PACK.NAME,"AFS Logistics, LLC",TIME.DATE,1)
+20:   HELP='Enter number of client to process.'
+      CALL GEN.IN(0,3,'Enter Client Number     #####','',CLIENT,1,5,'R','0',2,-5,3,0,QI,HELP,0,23)
+      IF QI='EX' OR QI='X' THEN GO 9999
+* Begin Mod  GRB01
+      READ BLOCK FROM F.TABLES,"NO-PROCESS*":CLIENT THEN
+         CALL ELINE('NO-PROCESS LOCK INPLACE FOR THIS Client ':CLIENT)
+         GO 20
+      END
+      READ FPBLOCK FROM F.TABLES,"FP_PROCESS" THEN
+         CLIENT.SER = INDEX(FPBLOCK,CLIENT,1)
+         IF CLIENT.SER GT 0 THEN
+            CALL ELINE('CLIENT IS CURRENTLY BEING PROCESSED ':CLIENT)
+            GO 20
+         END
+      END
+******* create lock while unprocessing
+******      BLOCK.REC = "account is being unprocessed"
+******      WRITE BLOCK.REC ON F.TABLES,"NO-PROCESS*":CLIENT
+* End Mod  GRB01
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT ELSE
+         CALL ELINE('Client ':CLIENT:' not on file!')
+         GO 20
+      END
+      ORIG.CLIENT.REC=CLIENT.REC
+      CRT @(30,3):CLIENT.REC<2>:@(-4):
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+
+*
+* Open clients's unprocess file
+*
+      OPEN 'FB.UNPROCESS,':CLIENT TO F.UP ELSE
+         CALL ELINE("Cannot open FB.UNPROCESS,":CLIENT:" file!")
+         GOTO 10
+      END
+      READ DUP FROM F.UP,'UNPROCESSED' THEN
+         CALL ELINE('This Account has already been unprocessed by ':DUP<3>)
+         GOTO 10
+      END
+      READ DPRO.REC FROM F.UP,'PROCESS.DATES' ELSE DPRO.REC=''
+      IF DPRO.REC#'' THEN
+         CRT @(0,5):'Beginning Date: ':DPRO.REC<1>'D2/'
+         CRT @(0,7):'Ending Date:    ':DPRO.REC<2>'D2/'
+         IF DPRO.REC<2>#DATE() THEN
+250:        HELP="X=Change. EX=Exit. I-UNDERSTAND=Continue."
+            CALL GEN.IN(0,22,'Ending Date is not today. Type I-UNDERSTAND to continue. ------------','',Q,0,12,'','',0,-12,22,1,QI,HELP,0,23)
+            QI=OCONV(QI,'MCU')
+            BEGIN CASE
+               CASE QI='X'
+                  CRT @(0,22):@(-3):
+                  GO 10
+               CASE QI='EX'
+                  GO 9999
+               CASE QI='I-UNDERSTAND'
+                  NULL
+               CASE 1
+                  CALL ELINE('Invalid entry. Must be X, EX, or I-UNDERSTAND.')
+                  GOTO 250
+            END CASE
+         END
+      END
+275:
+      SEND.EMAIL='N'                     ; * DRF04
+      ASK.SEND.MAIL=0                    ; * DRF04
+
+      READ DUMMY FROM F.BDG,CLIENT:'-TEST' THEN    ; * JMK01             ; *DRF01    ; * DRF04
+         ASK.SEND.MAIL=0                 ; * DRF04
+      END ELSE                           ; * DRF04
+         ASK.SEND.MAIL=1                 ; * DRF04
+      END                                ; * DRF04
+      IF ASK.SEND.MAIL THEN              ; * DRF04
+         HELP="Y=Yes N=No EX=Exit"       ; * DRF04
+         CALL GEN.IN(0,18,'Do you want to send an email to the client to disregard email. Y-','',Q,0,2,'','',0,-2,18,1,QI,HELP,0,23)         ; * DRF04
+         QI=OCONV(QI,'MCU')              ; * DRF04
+         BEGIN CASE                      ; * DRF04
+            CASE QI='X'                  ; * DRF04
+               CRT @(0,22):@(-3):        ; * DRF04
+               GO 10                     ; * DRF04
+            CASE QI='EX'                 ; * DRF04
+               GO 9999                   ; * DRF04
+            CASE QI=''                   ; * DRF04
+               SEND.EMAIL='Y'            ; * DRF04
+            CASE QI='N'                  ; * DRF04
+               SEND.EMAIL='N'            ; * DRF04
+            CASE QI='Y'                  ; * DRF04
+               SEND.EMAIL='Y'            ; * DRF04
+            CASE 1                       ; * DRF04
+               CALL ELINE('Invalid entry. Must be N, Y, X, or EX')     ; * DRF04
+               GOTO 275                  ; * DRF04
+         END CASE                        ; * DRF04
+      END                                ; * DRF04
+300:  HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            GO 10
+         CASE QI='EX'
+            GO 9999
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO 300
+      END CASE
+
+*
+* Open clients's file
+*
+      OPEN 'FB.BILLS,':CLIENT TO F.BILLS ELSE
+         CALL ELINE("Cannot open FB.BILLS,":CLIENT:" file!")
+         GOTO 20
+      END
+      OPEN 'FB.BILLS.HIST,':CLIENT TO F.HIST ELSE
+         CALL ELINE("Cannot open FB.HIST,":CLIENT:" file!")
+         GOTO 20
+      END
+      OPEN 'FB.BILLS.ACCESS,':CLIENT TO F.ACCESS ELSE        ; * SWB01
+         CALL ELINE("Cannot open FB.ACCESS,":CLIENT:" file!")          ; * SWB01
+         GOTO 20                         ; * SWB01
+      END                                ; * SWB01
+      IF CLIENT='10356' THEN             ; * JMK02
+         OPEN 'FB.BILLS.SUMMARY,':CLIENT TO F.SUMM ELSE      ; * JMK02
+            CALL ELINE("Cannot open FB.BILLS.SUMMARY,":CLIENT:" file!")          ; * JMK02
+            GOTO 20                      ; * JMK02
+         END                             ; * JMK02
+      END                                ; * JMK02
+*
+* Remove summary information from file
+*
+      END.DATE=CLIENT.REC<82>
+      READ DSUMMARY FROM F.SUMMARY,END.DATE THEN
+         LOCATE CLIENT IN DSUMMARY<2> BY 'AR' SETTING FB.POS THEN
+            DSUMMARY<1>=DSUMMARY<1>-DSUMMARY<3,FB.POS>
+            DEL DSUMMARY<2,FB.POS>
+            DEL DSUMMARY<3,FB.POS>
+            IF TESTING ELSE WRITE DSUMMARY ON F.SUMMARY,END.DATE
+         END ELSE
+            CALL ELINE('Could not find ':CLIENT:' in for record ':END.DATE:' in the summary file')
+         END
+      END ELSE
+
+         CALL ELINE('Could not find the record ':END.DATE:' in the summary file')          ; * SWB08
+      END
+*
+* Look at the dates in the file before processing.  Warning if good
+* bills are in the file past the Ending date.
+*
+      STMT = 'SSELECT FB.UNPROCESS,':CLIENT
+      STMT:= ' BY FILE.NAME BY ITEM.NAME'
+      EXECUTE STMT CAPTURING OUTPUT
+      IF SYSTEM(11) ELSE
+         CALL ELINE('There Are No Bills in the file to Unprocess!')
+         GO 10
+      END
+* create lock while unprocessing
+      BLOCK.REC = "account is being unprocessed"
+      WRITE BLOCK.REC ON F.TABLES,"NO-PROCESS*":CLIENT
+      LOG.ID=CLIENT:'*':DATE()           ; * DRF03
+      READ D.PROCESS.LOG FROM F.PROCESS.LOG,LOG.ID ELSE D.PROCESS.LOG=''         ; * DRF03
+      D.PROCESS.LOG<1,-1>='Unproc'       ; * DRF03
+      D.PROCESS.LOG<2,-1>='Beg'          ; * DRF03
+      D.PROCESS.LOG<3,-1>=TIME()         ; * DRF03
+      D.PROCESS.LOG<4,-1>=USER           ; * DRF03
+      WRITE D.PROCESS.LOG ON F.PROCESS.LOG,LOG.ID  ; * DRF03
+*
+* CHECK FOR MISSING AR TO ALERT AR DEPARTMENT ; * JMK01
+*
+      ACCESS.UPD=0                       ; *DRF01
+
+      READ DUMMY FROM F.BDG,CLIENT THEN  ; * JMK01             ; *DRF01
+         ACCESS.UPD=1                    ; *DRF01
+      END ELSE                           ; *DRF01
+         READ DUMMY FROM F.BDG,CLIENT:'-TEST' ELSE
+
+            READ DUMMY FROM F.BDG.LST,CLIENT:'*':DPRO.REC<2> THEN      ; * JMK07 ; * JMK08
+*
+GET.YES.NO:    * Do you really want to do this   * ; NPR01
+*
+               MASK='AR Has Been Posted for Client ':CLIENT:' Continue [Y]es, [N]o or EX '
+*
+               HELP='[Y]es [N]o [EX]it'
+               CALL GEN.IN(0,22,MASK,'',Q,0,4,'','',2,LEN(MASK)+1,22,1,QI,HELP,0,23)
+               QI=OCONV(QI,'MCU')
+               BEGIN CASE
+                  CASE QI='EX' OR QI='EXIT'
+                     STOP
+                  CASE QI='N' OR QI='NO' OR QI='0'
+                     CRT @(0,20):@(-3)
+                     STOP
+                  CASE QI='Y' OR QI='YES' OR QI='1'
+                     CALL ELINE("RETURN/ENTER to give reason for continuing")
+                     UNP.NOTES = ""
+                     DISPLAY.MODE = 0
+
+                     LOOP
+                     UNTIL UNP.NOTES NE "" DO
+                        CALL FB.UNPROCESS.NOTES(UNP.NOTES,DISPLAY.MODE)
+                        IF UNP.NOTES = "" THEN
+                           CALL AFS.SCR.HEAD('','','',PROG.NAME,PROG.DESC,PACK.NAME,"AFS Logistics, LLC",TIME.DATE,1)
+                           CALL ELINE("No reason entered? -  RETURN/ENTER to give reason for continuing")
+                        END
+                     REPEAT
+                     ACCESS.UPD=1        ; *DRF01
+                     SUBJ='Account ':CLIENT:' Unprocessed Where AR Has Been Posted'        ; * JMK01
+                     TEXT=USER:' has unprocessed an account where AR has been posted '     ; * JMK01
+                     TEXT<1,-1>='Client: ':CLIENT:'-':CLIENT.REC<2>    ; * JMK01
+
+                     TEXT<1,-1>='Invoice Date ':DPRO.REC<2>'D2/'       ; * JMK01 ; * JMK04
+
+                     TEXT<1,-1>=' '      ; * NPR01
+                     N.NOTES = DCOUNT(UNP.NOTES,@VM)         ; * NPR01
+                     FOR INX = 1 TO N.NOTES        ; * NPR01
+                        IF INX = 1 THEN  ; * NPR01
+                           TEXT<1,-1> = 'Reason : ':UNP.NOTES<1,INX>   ; * NPR01
+                        END ELSE         ; * NPR01
+                           TEXT<1,-1> = SPACE(9) : UNP.NOTES<1,INX>    ; * NPR01
+                        END              ; * NPR01
+                     NEXT INX            ; * NPR01
+                     TEXT<1,-1>=' '      ; * NPR01
+
+                     TEXT<1,-1>='A credit will most likely need to be made to the AR for this client'          ; * JMK01
+                     IF CLIENT='02192' THEN
+                        TEXT<1,-1>=' '
+                        TEXT<1,-1>='Do not forget to tell the client about the FTP folder'
+                     END
+                     MVIN=''             ; * JMK01
+                     MVIN<1>='Accounting@afs.net'  ; * JMK01
+                     MVIN<2>='DFriend@afs.net'     ; * JMK01
+                     MVIN<2,-1>='GBino@afs.net'
+                     MVIN<2,-1>='NMEDDAUGH@afs.net'
+*DF                     MVIN<2,-1>='RJaganathan@afs.net'
+*DF                     MVIN<2,-1>='RKosik@afs.net'
+                     MVIN<2,-1>='RBroom@afs.net'
+                     MVIN<2,-1>='SPant@afs.net'
+                     MVIN<2,-1>='RBeggs@afs.net'
+                     MVIN<2,-1>='TWinters@afs.net'
+                     IF CLIENT='02192' THEN
+                        MVIN<2,-1>='CYe@afs.net'
+                     END
+
+                     MVIN<4>='AFS'       ; * JMK01
+                     MVIN<5>=SUBJ        ; * JMK01
+                     MVIN<6>=TEXT        ; * JMK01
+                     CALL SENDMAIL(MVIN,MVOUT)     ; * JMK01
+                     IN.OPEN=1
+                  CASE 1                 ; * NPR01
+                     GOTO GET.YES.NO     ; * NPR01
+               END CASE                  ; * NPR01
+            END                          ; * JMK07
+         END                             ; * JMK01
+      END
+      OLD.FILE.NAME='FIRST'
+
+      MAX.BILLS.PER.FILE=50000           ; * The Maximum Number of Bills (Lines/Records) per file
+      BILL.BREAK.COUNTER=0               ; * Counter to Break HUGE file into smaller 50,000 line pieces
+      BILL.ARRAY=''
+
+      CLIENT.SEQ=10                      ; * Sequence Number for File Names (Start at 10) * BOH01
+
+      READ DPROCESS.DATES FROM F.UP,'PROCESS.DATES' ELSE     ; * BOH01
+         CALL ELINE('PROCESS.DATES record missing from Unprocess File')          ; * BOH01
+         ABORT                           ; * BOH01
+      END                                ; * BOH01
+
+      PROCESS.BEGIN=DPROCESS.DATES<1>    ; * BOH01
+      PROCESS.END =DPROCESS.DATES<2>     ; * BOH01
+
+      OPROCESS.BEGIN=PROCESS.BEGIN'D4-'
+      BEG.MONTH=OPROCESS.BEGIN[1,2]
+      BEG.DAY =OPROCESS.BEGIN[4,2]
+      BEG.YEAR =OPROCESS.BEGIN[7,4]
+
+      OPROCESS.END=PROCESS.END'D4-'
+      END.MONTH=OPROCESS.END[1,2]
+      END.DAY =OPROCESS.END[4,2]
+      END.YEAR =OPROCESS.END[7,4]
+
+      ARRAY.ID=CLIENT:"-":BEG.YEAR:BEG.MONTH:BEG.DAY:"-":END.YEAR:END.MONTH:END.DAY:"-":CLIENT.SEQ
+
+      IF SEND.EMAIL='Y' THEN             ; * DRF04
+         EMAIL.OUT=''                    ; * DRF04
+         EMAIL.OUT<1>=CLIENT.REC<125>    ; * DRF04
+         EMAIL.OUT<2>=CLIENT.REC<126>    ; * DRF04
+         EMAIL.OUT<3>=CLIENT.REC<127>    ; * DRF04
+         TEST.EMAIL=OCONV(EMAIL.OUT<1>:@VM:EMAIL.OUT<2>:@VM:EMAIL.OUT<3>,'MCL')  ; * DRF04
+         BD.SLS.ID=CLIENT.REC<114>       ; * DRF04
+         READ BD.SLS.REC FROM F.SLSMAN,BD.SLS.ID ELSE BD.SLS.REC=''    ; * DRF04
+         BD.SLS.EMAIL=OCONV(BD.SLS.REC<8>,'MCL')   ; * DRF04
+         IF BD.SLS.EMAIL='none' then     ; * DRF04
+            BD.SLS.EMAIL=''              ; * DRF04
+         END                             ; * DRF04
+         LOCATE BD.SLS.EMAIL IN TEST.EMAIL<1> SETTING EMAIL.POS ELSE   ; * DRF04
+            IF BD.SLS.EMAIL # '' THEN EMAIL.OUT<3,-1>=BD.SLS.EMAIL     ; * DRF04
+         END                             ; * DRF04
+         SVC.SLS.ID=CLIENT.REC<115>      ; * DRF04
+         READ SVC.SLS.REC FROM F.SLSMAN,SVC.SLS.ID ELSE SVC.SLS.REC=''           ; * DRF04
+         SVC.SLS.EMAIL=OCONV(SVC.SLS.REC<8>,'MCL')           ; * DRF04
+         IF SVC.SLS.EMAIL='none' then    ; * DRF04
+            SVC.SLS.EMAIL=''             ; * DRF04
+         END                             ; * DRF04
+         LOCATE SVC.SLS.EMAIL IN TEST.EMAIL<1> SETTING EMAIL.POS ELSE  ; * DRF04
+            IF SVC.SLS.EMAIL # '' THEN EMAIL.OUT<3,-1>=SVC.SLS.EMAIL   ; * DRF04
+         END                             ; * DRF04
+         ACCT.MGR.ID=CLIENT.REC<264>     ; * DRF04
+         READ ACCT.MGR.REC FROM F.SLSMAN,ACCT.MGR.ID ELSE ACCT.MGR.REC=''        ; * DRF04
+         ACCT.MGR.EMAIL=OCONV(ACCT.MGR.REC<8>,'MCL')         ; * DRF04
+         IF ACCT.MGR.EMAIL='none' then   ; * DRF04
+            ACCT.MGR.EMAIL=''            ; * DRF04
+         END                             ; * DRF04
+         LOCATE ACCT.MGR.EMAIL IN TEST.EMAIL<1> SETTING EMAIL.POS ELSE           ; * DRF04
+            IF ACCT.MGR.EMAIL # '' THEN EMAIL.OUT<3,-1>=ACCT.MGR.EMAIL           ; * DRF04
+         END                             ; * DRF04
+         EMAIL.OUT<3,-1>='WeeklyClientEmails@afs.net'        ; * DRF04
+         TEST.EMAIL=OCONV(EMAIL.OUT<1>:@VM:EMAIL.OUT<2>:@VM:EMAIL.OUT<3>,'MCL')  ; * DRF04
+      END                                ; * DRF04
+
+      DONE=0
+      LOOP UNTIL DONE=1 DO
+         READNEXT ID THEN
+            STAR.POS=INDEX(ID,"*",1)
+            IF ID='PROCESS.DATES' THEN GO 800
+            IF STAR.POS=0 THEN
+               FILE.NAME=ID
+               ITEM.NAME=''
+            END ELSE
+               FILE.NAME=ID[1,STAR.POS-1]
+               ITEM.NAME=ID[STAR.POS+1,9999]
+            END
+            CRT ID,FILE.NAME,ITEM.NAME
+            IF FILE.NAME#OLD.FILE.NAME THEN
+               OPEN FILE.NAME TO F.DATA.FILE ELSE
+                  CALL ELINE('Unable to open ':FILE.NAME:' Serious Error Aborting')
+                  ABORT
+               END
+               OLD.FILE.NAME=FILE.NAME
+            END
+            READ UP.ARRAY FROM F.UP,ID ELSE
+               CALL ELINE("FB.UNPROCESS ":ID:" Suddenly Missing! Serious Error Aborting!")
+               ABORT
+            END
+
+            IF UP.ARRAY<1>='*NEW*' THEN
+               IF TESTING ELSE           ; * JMK06
+                  FILE.OPT=0             ; * JMK06
+FILE.DELETE:      *                            ; * JMK06
+                  DELETE F.DATA.FILE,ITEM.NAME ON ERROR      ; * JMK06
+                     FILE.OPT+=1
+                     IF FILE.OPT < 6 THEN
+                        SLEEP 2
+                        GO FILE.DELETE
+                     END
+                  END                    ; * JMK06
+               END                       ; * JMK06
+               IF FILE.NAME='AR-BRIDGE' THEN       ; * JMK03
+                  IF UNPROCESS.SQL=1 THEN          ; * JMK09
+                     SQLVIN=''           ; * JMK03
+                     SQLVOUT=''          ; * JMK03
+                     SQLVIN<1>=USER      ; * JMK03
+                     SQLVIN<2>=CLIENT    ; * JMK03
+                     SQLVIN<3>=DPRO.REC<2>         ; * JMK03
+                     CALL DEL.SQL.FBPROC.SUB(SQLVIN,SQLVOUT)           ; * JMK03 ; * JMK09
+                  END                    ; * JMK09
+               END                       ; * JMK03
+            END ELSE
+               BEGIN CASE
+                  CASE FILE.NAME='PROCESS.DATES'
+*               Do Nothing... Just a record to remember the dates
+                     NULL
+                  CASE FILE.NAME='VARIANCE.CODES,':CLIENT
+                     READ DATA.ARRAY FROM F.DATA.FILE,ITEM.NAME ELSE
+                        CALL ELINE(FILE.NAME:" ":ITEM.NAME:" Suddenly Missing! Serious Error Aborting!")
+                        ABORT
+                     END
+                     UP.ARRAY<1>=DATA.ARRAY<1>     ; * Save the Current Description
+                     IF TESTING ELSE WRITE UP.ARRAY ON F.DATA.FILE,ITEM.NAME
+*
+                  CASE FILE.NAME='VEND.CUST,':CLIENT
+                     READ DATA.ARRAY FROM F.DATA.FILE,ITEM.NAME ELSE
+                        CALL ELINE(FILE.NAME:" ":ITEM.NAME:" Suddenly Missing! Serious Error Aborting!")
+                        ABORT
+                     END
+                     UP.ARRAY<1>=DATA.ARRAY<1>     ; * Save the Current Description
+                     IF TESTING ELSE WRITE UP.ARRAY ON F.DATA.FILE,ITEM.NAME
+*
+                  CASE FILE.NAME='EXPENSE.CODES,':CLIENT
+                     READ DATA.ARRAY FROM F.DATA.FILE,ITEM.NAME ELSE
+IF USER = "GBINO" THEN DEBUG
+                        CALL ELINE(FILE.NAME:" ":ITEM.NAME:" Suddenly Missing! Serious Error Aborting!")
+                        ABORT
+                     END
+                     UP.ARRAY<1>=DATA.ARRAY<1>     ; * Save the Current Description
+                     IF TESTING ELSE WRITE UP.ARRAY ON F.DATA.FILE,ITEM.NAME
+                  CASE FILE.NAME='DIVISION.CODES,':CLIENT
+                     READ DATA.ARRAY FROM F.DATA.FILE,ITEM.NAME ELSE
+                        CALL ELINE(FILE.NAME:" ":ITEM.NAME:" Suddenly Missing! Serious Error Aborting!")
+                        ABORT
+                     END
+                     UP.ARRAY<1>=DATA.ARRAY<1>     ; * Save the Current Description
+                     IF SEND.EMAIL='Y' THEN        ; * DRF04
+                        IF UP.ARRAY<9>#'' THEN     ; * DRF04
+                           DIV.EMAIL=OCONV(UP.ARRAY<9>,'MCL')          ; * DRF04
+                           NUM.EMAIL=DCOUNT(UP.ARRAY<9>,@VM)           ; * DRF04
+                           FOR NUM.OF.EMAILS = 1 TO NUM.EMAIL          ; * DRF04
+                              LOCATE DIV.EMAIL<1,NUM.OF.EMAILS> IN TEST.EMAIL<1> SETTING EMAIL.POS ELSE        ; * DRF04
+                                 EMAIL.OUT<1,-1>=UP.ARRAY<9,NUM.OF.EMAILS>       ; * DRF04
+                                 TEST.EMAIL=OCONV(EMAIL.OUT<1>:@VM:EMAIL.OUT<2>:@VM:EMAIL.OUT<3>,'MCL')        ; * DRF04
+                              END        ; * DRF04
+                           NEXT NUM.OF.EMAILS      ; * DRF04
+                        END              ; * DRF04
+                        IF UP.ARRAY<12>#'' THEN    ; * DRF04
+                           DIV.EMAIL=OCONV(UP.ARRAY<12>,'MCL')         ; * DRF04
+                           NUM.EMAIL=DCOUNT(UP.ARRAY<12>,@VM)          ; * DRF04
+                           FOR NUM.OF.EMAILS = 1 TO NUM.EMAIL          ; * DRF04
+                              LOCATE DIV.EMAIL<1,NUM.OF.EMAILS> IN TEST.EMAIL<1> SETTING EMAIL.POS ELSE        ; * DRF04
+                                 EMAIL.OUT<2,-1>=UP.ARRAY<12,NUM.OF.EMAILS>      ; * DRF04
+                                 TEST.EMAIL=OCONV(EMAIL.OUT<1>:@VM:EMAIL.OUT<2>:@VM:EMAIL.OUT<3>,'MCL')        ; * DRF04
+                              END        ; * DRF04
+                           NEXT NUM.OF.EMAILS      ; * DRF04
+                        END              ; * DRF04
+                        IF UP.ARRAY<13>#'' THEN    ; * DRF04
+                           DIV.EMAIL=OCONV(UP.ARRAY<13>,'MCL')         ; * DRF04
+                           NUM.EMAIL=DCOUNT(UP.ARRAY<13>,@VM)          ; * DRF04
+                           FOR NUM.OF.EMAILS = 1 TO NUM.EMAIL          ; * DRF04
+                              LOCATE DIV.EMAIL<1,NUM.OF.EMAILS> IN TEST.EMAIL<1> SETTING EMAIL.POS ELSE        ; * DRF04
+                                 EMAIL.OUT<3,-1>=UP.ARRAY<13,NUM.OF.EMAILS>      ; * DRF04
+                                 TEST.EMAIL=OCONV(EMAIL.OUT<1>:@VM:EMAIL.OUT<2>:@VM:EMAIL.OUT<3>,'MCL')        ; * DRF04
+                              END        ; * DRF04
+                           NEXT NUM.OF.EMAILS      ; * DRF04
+                        END              ; * DRF04
+                     END                 ; * DRF04
+                     IF TESTING ELSE WRITE UP.ARRAY ON F.DATA.FILE,ITEM.NAME
+                  CASE FILE.NAME='REGION.CODES,':CLIENT      ; * DRF04
+                     READ DATA.ARRAY FROM F.DATA.FILE,ITEM.NAME ELSE   ; * DRF04
+                        CALL ELINE(FILE.NAME:" ":ITEM.NAME:" Suddenly Missing! Serious Error Aborting!")       ; * DRF04
+                        ABORT            ; * DRF04
+                     END                 ; * DRF04
+                     UP.ARRAY<1>=DATA.ARRAY<1>     ; * Save the Current Description   ; * DRF04
+                     IF SEND.EMAIL='Y' THEN        ; * DRF04
+                        IF UP.ARRAY<9>#'' THEN     ; * DRF04
+                           DIV.EMAIL=OCONV(UP.ARRAY<9>,'MCL')          ; * DRF04
+                           NUM.EMAIL=DCOUNT(UP.ARRAY<9>,@VM)           ; * DRF04
+                           FOR NUM.OF.EMAILS = 1 TO NUM.EMAIL          ; * DRF04
+                              LOCATE DIV.EMAIL<1,NUM.OF.EMAILS> IN TEST.EMAIL<1> SETTING EMAIL.POS ELSE        ; * DRF04
+                                 EMAIL.OUT<1,-1>=UP.ARRAY<9,NUM.OF.EMAILS>       ; * DRF04
+                                 TEST.EMAIL=OCONV(EMAIL.OUT<1>:@VM:EMAIL.OUT<2>:@VM:EMAIL.OUT<3>,'MCL')        ; * DRF04
+                              END        ; * DRF04
+                           NEXT NUM.OF.EMAILS      ; * DRF04
+                        END              ; * DRF04
+                        IF UP.ARRAY<12>#'' THEN    ; * DRF04
+                           DIV.EMAIL=OCONV(UP.ARRAY<12>,'MCL')         ; * DRF04
+                           NUM.EMAIL=DCOUNT(UP.ARRAY<12>,@VM)          ; * DRF04
+                           FOR NUM.OF.EMAILS = 1 TO NUM.EMAIL          ; * DRF04
+                              LOCATE DIV.EMAIL<1,NUM.OF.EMAILS> IN TEST.EMAIL<1> SETTING EMAIL.POS ELSE        ; * DRF04
+                                 EMAIL.OUT<2,-1>=UP.ARRAY<12,NUM.OF.EMAILS>      ; * DRF04
+                                 TEST.EMAIL=OCONV(EMAIL.OUT<1>:@VM:EMAIL.OUT<2>:@VM:EMAIL.OUT<3>,'MCL')        ; * DRF04
+                              END        ; * DRF04
+                           NEXT NUM.OF.EMAILS      ; * DRF04
+                        END              ; * DRF04
+                        IF UP.ARRAY<13>#'' THEN    ; * DRF04
+                           DIV.EMAIL=OCONV(UP.ARRAY<13>,'MCL')         ; * DRF04
+                           NUM.EMAIL=DCOUNT(UP.ARRAY<13>,@VM)          ; * DRF04
+                           FOR NUM.OF.EMAILS = 1 TO NUM.EMAIL          ; * DRF04
+                              LOCATE DIV.EMAIL<1,NUM.OF.EMAILS> IN TEST.EMAIL<1> SETTING EMAIL.POS ELSE        ; * DRF04
+                                 EMAIL.OUT<3,-1>=UP.ARRAY<13,NUM.OF.EMAILS>      ; * DRF04
+                                 TEST.EMAIL=OCONV(EMAIL.OUT<1>:@VM:EMAIL.OUT<2>:@VM:EMAIL.OUT<3>,'MCL')        ; * DRF04
+                              END        ; * DRF04
+                           NEXT NUM.OF.EMAILS      ; * DRF04
+                        END              ; * DRF04
+                     END                 ; * DRF04
+                     IF TESTING ELSE WRITE UP.ARRAY ON F.DATA.FILE,ITEM.NAME
+                  CASE FILE.NAME='FB.BILLS,':CLIENT
+                     READ DATA.ARRAY FROM F.HIST,ITEM.NAME ELSE
+                        CALL ELINE("FB.BILLS.HIST,":CLIENT:" ":ITEM.NAME:" Suddenly Missing! Serious Error Aborting!")
+                        ABORT
+                     END
+********************************************************************************************************************
+* Start BOH01 - Adding Delete logic to the Cognos File
+********************************************************************************************************************
+
+                     VERSION=FIELD(ITEM.NAME,'*',3)
+                     IF VERSION = 0 THEN
+                        CARRIER=FIELD(ITEM.NAME,'*',1)
+                        PRO=FIELD(ITEM.NAME,'*',2)
+                        LINE='D'
+                        LINE<1,-1>=CLIENT:CARRIER:PRO:END.YEAR:END.MONTH:END.DAY
+                        BILL.ARRAY<-1>=LINE
+                        BILL.BREAK.COUNTER+=1
+
+                        IF BILL.BREAK.COUNTER=MAX.BILLS.PER.FILE THEN
+                           BILL.BREAK.COUNTER=0
+                           GOSUB WRITE.TO.COGNOS
+                           BILL.ARRAY=''
+                           CLIENT.SEQ+=1           ; * Increment Client Sequence number for next Piece
+                        END
+                     END
+
+********************************************************************************************************************
+* End BOH01 - Adding Delete logic to the Cognos File
+********************************************************************************************************************
+
+                     DATA.ARRAY<13>=''
+                     DATA.ARRAY<14>=''
+                     DATA.ARRAY<15>=''
+                     DATA.ARRAY<32>=''   ; * Expense Dist Commissions
+                     DATA.ARRAY.37 = DATA.ARRAY<37>          ; * SWB01
+                     DATA.ARRAY<37>=''
+                     DATA.ARRAY<40>=''
+                     DATA.ARRAY<42>=''
+                     DATA.ARRAY<43>=''
+                     DATA.ARRAY<44>=''
+                     DATA.ARRAY<67>=''   ; * Rej process date
+                     DATA.ARRAY.249 = DATA.ARRAY<249>        ; * SWB01
+                     DATA.ARRAY<249> = ''          ; * SWB01
+
+                     IF TESTING ELSE     ; * SWB01
+                        TIMELINE.TRANS.TYPE = "UNP"          ; * SWB01
+                        GOSUB UPDATE.TIMELINE.SUMMARY        ; * SWB01
+                        WRITE DATA.ARRAY ON F.HIST,ITEM.NAME           ; * SWB01
+                        WRITE DATA.ARRAY ON F.BILLS,ITEM.NAME          ; * SWB01
+
+                        IF ACCESS.UPD THEN         ; *DRF01
+*The FB.TIMELINE.SUMMARY file and the 'Touches' should only be updated
+*if we are Unprocessing a bill that was actually processed, meaning NOT
+*processed in 'Troubleshooting' mode. 249 is being used in lieu of 37
+*because 37 is filled in even when 'Troubleshooting' during Processing.
+                           ACCESS.REASON = TIMELINE.TRANS.TYPE         ; * SWB01
+                           ACC.VIN=''    ; * SWB01
+                           ACC.VOUT=''   ; * SWB01
+                           ACC.VIN<1>=CLIENT       ; * SWB01
+                           ACC.VIN<2>=ITEM.NAME    ; * SWB01
+                           ACC.VIN<3>=USER         ; * SWB01
+                           ACC.VIN<4>=USER.DPT     ; * SWB01
+                           ACC.VIN<5>=DATE()       ; * SWB01
+                           ACC.VIN<6>=TIME()       ; * SWB01
+                           ACC.VIN<7>='1'          ; * SWB01
+                           ACC.VIN<8>=PROG.NAME    ; * SWB01
+                           ACC.VIN<9>=PROG.DESC    ; * SWB01
+                           ACC.VIN<10>=PACK.NAME   ; * SWB01
+                           ACC.VIN<11>=CO.NAME     ; * SWB01
+                           W.REASON = ACCESS.REASON          ; * SWB01
+                           ACC.VIN<12> = W.REASON  ; * SWB01
+
+                           TEMP.CARRIER=FIELD(ITEM.NAME,'*',1)         ; * SWB01
+                           READ TEMP.CARRIER.REC FROM F.CARRIERS, CARRIER ELSE CARRIER.REC = ''      ; * SWB01
+                           CALL UPD.FB.BILLS.ACCESS(ACC.VIN,ACC.VOUT,CLIENT.REC,TEMP.CARRIER.REC,DATA.ARRAY,F.ACCESS,F.TABLES)     ; * SWB01
+                        END              ; * SWB01
+                     END                 ; * SWB01
+                     IF UNPROCESS.SQL=1 THEN       ; * JMK09
+                        SQLVIN=''        ; * JMK03
+                        SQLVOUT=''       ; * JMK03
+                        SQLVIN<1>=USER   ; * JMK03
+                        SQLVIN<2>=CLIENT           ; * JMK03
+                        SQLVIN<3>=ITEM.NAME        ; * JMK03
+                        CALL DEL.SQL.FBHIST.SUB(SQLVIN,SQLVOUT,DATA.ARRAY)       ; * JMK03 ; * JMK09
+                     END                 ; * JMK09
+                                         ; * JMK02
+*** Also Update the FB.BILLS.CRX FILE
+                     READ DATA.ARRAY FROM F.CRX,ITEM.NAME ELSE
+                        CALL ELINE("FB.BILLS.CRX ":ITEM.NAME:" Suddenly Missing! Serious Error Aborting!")
+
+                     END
+*** Also Delete from the FB.OPEN.BILLS or FB.PRE.OPEN.BILLS file
+***  Note: If Bank = 'N' there will be no record to delete
+***        or if Bank='V' Vouchers may have been printed
+***        (will not matter if deleting "Nothing")
+                     OPEN.ID=CLIENT:"*":ITEM.NAME
+                     IF TESTING ELSE
+                        IF IN.OPEN THEN
+                           DELETE F.OPEN,OPEN.ID
+                        END ELSE
+                           DELETE F.PRE.OPEN,OPEN.ID
+                        END
+                     END
+                     DATA.ARRAY<13>=''
+                     DATA.ARRAY<14>=''
+                     DATA.ARRAY<15>=''
+                     DATA.ARRAY<37>=''
+                     IF TESTING ELSE WRITE DATA.ARRAY ON F.CRX,ITEM.NAME
+
+                     IF TESTING ELSE
+                     END
+
+                  CASE FILE.NAME='CLIENTS'
+                     READ DATA.ARRAY FROM F.DATA.FILE,ITEM.NAME ELSE
+                        CALL ELINE(FILE.NAME:" ":ITEM.NAME:" Suddenly Missing! Serious Error Aborting!")
+                        ABORT
+                     END
+                     DATA.ARRAY<37>=UP.ARRAY<37>
+                     DATA.ARRAY<82>=UP.ARRAY<82>
+                     IF TESTING ELSE WRITE DATA.ARRAY ON F.DATA.FILE,ITEM.NAME
+
+                  CASE 1
+                     IF TESTING ELSE WRITE UP.ARRAY ON F.DATA.FILE,ITEM.NAME
+               END CASE
+            END
+         END ELSE DONE=1
+800:     ***
+      REPEAT
+      DUNPROCESSED=''
+      DUNPROCESSED<1>=DATE()
+      DUNPROCESSED<2>=TIME()
+      DUNPROCESSED<3>=USER
+      IF TESTING ELSE WRITE DUNPROCESSED ON F.UP,'UNPROCESSED'
+      IF SEND.EMAIL='Y' THEN             ; * DRF04
+         SUBJ=CLIENT:' - ':CLIENT.REC<2>:' ':OCONV(DPRO.REC<1>,'D2/'):' - ':OCONV(DPRO.REC<2>,'D2/'):' Unprocessed'
+         TEXT='Please disregard, corrected reports to follow'
+         TEXT<1,-1>=' '                  ; * DRF04
+         TEXT<1,-1>=' '                  ; * DRF04
+
+         MVIN=''                         ; * DRF04
+         MVIN<1>=EMAIL.OUT<1>            ; * DRF04
+         MVIN<2>=EMAIL.OUT<2>            ; * DRF04
+         MVIN<3>=EMAIL.OUT<3>            ; * DRF04
+
+         MVIN<4>='Reports@afs.net'       ; * DRF04
+         MVIN<5>=SUBJ                    ; * DRF04
+         MVIN<6>=TEXT                    ; * DRF04
+         CALL SENDMAIL(MVIN,MVOUT)       ; * DRF04
+      END                                ; * DRF04
+
+      GOSUB WRITE.TO.COGNOS
+      READ D.PROCESS.LOG FROM F.PROCESS.LOG,LOG.ID ELSE D.PROCESS.LOG=''         ; * DRF03
+      D.PROCESS.LOG<1,-1>='Unproc'       ; * DRF03
+      D.PROCESS.LOG<2,-1>='End'          ; * DRF03
+      D.PROCESS.LOG<3,-1>=TIME()         ; * DRF03
+      D.PROCESS.LOG<4,-1>=USER           ; * DRF03
+      WRITE D.PROCESS.LOG ON F.PROCESS.LOG,LOG.ID  ; * DRF03
+      GO 9999
+
+********************************************************************
+WRITE.TO.COGNOS:***
+********************************************************************
+      BILL.ARRAY=CHANGE(BILL.ARRAY,@VM,"|")
+      IF BILL.ARRAY#'' THEN
+         WRITE '' ON F.COGNOS,ARRAY.ID ELSE
+            WRITE.CNT=0
+            RITE=0
+            LOOP
+               WRITE.CNT+=1
+               WRITE '' ON F.COGNOS,ARRAY.ID THEN RITE=1
+            WHILE WRITE.CNT<11 AND RITE=0 DO
+            REPEAT
+            IF RITE=0 THEN
+               CRT 'UNPROCESS - Line 368 Could not initialize BILL.ARRAY on ':ARRAY.ID
+            END
+         END
+         WRITE BILL.ARRAY ON F.COGNOS,ARRAY.ID ELSE
+            WRITE.CNT=0
+            RITE=0
+            LOOP
+               WRITE.CNT+=1
+               WRITE BILL.ARRAY ON F.COGNOS,ARRAY.ID THEN RITE=1
+            WHILE WRITE.CNT<11 AND RITE=0 DO
+            REPEAT
+            IF RITE=0 THEN
+               CRT 'UNPROCESS - Line 409 Could not write BILL.ARRAY on ':ARRAY.ID          ; * JMK01
+            END
+         END
+         IF TESTING THEN CRT 'WROTE BILL.DARRAY ON TEMP ':ARRAY.ID
+      END
+      RETURN
+
+********************************************************************
+UPDATE.TIMELINE.SUMMARY:
+********************************************************************
+
+      IF VERSION = 0 THEN                ; * SWB01
+*In the following line, field 249 (MR to Proc Days) is being used to
+*decide whether the Bill was REALLY Processed in FB.2.3.NW. Field 37
+*is filled in by FB.2.3.NW even if 'Troubleshooting' is on.
+*If 'Troubleshooting' is on in FB.2.1.NW, the FB.TIMELINE.SUMMARY file
+*is not updated because the Bill is not really being processed. Without
+*this program checking to see if field 249 is filled in, it will
+*update the FB.TIMELINE.SUMMARY counters for the Freight Bill on the
+*ASSUMPTION that the Bill was really processed.
+
+         IF DATA.ARRAY<246> # '' AND DATA.ARRAY<247> # '' AND DATA.ARRAY.37 # '' AND DATA.ARRAY.249 # '' THEN  ; * SWB01
+            TR.VIN = DATA.ARRAY<53>      ; * SWB01
+            TR.VIN<2> = CLIENT           ; * SWB01
+            TR.VIN<3> = CARRIER          ; * SWB01
+            TR.VIN<4> = DATA.ARRAY<246>  ; * SWB01
+            TR.VIN<5> = DATA.ARRAY<247>  ; * SWB01
+            TR.VIN<6> = DATA.ARRAY<248>  ; * SWB01
+            TR.VIN<7> = DATA.ARRAY.37    ; * SWB01
+            TR.VIN<8> = DATA.ARRAY.249   ; * SWB01
+            TR.VIN<9> = ITEM.NAME        ; * SWB01
+            TR.VIN<10> = TIMELINE.TRANS.TYPE       ; * SWB01
+
+            CALL FB.UPD.TIMELINE.SUMMARY(TR.VIN, TR.VOUT, F.TIMELINE.SUMMARY)    ; * SWB01
+            BEGIN CASE                   ; * SWB01
+               CASE TR.VOUT[1, 11] = 'TRANS.TYPE='           ; * SWB01
+*Invalid Trans Type was passed
+
+                  TR.ERROR.CNT += 1      ; * SWB01
+                  TR.ERRORS<1, -1>='Invalid TRANS.TYPE of ':FIELD(TR.VOUT, '=', 2):' passed. Frt Bill # ':ITEM.NAME:'. Parameters passed were: '       ; * SWB01
+
+                  TR.ERRORS<1,-1>=TR.VIN           ; * SWB01
+
+               CASE TR.VOUT # ''         ; * SWB01
+*This transaction caused the FB Counter in one or more of the Summmary
+*records to 'go negative'. This transaction is not necessarily the one
+*that CAUSED the miscount.'
+
+                  TR.ERROR.CNT += 1      ; * SWB01
+                  IF TR.ERROR.CNT <= TR.ERROR.MAX THEN       ; * SWB01
+                     TR.ERRORS<1, -1> ='Frt Bill ':ITEM.NAME:' TRANS.TYPE of ':FIELD(TR.VOUT, '=', 2):' passed. One or more Summary records have a Count of less than zero '         ; * SWB01
+                     TR.ERRORS<1, -1> = 'with the following parmaters:':TR.VIN   ; * SWB01
+                     TR.ERRORS<1, -1> = 'The following parameters were passed back from FB.UPD.TIMELINE.SUMMARY: ':TR.VOUT         ; * SWB01
+                  END                    ; * SWB01
+
+               CASE 1                    ; * SWB01
+* No errors passed back.
+
+            END CASE                     ; * SWB01
+
+         END                             ; * SWB01
+      END                                ; * SWB01
+
+      RETURN                             ; * SWB01
+********************************************************************
+9999: * EXIT PROGRAM
+********************************************************************
+      DELETE F.TABLES,"NO-PROCESS*":CLIENT         ; * GRB01
+      IF TR.ERRORS # '' THEN             ; * SWB01
+         TR.EMAIL.OUT<1,1>='nmeddaugh@afs.net'         ; * SWB01
+         TR.EMAIL.OUT<1,2>='dfriend@afs.net'       ; * SWB01
+         TR.EMAIL.OUT<3>=''              ; * SWB01
+         TR.EMAIL.OUT<4>='UNPROCESS@afs.net'       ; * SWB01
+         TR.EMAIL.OUT<5>='Freight Bill Timeline Tracking errors'       ; * SWB01
+         TR.EMAIL.OUT<6> = 'Program ':PROG.NAME:' generated the following errors during UnProcessing of Freight Bills for Client ':CLIENT    ; * SWB01
+         TR.EMAIL.OUT<6, -1> = ' during calling of FB.UPD.TIMELINE.SUMMARY.'     ; * SWB01
+         TR.EMAIL.OUT <6, -1> = ' ':@VM  ; * SWB01
+         TR.EMAIL.OUT<6> := TR.ERRORS    ; * SWB01
+
+         TR.EMAIL.OUT<6, -1> = ''        ; * SWB01
+         TR.EMAIL.OUT<6, -1> = ''        ; * SWB01
+         TR.EMAIL.OUT<6, -1> = 'A maximum of ':TR.ERROR.MAX:' will be reported.'           ; * SWB01
+         TR.EMAIL.OUT<6, -1> = TR.ERROR.CNT:' errors were found.'      ; * SWB01
+
+         CALL SENDMAIL(TR.EMAIL.OUT,TR.EMAIL.VOUT)           ; * SWB01
+      END                                ; * SWB01
+
+      STOP
+
+      RETURN                             ; * SWB08

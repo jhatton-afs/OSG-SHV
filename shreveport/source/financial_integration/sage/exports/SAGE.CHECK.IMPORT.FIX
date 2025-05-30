@@ -1,0 +1,2269 @@
+************************************************************************
+*---- PROGRAM: SAGE.CHECK.IMPORT
+* AUTHOR: Steve Barbee
+* DATE: May 29, 2015
+* DESCRIPTION: FREIGHT BILL ENTRY SCREEN.
+* Copyright (c) 2002 by AFS Logistics, LLC. - All Rights Reserved
+**********************************************************************
+
+*Notes:
+* This program does a pre-verification of the incoming flat file and if there are
+* no fatal errors (ERROR.LEVEL > 5) then the program will proceed to the update portition
+* and if no fatal errors occur in that portion then a 'Post' verification is done.
+* In the program look for MODEs of 'BEFORE', 'UPDATE' and 'AFTER'. Note that some
+* error conditions in 'BEFORE' mode have lower ERROR.LEVEL than they do in AFTER mode.
+*
+*
+* Be Aware that one import file can have a check # paying for Freight Bills,
+* Operational items or Credit Card payments that have been voided on Sage and
+* checks for those same payments CAN BE IN THE SAME FILE, hence the
+* 'CHECK.WILL.BE.VOIDED' logic. In other words, a check Universe has never heard of
+* has already been voided on Sage and another check issued on Sage for those same invoices and
+* BOTH SETS OF INFORMATION CAN BE IN THE SAME IMPORT. THIS IS REALLY WEIRD BUT
+* IS THE WAY THE SAGE Check export was designed by the Sage folks.
+*
+*
+* ERROR.LEVELS range from 1 to 10.
+* 3 means it is worth mentioning
+* 4 is non-fatal
+* 5 is currently unused
+* 6 - 8 allow the whole import file to be verified but will preclude updating files
+* 9 and 10 are Fatal, stop what is being done right now errors.
+******************************************************************
+* Mods
+* 01/07/16 SWB01 - Fix problem where Cutback file was doubling and false error
+*                  message "Total Frt Bill Actual Charges" where the totals on the import
+*                  were double added and twice the actual charges
+
+      PROMPT ''
+      PROG.NAME = 'SAGE.CHECK.IMPORT'
+      PROG.DESC = 'Post Sage checks'
+      PACK.NAME = 'Freight Billing'
+      CO.NAME='AFS, LLC'
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CALL GET.USER(USER)
+* Begin GRB01
+      VIN1=""
+      VIN1<1> = PROG.NAME
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "S"
+      CALL PROGTRACK(VIN1,VOUT1)
+* End GRB01
+      PACK.NAME = 'Freight Billing'
+      CO.NAME='AFS, LLC'
+      FATAL.ERRORS = ''
+      OPEN '','BCTRL' TO F.BCTRL ELSE
+         FATAL.ERRORS<-1> = 'Cannot open BCTRL file. Stopping....'
+      END
+      OPEN '','EMAILDATA' TO F.EMAILDATA ELSE
+         FATAL.ERRORS<-1> = 'Cannot open EMAILDATA file. Stopping....'
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         FATAL.ERRORS<-1> = 'Cannot open FB.TABLES file. Stopping....'
+      END
+      OPEN '','SAGE.UV.IN' TO F.IN ELSE
+         FATAL.ERRORS<-1> = 'Cannot open SAGE.UV.IN file. Stopping....'
+      END
+      OPEN '','SAGE.UV.IN.HIST' TO F.IN.HIST ELSE
+         FATAL.ERRORS<-1> = 'Cannot open SAGE.UV.IN.HIST file. Stopping....'
+      END
+      OPEN '','SAGE.UV.IN.CUTBACKS.NEEDED' TO F.IN.CUTBACKS ELSE
+         FATAL.ERRORS<-1> = 'Cannot open SAGE.UV.IN.CUTBACKS.NEEDED file. Stopping....'
+      END
+      OPEN '','SAGE.UV.IN.CHK.CLEARING.NEEDED' TO F.IN.CHK.CLEARING ELSE
+         FATAL.ERRORS<-1> = 'Cannot open SAGE.UV.IN.CHK.CLEARING.NEEDED file. Stopping....'
+      END
+      OPEN '','FB.CHECK.DATE.XREF' TO F.CHECK.DATE.XREF ELSE
+         FATAL.ERRORS<-1> = 'Cannot open FB.CHECK.DATE.XREF file. Stopping....'
+      END
+      OPEN '','FB.CHECKS.HDR' TO F.CHECKS.HDR ELSE
+         FATAL.ERRORS<-1> = 'Cannot open FB.CHECKS.HDR file. Stopping....'
+      END
+      OPEN '','FB.CHECKS.DTL' TO F.CHECKS.D ELSE
+         FATAL.ERRORS<-1> = 'Cannot open FB.CHECKS.DTL file. Stopping....'
+      END
+      OPEN '','FB.OPEN.BILLS' TO F.OPEN.BILLS ELSE
+         FATAL.ERRORS<-1> = 'Cannot open FB.OPEN.BILLS file. Stopping....'
+      END
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         FATAL.ERRORS<-1> = 'Cannot open FB.BILLS.CRX file. Stopping....'
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         FATAL.ERRORS<-1> = 'Cannot open CLIENTS file. Stopping....'
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         FATAL.ERRORS<-1> = 'Cannot open CLIENTS file. Stopping....'
+      END
+      OPEN '','SAGE.VOIDED.CHECKS' TO F.SAGE.VOIDED.CHECKS ELSE
+         FATAL.ERRORS<-1> = 'Cannot open SAGE.VOIDED.CHECKS file. Stopping....'
+      END
+      OPEN '','SAGE.CHECK.IMPORT.SUMMARY' TO F.IMPORT.SUMMARY ELSE
+         FATAL.ERRORS<-1> = 'Cannot open SAGE.CHECK.IMPORT.SUMMARY file. Stopping....'
+      END
+      OPEN '','AUDIT.LOG.MULT' TO F.AUDIT.LOG ELSE ABORT
+
+      FATAL.DURING.INIT.SUBJ = 'Sage check info import - Files could not be opened in SAGE.CHECK.IMPORT.'
+
+      INT.DATE = DATE()
+      MODE = 'INIT'
+      CK.WRT = 0
+      LINE.WRAP.STRING = '& CHAR(10) &'
+      HIGHEST.ERROR.LEVELS = ''
+      ADD.TO.ACCT.REPORT = 0
+      ADD.TO.IT.REPORT = 0
+      ERROR.HINT = ''
+      ERROR.HINTS = ''
+      ERROR.LEVELS = ''
+      IMPORT.ID = ''
+      RECORDS.SELECTED = 0
+      IMPORT.CNT = 0
+
+      LOCK.CNT = 0
+STATUS.LOCK:
+      READU STATUS.REC FROM F.TABLES, 'SAGE.IMPORT.STATUS' LOCKED
+
+         CUR.TIME = TIME()
+         BEGIN CASE
+            CASE CUR.TIME >= 61200 OR CUR.TIME <= 28800
+               IF LOCK.CNT = 0 OR LOCK.CNT = 60 THEN
+                  EXECUTE 'BBSEND GREGB FB.TABLES SAGE.IMPORT.STATUS is locked in SAGE.CHECK.IMPORT'
+                  EXECUTE 'BBSEND DAVID FB.TABLES SAGE.IMPORT.STATUS is locked in SAGE.CHECK.IMPORT'
+               END
+               IF LOCK.CNT => 120 THEN
+                  EXECUTE 'BBSEND GREGB FB.TABLES SAGE.IMPORT.STATUS was locked for 10 minutes in SAGE.CHECK.IMPORT and has aborted.'
+                  EXECUTE 'BBSEND DAVID FB.TABLES SAGE.IMPORT.STATUS was locked for 10 minutes in SAGE.CHECK.IMPORT and has aborted.'
+                  GO THE.END
+               END
+            CASE LOCK.CNT = 0
+               EXECUTE 'BBSEND GREGB FB.TABLES SAGE.IMPORT.STATUS is locked in SAGE.CHECK.IMPORT'
+               EXECUTE 'BBSEND DAVID FB.TABLES SAGE.IMPORT.STATUS is locked in SAGE.CHECK.IMPORT'
+            CASE 1
+
+         END CASE
+
+         EXECUTE 'SLEEP 5'
+         LOCK.CNT += 1
+         GOTO STATUS.LOCK
+      END THEN
+         MODE = STATUS.REC<1>
+         BEGIN CASE
+            CASE MODE = 'IMPORT'
+
+            CASE 1
+               FATAL.ERRORS = 'FB.TABLES SAGE.IMPORT.STATUS field 1 of ':STATUS.REC<1>:' is not "IMPORT" '
+         END CASE
+      END ELSE
+         FATAL.ERRORS = 'FB.TABLES SAGE.IMPORT.STATUS is missing'
+      END
+
+      IF FATAL.ERRORS # '' THEN
+*If a file couldn't be opened, send an email saying so and then STOP
+         ERROR.LEVEL = 10
+         ERROR.HINT = 'Download from SAGE failed because file(s) could not be opened.'
+         STATUS.SUBJ = ERROR.HINT
+         STATUS.TEXT = FATAL.ERRORS
+         GOSUB TRACK.WORST.ERROR
+         GO THE.END
+      END
+
+      READ DBCTRL FROM F.BCTRL,USER ELSE DBCTRL = ''
+      IF DBCTRL<14>='A' THEN
+         USER.TYPE='A'
+      END ELSE
+         USER.TYPE=''
+      END
+      USER.DPT=DBCTRL<15>
+
+      INT.TODAY = DATE()
+      TAB.CHAR = CHAR(009)
+      PREV.CLIENT = '&$#'
+      INT.TODAY = DATE()
+      VERSION = 0
+      PAYMENT.ERRORS = ''
+      DATA.ERRORS = ''
+
+      AVIN = ''
+      AVIN<1> = 'AFS'                    ; * System Name for Audit Log file
+      AVIN<2> = PROG.NAME
+      AVIN<3> = USER
+
+      TESTING = 0
+      DISPLAY.CRTS = 0
+      DEBUGGING = 0
+      FOB.MISSING.CNT = 0
+      RPT.HEADING = 'Client #':TAB.CHAR:'Carrier #':TAB.CHAR:'PRO #':TAB.CHAR:'Frt Bill Actual Charge':TAB.CHAR:'Sage Invoice Amt Paid on Check':TAB.CHAR:'Sage Check # and Bank':TAB.CHAR
+      RPT.HEADING := 'Sage Check Amt':TAB.CHAR:'Sage Check Date':TAB.CHAR:'Frt Bill Check Amount':TAB.CHAR:'Frt Bill Check ID':TAB.CHAR:'Frt Bill Check Date':TAB.CHAR
+      RPT.HEADING := 'Errors':TAB.CHAR
+      RPT.HEADING := 'Check Amt in Check Header (I.T.)':TAB.CHAR:'Check # in Check Header (I.T.)':TAB.CHAR:'Frt Bill Xref Actual Charge (I.T.)':TAB.CHAR
+      RPT.HEADING := 'Frt Bill Xref Check Amt (I.T.)':TAB.CHAR:'Frt Bill Xref Check Number and Bank (I.T.)':TAB.CHAR:'Frt Bill Xref Check Date (I.T.)':TAB.CHAR
+      RPT.HEADING := 'Check Dtl Pro # (I.T.)':TAB.CHAR:'Check Dtl Invoice Amt (I.T.)':TAB.CHAR:'Check Dtl Client # (I.T.)':TAB.CHAR
+      RPT.HEADING := 'Record exists in Open Bills <Y,N> (I.T.)':TAB.CHAR:'Severity (I.T.)':TAB.CHAR:'Highest Error Code (I.T.)':TAB.CHAR:'PRO.ID (I.T.)'
+      FATAL.BEFORE.VER.SUBJ = 'Sage check info import - Fatal errors occurred during Verification of '
+      FATAL.AFTER.VER.SUBJ = 'Sage check info import - Errors detected after Importing of check information from '
+      FATAL.IMPORT.SUBJ = 'Sage check info import - Fatal errors occurred during Importing of '
+      EMAIL.PATH='E:\ARDENT\PUBLIC\EMAILDATA\'
+
+*Begin Part 1 which is to do a pre-verificaiton that the data in the Import looks correct and does not
+*conflict with data on the Universe System. Loop thru all lines reading everything that needs to be read to verify that all
+*necessary records are there. Report all errors that can be identified.
+
+      CHECK.IDS.FOUND = ''
+      CHECK.DTL.IDS.FOUND = ''
+      CHECK.LAST.SEQ.VERIFIED = ''
+      OLD.CHECK.AMT = 0
+      ERRORS.EMAIL.SUBJECT = 'Check info from SAGE Part 1 had errors.'
+      COLUMNS.EXPECTED = 12
+      MAX.FATAL.ERR.CNT = 50
+      HIGHEST.ERROR.LEVELS = ''
+      MODE = 'BEFORE IMPORT'
+
+
+      STMT = 'SSELECT SAGE.UV.IN WITH VALID.SAGE.CHECK.IMPORT = "Y" BY STARTING.SAGE.SEQ.NO'
+*DFDEBUG
+      EXECUTE STMT CAPTURING JUNK
+      RECORDS.SELECTED = @SELECTED
+      IF RECORDS.SELECTED > 0 THEN
+         EOR = 0
+         LOOP
+            READNEXT IMPORT.ID ELSE EOR = 1
+            ERRORS.EMAIL.SUBJECT = 'Check info from SAGE Part 1 had errors.'
+         UNTIL EOR DO
+            DISPLAY "IMPORT ID  ":IMPORT.ID
+*This program can import multiple files at one time AND has multiple identifiable steps for each
+*file so as we process each one, set the status so that each one will think it is at the start of this
+*program.
+
+*The following lines are to force a break at the first line of the file. The 'normal' way to do this would be to
+*have a 'FIRST' variable that would be on and then turned off when the first line is extracted. It was done this way
+*because we are getting check information for payments not related to Clients or Carriers and sometimes that information is
+*on the first line of the file. I thought this was simpler to code and maintain, even though it is unusual.
+*Similar initialization occurs in the Update section.
+            PREV.CLIENT = '&$#'
+            OLD.CHECK.ID = '%$&*#'
+            PREV.BANK.ID = '&*@#$%'
+            CHECK.NUM = '##$#$'
+            CHECK.ID = ''
+            DTL.SEQ.NUM = 0
+            SUM.FB.8 = 0
+            SAGE.SUM.INVOICE.AMT.PAID = 0
+            SAGE.SUM.ACTUAL.CHARGE = 0
+            MISSING.OPEN.DATE.CNT = 0
+            MISSING.OPEN.BILL.CNT = 0
+            DATE.NAME = FIELD(IMPORT.ID, '.', 1)
+            FILE.EXT = FIELD(IMPORT.ID, '.', 2)
+            OCONV.IMPORT.DATE = FIELD(DATE.NAME, '_', 1)
+            ICONV.IMPORT.DATE = ICONV(OCONV.IMPORT.DATE, 'D2-')
+            IMPORT.TYPE = FIELD(DATE.NAME, '_', 2)
+
+            READ TEST FROM F.IN.HIST, IMPORT.ID THEN
+               ERROR.LEVEL = 10
+               STATUS.TEXT = IMPORT.ID:' already exists in SAGE.UV.IN.HIST. Cannot verify or import'
+               STATUS.TEXT<-1> = 'Verification aborted. No Check information was imported.'
+               GOSUB TRACK.WORST.ERROR
+               GO THE.END
+            END
+            READ TEST FROM F.IN.CUTBACKS, IMPORT.ID THEN
+               ERROR.LEVEL = 10
+               STATUS.TEXT = IMPORT.ID:' already exists in SAGE.UV.IN.CUTBACKS.NEEDED. Cannot verify or import'
+               STATUS.TEXT<-1> = 'Verification aborted. No Check information was imported.'
+               GOSUB TRACK.WORST.ERROR
+               GO THE.END
+            END
+            READ TEST FROM F.IN.CHK.CLEARING, IMPORT.ID THEN
+               ERROR.LEVEL = 10
+               STATUS.TEXT = IMPORT.ID:' already exists in SAGE.UV.IN.CHK_CLEARING_NEEDED. Cannot verify or import'
+               STATUS.TEXT<-1> = 'Verification aborted. No Check information was imported.'
+               GOSUB TRACK.WORST.ERROR
+               GO THE.END
+            END
+            READ CHECK.IMPORT FROM F.IN, IMPORT.ID THEN
+               CHECK.IMPORT.ORIG = CHECK.IMPORT
+               IMPORT.ID.STATUS = 'Unknown'        ; * So far as we know at this point, this file has never been imported.
+               CHECK.IMPORT = CHANGE(CHECK.IMPORT, '"', '')
+               CHECK.IMPORT.MINUS.VOIDS = ''
+               CHECK.IMPORT.CUTBACKS = ''
+               FILE.DATE = FIELD(IMPORT.ID, '_', 1)
+               LINE.CNT = DCOUNT(CHECK.IMPORT, @FM)
+               SUM.FB.8 = 0
+               SAGE.SUM.INVOICE.AMT.PAID = 0
+               SAGE.SUM.ACTUAL.CHARGE = 0
+               FIRST.LINE.IMPORTED = ''
+               LAST.LINE.IMPORTED = ''
+               LAST.NON.OP.LINE = ''
+               CHECK.VOIDED = 0
+               VOIDED.CHECKS = ''
+               VOIDED.BANK.IDS = ''
+               CHECK.HDR.EXISTS = 0
+               IT.REPORT = ''
+               ACCT.REPORT = ''
+               ADD.TO.ACCT.REPORT = ''
+               ADD.TO.IT.REPORT = ''
+               LINE = ''
+               SAGE.BANK.CODES.IMPORTED = ''
+               BEGIN.CHECK.NUM.IMPORTED = ''
+               ENDING.CHECK.NUM.IMPORTED = ''
+
+               IF DCOUNT(CHECK.IMPORT<1>, TAB.CHAR) = COLUMNS.EXPECTED THEN
+                  MODE = 'BEFORE IMPORT'
+                  GOSUB VERIFY.DATA
+
+                  IF IMPORT.ID.STATUS = 'Partial' THEN
+                     IF LAST.LINE.IMPORTED = LAST.NON.OP.LINE THEN
+* This means it appears to have been imported but we didn't verify the Last Check Header record exits.
+* If it does, we can be pretty sure all the info was imported.
+                        IMPORT.ID.STATUS = 'Imported'
+                     END
+                  END
+*SBARBEE Probably need more logic about IMPORT.ID.STATUS here including possibly an email and maybe logic to skip importing it,
+*if it appears to have been without some sort of manual override.
+
+*We have finished Pass 1 for an IMPORT.ID. If errors were detected, then stop.
+*If errors weren't detected then proceed to Pass 2 which will actually do the updates.
+
+                  IF ACCT.REPORT # '' OR IT.REPORT # '' THEN
+                     GOSUB SEND.STATUS.EMAIL
+                  END
+*DFDEBUG
+                  IF IT.REPORT # '' THEN
+                     GO THE.END
+                  END
+
+                  IT.REPORT = ''
+                  ACCT.REPORT = ''
+
+* The data in the flat file has been verified as much as it can be and there are no apparent conflicts with existing data
+* in Universe. Proceed with the updating in Universe.
+                  MODE = 'UPDATE'
+
+                  GOSUB IMPORT.DATA
+
+                  ERRORS.EMAIL.SUBJECT = 'Check info Download from SAGE Part 2 had errors.'
+                  MODE = 'AFTER IMPORT'
+
+                  GOSUB VERIFY.DATA
+                  IF ACCT.REPORT # '' OR IT.REPORT # '' THEN
+                     GOSUB SEND.STATUS.EMAIL
+                  END
+
+               END ELSE
+                  ERROR.LEVEL = 10
+                  STATUS.TEXT = 'Line 1 of Import file ':IMPORT.ID:' has ':DCOUNT(CHECK.IMPORT<1>, TAB.CHAR):' columns but ':COLUMNS.EXPECTED:' are expected.'
+                  STATUS.TEXT<-1> = 'Verification aborted. No Check information was imported.'
+                  GOSUB TRACK.WORST.ERROR
+                  GO THE.END
+               END
+               IF DEBUGGING THEN DEBUG
+
+            END ELSE
+               ERROR.LEVEL = 10
+               STATUS.TEXT = 'Cannot read ':IMPORT.ID:' from SAGE.UV.IN.'
+               GOSUB TRACK.WORST.ERROR
+               GO THE.END
+            END
+            DISPLAY 'Maxium Error Level =':MAXIMUM(HIGHEST.ERROR.LEVELS)
+            IF MAXIMUM(HIGHEST.ERROR.LEVELS) <= 4 THEN
+               IF NOT(TESTING) THEN
+                  CHECK.IMPORT = CHANGE(CHECK.IMPORT, @VM, TAB.CHAR)
+
+                  IF CHECK.IMPORT # '' THEN
+*Keeping in mind that lines can be removed because the check # on that line has been
+*voided, CHECK.IMPORT can start with lines in it and end up being null. Under normal conditions,
+*it is very unlikely but it IS possible. The only point in writing a null file out is so that
+*it will be obvious that there was nothing to be imported but doing that probably causes as much
+*confusion as it avoids.
+                     WRITE CHECK.IMPORT ON F.IN.HIST, IMPORT.ID
+                  END
+
+                  IF CHECK.IMPORT.CUTBACKS # '' THEN
+*The cutback program wants a file with non-voided checks and for only Freight Payment....
+*not Operational or Credit Card payments
+                     IMPORT.ID.CUTBACKS = FIELD(IMPORT.ID, '.', 1):'_Cutback.txt'
+                     CHECK.IMPORT.CUTBACKS = CHANGE(CHECK.IMPORT.CUTBACKS, @VM, TAB.CHAR)
+                     WRITE CHECK.IMPORT.CUTBACKS ON F.IN.CUTBACKS, IMPORT.ID.CUTBACKS
+                  END
+
+*Write the original file to SAGE.UV.IN.HIST with _Orig in the id.
+                  IMPORT.ID.ORIG = FIELD(IMPORT.ID, '.', 1):'_Orig.txt'
+                  WRITE CHECK.IMPORT.ORIG ON F.IN.HIST, IMPORT.ID.ORIG
+                  DELETE F.IN, IMPORT.ID
+                  WRITEVU LAST.SAGE.SEQ.NO ON F.TABLES, 'LAST.SAGE.SEQ.NO', 1
+                  IMPORT.CNT += 1
+               END
+            END ELSE
+*Pause so this email will arrive later than previous emails
+               EXECUTE 'SLEEP 1'
+               EVIN=''
+               EVOUT=''
+               EVIN<1>='david@afs.net':@VM:'gbino@afs.net'
+               EVIN<4> = 'SAGE.CHECK.IMPORT@AFS.NET'
+               EVIN<5> = 'Sage Check Import failed while importing ':IMPORT.ID
+               EVIN<6> = STATUS.TEXT
+               CALL SENDMAIL(EVIN, EVOUT)
+               GO THE.END
+            END
+SKIP.REST.OF.IMPORT.FILE:
+         REPEAT
+
+      END ELSE
+         STATUS.SUBJ = 'Abnormal finish'
+         ERROR.LEVEL = 10
+         STATUS.TEXT = 'No SAGE download records were found to process by ':PROG.NAME
+         GOSUB TRACK.WORST.ERROR
+         GO THE.END
+      END
+
+*DFIF USER='DAVID' THEN CALL ELINE('PRESS BREAK - ABOUT TO END')
+      IF ACCT.REPORT # '' THEN
+         GOSUB SEND.STATUS.EMAIL
+*DF         GO THE.END
+      END
+      IF IT.REPORT # '' THEN
+         GOSUB SEND.STATUS.EMAIL
+*DF         GO THE.END
+      END
+      IF ACCT.REPORT = '' AND IT.REPORT = '' THEN
+         EVIN=''
+         EVOUT=''
+         EVIN<1>='david@afs.net':@VM:'gbino@afs.net'
+         EVIN<4> = 'SAGE.CHECK.IMPORT@AFS.NET'
+         EVIN<5> = 'Sage Check Import - All FP-checks... files successfully imported.   ':IMPORT.ID
+         EVIN<6> = STATUS.TEXT
+         CALL SENDMAIL(EVIN, EVOUT)
+
+         WRITE 'CLEARING' ON F.TABLES, 'SAGE.IMPORT.STATUS'
+         RELEASE F.TABLES, 'SAGE.IMPORT.STATUS'
+         RELEASE F.TABLES, 'LAST.SAGE.SEQ.NO'      ; * SWB01
+         CHAIN 'SAGE.CHECK.CLEAR.VOID'
+
+      END
+      RELEASE F.TABLES, 'LAST.SAGE.SEQ.NO'
+      WRITE 'CLEARING' ON F.TABLES, 'SAGE.IMPORT.STATUS'
+      RELEASE F.TABLES, 'SAGE.IMPORT.STATUS'
+*DF      RELEASE F.TABLES, 'LAST.SAGE.SEQ.NO'      ; * SWB01
+      VIN1=''
+      VIN1<1> = PROG.NAME
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "E"
+      CALL PROGTRACK(VIN1,VOUT1)
+      CHAIN 'SAGE.CHECK.CLEAR.VOID'
+THE.END:
+* Begin GRB01
+      VIN1=''
+      VIN1<1> = PROG.NAME
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "E"
+      CALL PROGTRACK(VIN1,VOUT1)
+* End GRB01
+
+      STOP
+*****************************************************************************
+VERIFY.DATA:
+*****************************************************************************
+* Validate the data in the incoming flat file to make sure there are no conflicts with the data in Universe.
+* Be aware that because of the way voids are handled, it is possible that the data will verify BUT as it is being
+* imported, can cause a conflict as in the case where a Freight Bill was paid, the check # voided and the Freight Bill
+* was paid again in the same import but Universe didn't receive information the first check had been voided so the
+* program will detect a conflict when it importing the data for the re-issued check.
+      DTL.SEQ.NUM = ''
+      SUM.FB.8 = 0                       ; * SWB01
+      SAGE.SUM.INVOICE.AMT.PAID = 0      ; * SWB01
+      LC = 0
+      LOOP
+         LC += 1
+         INFO = CHECK.IMPORT<LC>
+*The file can and usually does have a blank lines at the end
+      UNTIL LC > LINE.CNT OR INFO = '' DO
+         INFO = CHANGE(INFO, TAB.CHAR, @VM)
+         PRO.REC = ''
+         CRX.REC = ''
+         OB.REC.EXISTS = ''
+         CHECK.REC = ''
+         DTL.REC = ''
+         OPEN.BILLS.REC = ''
+         OPEN.DATES.REC = ''
+         HIGHEST.ERROR.LEVELS = ''
+         ERROR.LEVEL = ''
+         ERROR.HINT = ''
+         ERROR.HINTS = ''
+         ERROR.LEVELS = ''
+         STATUS.TEXT = ''
+         SOFT.ERR.MSG = ''
+         ADD.TO.ACCT.REPORT = ''
+         ADD.TO.IT.REPORT = ''
+         FRT.PAY.CHECK = 0
+         CC.PAYMENT = 0
+         ADD.TO.CUTBACK.IMPORT = 0
+         LINE = ''
+*DFCALL ELINE('PRSS BREAK')
+         IF LC = 1 THEN
+*There is a need to look at the contents of the next line to determine if the check # is going to change.
+*For the sake of efficiency, the next line will be extracted at the end of this loop.
+
+            IF DCOUNT(INFO, @VM) # COLUMNS.EXPECTED THEN
+               ERROR.LEVEL = 10
+               STATUS.TEXT = 'Sage check import ':IMPORT.ID:' Line ':LC:' has ':DCOUNT(INFO, @VM):' columns but ':COLUMNS.EXPECTED:' are expected.'
+               GOSUB TRACK.WORST.ERROR
+               GO THE.END
+            END
+         END
+         CARRIER = INFO<1, 1>
+         CLIENT = INFO<1, 6>"R%5"
+         SAGE.BANK.CODE = INFO<1, 7>
+         SAGE.ACTUAL.CHARGE = INFO<1, 8>
+         SAGE.INVOICE.AMT.PAID = INFO<1, 9>
+         SAGE.SEQ.NO = INFO<1, 10>
+         FIRST.SAGE.SEQ.NO = SAGE.SEQ.NO
+         CASH.RECEIPT.DATE = INFO<1, 11>
+         IF CASH.RECEIPT.DATE = '12/30/1899' THEN
+            CASH.RECEIPT.DATE = ''
+         END
+         TYPE.OF.PAYMENT = INFO<1, 12>
+*DFIF CHECK.NUM='0716652' OR CHECK.NUM='716652' THEN CALL ELINE ('PRESS BREAK')
+         ICONV.CASH.RECEIPT.DATE = ICONV(CASH.RECEIPT.DATE, 'D4/')
+         IF LC = 1 THEN
+            READVU LAST.SEQ.NO FROM F.TABLES, 'LAST.SAGE.SEQ.NO', 1 THEN
+               IF SAGE.SEQ.NO > LAST.SEQ.NO THEN
+                  IF SAGE.SEQ.NO - 1 # LAST.SEQ.NO THEN
+*DFCALL ELINE('PRESS BREAK':SAGE.SEQ.NO:' ':LAST.SEQ.NO)
+                     ERROR.LEVEL = 3
+                     STATUS.TEXT = 'Missing ':SAGE.SEQ.NO - LAST.SEQ.NO - 1:' Sage Sequence #(s). Last Sequence # imported was ':LAST.SEQ.NO:' but 1st seq # of this file is ':SAGE.SEQ.NO:'.'
+                     ERROR.HINT=STATUS.TEXT
+                     GOSUB TRACK.WORST.ERROR
+*******                     GO THE.END
+                  END
+               END
+            END ELSE
+               RELEASE F.TABLES, 'LAST.SAGE.SEQ.NO'
+               ERROR.LEVEL = 10
+               STATUS.TEXT = 'Control record LAST.SAGE.SEQ.NO missing from FB.TABLES'
+               GOSUB TRACK.WORST.ERROR
+               GO THE.END
+            END
+         END
+
+         CHECK.NUM = INFO<1, 5> 'R#7'
+         IF CHECK.NUM[1,1]='0' THEN CHECK.NUM=CHECK.NUM[2,6]
+         IF CHECK.NUM='719848' THEN CHECK.NUM='7198481'
+         IF CHECK.NUM='719849' THEN CHECK.NUM='7198491'
+         IF CHECK.NUM='719850' THEN CHECK.NUM='7198501'
+         IF CHECK.NUM='719851' THEN CHECK.NUM='7198511'
+         IF CHECK.NUM='719852' THEN CHECK.NUM='7198521'
+         IF CHECK.NUM='719853' THEN CHECK.NUM='7198531'
+         IF CHECK.NUM='719854' THEN CHECK.NUM='7198541'
+         IF CHECK.NUM='719855' THEN CHECK.NUM='7198551'
+         IF CHECK.NUM='719856' THEN CHECK.NUM='7198561'
+         LOCATE SAGE.BANK.CODE IN SAGE.BANK.CODES.IMPORTED<1> SETTING SBC.POS THEN
+            IF CHECK.NUM < BEGINNING.CHECK.NUM.IMPORTED THEN
+               BEGINNING.CHECK.NUM.IMPORTED = CHECK.NUM
+            END
+            IF CHECK.NUM > ENDING.CHECK.NUM.IMPORTED THEN
+               ENDING.CHECK.NUM.IMPORTED = CHECK.NUM
+            END
+         END ELSE
+            SAGE.BANK.CODES.IMPORTED = INSERT(SAGE.BANK.CODES.IMPORTED, 1, SBC.POS, 0, SAGE.BANK.CODE)
+            BEGINNING.CHECK.NUM.IMPORTED = CHECK.NUM
+            ENDING.CHECK.NUM.IMPORTED = CHECK.NUM
+         END
+
+         BANK.ID = SAGE.BANK.CODE
+         IF SAGE.BANK.CODE = 'F2' THEN BANK.ID = 'F'
+         IF SAGE.BANK.CODE = 'FW' THEN BANK.ID = 'F'
+         IF SAGE.BANK.CODE = 'TW' THEN BANK.ID = 'T'
+         IF SAGE.BANK.CODE = 'R3' THEN BANK.ID = 'R'
+
+         PRO.NUM = INFO<1, 2>
+         IF PRO.NUM[1,3] = "CCT" THEN CONTINUE
+         LEN.PRO.NUM = LEN(PRO.NUM)
+         IF PRO.NUM[LEN.PRO.NUM - 2, 3] = '-rp' OR PRO.NUM[LEN.PRO.NUM - 2, 3] = '-RP' THEN
+*Per Jonathan on 05/27/15, a '-RP' as the last 3 digits of the Freight Bill id indicates it was
+*'re-processed' in SAGE and means this line in the SAGE Export should be ignored.
+*Then, approxamately June 30, I was told that I should, in essence, remove the -FP from the Pro # and update that Freight Bill.
+            PRO.NUM = PRO.NUM[1, LEN.PRO.NUM - 3]
+         END
+         PRO.ID = CARRIER:'*':PRO.NUM:'*0'
+
+         CHECK.DATE = INFO<1, 3>
+         ICONV.CHECK.DATE = ICONV(CHECK.DATE, 'D4/')
+         CHECK.AMT = INFO<1, 4>
+         ICONV.CHECK.AMT = ICONV(CHECK.AMT, 'MD2')
+         CHECK.ID = CHECK.NUM:'*':BANK.ID
+
+*The boolean FRT.PAY.CHECK means that according to the Bank Code,
+*the check is paying for Freight Bills, as opposed to 'Operational checks' or Credit Card payments.
+*Note that Credit Card payments will be on the same banks
+*as the Freight Payment checks so for a short time, Credit Card payments will be treated as Freight
+*Payment checks.
+         BEGIN CASE
+            CASE CARRIER = '24334'       ; * American Express Credit Card
+               CC.PAYMENT = 1
+*The handling of a voided check will be handled further down in the program
+
+            CASE CARRIER = '26345'       ; * Mastercard
+               CC.PAYMENT = 1
+*The handling of a voided check will be handled further down in the program
+
+            CASE CARRIER[1, 2] = 'OP'
+*This is an Operational check, not a Freight Payment
+*We record it in Universe so that all Check #'s will be accounted for but no validation
+*is done on them. If it is voided, then the line(s) for that check are deleted in this 'BEFORE verification'
+*cycle so that they will NOT be in the Import record for the actual Import or the 'After' verfication.
+
+               GOSUB DETERMINE.VOID.STATUS
+               GOTO END.OF.VER.LOOP
+
+            CASE SAGE.BANK.CODE = 'C'
+               FRT.PAY.CHECK = 1
+               ADD.TO.CUTBACK.IMPORT = 1
+            CASE SAGE.BANK.CODE = 'E'
+               FRT.PAY.CHECK = 1
+               ADD.TO.CUTBACK.IMPORT = 1
+            CASE SAGE.BANK.CODE = 'E8'
+               FRT.PAY.CHECK = 1
+               ADD.TO.CUTBACK.IMPORT = 1
+            CASE SAGE.BANK.CODE = 'F'
+               FRT.PAY.CHECK = 1
+               ADD.TO.CUTBACK.IMPORT = 1
+            CASE SAGE.BANK.CODE = 'F2'
+               FRT.PAY.CHECK = 1
+               ADD.TO.CUTBACK.IMPORT = 1
+            CASE SAGE.BANK.CODE = 'FW'
+               FRT.PAY.CHECK = 1
+               ADD.TO.CUTBACK.IMPORT = 1
+            CASE SAGE.BANK.CODE = 'R'
+               FRT.PAY.CHECK = 1
+               ADD.TO.CUTBACK.IMPORT = 1
+            CASE SAGE.BANK.CODE = 'R3'
+               FRT.PAY.CHECK = 1
+               ADD.TO.CUTBACK.IMPORT = 1
+            CASE 1
+*This is NOT a Freight Payment
+               ERROR.LEVEL = 8
+               ERROR.HINT = 'Line # ':LC 'R#6':' - Bank Code ':SAGE.BANK.CODE:' is invalid'
+               STATUS.TEXT = ERROR.HINT
+               GOSUB TRACK.WORST.ERROR
+
+         END CASE
+
+         IF (CC.PAYMENT OR NOT(FRT.PAY.CHECK)) AND CLIENT # '' THEN
+* The Client is not null on a non-Freight Payment check and could cause the break logic to fail and possibly
+* mess up a Client record or corrupt a Client Record.
+            ERROR.LEVEL = 9
+            ERROR.HINT = 'Client # for non-Frt Pay Check'
+            GOSUB TRACK.WORST.ERROR
+         END
+
+         READ CARRIER.REC FROM F.CARRIERS, CARRIER ELSE
+            CARRIER := ' NOF'
+            ERROR.LEVEL = 9
+            ERROR.HINT = 'Cant read Carrier'
+            GOSUB TRACK.WORST.ERROR
+            GOTO END.OF.VER.LOOP
+         END
+
+         IF CLIENT # '' THEN
+            READ CLIENT.REC FROM F.CLIENTS, CLIENT ELSE
+               CLIENT := ' NOF'
+               ERROR.LEVEL = 9
+               ERROR.HINT = 'Cant read Client'
+               GOSUB TRACK.WORST.ERROR
+               GOTO END.OF.VER.LOOP
+            END
+         END ELSE
+* Client is null. If this isn't an 'Op'erational check, it is a serious error
+            IF FRT.PAY.CHECK THEN
+               CLIENT := ' Missing from Sage Import'
+               ERROR.LEVEL = 6
+               ERROR.HINT = 'Client # is null'
+               GOSUB TRACK.WORST.ERROR
+               PROCEED = 0
+            END
+         END
+
+         IF CHECK.ID # OLD.CHECK.ID THEN
+
+            DTL.SEQ.NUM = 0
+            OLD.CHECK.AMT = CHECK.AMT
+            SUM.FB.8 = 0
+            SAGE.SUM.ACTUAL.CHARGE = 0   ; * SWB01
+            SAGE.SUM.INVOICE.AMT.PAID = 0
+            MISSING.OPEN.DATE.CNT = 0
+            MISSING.OPEN.BILL.CNT = 0
+
+            GOSUB DETERMINE.VOID.STATUS
+            FB.NOT.FOUND = 0
+
+         END
+
+         SAGE.SUM.ACTUAL.CHARGE += SAGE.ACTUAL.CHARGE
+         SAGE.SUM.INVOICE.AMT.PAID += SAGE.INVOICE.AMT.PAID
+
+         CHECK.HDR.EXISTS = 0
+         OLD.CHECK.REC = ''
+         READ CHECK.REC FROM F.CHECKS.HDR, CHECK.ID THEN
+            CHECK.HDR.EXISTS = 1
+         END
+
+         BEGIN CASE
+            CASE MODE = 'BEFORE IMPORT' AND CHECK.VOIDED
+               IF CHECK.HDR.EXISTS THEN
+                  ERROR.LEVEL = 8
+                  ERROR.HINT = 'I.T. Check voided but is in FB.CHECKS.HDR'
+                  GOSUB TRACK.WORST.ERROR
+               END
+            CASE MODE = 'BEFORE IMPORT' AND CHECK.WILL.BE.VOIDED
+*There is something not-quite-right. Previous logic has determined that the Check # doesn't (shouldn't) exist
+*but it does exist. This may not cause a problem in this import but presumably will.
+               IF CHECK.HDR.EXISTS THEN
+                  ERROR.LEVEL = 8
+                  ERROR.HINT = 'I.T. Check voided but is in FB.CHECKS.HDR'
+                  GOSUB TRACK.WORST.ERROR
+               END
+
+            CASE MODE = 'BEFORE IMPORT'
+*The Check Hdr exists for the CHECK.ID that is going to be imported which means it already has been.
+*This probably means the file is being reimported and as such, is not an error.
+
+            CASE MODE = 'AFTER IMPORT' AND CHECK.VOIDED
+*At this point, there is no 'will be voided'. The check has either been voided, ignored, or imported.
+*If CHECK.VOIDED is true, the FB.CHECKS.HDR record should not exist.
+               IF CHECK.HDR.EXISTS THEN
+                  ERROR.LEVEL = 8
+                  ERROR.HINT = 'I.T. Check supposedly voided but is in FB.CHECKS.HDR'
+                  GOSUB TRACK.WORST.ERROR
+               END
+
+            CASE 1
+               IF MODE # 'AFTER IMPORT' THEN
+                  DISPLAY 'LOGIC ERROR'
+                  GO THE.END
+               END
+*To get here, the program is doing the After Import verification and thinks the Check should exist.
+*After the import, if the check # being verified has been voided, the FB.CHECKS.HDR for that CHECK.ID shouldn't exist,
+*nor should the FB.CHECK.DTL records.
+               IF NOT(CHECK.HDR.EXISTS) THEN
+                  ERROR.LEVEL = 8
+                  ERROR.HINT = 'I.T. Cant read Check Hdr ':CHECK.ID
+                  GOSUB TRACK.WORST.ERROR
+               END
+         END CASE
+
+         IF NOT(FRT.PAY.CHECK) OR CC.PAYMENT THEN
+            GOSUB DETERMINE.VOID.STATUS
+            GOTO END.OF.VER.LOOP
+
+         END
+
+         DTL.SEQ.NUM += 1
+         DTL.ID = CHECK.ID:'*':DTL.SEQ.NUM
+*No updates are necessary for FB.CHECKS.DTL
+         CHECK.DTL.EXISTS = 0
+         READ DTL.REC FROM F.CHECKS.D, DTL.ID THEN
+            CHECK.DTL.EXISTS = 1
+         END ELSE IF NOT(CHECK.VOIDED) THEN
+            IF MODE = 'AFTER IMPORT' THEN
+               ERROR.LEVEL = 8
+               ERROR.HINT = 'I.t. Check Dtl ':DTL.ID:' is missing'
+               GOSUB TRACK.WORST.ERROR
+            END
+         END
+
+         IF FRT.PAY.CHECK THEN
+            LAST.NON.OP.LINE = LC
+
+            BEGIN CASE
+               CASE IMPORT.ID.STATUS = 'Unknown'
+                  BEGIN CASE
+                     CASE CHECK.DTL.EXISTS
+* Some of the check info in this import file has been imported into Universe
+                        FIRST.LINE.IMPOTED = LC
+                        LAST.LINE.IMPORTED = LC
+                        IMPORT.ID.STATUS = 'Partial'
+                     CASE 1
+* Based on the first non-operational check info in the file, it appears none of the information in this file has been imported
+                        IMPORT.ID.STATUS = 'Not'
+                  END CASE
+
+                  BEGIN CASE
+                     CASE FIRST.LINE.IMPORTED AND LAST.LINE.IMPORTED
+                        IMPORT.ID.STATUS = 'Imported'
+                     CASE FIRST.LINE.IMPORTED
+                        IMPORT.ID.STATUS = 'Partially Imported'
+                     CASE LAST.LINE.IMPORTED
+*Imported out of sequence or (the last) part of it imported but the first part not.
+                        IMPORT.ID.STATUS = 'Imported OOS'
+                     CASE 1
+                  END CASE
+               CASE IMPORT.ID.STATUS = 'Partial'
+* Keep track of the last line that is NOT an Operational Check
+                  LAST.LINE.IMPORTED = LC
+
+               CASE IMPORT.ID.STATUS = 'NoT'
+*This is odd and possibly a sign of an error because we shouldn't get a file with information that
+*hasn't been imported followed by information that has been imported, unless the previous information
+*was voided.
+                  IMPORT.ID.STATUS = 'Partial OOS'           ; * This is worth reporting to I.T. SBARBEE
+               CASE 1
+
+            END CASE
+         END
+
+         ACTUAL.CHARGE = 0
+         OPEN.DATES.REC = ''
+
+         OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS.HIST THEN
+            OPEN '','FB.OPEN.DATE.XREF,':CLIENT TO F.DATE.XREF THEN
+               PROCESS.CLIENT = 1
+
+*As of 06/06/15, we expect upper case ids but some times get lower case ids
+               READ TEST.REC FROM F.BILLS.HIST,PRO.ID ELSE
+*We know the upper case id doesn't exist. Change it to lower case. If that isn't found, it means neither exists.
+*If it is found, from now on in this program, this id will be in lower case to maintain consistency.
+                  PRO.ID = DOWNCASE(PRO.ID)
+               END
+
+               READ PRO.REC FROM F.BILLS.HIST,PRO.ID THEN
+                  BEGIN CASE
+                     CASE CHECK.VOIDED
+                        IF PRO.REC<14> = CHECK.ID THEN
+                           ERROR.LEVEL = 8
+                           ERROR.HINT = 'Check ':PRO.REC<14>:' voided but still on Frt Bill'
+                           GOSUB TRACK.WORST.ERROR
+                           GOTO VER.SKIP.REMAINING.CRX.ERRORS
+                        END
+                     CASE MODE = 'BEFORE IMPORT'
+*Check infor for this Bill has been at least partially imported. We expect the Check info in it to be correct.
+                        IF PRO.REC<14> # '' AND PRO.REC<14> # CHECK.ID THEN
+                           ERROR.LEVEL = 7
+                           ERROR.HINT = 'Frt Bill already paid by check ':PRO.REC<14>
+                           GOSUB TRACK.WORST.ERROR
+                           GOTO VER.SKIP.REMAINING.FB.ERRORS
+
+                        END ELSE
+                           IF (PRO.REC<13> # '' AND PRO.REC<13> # ICONV.CHECK.AMT) OR (PRO.REC<15> # '' AND PRO.REC<15> # ICONV.CHECK.DATE) THEN
+                              ERROR.LEVEL = 7
+                              ERROR.HINT = 'I.T. Frt Bill Check Info mismatch'
+                              GOSUB TRACK.WORST.ERROR
+                              GOTO VER.SKIP.REMAINING.FB.ERRORS
+                           END
+                        END
+                     CASE MODE = 'AFTER IMPORT'
+                        IF PRO.REC<14> # CHECK.NUM:'*':BANK.ID THEN
+                           ERROR.LEVEL = 7
+                           ERROR.HINT = 'Frt Bill previously paid by check ':CHECK.ID
+                           GOSUB TRACK.WORST.ERROR
+                           GOTO VER.SKIP.REMAINING.FB.ERRORS
+                        END ELSE
+                           IF PRO.REC<13> # ICONV.CHECK.AMT OR PRO.REC<15> # ICONV.CHECK.DATE THEN
+                              ERROR.LEVEL = 8
+                              ERROR.HINT = 'I.T. Frt Bill Check Info incorrect'
+                              GOSUB TRACK.WORST.ERROR
+                              GOTO VER.SKIP.REMAINING.FB.ERRORS
+                           END
+                        END
+                     CASE 1
+                        DISPLAY 'Invalid Mode of ':MODE
+                        GO THE.END
+                  END CASE
+
+VER.SKIP.REMAINING.FB.ERRORS:
+
+                  ACTUAL.CHARGE = PRO.REC<8>
+                  OCONV.ACTUAL.CHARGE = OCONV(ACTUAL.CHARGE, 'MD2')
+                  IF ABS(OCONV.ACTUAL.CHARGE) # ABS(SAGE.INVOICE.AMT.PAID) THEN
+                     ERROR.LEVEL = 4
+                     ERROR.HINT = 'Inv Amt Paid vs. UV Actual Chg'
+                     GOSUB TRACK.WORST.ERROR
+                  END
+
+                  IF PRO.ID='00041*51Y-R37050617-T*0' THEN CALL ELINE('PRESS BREAK')
+                  SUM.FB.8 += ACTUAL.CHARGE
+*DFCALL ELINE(PRO.ID:' ':ACTUAL.CHARGE:' ':SUM.FB.8)
+               END ELSE
+                  ERROR.LEVEL = 9
+                  ERROR.HINT = 'Cannot read Freight Bill'
+                  GOSUB TRACK.WORST.ERROR
+                  FB.NOT.FOUND = 1
+                  GOTO END.OF.VER.LOOP
+               END
+            END ELSE
+               ERROR.LEVEL = 10
+               STATUS.TEXT = 'Line # ':LC 'R#6':' - Cannot open FB.OPEN.DATE.XREF,':CLIENT
+               GOSUB TRACK.WORST.ERROR
+               GO THE.END
+            END
+         END ELSE
+            ERROR.LEVEL = 10
+            STATUS.TEXT = 'Line # ':LC 'R#6':' - Cannot open FB.BILLS.HIST,':CLIENT
+*DFCALL ELINE('PRESS BREAK')
+            GOSUB TRACK.WORST.ERROR
+            GO THE.END
+         END
+
+         READ CRX.REC FROM F.CRX,PRO.ID THEN
+            IF CRX.REC<1> = CLIENT THEN
+               IF OCONV(CRX.REC<8>, 'MD2') # SAGE.INVOICE.AMT.PAID THEN
+                  IF PRO.REC<8> = CRX.REC<8> THEN
+                     ERROR.LEVEL = 4
+                     ERROR.HINT = 'I.T. Inv Amt Paid vs. CRX Actual Chg'
+                  END ELSE
+                     ERROR.LEVEL = 8
+                     ERROR.HINT = 'I.T. FB and CRX Actual Chg mismatch'
+                  END
+                  GOSUB TRACK.WORST.ERROR
+                  GOTO VER.SKIP.REMAINING.CRX.ERRORS
+               END
+               BEGIN CASE
+                  CASE CHECK.VOIDED
+                     IF CRX.REC<14> = CHECK.NUM:'*':BANK.ID THEN
+                        ERROR.LEVEL = 8
+                        ERROR.HINT = 'Check ':CRX.REC<14>:' voided but still on Frt Bill Xref'
+                        GOSUB TRACK.WORST.ERROR
+                        GOTO VER.SKIP.REMAINING.CRX.ERRORS
+                     END
+                  CASE MODE = 'BEFORE IMPORT'
+                     IF (CRX.REC<13> # '' AND CRX.REC<13> # ICONV.CHECK.AMT) OR (CRX.REC<14> # '' AND CRX.REC<14> # CHECK.NUM:'*':BANK.ID) OR (CRX.REC<15> # '' AND CRX.REC<15> # ICONV.CHECK.DATE) THEN
+                        ERROR.LEVEL = 7
+                        ERROR.HINT = 'I.T. Xref Check Info'
+                        GOSUB TRACK.WORST.ERROR
+                        GOTO VER.SKIP.REMAINING.CRX.ERRORS
+                     END
+
+                  CASE MODE = 'AFTER IMPORT'
+                     IF CRX.REC<13> # ICONV.CHECK.AMT OR CRX.REC<14> # CHECK.NUM:'*':BANK.ID OR CRX.REC<15> # ICONV.CHECK.DATE THEN
+                        ERROR.LEVEL = 7
+                        ERROR.HINT = 'I.T. Xref Check Info'
+                        GOSUB TRACK.WORST.ERROR
+                        GOTO VER.SKIP.REMAINING.CRX.ERRORS
+                     END
+
+                  CASE 1
+                     DISPLAY 'Invalid Mode of ':MODE
+                     GO THE.END
+
+               END CASE
+            END ELSE
+               GOSUB LOG.IT              ; * SBARBEE
+            END
+         END ELSE
+            ERROR.LEVEL = 9
+            ERROR.HINT = 'I.T. CRX missing'
+            GOSUB TRACK.WORST.ERROR
+            GOTO END.OF.VER.LOOP
+         END
+VER.SKIP.REMAINING.CRX.ERRORS:
+*Verify that FB.OPEN.BILLS is there when it should be and not there when it shouldn't be
+
+         READ OPEN.BILLS.REC FROM F.OPEN.BILLS,CLIENT:'*':PRO.ID THEN
+            OB.REC.EXISTS = 'Y'
+            IF CHECK.DTL.EXISTS THEN
+*The Open Bills record should not exist if the bill has been paid
+               IF MODE = 'BEFORE IMPORT' AND NOT(CHECK.DTL.EXISTS) THEN
+                  ERROR.LEVEL = 3
+                  ERROR.HINT = 'I.T. Open bills rec and Check exist'
+                  GOSUB TRACK.WORST.ERROR
+               END ELSE
+                  ERROR.LEVEL = 3
+                  ERROR.HINT = 'I.T. Open bills rec and Check exists'
+                  GOSUB TRACK.WORST.ERROR
+               END
+            END ELSE
+*This probably means the FB.OPEN.BILLS record wasn't deleted during the Import
+               IF MODE = 'AFTER IMPORT' THEN
+                  ERROR.LEVEL = 8
+                  ERROR.HINT = 'I.T. Open Bills rec not deleted'
+                  GOSUB TRACK.WORST.ERROR
+               END
+            END
+
+         END ELSE
+
+            IF MODE = 'BEFORE IMPORT' THEN
+               IF NOT(CHECK.VOIDED) AND NOT(CHECK.DTL.EXISTS) AND PRO.REC<8> # 0 THEN
+*This condition of the FB.OPEN.BILLS record not existing before the Check Information for the Freight Bill is the condition
+*that has been verified from the start (06/01/15). Originally, it was deemed to be 'fatal'. But since then, it has only happened a few times. As of about 08/17/15,
+*this error will be lowered in severity because to get here, Sage paid the Freight Bill so we might as well update the Bill to reflect that payment.
+*These errors are worth noting and if enough occur, researching and reporting to Accounting.
+                  ERROR.LEVEL = 8
+                  ERROR.HINT = 'I.T. Open Bills rec missing'
+                  GOSUB TRACK.WORST.ERROR
+               END ELSE
+                  IF PRO.REC<8> = 0 THEN
+                     ERROR.LEVEL = 4
+                     ERROR.HINT = 'Open Bills rec missing for zeroed bill'
+                     GOSUB TRACK.WORST.ERROR
+                  END ELSE IF NOT(CHECK.VOIDED) THEN
+                     ERROR.LEVEL = 4
+                     ERROR.HINT = 'I.T. Open Bills record missing'
+                     GOSUB TRACK.WORST.ERROR
+                  END
+               END
+            END
+         END
+
+         READ OPEN.DATES.REC FROM F.DATE.XREF,PRO.REC<37> THEN
+            LOCATE CLIENT:'*':PRO.ID IN OPEN.DATES.REC SETTING OD.POS THEN
+               IF CHECK.DTL.EXISTS THEN
+                  ERROR.LEVEL = 3
+                  ERROR.HINT = 'I.T. Bill in OPEN.DATES and Check Dtl exists'
+                  GOSUB TRACK.WORST.ERROR
+               END
+            END ELSE
+               IF NOT(CHECK.HDR.EXISTS) THEN
+                  ERROR.LEVEL = 3
+                  ERROR.HINT = 'I.T. Bill NOT in OPEN.DATES and Check not voided or imported'
+                  GOSUB TRACK.WORST.ERROR
+               END
+            END
+         END ELSE
+            IF DEBUGGING THEN DEBUG
+            OPEN.DATES.REC = ''
+            IF NOT(CHECK.DTL.EXISTS) AND NOT(CHECK.VOIDED) THEN
+               ERROR.LEVEL = 3
+               ERROR.HINT = 'I.T. Bill NOT in OPEN.DATES and Check Dtl doesnt exist'
+               GOSUB TRACK.WORST.ERROR   ; * Commented for testing on the development server. Uncomment me before installing. SBARBEE
+            END
+         END
+
+CHECK.HDR.EXISTS = 0
+         IF CHECK.HDR.EXISTS THEN
+            IF FRT.PAY.CHECK THEN
+               IF CHECK.REC<1> # CHECK.NUM OR CHECK.REC<3> # CARRIER OR PRO.REC<13> # CHECK.REC<4> OR PRO.REC<15> # CHECK.REC<2> THEN
+*DFCALL ELINE ('PRESS BREAK')
+                  ERROR.HINT = 'I.T. Frt Bill Check info vs Check info'
+                  ERROR.LEVEL = 8
+                  GOSUB TRACK.WORST.ERROR
+                  GOTO VER.SKIP.REMAINING.HDR.ERRORS
+               END
+               IF CRX.REC<13> # CHECK.REC<4> OR CRX.REC<15> # CHECK.REC<2> THEN
+                  ERROR.HINT = 'I.T. Frt Bill Xref Check info vs Check info'
+                  ERROR.LEVEL = 8
+                  GOSUB TRACK.WORST.ERROR
+                  GOTO VER.SKIP.REMAINING.HDR.ERRORS
+               END
+            END ELSE
+*Operational or Credit Card or Miscellaneous payment
+               IF CHECK.REC<1> # CHECK.NUM OR CHECK.REC<3> # CARRIER OR ICONV.CHECK.AMT # CHECK.REC<4> OR ICONV.CHECK.DATE # CHECK.REC<2> THEN
+                  ERROR.HINT = 'I.T. Operational Check info vs Check info'
+                  ERROR.LEVEL = 8
+                  GOSUB TRACK.WORST.ERROR
+                  GOTO VER.SKIP.REMAINING.HDR.ERRORS
+               END
+            END
+         END
+VER.SKIP.REMAINING.HDR.ERRORS:
+
+CHECK.DTL.EXISTS = 0
+         IF CHECK.DTL.EXISTS THEN
+*The 'ELSE' condition of this, which is an error if CHECK.VOIDED is false, is handled when the
+*FB.CHECKS.DTL record is read, above.
+            IF NOT(CHECK.VOIDED) THEN
+               MISSING.OPEN.DATE.CNT += 1
+               MISSING.OPEN.BILL.CNT += 1
+            END
+            IF UPCASE(PRO.ID) # UPCASE(DTL.REC<1>) OR PRO.REC<8> # DTL.REC<2> OR CLIENT # DTL.REC<3> THEN
+               ERROR.LEVEL = 8
+               ERROR.HINT = 'I.T. Check Dtl data mismatch'
+               GOSUB TRACK.WORST.ERROR
+               GOTO VER.SKIP.REMAINING.DTL.ERRORS
+            END
+
+         END
+VER.SKIP.REMAINING.DTL.ERRORS:
+*The program has already determined if the FB.CHECKS.HDR record exists AND either the FB.OPEN.BILLS
+*record exist, which is 'Fatal' or whether the id is in FB.CHECK.DATE.XREF, which also is a 'Fatal' error.
+*Note that in the logic below, if the id is NOT in the FB.CHECK.DATE.XREF, IT is a 'soft' error as opposed to
+*the opposite condition which is considered Fatal.
+
+*If the FB.CHECKS.HDR AND FB.CHECKS.DTL record do NOT exist, then the FB.OPEN.BILLS and FB.OPEN.DATE.XREF
+*records should exist.
+
+         BEGIN CASE
+
+            CASE NOT(CHECK.DTL.EXISTS) AND NOT(CHECK.VOIDED)
+*The FB.CHECKS.HDR record exists which should mean 1 of 2 things; 1st, the check information being passed from SAGE
+*had a check record created when checks were printed from Universe (this is unlikely) or 2nd, this import or some
+*Freight bill and check info in it have already been imported. Since the last thing done relating to a Check in
+*this program is to write the FB.CHECKS.HDR record, since it exists, we are going to PRESUME that the Freight Bill
+*will NOT be in FB.OPEN.DATE.XREF OR in FB.OPEN.BILLS
+
+               IF OPEN.DATES.REC = '' THEN         ; * SBARBEE scrutinize this
+                  ERROR.LEVEL = 3
+                  ERROR.HINT = 'I.T. Check exists but Open Dates rec is null.'
+                  GOSUB TRACK.WORST.ERROR          ; * Commented for testing for afs-fs. Uncomment me before installing. SBARBEE
+               END
+
+            CASE CHECK.HDR.EXISTS AND CHECK.DTL.EXISTS AND NOT(CHECK.VOIDED)
+*Perfectly normal if this check info has been previously imported
+
+            CASE CHECK.HDR.EXISTS AND CHECK.VOIDED
+               ERROR.LEVEL = 8
+               ERROR.HINT = 'I.T. Check HDR exists but check indicates Voided'
+               GOSUB TRACK.WORST.ERROR
+
+            CASE NOT(CHECK.HDR.EXISTS) AND CHECK.DTL.EXISTS AND NOT(CHECK.VOIDED)
+*There is NO Check header record, but Check Detail records and the check has not been voided.
+*This is unusual but this condition would exist if information for this check has already been PARTIALLY imported.
+*For the pre-verification, this is not a show-stopper. For the post-verification, it needs to be reviewed.
+
+               IF MODE = 'AFTER IMPORT' THEN
+                  ERROR.LEVEL = 8
+                  ERROR.HINT = 'I.T. Check Dtl exists with no Check HDR'
+                  GOSUB TRACK.WORST.ERROR
+               END
+
+            CASE 1
+
+         END CASE
+
+END.OF.VER.LOOP:
+
+         OLD.CHECK.ID = CHECK.ID
+         LOCATE CHECK.NUM IN VOIDED.CHECKS BY 'AR' SETTING CHECK.NUM.POS THEN
+            IF VOIDED.BANK.IDS<CHECK.NUM.POS> # BANK.ID THEN
+               CHECK.IMPORT.MINUS.VOIDS<-1> = CHANGE(INFO, @VM, TAB.CHAR)
+            END
+         END ELSE
+            CHECK.IMPORT.MINUS.VOIDS<-1> = CHANGE(INFO, @VM, TAB.CHAR)
+         END
+
+*        IF ADD.TO.CUTBACK.IMPORT AND NOT(CHECK.VOIDED) AND NOT(CHECK.WILL.BE.VOIDED) THEN   ; * SWB01
+         IF ADD.TO.CUTBACK.IMPORT AND NOT(CHECK.VOIDED) AND NOT(CHECK.WILL.BE.VOIDED) AND MODE = 'BEFORE IMPORT' THEN    ; * SWB01
+*Only do this in 'pre-verify' mode, not after the update because it will double the file.
+            CHECK.IMPORT.CUTBACKS<-1> = INFO
+         END
+
+         IF LC < LINE.CNT THEN
+*Determine if the check # is going to change on the next line
+            NEXT.LINE = LC + 1
+
+            NL.INFO = CHECK.IMPORT<NEXT.LINE>
+            NL.INFO = CHANGE(NL.INFO, TAB.CHAR, @VM)
+            IF DCOUNT(NL.INFO, @VM) # COLUMNS.EXPECTED THEN
+               ERROR.LEVEL = 10
+               STATUS.TEXT = 'Sage check import ':IMPORT.ID:' Line ':NEXT.LINE:' has ':DCOUNT(NL.INFO, @VM):' columns but ':COLUMNS.EXPECTED:' are expected.'
+               GOSUB TRACK.WORST.ERROR
+               GO THE.END
+            END
+            NEXT.CHECK.NUM = NL.INFO<1, 5> 'R#7'
+            IF NEXT.CHECK.NUM[1,1]='0' THEN NEXT.CHECK.NUM=NEXT.CHECK.NUM[2,6]
+            IF NEXT.CHECK.NUM='719848' THEN NEXT.CHECK.NUM='7198481'
+            IF NEXT.CHECK.NUM='719849' THEN NEXT.CHECK.NUM='7198491'
+            IF NEXT.CHECK.NUM='719850' THEN NEXT.CHECK.NUM='7198501'
+            IF NEXT.CHECK.NUM='719851' THEN NEXT.CHECK.NUM='7198511'
+            IF NEXT.CHECK.NUM='719852' THEN NEXT.CHECK.NUM='7198521'
+            IF NEXT.CHECK.NUM='719853' THEN NEXT.CHECK.NUM='7198531'
+            IF NEXT.CHECK.NUM='719854' THEN NEXT.CHECK.NUM='7198541'
+            IF NEXT.CHECK.NUM='719855' THEN NEXT.CHECK.NUM='7198551'
+            IF NEXT.CHECK.NUM='719856' THEN NEXT.CHECK.NUM='7198561'
+            NEXT.SAGE.BANK.CODE = NL.INFO<1, 7>
+            NEXT.BANK.ID = NEXT.SAGE.BANK.CODE
+            IF NEXT.SAGE.BANK.CODE = 'F2' THEN NEXT.BANK.ID = 'F'
+            IF NEXT.SAGE.BANK.CODE = 'FW' THEN NEXT.BANK.ID = 'F'
+            IF NEXT.SAGE.BANK.CODE = 'R3' THEN NEXT.BANK.ID = 'R'
+            NEXT.CHECK.ID = NEXT.CHECK.NUM:'*':NEXT.BANK.ID
+
+         END
+         IF FRT.PAY.CHECK THEN
+*At this point, FRT.PAY.CHECK is true or false for the PREVIOUS line in the import file
+
+            IF NEXT.CHECK.ID # CHECK.ID OR LC = LINE.CNT THEN
+*This code is to handle 'breaks' on CHECK.ID, both as the file is being imported and for the handling the automatic break at the end of the file.
+*The reason it is being done this way is because the program is keeping track of whether the SUM of the amounts on the freight bills for the Check
+*is equal to the check amount and since the results are in a spreadsheet with 1 line being for each freight bill. By verifying it here, the message
+*can be put on the last Freight Bill for that Check #.
+               IF OLD.CHECK.ID # '%$&*#' THEN
+                  IF OCONV(SUM.FB.8, 'MD2') # OLD.CHECK.AMT THEN
+                     IF FB.NOT.FOUND THEN
+*When someone in Accounting makes a mistake that affects the import, Universe gets info it doesn't know what to do with and we,
+*in Universe have to deal with it. If a Pro # in the Import doesn't exist in Universe AND the SUM of the Freight Bills for that check that
+*could be read doesn't equal the Check Amount, report it on the 'Before' report because it will probably help the human figure out what is
+*wrong and what needs to be done.
+                        ERROR.LEVEL = 8
+                     END ELSE
+*Otherwise, the error is presumed to be, until a new creative error condition happens, that the Actual Charge was reduced in either Universe (FB.BILLS.HIST field 8) or in Sage,
+*but not both. This condition should NOT stop importing and will (should) be reported in the After Import Verification.
+                        ERROR.LEVEL = 4
+                     END
+                     ERROR.HINT = 'Total Frt Bill Actual Charges of ':OCONV(SUM.FB.8, 'MD2'):' not Check Amt.'
+                     GOSUB TRACK.WORST.ERROR
+                  END
+
+                  SAGE.SUM.INVOICE.AMT.PAID = OCONV(ICONV(OCONV(ICONV(SAGE.SUM.INVOICE.AMT.PAID, 'MD2'), 'MD2'), 'MD2'), 'MD2')
+                  OLD.CHECK.AMT = OCONV(ICONV(OCONV(ICONV(OLD.CHECK.AMT, 'MD2'), 'MD2'), 'MD2'), 'MD2')
+                  IF ABS(SAGE.SUM.INVOICE.AMT.PAID) # ABS(OLD.CHECK.AMT) THEN
+                     IF MODE = 'BEFORE IMPORT' THEN
+                        ERROR.LEVEL = 4
+                     END ELSE
+                        ERROR.LEVEL = 4
+                     END
+                     ERROR.HINT = 'Total Inv Amts Paid ':SAGE.SUM.INVOICE.AMT.PAID:' not Check Amt'
+                     GOSUB TRACK.WORST.ERROR
+                  END
+
+               END
+            END
+         END
+
+         IF HIGHEST.ERROR.LEVELS # '' THEN
+            GOSUB BUILD.REPORTS
+         END
+
+*Bottom of LC loop
+      REPEAT
+
+      CHECK.IMPORT = CHECK.IMPORT.MINUS.VOIDS
+      CHECK.IMPORT.MINUS.VOIDS = ''
+
+*Bottom of VERIFY.DATA subroutine
+      RETURN
+
+*****************************************************************************
+TRACK.WORST.ERROR:
+*****************************************************************************
+      IF ERROR.LEVEL > HIGHEST.ERROR.LEVELS<1> THEN
+         HIGHEST.ERROR.LEVELS<1> = ERROR.LEVEL
+      END
+
+      IF ERROR.LEVEL > HIGHEST.ERROR.LEVELS<2> THEN
+         HIGHEST.ERROR.LEVELS<2> = ERROR.LEVEL
+      END
+
+      IF ERROR.HINTS = '' THEN
+         ERROR.HINTS = '=':DQUOTE(ERROR.HINT)
+         ERROR.LEVELS = '=':DQUOTE(ERROR.LEVEL)
+      END ELSE
+         ERROR.HINTS := LINE.WRAP.STRING:DQUOTE(ERROR.HINT)
+         ERROR.LEVELS := LINE.WRAP.STRING:DQUOTE(ERROR.LEVEL)
+      END
+
+      BEGIN CASE
+         CASE ERROR.LEVEL = 10
+            ADD.TO.IT.REPORT = 1
+            GOSUB BUILD.REPORTS
+            GOSUB SEND.STATUS.EMAIL
+
+*As coded, the logic will return to clause in the program that called TRACK.WORST.ERROR and will
+*STOP there to allow future flexibility. If you put logic in that can divert it, there will be
+*unpredictable results.
+            GOTO TRACK.WORST.ERROR.RETURN
+         CASE MODE = 'BEFORE IMPORT' AND ERROR.LEVEL < 6
+*During the verification Before the import, if the error will not stop importing, skip it and keep going.
+            GOTO TRACK.WORST.ERROR.RETURN
+
+         CASE MODE = 'BEFORE IMPORT' AND ERROR.LEVEL >= 6 AND ERROR.LEVEL <= 7
+*During the verification Before the import, if the error will not stop importing, skip it and keep going.
+            ADD.TO.ACCT.REPORT = 1
+            ADD.TO.IT.REPORT = 1
+
+         CASE MODE = 'UPDATE' AND ERROR.LEVEL >= 6
+            ADD.TO.IT.REPORT = 1
+            GOSUB BUILD.REPORTS
+            GOSUB SEND.STATUS.EMAIL
+
+            GO THE.END
+
+         CASE MODE = 'AFTER IMPORT' AND ERROR.LEVEL >= 4 AND ERROR.LEVEL <= 7
+            ADD.TO.ACCT.REPORT = 1
+            ADD.TO.IT.REPORT = 1
+         CASE 1
+            ADD.TO.IT.REPORT = 1
+      END CASE
+
+TRACK.WORST.ERROR.RETURN:
+      RETURN
+*****************************************************************************
+IMPORT.DATA:
+*****************************************************************************
+
+      DATE.NAME = FIELD(IMPORT.ID, '.', 1)
+      FILE.EXT = FIELD(IMPORT.ID, '.', 2)
+      OCONV.IMPORT.DATE = FIELD(DATE.NAME, '_', 1)
+      ICONV.IMPORT.DATE = ICONV(OCONV.IMPORT.DATE, 'D2-')
+      IMPORT.TYPE = FIELD(DATE.NAME, '_', 2)
+      IF DEBUGGING THEN DEBUG
+      CHECK.HDR.EXISTS = ''
+      ERROR.HINTS = ''
+
+      PREV.CLIENT = '&$#'
+      PREV.CHECK.NUM = '#$@&*'
+      CHECK.NUM = '##$#$'
+      CHECK.ID = ''
+      CHECK.WILL.BE.VOIDED = 0
+      PREV.BANK.ID = '&*@#$%'
+      IF DEBUGGING THEN DEBUG
+      CHECK.IMPORT = CHANGE(CHECK.IMPORT, '"', '')
+*Even though we haven't re-read the CHECK.IMPORT variable, the verification routine deleted any lines for
+*Voided Checks. So, we need to count the number of lines again so the FOR/NEXT loop will know when to stop
+      LINE.CNT = DCOUNT(CHECK.IMPORT, @FM)
+      FOR LC = 1 TO LINE.CNT
+         HIGHEST.ERROR.LEVELS = ''
+         CHECK.DTL.EXISTS = 0
+         CC.PAYMENT = 0
+         FRT.PAY.CHECK = 0
+         ERROR.HINT = ''
+         INFO = CHECK.IMPORT<LC>
+         INFO = CHANGE(INFO, TAB.CHAR, @VM)
+         IF TESTING AND DISPLAY.CRTS THEN CRT LC 'R#3':' - ':INFO
+         VERSION = 0
+         CARRIER = INFO<1, 1>
+         IF CARRIER[1,2] = "OP" THEN
+            CONTINUE
+         END
+         PRO.NUM = INFO<1, 2>
+         IF PRO.NUM[1,2] = "CC" THEN
+            CONTINUE
+         END
+         CLIENT = INFO<1, 6>"R%5"
+         SAGE.BANK.CODE = INFO<1, 7>
+         SAGE.ACTUAL.CHARGE = INFO<1, 8>
+         SAGE.INVOICE.AMT.PAID = INFO<1, 9>
+         SAGE.SEQ.NO = INFO<1, 10>
+         FIRST.SAGE.SEQ.NO = SAGE.SEQ.NO
+         CASH.RECEIPT.DATE = INFO<1, 11>
+         IF CASH.RECEIPT.DATE = '12/30/1899' THEN
+            CASH.RECEIPT.DATE = ''
+         END
+         TYPE.OF.PAYMENT = INFO<1, 12>
+         ICONV.CASH.RECEIPT.DATE = ICONV(CASH.RECEIPT.DATE, 'D4/')
+         ADD.TO.ACCT.REPORT = ''
+         ADD.TO.IT.REPORT = ''
+         LINE = ''
+         CHECK.NUM = INFO<1, 5> 'R#7'
+         IF CHECK.NUM='719848' THEN CHECK.NUM='7198481'
+         IF CHECK.NUM='719849' THEN CHECK.NUM='7198491'
+         IF CHECK.NUM='719850' THEN CHECK.NUM='7198501'
+         IF CHECK.NUM='719851' THEN CHECK.NUM='7198511'
+         IF CHECK.NUM='719852' THEN CHECK.NUM='7198521'
+         IF CHECK.NUM='719853' THEN CHECK.NUM='7198531'
+         IF CHECK.NUM='719854' THEN CHECK.NUM='7198541'
+         IF CHECK.NUM='719855' THEN CHECK.NUM='7198551'
+         IF CHECK.NUM='719856' THEN CHECK.NUM='7198561'
+         IF CHECK.NUM[1,1]='0' THEN CHECK.NUM=CHECK.NUM[2,6]
+         BANK.ID = SAGE.BANK.CODE
+         IF SAGE.BANK.CODE = 'F2' THEN BANK.ID = 'F'
+         IF SAGE.BANK.CODE = 'FW' THEN BANK.ID = 'F'
+         IF SAGE.BANK.CODE = 'R3' THEN BANK.ID = 'R'
+*In the Verification phase we built a list of Checks that have been voided so that those lines for those checks
+*can be skipped (ignored) in the Import Phase (this phase)
+
+
+         LEN.PRO.NUM = LEN(PRO.NUM)
+
+         IF PRO.NUM[LEN.PRO.NUM - 2, 3] = '-rp' OR PRO.NUM[LEN.PRO.NUM - 2, 3] = '-RP' THEN
+*Per Jonathan on 05/27/15, a '-RP' as the last 3 digits of the Freight Bill id indicates it was
+*'re-processed' in SAGE and means this line in the SAGE Export should be ignored.
+*Then, approxamately June 30, I was told that I should, in essence, remove the -FP from the Pro # and update that Freight Bill.
+            PRO.NUM = PRO.NUM[1, LEN.PRO.NUM - 3]
+         END
+         PRO.ID = CARRIER:'*':PRO.NUM:'*':VERSION
+
+         CHECK.DATE = INFO<1, 3>
+         ICONV.CHECK.DATE = ICONV(CHECK.DATE, 'D4/')
+         CHECK.AMT = INFO<1, 4>
+         ICONV.CHECK.AMT = ICONV(CHECK.AMT, 'MD2')
+         IF TESTING AND DISPLAY.CRTS THEN CRT '1130 CHECK.NUM=':CHECK.NUM:' BANK.ID=':BANK.ID
+
+*The boolean FRT.PAY.CHECK means that according to the Bank Code OR the Carrier ID starting with OP,
+*the check is paying for for Freight Bills. Note that Credit Card payments will be on the same banks
+*as the Freight Payment checks so for a short time, Credit Card payments will be treated as Freight
+*Payment checks.
+
+         BEGIN CASE
+            CASE CARRIER = '24334'       ; * American Express Credit Card
+               CC.PAYMENT = 1
+            CASE CARRIER = '26345'       ; * Mastercard
+               CC.PAYMENT = 1
+            CASE CARRIER[1, 2] = 'OP'
+*This is an Operational check, not a Freight Payment
+               GOSUB DETERMINE.VOID.STATUS
+            CASE SAGE.BANK.CODE = 'C'
+               FRT.PAY.CHECK = 1
+            CASE SAGE.BANK.CODE = 'E'
+               FRT.PAY.CHECK = 1
+            CASE SAGE.BANK.CODE = 'E8'
+               FRT.PAY.CHECK = 1
+            CASE SAGE.BANK.CODE = 'F'
+               FRT.PAY.CHECK = 1
+            CASE SAGE.BANK.CODE = 'F2'
+               FRT.PAY.CHECK = 1
+            CASE SAGE.BANK.CODE = 'FW'
+               FRT.PAY.CHECK = 1
+            CASE SAGE.BANK.CODE = 'R'
+               FRT.PAY.CHECK = 1
+            CASE SAGE.BANK.CODE = 'R3'
+               FRT.PAY.CHECK = 1
+            CASE 1
+               ERROR.LEVEL = 8
+               ERROR.HINT = 'Line # ':LC 'R#6':' - Invalid Bank Code of ':SAGE.BANK.CODE
+               STATUS.TEXT = ERROR.HINT
+               GOSUB TRACK.WORST.ERROR
+
+         END CASE
+         IF (CC.PAYMENT OR NOT(FRT.PAY.CHECK)) AND CLIENT # '' THEN
+* The Client is not null on a non-Freight Payment check and could cause the break logic to fail and possibly
+* mess up a Client record or corrupt a Client Record.
+            ERROR.LEVEL = 9
+            ERROR.HINT = 'Client # for non-Frt Pay Check'
+            GOSUB TRACK.WORST.ERROR
+         END
+
+         IF DEBUGGING THEN DEBUG
+
+         IF CLIENT # PREV.CLIENT THEN
+*We are going to do the first part of the Client break logic for every line of the import. If the previous
+*line is an Operational, miscellaneous or Credit Card payment, it won't have a Client # so it won't WRITE
+*the Client record. If the previous line is for a Freight Bill, it should pass the following condition and
+*WRITE the client record for the last line(s).
+            IF PREV.CLIENT # '&$#' AND PREV.CLIENT # '' THEN           ; * SBARBEE What if Sage puts a Client # in an Op Check?
+               IF NOT(TESTING) THEN
+                  IF DEBUGGING THEN DEBUG
+                  AVIN<4> = 'CLIENTS'
+                  AVIN<5> = CLIENT
+                  AVOUT = ''
+                  READ TEST.PREV.CLIENT.REC FROM F.CLIENTS, PREV.CLIENT ELSE NULL
+
+                  IF TEST.PREV.CLIENT.REC # CLIENT.REC THEN
+                     CALL UPD.AUDIT.LOG(AVIN, AVOUT, TEST.PREV.CLIENT.REC, CLIENT.REC, F.AUDIT.LOG)
+                     AVOUT = ''
+                  END
+                  CALL UPD.AUDIT.LOG(AVIN, AVOUT, ORIG.CLIENT.REC, CLIENT.REC, F.AUDIT.LOG)
+                  IF PREV.CLIENT # "" THEN
+                     WRITE CLIENT.REC ON F.CLIENTS,PREV.CLIENT
+                  END ELSE
+                     DISPLAY "WRITE TO CLIENT FILE WITH NULL ID"
+                     DEBUG
+                  END
+               END
+
+               RELEASE F.CLIENTS,PREV.CLIENT
+               CLOSE F.BILLS.HIST
+            END
+
+            PREV.CLIENT = CLIENT
+            IF CC.PAYMENT OR NOT(FRT.PAY.CHECK) THEN
+*Skip reading the Client record and jump to where the FB.CHECKS.HDR record will be created.
+               GOTO SKIP.CLIENT.READ
+            END
+
+TRY.AGAIN:***
+            PROCESS.CLIENT = 0
+            IF TESTING THEN
+               CLIENT.ID.READ = PREV.CLIENT
+            END
+            READU CLIENT.REC FROM F.CLIENTS,CLIENT LOCKED
+               WL.VIN = STATUS()
+               WL.VOUT = ''
+               CALL WHOS.LOCKING(WL.VIN, WL.VOUT)
+               READ TDBCTRL FROM F.BCTRL, WL.VOUT<1> ELSE TDBCTRL = ''
+               DISPLAY "Client ":CLIENT:" is locked by ":TDBCTRL<13>
+               EXECUTE 'SLEEP 2'
+               GOTO TRY.AGAIN
+            END THEN
+               ORIG.CLIENT.REC = CLIENT.REC
+               OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS.HIST THEN
+                  OPEN '','FB.OPEN.DATE.XREF,':CLIENT TO F.DATE.XREF THEN
+                     PROCESS.CLIENT = 1
+                  END ELSE
+                     ERROR.LEVEL = 10
+                     ERROR.HINT = 'Line # ':LC 'R#6':' - Cannot open FB.OPEN.DATE.XREF,':CLIENT
+                     STATUS.TEXT = ERROR.HINT
+                     GOSUB TRACK.WORST.ERROR
+                     GO THE.END
+                  END
+               END ELSE
+                  ERROR.LEVEL = 10
+                  ERROR.HINT = 'Line # ':LC 'R#6':' - Cannot open FB.BILLS.HIST,':CLIENT
+                  STATUS.TEXT = ERROR.HINT
+                  GOSUB TRACK.WORST.ERROR
+                  GO THE.END
+               END
+            END ELSE
+               ERROR.LEVEL = 9
+               ERROR.HINT = 'Cant read Client'
+               GOSUB TRACK.WORST.ERROR
+            END
+         END
+         IF TESTING AND DISPLAY.CRTS THEN CRT '1229 LC=':LC:' - PROCESS.CLIENT=':PROCESS.CLIENT
+
+SKIP.CLIENT.READ:
+
+         IF DEBUGGING THEN DEBUG
+
+         IF CHECK.NUM # PREV.CHECK.NUM OR BANK.ID # PREV.BANK.ID THEN
+            IF DEBUGGING THEN DEBUG
+
+            IF PREV.CHECK.NUM # '#$@&*' THEN
+               GOSUB UPD.CHECK.HDR.AND.XREF
+            END
+
+            CHECK.ID = CHECK.NUM:'*':BANK.ID
+
+            PREV.CHECK.NUM = CHECK.NUM
+            PREV.BANK.ID = BANK.ID
+
+            GOSUB DETERMINE.VOID.STATUS
+            GOSUB CREATE.CHECK.HDR
+
+            IF CC.PAYMENT OR NOT(FRT.PAY.CHECK) THEN
+*Skip reading the Client record and jump to where the FB.CHECKS.HDR record will be created.
+
+               IF CHECK.HDR.EXISTS THEN
+                  RELEASE F.CHECKS.HDR, CHECK.ID
+               END
+               GOSUB DETERMINE.VOID.STATUS
+               GOTO END.OF.UPDATE.LOOP
+            END
+
+         END
+
+         IF PROCESS.CLIENT THEN
+
+            IF DEBUGGING THEN DEBUG
+            READ CARRIER.REC FROM F.CARRIERS, CARRIER THEN
+
+*DFIF CK.WRT=93 THEN CALL ELINE('PRESS BREAK')
+*DFCALL ELINE(PRO.ID)
+               IF @TTY # 'phantom' THEN
+                  DISPLAY @(0,20):PRO.ID
+               END
+               READ TEST.REC FROM F.BILLS.HIST,PRO.ID ELSE
+                  PRO.ID = DOWNCASE(PRO.ID)
+               END
+
+HIST.READ.LOCK:
+               IF DEBUGGING THEN DEBUG
+               OLD.PRO.REC = ''
+
+               READU PRO.REC FROM F.BILLS.HIST,PRO.ID LOCKED
+                  WL.VIN = STATUS()
+                  WL.VOUT = ''
+                  CALL WHOS.LOCKING(WL.VIN, WL.VOUT)
+                  READ TDBCTRL FROM F.BCTRL, WL.VOUT<1> ELSE TDBCTRL = ''
+                  DISPLAY TDBCTRL<13>:' has ':PRO.ID:' locked in FB.BILLS.HIST,':CLIENT
+                  EXECUTE 'SLEEP 2'
+                  GOTO HIST.READ.LOCK
+               END THEN
+                  OLD.PRO.REC = PRO.REC
+                  IF DEBUGGING THEN DEBUG
+                  CHECK.DTL.SEQ += 1
+                  IF CHECK.DTL.SEQ > CHECK.REC<25> THEN
+*This is an indication that this FB.CHECKS.DETAIL record already exists
+                     CHECK.REC<25> = CHECK.DTL.SEQ
+                  END
+
+                  OLD.DTL.REC = ''
+                  DTL.REC = ''
+                  DTL.ID = CHECK.ID:'*':CHECK.DTL.SEQ
+CHK.DTL.LOCK:
+GO 8881
+
+                  READU DTL.REC FROM F.CHECKS.D, DTL.ID LOCKED
+                     WL.VIN = STATUS()
+                     WL.VOUT = ''
+                     CALL WHOS.LOCKING(WL.VIN, WL.VOUT)
+                     READ TDBCTRL FROM F.BCTRL, WL.VOUT<1> ELSE TDBCTRL = ''
+                     DISPLAY TDBCTRL<13>:' has ':DTL.ID:' locked in FB.CHECKS.DTL'
+                     EXECUTE 'SLEEP 2'
+                     GOTO CHK.DTL.LOCK
+
+                  END THEN
+                     OLD.DTL.REC = DTL.REC
+                     CHECK.DTL.EXISTS = 1
+                     IF UPCASE(DTL.REC<1>) # UPCASE(CARRIER:'*':PRO.NUM:'*':VERSION) THEN
+                        ERROR.LEVEL = 8
+                        ERROR.HINT = 'I.T. Check Dtl data mismatch'
+                        GOSUB TRACK.WORST.ERROR
+                     END
+                     IF DTL.REC<2> # PRO.REC<8> THEN
+                        ERROR.LEVEL = 8
+                        ERROR.HINT = 'I.T. Check Dtl data mismatch'
+                        GOSUB TRACK.WORST.ERROR
+                     END
+                     IF DTL.REC<3> # CLIENT THEN
+                        ERROR.LEVEL = 8
+                        ERROR.HINT = 'I.T. Check Dtl data mismatch'
+                        GOSUB TRACK.WORST.ERROR
+                     END
+                  END ELSE
+                     DTL.REC = ''
+                     DTL.REC<1>=CARRIER:'*':PRO.NUM:'*':VERSION
+                     DTL.REC<2>=PRO.REC<8>
+                     DTL.REC<3>=CLIENT
+                  END
+
+8881:
+                  READU OPEN.BILLS.REC FROM F.OPEN.BILLS,CLIENT:'*':PRO.ID THEN
+                     OB.REC.EXISTS = 'Y'
+                     IF CHECK.DTL.EXISTS THEN
+                        ERROR.LEVEL = 3
+                        ERROR.HINT = 'I.T. Open bills rec and Check Dtl exist'
+                        GOSUB TRACK.WORST.ERROR
+                     END
+                  END ELSE
+
+                     IF NOT(CHECK.VOIDED) AND NOT(CHECK.DTL.EXISTS) AND PRO.REC<8> # 0 THEN
+*If the file has been partially processed up to or past this
+*Freight Bill, the FB.OPEN.BILLS record will have been properly deleted
+*and the Freight Bill record field 13 - 15 will have the check info so
+*only report an error if the Check Amount has not been put in field 13
+*of the Freight Bill
+                        ERROR.LEVEL = 8
+                        ERROR.HINT = 'I.T. No Open bills rec'
+                        GOSUB TRACK.WORST.ERROR
+                     END
+                  END
+
+                  IF OCONV(PRO.REC<8>, 'MD2') # SAGE.INVOICE.AMT.PAID THEN
+                     ERROR.LEVEL = 4
+                     ERROR.HINT = 'I.T. Inv Amt Paid vs. Frt Bill Actual Chg'
+                     GOSUB TRACK.WORST.ERROR
+                  END
+
+*This is for checks AFS is sending to Carriers
+                  IF PRO.REC<13> = '' THEN
+                     PRO.REC<13> = ICONV.CHECK.AMT
+                  END ELSE
+                     IF PRO.REC<13> # ICONV.CHECK.AMT THEN
+                        ERROR.LEVEL = 8
+                        ERROR.HINT = 'I.T. Frt Bill Check Info has different Check info'
+                        GOSUB TRACK.WORST.ERROR
+                     END
+                  END
+                  IF PRO.REC<14> = '' THEN
+                     PRO.REC<14> = CHECK.NUM:'*':BANK.ID
+                  END ELSE
+                     IF PRO.REC<14> # CHECK.NUM:'*':BANK.ID THEN
+                        ERROR.LEVEL = 8
+                        ERROR.HINT = 'I.T. Frt Bill Check Info has different Check info'
+                        GOSUB TRACK.WORST.ERROR
+                     END
+                  END
+                  IF PRO.REC<15> = '' THEN
+                     PRO.REC<15> = ICONV.CHECK.DATE
+                  END ELSE
+                     IF PRO.REC<15> # ICONV.CHECK.DATE THEN
+                        ERROR.LEVEL = 8
+                        ERROR.HINT = 'I.T. Frt Bill Check Info has different Check info'
+                        GOSUB TRACK.WORST.ERROR
+                     END
+                  END
+
+*The following fields are recording payment information from the Clients to AFS. There is no direct
+*correlation to the fields we just updated for Carrier payment info in Universe except we get both
+*sets of information in the same import file typically at the same time.
+
+*Based on a conversation with Jonathan on 09/22/15, we can assume that we will NEVER receive a
+*Cash Receipt Date (aka Funded Date) or TYPE.OF.PAYMENT that is for the same Freight Bill and are
+*different than already recorded. If that happens, report it as a 'fatal' error.
+                  IF PRO.REC<133> = '' THEN
+                     PRO.REC<133> = ICONV.CASH.RECEIPT.DATE
+                  END ELSE
+                     IF PRO.REC<133> # ICONV.CASH.RECEIPT.DATE THEN
+                        ERROR.LEVEL = 8
+                        ERROR.HINT = 'I.T. Cash Rec. Date ':CASH.RECEIPT.DATE:' not FB 133':OCONV(PRO.REC<133>, 'D4/')
+                        GOSUB TRACK.WORST.ERROR
+                     END
+                  END
+                  IF PRO.REC<134> = '' THEN
+                     PRO.REC<134> = ICONV.CHECK.DATE
+                  END ELSE
+                     IF PRO.REC<134> # ICONV.CHECK.DATE THEN
+                        ERROR.LEVEL = 8
+                        ERROR.HINT = 'I.T. Check Date not FB 134':OCONV(PRO.REC<134>, 'D4/')
+                        GOSUB TRACK.WORST.ERROR
+                     END
+                  END
+                  IF PRO.REC<135> = '' THEN
+                     PRO.REC<135> = ICONV.CASH.RECEIPT.DATE
+                  END ELSE
+                     IF PRO.REC<135> # ICONV.CASH.RECEIPT.DATE THEN
+                        ERROR.LEVEL = 8
+                        ERROR.HINT = 'I.T. Cash Rec. Date ':CASH.RECEIPT.DATE:' not FB 135':OCONV(PRO.REC<135>, 'D4/')
+                        GOSUB TRACK.WORST.ERROR
+                     END
+                  END
+                  IF PRO.REC<216> = '' THEN
+                     PRO.REC<216> = TYPE.OF.PAYMENT
+                  END ELSE
+                     IF PRO.REC<216> # TYPE.OF.PAYMENT THEN
+                        ERROR.LEVEL = 8
+                        ERROR.HINT = 'I.T. Pay type ':TYPE.OF.PAYMENT:' not FB 216':PRO.REC<216>
+                        GOSUB TRACK.WORST.ERROR
+                     END
+                  END
+
+                  IF DEBUGGING THEN DEBUG
+                  READU OPEN.DATES.REC FROM F.DATE.XREF,PRO.REC<37> THEN
+                     OLD.OPEN.DATES.REC = OPEN.DATES.REC
+                     LOCATE CLIENT:'*':PRO.ID IN OPEN.DATES.REC SETTING OD.POS THEN
+                        OPEN.DATES.REC = DELETE(OPEN.DATES.REC, OD.POS, 0, 0)
+                     END
+                  END ELSE
+                     OPEN.DATES.REC = ''
+                     OLD.OPEN.DATES.REC = ''
+                     IF DEBUGGING THEN DEBUG
+                  END
+
+CRX.READ.LOCK:
+                  IF DEBUGGING THEN DEBUG
+                  OLD.CRX.REC = ''
+
+                  READU CRX.REC FROM F.CRX,PRO.ID LOCKED
+                     WL.VIN = STATUS()
+                     WL.VOUT = ''
+                     CALL WHOS.LOCKING(WL.VIN, WL.VOUT)
+                     READ TDBCTRL FROM F.BCTRL, WL.VOUT<1> ELSE TDBCTRL = ''
+                     DISPLAY TDBCTRL<13>:' has ':PRO.ID:' locked in FB.BILLS.HIST,':CLIENT
+                     EXECUTE 'SLEEP 2'
+                     GOTO CRX.READ.LOCK
+                  END THEN
+                     OLD.CRX.REC = CRX.REC
+
+                     IF CRX.REC<1> = CLIENT THEN
+                        IF OCONV(CRX.REC<8>, 'MD2') # SAGE.INVOICE.AMT.PAID THEN
+                           ERROR.LEVEL = 4
+                           ERROR.HINT = 'CRX Actual Chg vs. I.T. Inv Amt Paid'
+                           GOSUB TRACK.WORST.ERROR
+                        END
+                        IF CRX.REC<13> = '' THEN
+                           CRX.REC<13> = ICONV.CHECK.AMT
+                        END ELSE
+                           IF CRX.REC<13> # '' AND CRX.REC<13> # ICONV.CHECK.AMT THEN
+                              ERROR.LEVEL = 8
+                              ERROR.HINT = 'I.T. Xref Check Info'
+                              GOSUB TRACK.WORST.ERROR
+                              IF DEBUGGING THEN DEBUG
+                           END
+                        END
+                        IF CRX.REC<14> = '' THEN
+                           CRX.REC<14> = CHECK.NUM:'*':BANK.ID
+                        END ELSE
+                           IF CRX.REC<14> # '' AND CRX.REC<14> # CHECK.NUM:'*':BANK.ID THEN
+                              ERROR.LEVEL = 8
+                              ERROR.HINT = 'I.T. Xref Check Info'
+                              GOSUB TRACK.WORST.ERROR
+                           END
+                        END
+                        IF CRX.REC<15> = '' THEN
+                           CRX.REC<15> = ICONV.CHECK.DATE
+                        END ELSE
+                           IF CRX.REC<15> # '' AND CRX.REC<15> # ICONV.CHECK.DATE THEN
+                              ERROR.LEVEL = 8
+                              ERROR.HINT = 'I.T. Xref Check Info'
+                              GOSUB TRACK.WORST.ERROR
+                           END
+                        END
+                     END ELSE
+                        DISPLAY 'Line # ':LC 'R#4':' CRX ':PRO.ID:' field 1 is ':CRX.REC<1>:' but Client is ':CLIENT
+                        GOSUB LOG.IT     ; * SBARBEE
+                     END
+
+                     CHECK.PRINT.DATE = INT.TODAY
+                     PROCESS.DATE = PRO.REC<37>
+                     GOSUB UPDATE.DAYS.TO.PAY
+                     IF DEBUGGING THEN DEBUG
+                     IF NOT(TESTING) THEN
+                        IF DEBUGGING THEN DEBUG
+                        IF OLD.DTL.REC # DTL.REC THEN
+                           WRITE DTL.REC ON F.CHECKS.D, DTL.ID
+                        END
+
+                        IF OLD.CRX.REC # CRX.REC THEN
+                           AVIN<4> = 'FB.CRX'
+                           AVIN<5> = PRO.ID
+                           AVOUT = ''
+                           CALL UPD.AUDIT.LOG(AVIN, AVOUT, OLD.CRX.REC, CRX.REC, F.AUDIT.LOG)
+                           WRITE CRX.REC ON F.CRX, PRO.ID
+                        END
+                        DELETE F.OPEN.BILLS, CLIENT:'*':PRO.ID
+                        IF OLD.OPEN.DATES.REC # OPEN.DATES.REC THEN
+                           IF OPEN.DATES.REC = '' THEN
+                              DELETE F.DATE.XREF, PRO.REC<37>
+                           END ELSE
+                              WRITE OPEN.DATES.REC ON F.DATE.XREF, PRO.REC<37>
+                           END
+                        END
+
+                        IF OLD.PRO.REC # PRO.REC THEN
+                           AVIN<4> = 'FBH.':CLIENT
+                           AVIN<5> = PRO.ID
+                           AVOUT = ''
+                           CALL UPD.AUDIT.LOG(AVIN, AVOUT, OLD.PRO.REC, PRO.REC, F.AUDIT.LOG)
+                           WRITE PRO.REC ON F.BILLS.HIST, PRO.ID
+
+                           GOSUB DETERMINE.CLEARED.DATE
+
+                           SQLVIN=''
+                           SQLVIN<1>=USER
+                           SQLVIN<2>=CLIENT
+                           SQLVIN<3>=PRO.ID
+                           SQLVIN<4>=ICONV.CLEARED.DATE
+                           SQLVOUT=''
+******                           CALL UPD.SQL.FBPYMT.SUB(SQLVIN,SQLVOUT,PRO.REC)
+                        END
+                     END
+                  END ELSE
+                     ERROR.LEVEL = 9
+                     ERROR.HINT = 'I.T. CRX missing'
+                     GOSUB TRACK.WORST.ERROR
+                  END
+
+               END ELSE
+                  IF TESTING AND DISPLAY.CRTS THEN CRT PRO.ID
+                  ERROR.LEVEL = 9
+                  ERROR.HINT = 'Cannot read Freight Bill'
+                  GOSUB TRACK.WORST.ERROR
+               END
+            END ELSE
+               CARRIER := ' NOF'
+               ERROR.LEVEL = 9
+               ERROR.HINT = 'Cant read Carrier'
+               GOSUB TRACK.WORST.ERROR
+            END
+            RELEASE F.CHECKS.D, DTL.ID
+            RELEASE F.BILLS.HIST, PRO.ID
+            RELEASE F.CRX, PRO.ID
+            RELEASE F.OPEN.BILLS, CLIENT:'*':PRO.ID
+            RELEASE F.DATE.XREF, PRO.REC<37>
+         END
+
+         IF DEBUGGING THEN DEBUG
+END.OF.UPDATE.LOOP:
+      NEXT LC
+
+      IF CHECK.REC # '' AND CHECK.ID # '' AND PREV.CHECK.NUM # '#$@&*' THEN
+         GOSUB UPD.CHECK.HDR.AND.XREF
+      END
+      IF NOT(TESTING) THEN
+         IF DEBUGGING THEN DEBUG
+         AVIN<4> = 'CLIENTS'
+         AVIN<5> = CLIENT
+         AVOUT = ''
+         READ TEST.PREV.CLIENT.REC FROM F.CLIENTS, CLIENT ELSE NULL
+         IF TEST.PREV.CLIENT.REC # CLIENT.REC THEN
+            CALL UPD.AUDIT.LOG(AVIN, AVOUT, TEST.PREV.CLIENT.REC, CLIENT.REC, F.AUDIT.LOG)
+            AVOUT = ''
+         END
+         CALL UPD.AUDIT.LOG(AVIN, AVOUT, ORIG.CLIENT.REC, CLIENT.REC, F.AUDIT.LOG)
+         IF CLIENT # "" THEN
+            WRITE CLIENT.REC ON F.CLIENTS,CLIENT
+         END ELSE
+            DISPLAY "WRITE TO CLIENT FILE USING NULL ID"
+            DEBUG
+         END
+      END
+
+      LAST.SAGE.SEQ.NO = SAGE.SEQ.NO
+
+*Update the FB.TABLES record that identifies the last Check #'s imported and under which IMPORT.ID (id of the file in UV_IN)
+*This record in FB.TABLES is fleeting. It will only exist from the time the WRITE occurs below to the next time a file is imported
+*and gets to this part of the logic. Normally, this is about 24 hours but can be a few minutes realistically.
+
+      LAST.SAGE.CHECK.NOS.REC = IMPORT.ID
+      LAST.SAGE.CHECK.NOS.REC<2> = SAGE.BANK.CODES.IMPORTED
+      LAST.SAGE.CHECK.NOS.REC<3> = BEGINNING.CHECK.NUM.IMPORTED
+      LAST.SAGE.CHECK.NOS.REC<4> = ENDING.CHECK.NUM.IMPORTED
+      WRITE LAST.SAGE.CHECK.NOS.REC ON F.TABLES, 'LAST.SAGE.CHECK.NOS'
+
+*Update a summary/history file of what files were imported and what seq #'s and check #'s were in them
+*Note: File Type is currently only 'CHECK.IMPORT' but is part of the id in case this needs to be expanded to other
+*      related programs in the future.
+*Note: The Date is to handle the possibility the same file could be imported multiple times.
+      SUMMARY.REC = INT.DATE
+      SUMMARY.REC<2> = FIRST.SAGE.SEQ.NO
+      SUMMARY.REC<3> = LAST.SAGE.SEQ.NO
+      SUMMARY.REC<4> = SAGE.BANK.CODES.IMPORTED
+      SUMMARY.REC<5> = BEGINNING.CHECK.NUM.IMPORTED
+      SUMMARY.REC<6> = ENDING.CHECK.NUM.IMPORTED
+      SUMMARY.ID = 'CHECK.IMPORT*':IMPORT.ID:'*':INT.DATE:'*':TIME()
+      WRITE SUMMARY.REC ON F.IMPORT.SUMMARY,SUMMARY.ID
+
+*Bottom of IMPORT.DATA subtroutine
+
+      RETURN
+*****************************************************************************
+UPD.CHECK.HDR.AND.XREF:
+*****************************************************************************
+
+      IF CHECK.WILL.BE.VOIDED THEN
+*The check was voided in SAGE before Universe even knew it existed. Mark SAGE.VOIDED.CHECKS as such.
+         WRITE '1' ON F.SAGE.VOIDED.CHECKS, CHECK.ID
+         AVIN<4> = 'SAGE.VOIDED.CHECKS'
+         AVIN<5> = CHECK.ID
+         CALL UPD.AUDIT.LOG(AVIN, AVOUT, SAGE.VOID.REC, '1', F.AUDIT.LOG)
+      END ELSE
+
+CHECK.DATE.XREF.LOCK:
+         READU DCHECK.DATE.XREF FROM F.CHECK.DATE.XREF, ICONV.CHECK.DATE LOCKED
+            WL.VIN = STATUS()
+            WL.VOUT = ''
+            CALL WHOS.LOCKING(WL.VIN, WL.VOUT)
+            READ TDBCTRL FROM F.BCTRL, WL.VOUT<1> ELSE TDBCTRL = ''
+            DISPLAY TDBCTRL<13>:' has ':ICONV.CHECK.DATE:' locked in FB.CHECK.DATE.XREF'
+            EXECUTE 'SLEEP 2'
+            GOTO CHECK.DATE.XREF.LOCK
+
+         END ELSE
+            DCHECK.DATE.XREF = ''
+         END
+
+         LOCATE CHECK.ID IN DCHECK.DATE.XREF BY 'AL' SETTING F.POS ELSE
+            DCHECK.DATE.XREF = INSERT(DCHECK.DATE.XREF, F.POS, 0, 0, CHECK.ID)
+         END
+         IF NOT(TESTING) THEN
+            IF CHECK.REC<1> # FIELD(CHECK.ID, '*', 1) THEN
+            END
+            WRITE DCHECK.DATE.XREF ON F.CHECK.DATE.XREF, ICONV.CHECK.DATE
+            AVIN<4> = 'FB.CHECKS.HDR'
+            AVIN<5> = CHECK.ID
+            AVOUT = ''
+            CALL UPD.AUDIT.LOG(AVIN, AVOUT, OLD.CHECK.REC, CHECK.REC, F.AUDIT.LOG)
+            WRITE CHECK.REC ON F.CHECKS.HDR, CHECK.ID
+            CK.WRT = CK.WRT + 1
+               IF @TTY # 'phantom' THEN
+            DISPLAY @(10,10):CK.WRT:
+END
+         END
+      END
+      RELEASE F.CHECKS.HDR, CHECK.ID
+
+      RETURN
+
+*This logic stolen from AR.PAY.SELECT
+*****************************************************************************
+UPDATE.DAYS.TO.PAY:***
+*****************************************************************************
+*
+* Update the Client Record If the amount selected is GE 95% of the STARTING Total
+*It is presumed that since the check was paid in SAGE, the 95% threshold has been met.
+
+******************************************************************************************
+
+      LAST.CHECK.DATES=CLIENT.REC<117>
+      LAST.PROC.DATES=CLIENT.REC<118>
+******************************************************************************************
+**** Check for this Process Date.  If its there then Skip the update Only Happens Once ***
+      LOCATE PROCESS.DATE IN LAST.PROC.DATES<1> SETTING POS THEN
+         RETURN
+      END
+******************************************************************************************
+* Stick them in front, They will be resorted
+      CHECK.DATE=CHECK.PRINT.DATE
+      INS CHECK.DATE BEFORE LAST.CHECK.DATES<1,1>
+      INS PROCESS.DATE BEFORE LAST.PROC.DATES<1,1>
+* Build Array and Resort Check At the Same Time
+      CHECK.SORT.ARRAY=''
+      NUMB.CHECKS=DCOUNT(LAST.CHECK.DATES<1>,@VM)
+      FOR X = 1 TO NUMB.CHECKS
+         CHECK.STR=LAST.CHECK.DATES<1,X>:"*":LAST.PROC.DATES<1,X>
+         LOCATE CHECK.STR IN CHECK.SORT.ARRAY BY 'DR' SETTING POS ELSE
+            INS CHECK.STR BEFORE CHECK.SORT.ARRAY<POS>
+         END
+      NEXT X
+* Explode the Sorted Array
+      LAST.CHECK.DATES=''
+      LAST.PROC.DATES=''
+      IF DEBUGGING THEN DEBUG
+      NUMB.CHECKS=DCOUNT(CHECK.SORT.ARRAY,@AM)
+* Put back in "Client Rec" Format but Limit to 1st 26 (1/2 Year)
+      FOR X = 1 TO NUMB.CHECKS UNTIL X > 26
+         LAST.CHECK.DATES<1,X>=FIELD(CHECK.SORT.ARRAY<X>,"*",1)
+         LAST.PROC.DATES<1,X>=FIELD(CHECK.SORT.ARRAY<X>,"*",2)
+      NEXT X
+      IF DEBUGGING THEN DEBUG
+      SAVE.CLIENT.REC=CLIENT.REC
+      CLIENT.REC<117>=LAST.CHECK.DATES<1>
+      CLIENT.REC<118>=LAST.PROC.DATES<1>
+      RETURN
+*****************************************************************************
+CREATE.CHECK.HDR:
+CHECK.READ.LOCK:
+*****************************************************************************
+      IF DEBUGGING THEN DEBUG
+      CHECK.DTL.SEQ = 0
+      CHECK.HDR.EXISTS = ''
+
+      READ SAGE.VOID.REC FROM F.SAGE.VOIDED.CHECKS, CHECK.ID THEN
+*This should never happen because lines in the import for the Check # that is marked 'to be voided' are deleted during
+*the 'BEFORE IMPORT' verification.
+         ERROR.LEVEL = 9
+         ERROR.HINT = 'Check ':CHECK.ID:' indicates it is to be voided but exists in CHECK.IMPORT during UPDATE'
+         GOSUB TRACK.WORST.ERROR
+* A stop statement is theoretically unnecessary because it should stop in TRACK.WORST.ERROR
+         GO THE.END
+      END ELSE
+         SAGE.VOID.REC = ''
+      END
+
+      READU CHECK.REC FROM F.CHECKS.HDR, CHECK.ID LOCKED
+         WL.VIN = STATUS()
+         WL.VOUT = ''
+         CALL WHOS.LOCKING(WL.VIN, WL.VOUT)
+         READ TDBCTRL FROM F.BCTRL, WL.VOUT<1> ELSE TDBCTRL = ''
+         DISPLAY TDBCTRL<13>:' has ':PRO.ID:' locked in FB.CHECKS.HDR'
+         EXECUTE 'SLEEP 2'
+         GOTO CHECK.READ.LOCK
+
+      END THEN
+         CHECK.HDR.EXISTS = 1
+         IF CHECK.VOIDED THEN
+            ERROR.LEVEL = 9
+            ERROR.HINT = 'Check ':CHECK.ID:' is in SAGE.VOIDED.CHECKS but exists in FB.CHECKS.HDR'
+            GOSUB TRACK.WORST.ERROR
+            GO THE.END                   ; * This is theoretically unnecessary because it should stop in TRACK.WORST.ERROR
+         END
+      END ELSE
+         CHECK.REC = ''
+         IF CHECK.NUM # FIELD(CHECK.ID, '*', 1) THEN
+            ERROR.LEVEL = 9
+            ERROR.HINT = 'CHECK.NUM of ':CHECK.NUM:' does not match CHECK.ID ':CHECK.ID
+            GOSUB TRACK.WORST.ERROR
+         END
+         CHECK.REC<1> = CHECK.NUM
+         CHECK.REC<2> = ICONV.CHECK.DATE
+         CHECK.REC<3> = CARRIER
+         CHECK.REC<4> = ICONV.CHECK.AMT
+
+         GOSUB DETERMINE.CLEARED.DATE
+
+         IF ICONV.CLEARED.DATE # '' THEN
+            CHECK.REC<5> = ICONV.CLEARED.DATE
+            CHECK.REC<6> = ICONV.CHECK.AMT
+            CHECK.REC<21> = ICONV.CLEARED.DATE
+         END
+
+         IF CHECK.REC<22> = '' THEN
+            CHECK.REC<22> = ICONV.CASH.RECEIPT.DATE
+         END
+         IF CHECK.REC<23> = '' THEN
+            CHECK.REC<23> = ICONV.CHECK.AMT
+         END
+         CHECK.REC<25> = 0
+         CHECK.REC<48> = DATE()
+         IF SAGE.BANK.CODE = 'F2' THEN
+*If the Bank code from SAGE is F2, the payment was by ACH through SAGE
+            CHECK.REC<26> = CHECK.NUM:'*F2'
+         END
+         IF SAGE.BANK.CODE = 'FW' THEN
+*If the Bank code from SAGE is F2, the payment was by ACH through SAGE
+            CHECK.REC<26> = CHECK.NUM:'*FW'
+         END
+         IF SAGE.BANK.CODE = 'R3' THEN
+*If the Bank code from SAGE is F2, the payment was by ACH through SAGE
+            CHECK.REC<26> = CHECK.NUM:'*R3'
+         END
+      END
+
+      RETURN
+*****************************************************************************
+LOG.IT:
+*****************************************************************************
+      DISPLAY 'No code for LOG.IT subroutine'
+
+      RETURN
+*****************************************************************************
+BUILD.REPORTS:
+*****************************************************************************
+      FOR HEL = 1 TO 2
+*Build the reports for Acct and then I.T.
+         ERROR.LEVEL += 0
+         BEGIN CASE
+            CASE HIGHEST.ERROR.LEVELS<HEL> >= 9 AND MODE = 'UPDATE'
+               SEVERITY = 'Very High.'
+               GOSUB BUILD.ROW
+
+            CASE HIGHEST.ERROR.LEVELS<HEL> >= 9
+               ACCT.REPORT = ''
+               IT.REPORT = ''
+               LINE = ''
+
+            CASE HIGHEST.ERROR.LEVELS<HEL> >= 8
+               SEVERITY = 'Very High.'
+               GOSUB BUILD.ROW
+
+            CASE HIGHEST.ERROR.LEVELS<HEL> >= 6
+               SEVERITY = 'High'
+               GOSUB BUILD.ROW
+
+            CASE HIGHEST.ERROR.LEVELS<HEL> = 5
+*currently unused
+            CASE HIGHEST.ERROR.LEVELS<HEL> = 4
+               SEVERITY = 'Normal'
+               GOSUB BUILD.ROW
+
+            CASE HIGHEST.ERROR.LEVELS<HEL> >= 2
+               SEVERITY = 'Low'
+               GOSUB BUILD.ROW
+
+            CASE 1
+
+         END CASE
+
+         IF LINE # '' THEN
+            IF HEL = 1 AND ADD.TO.ACCT.REPORT THEN
+               ACCT.REPORT<-1> = LINE
+            END
+
+            IF HEL = 2 AND ADD.TO.IT.REPORT THEN
+               IT.REPORT<-1> = LINE
+            END
+         END
+      NEXT HEL
+
+      RETURN
+*****************************************************************************
+BUILD.ROW:
+*****************************************************************************
+*This routine builds the rows that will be put into the Excel spreadsheet of errors
+      IF HEL = 1 THEN
+*The version of the report for Accounting
+         RPT.ERROR.LEVELS = ''
+         RPT.ERROR.HINTS = ''
+         EHV.CNT = DCOUNT(ERROR.HINTS, LINE.WRAP.STRING)
+         ERR.LEVEL = CHANGE(ERROR.LEVELS, LINE.WRAP.STRING, '')
+         ERR.LEVEL = CHANGE(ERR.LEVEL, '=', '')
+         ERR.LEVEL = CHANGE(ERR.LEVEL, '""', @FM)
+         ERR.LEVEL = CHANGE(ERR.LEVEL, '"', '')
+
+         ERR.HINT = CHANGE(ERROR.HINTS, LINE.WRAP.STRING, '')
+         ERR.HINT = CHANGE(ERR.HINT, '=', '')
+         ERR.HINT = CHANGE(ERR.HINT, '""', @FM)
+         ERR.HINT = CHANGE(ERR.HINT, '"', '')
+
+         FOR EHVC = 1 TO EHV.CNT
+            ERR = ERR.LEVEL<EHVC>
+            HINT = ERR.HINT<EHVC>
+            IF ERR >= 4 AND ERR <= 7 THEN
+               IF RPT.ERROR.LEVELS = '' THEN
+                  RPT.ERROR.LEVELS = '=':DQUOTE(ERR)
+                  RPT.ERROR.HINTS = '=':DQUOTE(HINT)
+               END ELSE
+                  RPT.ERROR.LEVELS := LINE.WRAP.STRING:DQUOTE(ERR)
+                  RPT.ERROR.HINTS := LINE.WRAP.STRING:DQUOTE(HINT)
+               END
+
+            END
+         NEXT EHVC
+
+      END ELSE
+         RPT.ERROR.HINTS = ERROR.HINTS
+         RPT.ERROR.LEVELS = ERROR.LEVELS
+      END
+      LINE = CLIENT:TAB.CHAR:CARRIER:TAB.CHAR:PRO.NUM:TAB.CHAR:OCONV(PRO.REC<8>, 'MD2'):TAB.CHAR:SAGE.INVOICE.AMT.PAID:TAB.CHAR:CHECK.ID:TAB.CHAR
+      LINE := CHECK.AMT:TAB.CHAR:CHECK.DATE:TAB.CHAR:OCONV(PRO.REC<13>, 'MD2'):TAB.CHAR:PRO.REC<14>:TAB.CHAR:OCONV(PRO.REC<15>, 'D2/'):TAB.CHAR
+      LINE := RPT.ERROR.HINTS:TAB.CHAR
+      LINE := OCONV(CHECK.REC<4>, 'MD2'):TAB.CHAR:CHECK.REC<1>:TAB.CHAR:OCONV(CRX.REC<8>, 'MD2'):TAB.CHAR
+      LINE := OCONV(CRX.REC<13>, 'MD2'):TAB.CHAR:CRX.REC<14>:TAB.CHAR:OCONV(CRX.REC<15>, 'D2/'):TAB.CHAR
+      LINE := DTL.REC<1>:TAB.CHAR:OCONV(DTL.REC<2>, 'MD2'):TAB.CHAR:DTL.REC<3>:TAB.CHAR:OB.REC.EXISTS:TAB.CHAR:SEVERITY:TAB.CHAR:RPT.ERROR.LEVELS:TAB.CHAR:PRO.ID
+
+      RETURN
+*****************************************************************************
+SEND.STATUS.EMAIL:
+*****************************************************************************
+      BEGIN CASE
+         CASE MODE = 'INIT'
+            STATUS.SUBJ = FATAL.DURING.INIT.SUBJ:IMPORT.ID
+         CASE MODE = 'BEFORE IMPORT'
+            STATUS.SUBJ = FATAL.BEFORE.VER.SUBJ:IMPORT.ID
+         CASE MODE = 'UPDATE'
+            STATUS.SUBJ = FATAL.IMPORT.SUBJ:IMPORT.ID
+         CASE MODE = 'AFTER IMPORT'
+            STATUS.SUBJ = FATAL.AFTER.VER.SUBJ:IMPORT.ID
+         CASE 1
+            STATUS.SUBJ = 'Sage Unknown Mode of':MODE
+      END CASE
+
+      VIN = ''
+      VOUT = ''
+      VIN<1> = 'david@afs.net':@VM:'gbino@afs.net'
+      VIN<4> = 'SAGE.CHECK.IMPORT@AFS.NET'
+      VIN<6> = STATUS.TEXT
+
+      IF ACCT.REPORT # '' THEN
+         ACCT.REPORT.ID = 'SAGE_IMPORT_ACCT-':FIELD(IMPORT.ID, '_', 1, 4):'.xls'
+         ACCT.REPORT = RPT.HEADING:@FM:ACCT.REPORT
+*DF         VIN<2>='cbeasley@afs.net':@VM:'mrose@afs.net':@VM:'kkrivjansky@afs.net'
+         VIN<2>='cbeasley@afs.net':@VM:'mrose@afs.net':@VM:'amparker@afs.net'
+         VIN<11> = EMAIL.PATH:ACCT.REPORT.ID
+         WRITE ACCT.REPORT ON F.EMAILDATA, ACCT.REPORT.ID
+         VIN<5> = STATUS.SUBJ:' for ':IMPORT.ID:' for Accounting'
+         CALL SENDMAIL(VIN,VOUT)
+         VIN<2>=''
+      END
+
+      IF IT.REPORT # '' THEN
+         IT.REPORT.ID = 'SAGE_IMPORT_IT-':FIELD(IMPORT.ID, '_', 1, 4):'.xls'
+         IT.REPORT = RPT.HEADING:@FM:IT.REPORT
+         VIN<2>=''                       ; * Not sending the I.T. version to Accounting
+         VIN<11> = EMAIL.PATH:IT.REPORT.ID
+         WRITE IT.REPORT ON F.EMAILDATA, IT.REPORT.ID
+         VIN<5> = STATUS.SUBJ:' for ':IMPORT.ID:' for I.T.'
+         CALL SENDMAIL(VIN,VOUT)
+      END ELSE
+         IF STATUS.TEXT # '' THEN
+            VIN<5> = STATUS.SUBJ
+            CALL SENDMAIL(VIN,VOUT)
+         END
+      END
+
+      RETURN
+*****************************************************************************
+DETERMINE.CLEARED.DATE:
+*****************************************************************************
+      BEGIN CASE
+         CASE SAGE.BANK.CODE = 'F2'      ; * ACH's from Sage
+            ICONV.CLEARED.DATE = ICONV.CHECK.DATE
+         CASE SAGE.BANK.CODE = 'FW'      ; * ACH's from Sage
+            ICONV.CLEARED.DATE = ICONV.CHECK.DATE
+         CASE SAGE.BANK.CODE = 'E'       ; * American Express payments
+            ICONV.CLEARED.DATE = ICONV.CHECK.DATE
+         CASE SAGE.BANK.CODE = 'E8'       ; * American Express payments
+            ICONV.CLEARED.DATE = ICONV.CHECK.DATE
+         CASE SAGE.BANK.CODE = 'R'       ; * Master Card payment
+*As of September, 2015, Cleared check files are not being generated for Bank E so this code is here to emulate what was done in FB.5.4.LASER.
+            ICONV.CLEARED.DATE = ICONV.CHECK.DATE
+         CASE SAGE.BANK.CODE = 'R3'      ; * Master Card payment
+*As of September, 2015, Cleared check files are not being generated for Bank E so this code is here to emulate what was done in FB.5.4.LASER.
+            ICONV.CLEARED.DATE = ICONV.CHECK.DATE
+         CASE 1
+            ICONV.CLEARED.DATE = ''
+      END CASE
+
+      RETURN
+*****************************************************************************
+DETERMINE.VOID.STATUS:
+*****************************************************************************
+      VOID.STATUS = 0
+      CHECK.VOIDED = 0
+      CHECK.WILL.BE.VOIDED = 0
+      LOCATE CHECK.NUM IN VOIDED.CHECKS BY 'AR' SETTING CHECK.NUM.POS ELSE
+
+         READ SAGE.VOID.REC FROM F.SAGE.VOIDED.CHECKS, CHECK.ID THEN
+            VOID.STATUS = SAGE.VOID.REC<1>
+            BEGIN CASE
+               CASE VOID.STATUS = 0
+                  CHECK.WILL.BE.VOIDED = 1
+               CASE VOID.STATUS = 1
+                  CHECK.VOIDED = 1
+               CASE VOID.STATUS = 2
+                  CHECK.VOIDED = 1
+               CASE 1
+
+            END CASE
+*If this check # has been voided, add it to the list so that any lines in this Import file for that Check # can be
+*skipped. At the very bottom of the Verificaiton loop (below the 'END.OF.VER.LOOP' label), any 'Row' in the import that
+*has a Freight Bill for a Check # that has been voided will literally be removed from IMPORT.REC before the Update routine.
+            VOIDED.CHECKS = INSERT(VOIDED.CHECKS, CHECK.NUM.POS, 0, 0, CHECK.NUM)
+            VOIDED.BANK.IDS = INSERT(VOIDED.BANK.IDS, CHECK.NUM.POS, 0, 0, BANK.ID)
+         END ELSE
+            SAGE.VOID.REC = ''
+         END
+
+      END
+
+      RETURN
+
+   END

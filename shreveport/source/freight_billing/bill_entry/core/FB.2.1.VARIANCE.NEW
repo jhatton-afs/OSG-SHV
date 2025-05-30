@@ -1,0 +1,682 @@
+      SUBROUTINE FB.2.1.VARIANCE.NEW(VIN,VOUT,MAT CLIENT.REC,BAL.DUE,VARIANCE,VAR.ARR,MODE)
+********************************************************************************
+ UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.2.1.VARIANCE.NEW' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+ CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+* SUBROUTINE TO CALCULATE, DISPLAY, AND ADJUST VARIANCE AND CUTBACK CODES
+*
+* FREIGHT BILLING PACKAGE
+* AUTHOR: BRIAN M. QUEEN
+* DATE: DECEMBER 7, 1990
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE EXPRESS
+* WRITTEN CONSENT OF SAME.
+*
+* Last updated by AFS.SOURCE (valerie) at 14:08:41 on 08/04/1994.
+*   ADDED INSERT FOR CLIENTS TO GO WITH FB.2.1.
+*
+* Last updated by James Barberousse on 06/03/2002.
+*   Added pop-up cutback code list
+*   Cleaned up and simplified the code
+* 060804 - JMK01 - ALLOW FOR ENTRY OF DISCOUNT, BUT REPORT TO MGMT
+* 081104 - JMK02 - VERIFY ENTRY FOR DISCOUNT REASON
+* 060705 - JMK03 - BLOCK BOGUS DISCOUNT REASONS
+* 051006 - JCW01 - CHANGES TO @SELECTED, CLEARSELECT, AND STMT<X>
+* 081508 - JMK04 - C081314 - Overcharge classification
+*
+* VAR.ARR Documentation
+*-------------------------------------
+* <1>=Discount variance
+* <2>=Overcharge variance
+* <3>=Commission variance
+* <4>=BD Discount variance
+* <5>=BD Overcharge variance
+* <6>=BD Commission variance
+* <7>=Discount cutback descriptions
+* <8>=Overcharge cutback descriptions
+* <9>=Consulting cutback descriptions
+********************************************************************************
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_CLIENTS
+
+* Initialize variables
+      PROMPT''
+      CC=VIN<1>
+      USER=VIN<2>
+      ALLOW.DISCOUNTS=VIN<3>
+      CLIENT.ID=VIN<4>
+      CARRIER.ID=VIN<5>
+      IF MODE='I' THEN INQUIRE=1 ELSE INQUIRE=0
+      OLD.VAR=VAR.ARR
+      DISC.DESC=''                       ; * JMK01
+      CUT.DESC=''
+      CUT.CLASS=''                       ; * JMK04
+      MASK.CHAR='-'
+      DEBUG=(USER='JAMES')
+
+* Open files
+      OPEN '','FB.CUT.BACKS' TO F.CUT.BACKS ELSE
+         CALL OPEN.ABORT('FB.CUT.BACKS','FB.2.1.VARIANCE.NEW')
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE         ; * JMK04
+         CALL OPEN.ABORT('FB.TABLES','FB.2.1.VARIANCE.NEW')  ; * JMK04
+      END                                ; * JMK04
+
+* Initial display
+100:***
+      IF VAR.ARR='' THEN
+         GOSUB 1000                      ; * Assign default variances
+      END ELSE
+         GOSUB 1500                      ; * Replace commas in description fields with value marks
+      END
+      GOSUB 2000                         ; * Display screen
+      GOSUB 3000                         ; * Display D and O cutback codes
+
+* Display only
+      IF MODE='D' THEN
+         CALL ELINE('')
+         GOTO SAVE.AND.EXIT
+      END
+
+* Change variance amounts
+200:***
+      HELP='Enter variance number to change. [R]estore Default [X]=Back [EX]it'
+      CALL GEN.IN(0,22,'Variance Number: # ','',Q,0,2,'','',1,-2,22,1,QI,HELP,0,23)
+      CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+      QI=OCONV(QI,'MCU')
+      IF QI=1 AND NOT(ALLOW.DISCOUNTS) THEN
+210:* ENTER DISCOUNT REASON ; * JMK02
+         HELP="'Grace' period has expired! Enter explanation for mgmt. [X]=Back [EX]it"    ; * JMK01
+         CALL GEN.IN(0,22,STR('-',75),'',DISC.DESC,1,75,'','',0,-75,22,0,DISC.DESC,HELP,0,23)
+         CC+=LEN(DISC.DESC)+1 ; GOSUB PRINT.CC
+*        CALL ELINE("Discount 'Grace' period has expired! Enter as an Overcharge.")     ; * JMK01
+*        GOTO 200                     ; * JMK01
+         BEGIN CASE                      ; * JMK02
+            CASE DISC.DESC='X'           ; * JMK02
+               GOTO 200                  ; * JMK02
+            CASE DISC.DESC='EX'          ; * JMK02
+               STOP                      ; * JMK02
+            CASE TRIM(DISC.DESC)=''      ; * JMK02
+               GOTO 210                  ; * JMK02
+            CASE 1                       ; * JMK03
+               DESC.TEST=TRIM(OCONV(DISC.DESC,'MCA'))        ; * JMK03
+               CHR.LST=''                ; * JMK03
+               FOR CPOS=1 TO LEN(DESC.TEST)        ; * JMK03
+                  CHR=DESC.TEST[CPOS,1]  ; * JMK03
+                  IF CHR=' ' THEN CHR='_'          ; * JMK03
+                  LOCATE(CHR,CHR.LST,1;POS) ELSE   ; * JMK03
+                     CHR.LST<1,-1>=CHR   ; * JMK03
+                  END                    ; * JMK03
+               NEXT CPOS                 ; * JMK03
+               NCHRS=DCOUNT(CHR.LST<1>,@VM)        ; * JMK03
+               IF NCHRS <= 5 THEN        ; * JMK03
+                  GOTO 210               ; * JMK03
+               END
+         END CASE                        ; * JMK02
+      END
+      BEGIN CASE
+         CASE QI='EX'                    ; * Exit program immediately
+            STOP
+
+         CASE QI='X'                     ; * X-back to calling program - Don't save
+            VAR.ARR=OLD.VAR
+            GOTO THE.END
+
+         CASE QI='R'                     ; * Restore defaults
+            VAR.ARR=OLD.VAR
+            GOTO 100
+
+         CASE NUM(QI) & INQUIRE
+            CALL ELINE('Cannot access detail in inquiry!')
+            CC+=1 ; GOSUB PRINT.CC
+            GOTO 200
+
+         CASE QI=1                       ; * Discount
+            QI=''
+            IF CL.VAR.DEF='D' THEN
+               CALL ELINE('ERROR - Default variance cannot be changed.')
+               CC+=1 ; GOSUB PRINT.CC
+               GOTO 200
+            END
+            IF BAL.DUE THEN
+               OLD.AMT=VAR.ARR<1>
+               MASK=VAR.ARR<1>:STR(MASK.CHAR,12-LEN(VAR.ARR<1>))
+               HELP='Enter portion of total variance for discounts. Balance is due.'
+               CALL GEN.IN(14,6,MASK,'AMT2',Q,0,12,'','',0,-12,6,0,QI,HELP,0,23)
+               CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+               IF QI='' THEN Q=VAR.ARR<1>
+               NEW.AMT=Q
+               GOSUB 5000
+               VAR.ARR<1>=NEW.AMT
+               CRT @(14,6):VAR.ARR<1>'R26,#12'
+            END ELSE
+               OLD.AMT=VAR.ARR<1>
+               MASK=VAR.ARR<1>:STR(MASK.CHAR,12-LEN(VAR.ARR<1>))
+               HELP='Enter portion of total variance for discounts.'
+               CALL GEN.IN(31,6,MASK,'AMT2',Q,0,12,'','',0,-12,6,0,QI,HELP,0,23)
+               CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+               IF QI='' THEN Q=VAR.ARR<1>
+               NEW.AMT=Q
+               GOSUB 5000
+               VAR.ARR<1>=NEW.AMT
+               CRT @(31,6):VAR.ARR<1>'R26,#12'
+            END
+            GOSUB 2000                   ; * Display screen
+            GOSUB 3000                   ; * Display D, O, C cutbacks
+            GOTO 200
+
+         CASE QI=2                       ; * Overcharge
+            QI=''
+            IF CL.VAR.DEF='O' THEN
+               CALL ELINE('ERROR - Default variance cannot be changed.')
+               CC+=1 ; GOSUB PRINT.CC
+               GOTO 200
+            END
+            IF BAL.DUE THEN
+               OLD.AMT=VAR.ARR<2>
+               MASK=VAR.ARR<2>:STR(MASK.CHAR,12-LEN(VAR.ARR<2>))
+               HELP='Enter portion of total variance for overcharges. Balance is due.'
+               CALL GEN.IN(14,13,MASK,'AMT2',Q,0,12,'','',0,-12,13,0,QI,HELP,0,23)
+               CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+               IF QI='' THEN Q=VAR.ARR<2>
+               NEW.AMT=Q
+               GOSUB 5000
+               VAR.ARR<2>=NEW.AMT
+               CRT @(14,13):VAR.ARR<2>'R26,#12'
+            END ELSE
+               OLD.AMT=VAR.ARR<2>
+               MASK=VAR.ARR<2>:STR(MASK.CHAR,12-LEN(VAR.ARR<2>))
+               HELP='Enter portion of total variance for overcharges.'
+               CALL GEN.IN(31,13,MASK,'AMT2',Q,0,12,'','',0,-12,13,0,QI,HELP,0,23)
+               CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+               IF QI='' THEN Q=VAR.ARR<2>
+               NEW.AMT=Q
+               GOSUB 5000
+               VAR.ARR<2>=NEW.AMT
+               CRT @(31,13):VAR.ARR<2>'R26,#12'
+            END
+            GOSUB 2000                   ; * Display screen
+            GOSUB 3000                   ; * Display D, O, C cutbacks
+            GOTO 200
+
+         CASE QI=3                       ; * Consulting
+            QI=''
+*         IF CL.CONS.PC<1,DCOUNT(CL.CONS.PC<1>,@VM)>+0 = 0 THEN
+*           CALL ELINE('Error! Consulting Fees have NOT been setup! No consulting can be entered!')
+*           CC+=1; GOSUB PRINT.CC
+*           GOTO 200
+*         END
+            IF CL.VAR.DEF='C' THEN
+               CALL ELINE('ERROR - Default variance cannot be changed.')
+               CC+=1 ; GOSUB PRINT.CC
+               GOTO 200
+            END
+            IF BAL.DUE THEN
+               OLD.AMT=VAR.ARR<3>
+               MASK=VAR.ARR<3>:STR(MASK.CHAR,12-LEN(VAR.ARR<3>))
+               HELP='Enter portion of total variance for consulting. Balance is due.'
+               CALL GEN.IN(14,20,MASK,'AMT2',Q,0,12,'','',0,-12,20,0,QI,HELP,0,23)
+               CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+               IF QI='' THEN Q=VAR.ARR<3>
+               NEW.AMT=Q
+               GOSUB 5000
+               VAR.ARR<3>=NEW.AMT
+               CRT @(14,20):VAR.ARR<3>'R26,#12'
+            END ELSE
+               OLD.AMT=VAR.ARR<3>
+               MASK=VAR.ARR<3>:STR(MASK.CHAR,12-LEN(VAR.ARR<3>))
+               HELP='Enter portion of total variance for consulting.'
+               CALL GEN.IN(31,20,MASK,'AMT2',Q,0,12,'','',0,-12,20,0,QI,HELP,0,23)
+               CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+               IF QI='' THEN Q=VAR.ARR<3>
+               NEW.AMT=Q
+               GOSUB 5000
+               VAR.ARR<3>=NEW.AMT
+               CRT @(31,20):VAR.ARR<3>'R26,#12'
+            END
+            GOSUB 2000                   ; * Display screen
+            GOSUB 3000                   ; * Display D, O, C cutbacks
+            GOTO 200
+
+         CASE QI='' & NOT(INQUIRE)
+            FOR Z=1 TO 2
+               IF VAR.ARR<Z>'R0' NE 0 THEN
+                  ROW=Z*7
+                  ATTR=Z+6
+                  GOSUB 4000             ; * Display cutback codes
+                  GOSUB ADD.CUTBACK.CODE           ; * Enter cutback codes
+               END
+            NEXT Z
+            FOR Z=4 TO 5
+               IF VAR.ARR<Z>'R0' NE 0 THEN
+                  ROW=(Z-3)*7
+                  ATTR=Z+3
+                  GOSUB 4000             ; * Display cutback codes
+                  GOSUB ADD.CUTBACK.CODE           ; * Enter cutback codes
+               END
+            NEXT Z
+            GOSUB 2000                   ; * Display screen
+            GOSUB 3000                   ; * Display D, O, C cutbacks
+            GOTO SAVE.AND.EXIT
+
+         CASE QI='' & INQUIRE
+            VAR.ARR=OLD.VAR
+            GOTO THE.END                 ; * Return to calling program
+
+         CASE QI='*' AND DEBUG           ; * Debug
+            CRT @(0,6):@(-3):VAR.ARR
+            CALL ELINE('Press ENTER to continue.')
+            GOSUB 2000                   ; * Display screen
+            GOSUB 3000                   ; * Display D, O, C cutbacks
+            GOTO 200
+
+         CASE 1
+            GOTO 200
+
+      END CASE
+
+********************************************************************************
+* Internal subroutines
+********************************************************************************
+
+* Assign data in the case of a default variance
+1000:***
+      BEGIN CASE
+         CASE CL.VAR.DEF='D'
+            VAR.ARR<1>=VARIANCE
+            VAR.ARR<2>=0
+            VAR.ARR<3>=0
+            VAR.ARR<8>=''
+            VAR.ARR<9>=''
+            VAR.ARR<11>=''               ; * JMK04
+            VAR.ARR<12>=''               ; * JMK04
+         CASE CL.VAR.DEF='O'
+            VAR.ARR<1>=0
+            VAR.ARR<2>=VARIANCE
+            VAR.ARR<3>=0
+            VAR.ARR<7>=''
+            VAR.ARR<9>=''
+            VAR.ARR<10>=''               ; * JMK04
+            VAR.ARR<12>=''               ; * JMK04
+         CASE CL.VAR.DEF='C'
+            VAR.ARR<1>=0
+            VAR.ARR<2>=0
+            VAR.ARR<3>=VARIANCE
+            VAR.ARR<7>=''
+            VAR.ARR<8>=''
+            VAR.ARR<10>=''               ; * JMK04
+            VAR.ARR<11>=''               ; * JMK04
+      END CASE
+      RETURN
+
+********************************************************************************
+
+* Replace commas with value marks
+1500:***
+      FOR I=7 TO 9
+         NUM=DCOUNT(VAR.ARR<I>,',')
+         TEMP=''
+         FOR J=1 TO NUM
+            TEMP<1,J>=FIELD(VAR.ARR<I>,',',J)
+         NEXT J
+         VAR.ARR<I>=TEMP<1>
+      NEXT I
+      RETURN
+
+********************************************************************************
+
+* Display screen
+2000:***
+      CRT @(0,2):@(-3)
+      CRT @(0,2):'Variance to Distribute : $':VARIANCE'R26#12'
+      CRT @(0,3):STR('-',79)
+      CRT @(0,4):'Ln  Desc           Bal Due Amt       Amount'
+      CRT @(0,5):STR('-',79)
+
+      CRT @(0, 6):'1)  Discount   '
+      CRT @(0,13):'2)  Overcharge '
+      CRT @(0,20):'3)  Consulting '
+      IF CL.VAR.DEF='D' THEN CRT @(0, 6):'*' ; CRT @(50, 6):'Default Discount Variance'
+      IF CL.VAR.DEF='O' THEN CRT @(0,13):'*' ; CRT @(50,13):'Default Overcharge Variance'
+      IF CL.VAR.DEF='C' THEN CRT @(0,20):'*' ; CRT @(50,20):'Default Consulting Variance'
+      IF BAL.DUE THEN
+         CRT @(14, 6):VAR.ARR<1>'R26#12'
+         CRT @(14,13):VAR.ARR<2>'R26#12'
+         CRT @(14,20):VAR.ARR<3>'R26#12'
+      END ELSE
+         CRT @(31, 6):VAR.ARR<1>'R26#12'
+         CRT @(31,13):VAR.ARR<2>'R26#12'
+         CRT @(31,20):VAR.ARR<3>'R26#12'
+      END
+      RETURN
+
+********************************************************************************
+
+* Display all cutback code lists
+3000:***
+      FOR Y=1 TO 2
+         IF VAR.ARR<Y>'R0' NE 0 THEN
+            ROW=Y*7
+            ATTR=Y+6
+            GOSUB 4000                   ; * Display cutback codes
+         END
+      NEXT Y
+      FOR Y=4 TO 5
+         IF VAR.ARR<Y>'R0' NE 0 THEN
+            ROW=(Y-3)*7
+            ATTR=Y+3
+            GOSUB 4000                   ; * Display cutback codes
+         END
+      NEXT Y
+      RETURN
+
+********************************************************************************
+
+* Display a single cutback code list
+4000:***
+      STOP=DCOUNT(VAR.ARR<ATTR>,CHAR(253))+1
+      START=STOP-5
+      IF START LT 1 THEN START=1
+
+* Display cutback descriptions
+4100:***
+      LIN=ROW
+      FOR I=START TO STOP
+         CRT @(0,ROW+I-START):SPACE(5):VAR.ARR<ATTR,I>'L#74':@(-4)
+      NEXT I
+      LIN=ROW+STOP-START
+      RETURN
+
+********************************************************************************
+
+* Adjust default variance to keep the total variance the same
+5000:***
+      IF NEW.AMT GT VARIANCE THEN
+         CALL ELINE('ERROR - Entered amount is greater than variance.')
+         CC+=1 ; GOSUB PRINT.CC
+         NEW.AMT=0
+         RETURN
+      END
+      BEGIN CASE
+         CASE CL.VAR.DEF='D'             ; * Discount
+            VAR.ARR<1>=VAR.ARR<1>+OLD.AMT-NEW.AMT
+            IF VAR.ARR<1> LT 0 THEN
+               CALL ELINE('ERROR - Entry will result in negative variance.')
+               CC+=1 ; GOSUB PRINT.CC
+               VAR.ARR<1>=VAR.ARR<1>-OLD.AMT+NEW.AMT
+               NEW.AMT=OLD.AMT
+               RETURN
+            END
+         CASE CL.VAR.DEF='O'             ; * Overcharge
+            VAR.ARR<2>=VAR.ARR<2>+OLD.AMT-NEW.AMT
+            IF VAR.ARR<2> LT 0 THEN
+               CALL ELINE('ERROR - Entry will result in negative variance.')
+               CC+=1 ; GOSUB PRINT.CC
+               VAR.ARR<2>=VAR.ARR<2>-OLD.AMT+NEW.AMT
+               NEW.AMT=OLD.AMT
+               RETURN
+            END
+         CASE CL.VAR.DEF='C'             ; * Consulting
+            VAR.ARR<3>=VAR.ARR<3>+OLD.AMT-NEW.AMT
+            IF VAR.ARR<3> LT 0 THEN
+               CALL ELINE('ERROR - Entry will result in negative variance.')
+               CC+=1 ; GOSUB PRINT.CC
+               VAR.ARR<3>=VAR.ARR<3>-OLD.AMT+NEW.AMT
+               NEW.AMT=OLD.AMT
+               RETURN
+            END
+      END CASE
+*     IF VAR.ARR<1>=0 THEN VAR.ARR<7>='' ; * JMK04
+*     IF VAR.ARR<2>=0 THEN VAR.ARR<8>='' ; * JMK04
+*     IF VAR.ARR<3>=0 THEN VAR.ARR<9>='' ; * JMK04
+      IF VAR.ARR<1>=0 THEN VAR.ARR<7>='' ; VAR.ARR<10>=''    ; * JMK04
+      IF VAR.ARR<2>=0 THEN VAR.ARR<8>='' ; VAR.ARR<11>=''    ; * JMK04
+      IF VAR.ARR<3>=0 THEN VAR.ARR<9>='' ; VAR.ARR<12>=''    ; * JMK04
+      RETURN
+
+********************************************************************************
+
+* Add new cutback codes
+ADD.CUTBACK.CODE:***
+      HELP='Enter cutback code. [99]=Free Form [L]ist [D]elete [P]rev [ENTER]=End [EX]it'
+      IF VAR.ARR<ATTR>='' THEN REQ=1 ELSE REQ=0
+      CALL GEN.IN(0,LIN,'#### ','',Q,REQ,4,'','',2,-5,LIN,0,QI,HELP,0,23)
+      CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+      CRT @(0,LIN):'    ':
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'                    ; * Terminate the program immediately
+            STOP
+
+         CASE QI=''                      ; * Return to earlier prompt
+            RETURN
+
+         CASE QI='P'                     ; * Move to previous code for viewing/deleting
+            STOP=STOP-1
+            IF STOP=0 THEN
+               STOP=1
+               GOTO ADD.CUTBACK.CODE
+            END ELSE
+               START=STOP-5
+               IF START LT 1 THEN START=1
+               GOSUB 4100
+               GOTO ADD.CUTBACK.CODE
+            END
+
+         CASE QI='D'                     ; * Delete
+            VAR.ARR=DELETE(VAR.ARR,ATTR,STOP)
+            SAVE.ROW=ROW ; SAVE.ATTR=ATTR ; SAVE.LIN=LIN
+            GOSUB 3000
+            ROW=SAVE.ROW ; ATTR=SAVE.ATTR ; LIN=SAVE.LIN
+            GOSUB 4000
+            GOTO ADD.CUTBACK.CODE
+
+         CASE QI='L'                     ; * List
+            CRT @(0,23):'Select a cutback code from the list. [E]xit to next list.':@(-4):
+            GOSUB DISPLAY.POP.UP
+            GOSUB 2000                   ; * Display screen
+            IF SELECTION='E' THEN
+               SAVE.ROW=ROW ; SAVE.ATTR=ATTR ; SAVE.LIN=LIN
+               GOSUB 3000
+               ROW=SAVE.ROW ; ATTR=SAVE.ATTR ; LIN=SAVE.LIN
+               GOSUB 4000
+               GOTO ADD.CUTBACK.CODE
+            END ELSE
+               IF CUT.CODE='0099' THEN GOTO FREE.FORM ELSE GOTO INSERT.CUT.BACK
+            END
+
+         CASE QI='99'                    ; * Free Form cutback code
+FREE.FORM:
+            CALL GEN.IN(0,22,STR('-',75),'',CUT.DESC,1,75,'','',0,-75,22,0,QI,'','','')
+            CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+
+         CASE 1
+*           READV CUT.DESC FROM F.CUT.BACKS,QI'R%4',1 ELSE   ; * JMK04
+            READ CUT.BACK.REC FROM F.CUT.BACKS,QI'R%4' ELSE  ; * JMK04
+               CALL ELINE('Code ':QI:' not on file.')
+               CC+=1 ; GOSUB PRINT.CC
+               GOTO ADD.CUTBACK.CODE
+            END
+            CUT.DESC=CUT.BACK.REC<1>     ; * JMK04
+            CUT.CLASS=CUT.BACK.REC<6>    ; * JMK04
+INSERT.CUT.BACK:
+            END.OF.TEXT=INDEX(CUT.DESC,'(',1)
+            IF END.OF.TEXT THEN
+               END.OF.TEXT=END.OF.TEXT-1
+               CUT.DESC=CUT.DESC[1,END.OF.TEXT]
+               LOOP UNTIL CUT.DESC[END.OF.TEXT,1]#' ' OR CUT.DESC='' DO
+                  END.OF.TEXT=END.OF.TEXT-1
+                  CUT.DESC=CUT.DESC[1,END.OF.TEXT]
+               REPEAT
+            END
+      END CASE
+
+* Fill in blanks marked by ~ characters if necessary
+      LN=''
+      X=COUNT(CUT.DESC,'~')
+      IF X GT 0 THEN
+         FOR I=1 TO X
+            LN=LN:FIELD(CUT.DESC,'~',I)
+            CALL GEN.IN(0,22,LN:STR('-',20),'',Q,1,20,'','',1,-20,22,0,QI,'','','')
+            CC+=LEN(QI) ; GOSUB PRINT.CC
+            LN=LN:Q
+         NEXT I
+         IF FIELD(CUT.DESC,'~',X+1) NE '' THEN LN=LN:FIELD(CUT.DESC,'~',X+1)
+      END ELSE
+         LN=CUT.DESC
+      END
+      IF CUT.CLASS='' THEN               ; * JMK04
+CHOOSE.CUT.CLASS.CODE:*                  ; * JMK04
+         CALL FB.CLEAR.WINDOW            ; * JMK04
+         READ CUT.CLASS.REC FROM F.TABLES,'OVRCHG.CODES' THEN          ; * JMK04
+            NOVAL=DCOUNT(CUT.CLASS.REC<1>,@VM)     ; * JMK04
+            FOR OVAL=1 TO NOVAL          ; * JMK04
+               CRT @(41,6+OVAL):OVAL'R%2 ':CUT.CLASS.REC<1,OVAL>'L#2 ':CUT.CLASS.REC<2,OVAL>'L#25 '  ; * JMK04
+            NEXT OVAL                    ; * JMK04
+            HELP='Enter Cut Back Class Code Number. [X]=Back [EX]it'   ; * JMK04
+            CALL GEN.IN(0,22,'Cut Back Class: # ','',Q,0,2,'','',1,-2,22,1,QI,HELP,0,23)   ; * JMK04
+            CC+=LEN(QI)+1 ; GOSUB PRINT.CC         ; * JMK04
+            QI=OCONV(QI,'MCU')           ; * JMK04
+            BEGIN CASE                   ; * JMK04
+               CASE QI='X'               ; * JMK04
+                  GOTO ADD.CUTBACK.CODE  ; * JMK04
+               CASE QI='EX'              ; * JMK04
+                  STOP                   ; * JMK04
+               CASE NUM(QI) AND QI#''    ; * JMK04
+                  CUT.CLASS=CUT.CLASS.REC<1,QI>    ; * JMK04
+                  IF CUT.CLASS='' THEN   ; * JMK04
+                     CALL ELINE('Invalid option.')           ; * JMK04
+                     GOTO CHOOSE.CUT.CLASS.CODE    ; * JMK04
+                  END                    ; * JMK04
+               CASE 1                    ; * JMK04
+                  LOCATE QI IN CUT.CLASS.REC<1> SETTING CCPOS THEN     ; * JMK04
+                     CUT.CLASS=QI        ; * JMK04
+                  END ELSE               ; * JMK04
+                     CALL ELINE('Invalid option.')           ; * JMK04
+                     GOTO CHOOSE.CUT.CLASS.CODE    ; * JMK04
+                  END                    ; * JMK04
+            END CASE                     ; * JMK04
+         END                             ; * JMK04
+         CALL FB.CLEAR.WINDOW            ; * JMK04
+      END                                ; * JMK04
+
+* Update variance array
+      CRT @(0,22):@(-3):
+      VAR.ARR<ATTR,-1>=LN
+      VAR.ARR<ATTR+3,-1>=CUT.CLASS       ; * JMK04
+      SAVE.ROW=ROW ; SAVE.ATTR=ATTR ; SAVE.LIN=LIN
+      GOSUB 3000
+      ROW=SAVE.ROW ; ATTR=SAVE.ATTR ; LIN=SAVE.LIN
+      GOSUB 4000
+      GOTO ADD.CUTBACK.CODE
+
+********************************************************************************
+
+* Display pop up list of cutback codes to choose from
+DISPLAY.POP.UP:***
+      SELECTION=''
+      DISPLAY.LIST=1
+      LOOP WHILE 1
+         BEGIN CASE
+            CASE DISPLAY.LIST=1          ; * Client/Carrier
+               STMT ='SSELECT FB.CUT.BACKS WITH 2 = "':CLIENT.ID:'"'
+               STMT:=' AND WITH 3 = "':CARRIER.ID:'"'
+               STMT:=' BY 2 BY 3 BY 4'
+            CASE DISPLAY.LIST=2          ; * Client/All
+               STMT ='SSELECT FB.CUT.BACKS WITH 2 = "':CLIENT.ID:'"'
+               STMT:=' AND WITH 3 # "':CARRIER.ID:'"'
+               STMT:=' BY 2 BY 3 BY 4'
+            CASE DISPLAY.LIST=3          ; * AFS Rules/All
+               STMT ='SSELECT FB.CUT.BACKS WITH 2 = 00001'
+               STMT:=' BY 2 BY 3 BY 4'
+            CASE DISPLAY.LIST=4          ; * All/All
+               STMT ='SSELECT FB.CUT.BACKS WITH 2 # "':CLIENT.ID:'"'
+               STMT:=' AND WITH 2 # 00001'
+               STMT:=' BY 2 BY 3 BY 4'
+         END CASE
+         EXECUTE STMT CAPTURING OUTPUT
+         NUM.CUTBACK.CODES=@SELECTED
+*        IF NUM.CUTBACK.CODES#0 THEN   ; * JCW01
+         IF NUM.CUTBACK.CODES > 0 THEN   ; * JCW01
+            CUTBACK.DESC=''
+            CUTBACK.LIST=''
+            DONE=0
+            LOOP
+               READNEXT CUTBACK.ID ELSE DONE=1
+            UNTIL DONE=1
+               READ CUTBACK.REC FROM F.CUT.BACKS,CUTBACK.ID THEN
+                  CUTBACK.DESC<-1>=CUTBACK.ID:@VM:CUTBACK.REC<1>
+                  CUTBACK.LIST<-1>=CUTBACK.ID'R%4':SPACE(2):CUTBACK.REC<1>'L#47':SPACE(2):CUTBACK.REC<2>'R%5':SPACE(2):CUTBACK.REC<3>'R%5':SPACE(2):CUTBACK.REC<4>'L#10'
+               END
+            REPEAT
+            FOR X=1 TO NUM.CUTBACK.CODES
+               CUTBACK.LIST<X>:=SPACE(79-LEN(CUTBACK.LIST<X>))
+            NEXT X
+            HEADING='CODE  DESCRIPTION                                       CLI    CAR   AUDITOR'
+            HEADING:=SPACE(79-LEN(HEADING))
+            CALL POP.UP.LIST(CUTBACK.LIST,HEADING,4,19,SELECTION)
+            IF SELECTION#'E' THEN        ; * Exited POP.UP.LIST with a choice
+               CUT.CODE=TRIM(CUTBACK.DESC<SELECTION,1>)
+               CUT.DESC=TRIM(CUTBACK.DESC<SELECTION,2>)
+               RETURN
+            END ELSE
+               DISPLAY.LIST+=1
+            END
+         END ELSE
+            DISPLAY.LIST+=1
+         END
+         IF DISPLAY.LIST=5 THEN
+            RETURN
+         END
+      REPEAT
+
+********************************************************************************
+
+* Show characters entered
+PRINT.CC:***
+      IF USER#'OWEN' THEN RETURN
+      PRINT @(0,0):@(-4):'Characters: ':CC'R#4':
+      RETURN
+
+********************************************************************************
+
+* Check failsafe's first
+* Replace value mark in description fields with commas
+* Return to calling program
+SAVE.AND.EXIT:***
+*DF   IF BAL.DUE THEN ATT=4 ELSE ATT=1
+      ATT=1
+      CHK.TOT=0
+      FOR CHK=ATT TO ATT+2
+         CHK.TOT+=VAR.ARR<CHK>
+      NEXT CHK
+      IF CHK.TOT+0#VARIANCE THEN
+         CALL ELINE('Individual variances do not sum up to total variance of ':VARIANCE'R26':' - Reenter!')
+         CC+=1 ; GOSUB PRINT.CC
+         GOTO 100
+      END
+      IF NOT(ALLOW.DISCOUNTS) AND VAR.ARR<1>+VAR.ARR<4>+0#0 THEN
+*        CALL ELINE('More than 30 days past pre-audit start date. Discounts not accepted!')          ; * JMK01
+*        GOTO 100                        ; * JMK01
+      END
+
+* Change value marks to commas and get out
+      FOR I=7 TO 9
+         X=DCOUNT(VAR.ARR<I>,CHAR(253))
+         TEMP=''
+         FOR J=1 TO X
+            IF TEMP NE '' THEN
+               TEMP=TEMP:',':VAR.ARR<I,J>
+            END ELSE
+               TEMP=VAR.ARR<I,J>
+            END
+         NEXT J
+         VAR.ARR<I>=TEMP
+      NEXT I
+
+* Exit and return to calling program
+THE.END:***
+      VOUT<1>=CC
+      VOUT<2>=DISC.DESC                  ; * JMK01
+      RETURN

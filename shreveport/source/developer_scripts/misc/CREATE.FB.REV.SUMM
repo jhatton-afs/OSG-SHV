@@ -1,0 +1,137 @@
+*PRINT @(-1):"Now sleeping for 1hr"
+*EXECUTE 'SLEEP 3600'
+      PROMPT ''
+      CALL CHANNEL(CH.NUM)
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE ABORT
+      OPEN '','FB.REV.SUMM' TO F.SUMM ELSE ABORT
+5:    CRT @(0,0):@(-3):
+10:   CRT @(10,10):@(-4):'Enter the Beginning date to rebuild : ':
+      INPUT BEG.DATE
+      IF BEG.DATE='' THEN STOP
+      IF BEG.DATE='X' THEN STOP
+      IF BEG.DATE='EX' THEN STOP
+15:   CRT @(10,12):@(-4):'Enter the Ending date to rebuild    : ':
+      INPUT END.DATE
+      IF END.DATE='' THEN GO 10
+      IF END.DATE='X' THEN GO 10
+      IF END.DATE='EX' THEN STOP
+      STMT='SELECT FB.REV.SUMM WITH PROC.DT >= "':BEG.DATE:'" AND WITH PROC.DT <= "':END.DATE:'"'
+      EXECUTE STMT RTNLIST SUMM.LIST CAPTURING SUMM.RESULTS
+      SUMM.TCNT=@SELECTED
+      SUMM.EOF=0
+      SUMM.CNT=0
+      LOOP
+         READNEXT SUMM.ID FROM SUMM.LIST ELSE SUMM.EOF=1
+      UNTIL SUMM.EOF DO
+         SUMM.CNT+=1
+         CALL PROG.BAR(18,SUMM.CNT,SUMM.TCNT,SUMM.PER)
+         DELETE F.SUMM,SUMM.ID
+      REPEAT
+*
+* SELECT CLIENT FILE
+*
+      TEXT='Selecting Clients...'
+      CALL CENTER(TEXT,80)
+      CRT @(0,10):TEXT
+*
+      CLIENT.STMT="SELECT VOC 'FB.BILLS.HIST' *A7"
+      PRINT CLIENT.STMT
+******************************************************************
+* Select of First List
+******************************************************************
+      EXECUTE CLIENT.STMT RTNLIST CLIENT.LIST CAPTURING CLIENT.RESULTS
+      CLIENT.NITM = @SELECTED
+      IF NOT( @SELECTED ) THEN
+         CALL ELINE('ERROR - No clients on file.')
+         STOP
+      END
+      CLIENT.CNT=0
+      CLIENT.PER=0
+      CLIENT.EOF=0
+      LOOP
+         READNEXT CLIENT.ID FROM CLIENT.LIST ELSE CLIENT.EOF=1
+      UNTIL CLIENT.EOF DO
+         CLIENT.CNT+=1
+*       IF CLIENT.ID='FB.BILLS.HIST' OR CLIENT.ID[1,2]='99' THEN GO SKIP.FIRST
+         READV CLIENT.NAME FROM F.CLIENTS,CLIENT.ID,2 ELSE
+            CLIENT.NAME='*** Not On File ***'
+         END
+         CRT @(0,17):CLIENT.ID:" ":CLIENT.NAME:" - Now selecting freight bills":@(-4):
+         CALL PROG.BAR(20,CLIENT.CNT,CLIENT.NITM,CLIENT.PER)
+         OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS.HIST THEN
+            FPX.STMT1='SELECT FB.PROC.DATE.XREF,':CLIENT.ID:' WITH DATE >= "':BEG.DATE:'" AND WITH DATE <= "':END.DATE:'"'
+            EXECUTE FPX.STMT1 RTNLIST FPX.LIST1 CAPTURING FPX.RESULTS1
+            IF @SELECTED <= 0 THEN GO SKIP.CLIENT
+            FPX.STMT2='QSELECT FB.PROC.DATE.XREF,':CLIENT.ID
+            EXECUTE FPX.STMT2 PASSLIST FPX.LIST1 RTNLIST FPX.LIST2 CAPTURING FPX.RESULTS2
+            BILL.STMT='SELECT FB.BILLS.HIST,':CLIENT.ID
+            EXECUTE BILL.STMT PASSLIST FPX.LIST2 RTNLIST BILL.LIST CAPTURING BILL.RESULTS
+*         STMT:=' WITH VERSION = "0"'
+            EXECUTE BILL.STMT RTNLIST BILL.LIST CAPTURING BILL.RESULTS
+            BILL.NITM = @SELECTED
+            CRT @(0,17):CLIENT.ID:" ":CLIENT.NAME:" - Now processing ":BILL.NITM:" Freight Bills...":@(-4):
+            BILL.CNT=0
+            BILL.PER=0
+            BILL.EOF=0
+            LOOP
+               READNEXT BILL.ID FROM BILL.LIST ELSE BILL.EOF=1
+            UNTIL BILL.EOF DO
+               BILL.CNT+=1
+*              PRINT @(0,23):BILL.CNT'L%6':PRO.ID:
+*              CRT @(0,17):CLIENT.ID:' ':PRO.ID:@(-4):
+               IF BILL.NITM>0 THEN CALL PROG.BAR(22,BILL.CNT,BILL.NITM,BILL.PER)
+               READ BILL.REC FROM F.BILLS.HIST,BILL.ID THEN
+                  CARRIER.ID=FIELD(BILL.ID,'*',1)
+                  IOT=BILL.REC<2>
+                  BILL.MODE=BILL.REC<21>
+                  IF BILL.MODE#'1' THEN GO SKIP.BILL
+                  PROC.DT=BILL.REC<37>
+                  WT=BILL.REC<6>
+                  CARRIER.CHG=BILL.REC<7>
+                  ACTUAL.CHG=BILL.REC<8>
+                  FRT.CHG=ACTUAL.CHG
+                  FUEL.CHG=0
+                  LOCATE 'FSC' IN BILL.REC<151> SETTING FPOS THEN
+                     FUEL.CHG=BILL.REC<152,FPOS>
+                     FRT.CHG-=FUEL.CHG
+                  END
+                  OVR.COMM=BILL.REC<43>
+                  LOG.COMM=BILL.REC<44>
+                  IF ACTUAL.CHG+0=0 THEN
+                     LOG.FRT.COMM=0
+                     LOG.FUEL.COMM=0
+                  END ELSE
+                     LOG.FRT.COMM=(LOG.COMM/ACTUAL.CHG*FRT.CHG)'R0'
+                     LOG.FUEL.COMM=(LOG.COMM/ACTUAL.CHG*FUEL.CHG)'R0'
+                  END
+                  SUMM.ID=CLIENT.ID:'*':CARRIER.ID:'*':IOT:'*':BILL.MODE:'*':PROC.DT
+                  READ SUMM.REC FROM F.SUMM,SUMM.ID ELSE SUMM.REC=''
+                  SUMM.ORG=SUMM.REC
+                  SUMM.REC<1>+=1
+                  SUMM.REC<2>+=WT
+                  SUMM.REC<4>+=CARRIER.CHG
+                  SUMM.REC<5>+=ACTUAL.CHG
+                  SUMM.REC<6>+=FRT.CHG
+                  SUMM.REC<7>+=FUEL.CHG
+                  SUMM.REC<8>+=OVR.COMM
+                  SUMM.REC<9>+=LOG.COMM
+                  SUMM.REC<10>+=LOG.FRT.COMM
+                  SUMM.REC<11>+=LOG.FUEL.COMM
+                  IF SUMM.REC<2>+0=0 THEN
+                     SUMM.REC<3>=0
+                     SUMM.REC<12>=0
+                     SUMM.REC<13>=0
+                  END ELSE
+                     SUMM.REC<3>=(SUMM.REC<2>/SUMM.REC<1>)'R0'
+                     SUMM.REC<12>=(SUMM.REC<10>/SUMM.REC<1>)'R0'
+                     SUMM.REC<13>=(SUMM.REC<11>/SUMM.REC<1>)'R0'
+                  END
+                  IF SUMM.REC#SUMM.ORG THEN
+                     WRITE SUMM.REC ON F.SUMM,SUMM.ID
+                  END
+               END
+SKIP.BILL: ***
+            REPEAT
+         END
+SKIP.CLIENT: ***
+      REPEAT

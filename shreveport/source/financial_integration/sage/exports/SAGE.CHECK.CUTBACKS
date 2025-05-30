@@ -1,0 +1,841 @@
+****************************************
+* Program name : SAGE.CHECK.CUTBACKS
+* Author       : Steve Barbee
+* Date written : May 29, 2015
+* Library      : FBBP
+* COPYRIGHT (c) : AFS, LLC 2021, All Rights Reserved.
+*
+
+* Last updated by afs (AFSLOGISTICS\gbino) at 12:20:18 on 09/09/2020.
+*
+* Start modification history
+* Mod nn  mm/dd/yy, init, req #, description
+* 071817 - DRF01 - SysAid 34159 corrected to have the correct check number on the email
+
+* End modification history
+*
+*******************************************
+
+      CRT @(0,22):"Now processing cutbacks"
+      PROMPT ''
+      PROG.NAME = 'SAGE.CHECK.CUTBACKS'
+      PROG.DESC = 'Post SAGE check cutback info'
+      PACK.NAME = 'Freight Billing'
+      CO.NAME='AFS, LLC'
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CALL GET.USER(USER)
+      PACK.NAME = 'Freight Billing'
+      CO.NAME='AFS, LLC'
+      FATAL.ERRORS = ''
+      OPEN '','BCTRL' TO F.BCTRL ELSE
+         FATAL.ERRORS<-1> = 'Cannot open BCTRL file. Stopping....'
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         FATAL.ERRORS<-1> = 'Cannot open FB.TABLES file. Stopping....'
+      END
+      OPEN '','SAGE.UV.IN' TO F.IN ELSE
+         FATAL.ERRORS<-1> = 'Cannot open SAGE.UV.IN file. Stopping....'
+      END
+      OPEN '','SAGE.UV.IN.HIST' TO F.IN.HIST ELSE
+         FATAL.ERRORS<-1> = 'Cannot open SAGE.UV.IN.HIST file. Stopping....'
+      END
+      OPEN '','SAGE.UV.IN.CUTBACKS.NEEDED' TO F.IN.CUTBACKS ELSE
+         FATAL.ERRORS<-1> = 'Cannot open SAGE.UV.IN.CUTBACKS.NEEDED file. Stopping....'
+      END
+      OPEN '','FB.CHECK.DATE.XREF' TO F.CHECK.DATE.XREF ELSE
+         FATAL.ERRORS<-1> = 'Cannot open FB.CHECK.DATE.XREF file. Stopping....'
+      END
+      OPEN '','FB.CHECKS.HDR' TO F.CHECKS.HDR ELSE
+         FATAL.ERRORS<-1> = 'Cannot open FB.CHECKS.HDR file. Stopping....'
+      END
+      OPEN '','FB.CHECKS.DTL' TO F.CHECKS.D ELSE
+         FATAL.ERRORS<-1> = 'Cannot open FB.CHECKS.DTL file. Stopping....'
+      END
+
+      OPEN '','SAGE.CUTBACK.FBS' TO F.CUTBACK.FBS ELSE
+         FATAL.ERRORS<-1> = 'Cannot open SAGE.CUTBACK.FBS file. Stopping....'
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         FATAL.ERRORS<-1> = 'Cannot open CLIENTS file. Stopping....'
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         FATAL.ERRORS<-1> = 'Cannot open CLIENTS file. Stopping....'
+      END
+      OPEN '','EREMIT' TO F.EREMIT ELSE
+         CALL OPEN.ABORT("EREMIT",PROG.NAME)
+      END
+
+      OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE
+         CALL OPEN.ABORT("BILLDATA.':USER.NAME",PROG.NAME)
+      END
+
+* Begin GRB01
+      VIN1=""
+      VIN1<1> = PROG.NAME
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "S"
+      CALL PROGTRACK(VIN1,VOUT1)
+* End GRB01
+      LOCK.CNT = 0
+      TESTING = 0
+      DEBUGGING = 0
+STATUS.LOCK:
+      READU STATUS.REC FROM F.TABLES, 'SAGE.IMPORT.STATUS' LOCKED
+
+         CUR.TIME = TIME()
+         BEGIN CASE
+            CASE CUR.TIME >= 61200 OR CUR.TIME <= 28800
+               IF LOCK.CNT = 0 OR LOCK.CNT = 60 THEN
+                  EXECUTE 'BBSEND GREGB FB.TABLES SAGE.IMPORT.STATUS is locked in SAGE.CHECK.CLEAR.VOID'
+                  EXECUTE 'BBSEND DAVID FB.TABLES SAGE.IMPORT.STATUS is locked in SAGE.CHECK.CLEAR.VOID'
+               END
+               IF LOCK.CNT => 120 THEN
+                  EXECUTE 'BBSEND GREGB FB.TABLES SAGE.IMPORT.STATUS was locked for 10 minutes in SAGE.CHECK.CLEAR.VOID and has aborted.'
+                  EXECUTE 'BBSEND DAVID FB.TABLES SAGE.IMPORT.STATUS was locked for 10 minutes in SAGE.CHECK.CLEAR.VOID and has aborted.'
+                  STOP
+               END
+            CASE LOCK.CNT = 0
+               EXECUTE 'BBSEND GREGB FB.TABLES SAGE.IMPORT.STATUS is locked in SAGE.CHECK.CLEAR.VOID'
+               EXECUTE 'BBSEND DAVID FB.TABLES SAGE.IMPORT.STATUS is locked in SAGE.CHECK.CLEAR.VOID'
+            CASE 1
+
+         END CASE
+
+         EXECUTE 'SLEEP 5'
+         LOCK.CNT += 1
+         GOTO STATUS.LOCK
+      END THEN
+         MODE = STATUS.REC<1>
+         BEGIN CASE
+            CASE MODE = 'CUTBACKS'
+*               F.FROM = F.IN.CUTBACKS
+*               FROM.FILE.NAME = 'SAGE.UV.IN.CUTBACKS'
+*               F.TO = F.IN.HIST
+*               TO.FILE.NAME = 'SAGE.UV.IN.HIST'
+
+            CASE 1
+               FATAL.ERRORS = 'FB.TABLES SAGE.IMPORT.STATUS field 1 of ':STATUS.REC<1>:' is not "CUTBACKS" '
+         END CASE
+      END ELSE
+         FATAL.ERRORS = 'FB.TABLES SAGE.IMPORT.STATUS is missing'
+      END
+
+      IF FATAL.ERRORS # '' THEN
+*If a file couldn't be opened, send an email saying so and then STOP
+         ERRORS.EMAIL.SUBJECT = 'Sage Cutback email generation failed because file(s) could not be opened.'
+         GOSUB SEND.EMAIL
+         STOP
+      END
+     
+      READ DBCTRL FROM F.BCTRL,USER ELSE DBCTRL = ''
+      IF DBCTRL<14>='A' THEN
+         USER.TYPE='A'
+      END ELSE
+         USER.TYPE=''
+      END
+      USER.DPT=DBCTRL<15>
+
+      CUTBACK.HEAD='Client Name''L#31':'Auditor Name''L#26':'Pro Date ':'Pro Number''L#14':'Amt Billed''R#10':'Reduced''R#10':'Amt Paid''R#10':' Short Pay Reason'
+      CUTBACK.HDR.LINE='Client Name':@VM:'Auditor Name':@VM:'Auditor Email':@VM:'Pro Date':@VM:'Pro Number':@VM:'Amt Billed':@VM:'Reduced':@VM:'Amt Paid':@VM:'Short Pay Reason'
+      CUTBACK.TEXT=''
+      CUTBACK.INFO.ADDTL = ''
+      CUTBACK.INFO=CUTBACK.HDR.LINE
+      INT.TODAY = DATE()
+      TAB.CHAR = CHAR(009)
+      PREV.CLIENT = '&$#'
+      PREV.CARRIER = '$#@&'
+      INT.TODAY = DATE()
+      VERSION = 0
+      SOFT.ERRORS = ''
+*DF      OVERRIDE.EMAIL.ADDR = 1
+      OVERRIDE.EMAIL.ADDR = 0
+
+      TESTING = 0
+      DISPLAY.CRTS = 0
+      DEBUGGING = 0
+      TESTING.EMAIL = 'david@afs.net':@VM:'nmeddaugh@afs.net'
+
+      *Begin Part 1. Loop thru all lines reading everything that needs to be read to verify that all
+*necessary records are there. Report all errors that can be identified.
+
+      INVALID.IMPORTS = ''
+      CHECK.IDS.FOUND = ''
+      CHECK.DTL.IDS.FOUND = ''
+      CHECK.LAST.SEQ.VERIFIED = ''
+      OLD.CHECK.AMT = 0
+      ERRORS.EMAIL.SUBJECT = 'Sage Cutback email generation Part 1 had errors.'
+
+      IF DEBUGGING THEN DEBUG
+      STMT = 'SSELECT SAGE.UV.IN.CUTBACKS.NEEDED LIKE ...FP-Checks... AND LIKE ...Cutback...'
+
+      EXECUTE STMT CAPTURING JUNK
+      RECORDS.SELECTED = @SELECTED
+      IMPORT.CNT = 0
+      IF RECORDS.SELECTED > 0 THEN
+         EOR = 0
+         LOOP
+            READNEXT IMPORT.ID ELSE EOR = 1
+            ERRORS.EMAIL.SUBJECT = 'Sage Cutback email generation Part 1 had errors.'
+         UNTIL EOR DO
+            CRT IMPORT.ID
+            IMPORT.CNT += 1
+            SOFT.ERRORS = ''
+            OLD.CHECK.ID = '%$&*#'
+            DTL.SEQ.NUM = 0
+            SUM.FB.8 = 0
+            SUM.OOB.8 = 0
+            SAGE.SUM.INVOICE.AMT.PAID = 0
+            SAGE.SUM.ACTUAL.CHARGE = 0
+            DATE.NAME = FIELD(IMPORT.ID, '.', 1)
+            FILE.EXT = FIELD(IMPORT.ID, '.', 2)
+            INVOICE.DETAIL.AMTS.EXPECTED = 1
+
+            READ CHECK.IMPORT FROM F.IN.CUTBACKS, IMPORT.ID THEN
+               CHECK.IMPORT = CHANGE(CHECK.IMPORT, '"', '')
+               FILE.DATE = FIELD(IMPORT.ID, '_', 1)
+               LINE.CNT = DCOUNT(CHECK.IMPORT, @FM)
+               TEST.LINE = CHECK.IMPORT<1>
+*As of approximately 09/01/15, the Check Import files had 12 columns. Each time a column is added,
+*it is APPENEDED. For this program, we only need the first 9 columns. If desired, it could be changed
+*to require the current 12 columns.
+               IF DCOUNT(TEST.LINE, TAB.CHAR) < 9 THEN
+                  INVALID.IMPORTS<-1> = IMPORT.ID
+                  GOTO SKIP.IMPORT.ID
+               END
+               SUM.FB.8 = 0
+               SUM.OOB.8 = 0
+               SAGE.SUM.INVOICE.AMT.PAID = 0
+               SAGE.SUM.ACTUAL.CHARGE = 0
+
+               READ TEST FROM F.IN.HIST, IMPORT.ID THEN
+                  FATAL.ERROR = 1
+                  FATAL.ERRORS<-1> = IMPORT.ID:' with History id of ':IMPORT.ID:' already exists in SAGE.UV.IN.HIST. Stopping...'
+               END
+
+               FOR LC = 1 TO LINE.CNT
+                  SOFT.ERR.MSG = ''
+                  INFO = CHECK.IMPORT<LC>
+                  INFO = CHANGE(INFO, TAB.CHAR, @VM)
+                  SAGE.BANK.CODE = INFO<1, 7>
+                  SAGE.ACTUAL.CHARGE = INFO<1, 8>
+                  SAGE.INVOICE.AMT.PAID = INFO<1, 9>
+                  IF SAGE.BANK.CODE = 'O1' OR SAGE.BANK.CODE = 'O2' THEN
+*These are 'Operating checks' and if any are received, they should be ignored
+                     SOFT.ERRORS<-1> = 'Line ':LC:' has bank code of ':SAGE.BANK.CODE:'...skipping'
+                     GOTO END.OF.LC.LOOP
+                  END
+                  CLIENT = INFO<1, 6>
+                  READ CLIENT.REC FROM F.CLIENTS, CLIENT ELSE
+                     FATAL.ERRORS<-1> = 'Line # ':LC 'R#6':' - Cannot read ':CLIENT:' from CLIENTS file.'
+                     PROCEED = 0
+                  END
+                  CARRIER = INFO<1, 1>
+                  READ CARRIER.REC FROM F.CARRIERS, CARRIER ELSE
+                     FATAL.ERRORS<-1> = 'Line # ':LC 'R#6':' - Cannot read ':CARRIER:' from CARRIERS file....Stopping'
+                     PROCEED = 0
+                  END
+                  CHECK.NUM = INFO<1, 5> 'R#7'
+                  IF CHECK.NUM[1,1]='0' THEN CHECK.NUM=CHECK.NUM[2,6]
+        
+                  BANK.ID = SAGE.BANK.CODE
+                  IF SAGE.BANK.CODE = 'F2' THEN BANK.ID = 'F'
+                  IF SAGE.BANK.CODE = 'FW' THEN BANK.ID = 'F'
+                  IF SAGE.BANK.CODE = 'R3' THEN BANK.ID = 'R'
+
+                  PRO.NUM = INFO<1, 2>
+                  LEN.PRO.NUM = LEN(PRO.NUM)
+                  IF PRO.NUM[LEN.PRO.NUM - 2, 3] = '-rp' OR PRO.NUM[LEN.PRO.NUM - 2, 3] = '-RP' THEN
+*Per Jonathan on 05/27/15, a '-RP' as the last 3 digits of the Freight Bill id indicates it was
+*'re-processed' in SAGE and means this line in the SAGE Export should be ignored.
+*Then, approxamately June 30, I was told that I should, in essence, remove the -RP from the Pro # and update that Freight Bill.
+                     PRO.NUM = PRO.NUM[1, LEN.PRO.NUM - 3]
+                  END
+                  PRO.ID = CARRIER:'*':PRO.NUM:'*0'
+
+                  CHECK.DATE = INFO<1, 3>
+                  ICONV.CHECK.DATE = ICONV(CHECK.DATE, 'D4/')
+                  CHECK.AMT = INFO<1, 4>
+                  ICONV.CHECK.AMT = ICONV(CHECK.AMT, 'MD2')
+
+                  CHECK.ID = CHECK.NUM:'*':BANK.ID
+                  IF CHECK.ID # OLD.CHECK.ID THEN
+                     IF OLD.CHECK.ID # '%$&*#' THEN
+
+                        IF INVOICE.DETAIL.AMTS.EXPECTED THEN
+                           SAGE.SUM.INVOICE.AMT.PAID = OCONV(ICONV(OCONV(ICONV(SAGE.SUM.INVOICE.AMT.PAID, 'MD2'), 'MD2'), 'MD2'), 'MD2')
+                           OLD.CHECK.AMT = OCONV(ICONV(OCONV(ICONV(OLD.CHECK.AMT, 'MD2'), 'MD2'), 'MD2'), 'MD2')
+                           IF ABS(SAGE.SUM.INVOICE.AMT.PAID) # ABS(OLD.CHECK.AMT) THEN
+                              FATAL.ERRORS<-1> = 'For Check # ':OLD.CHECK.ID:', The SUM of the Invoice Amounts in the Download of ':SAGE.SUM.INVOICE.AMT.PAID:' is different than the Check Amount of ':OLD.CHECK.AMT
+                           END
+                           SAGE.SUM.ACTUAL.CHARGE = OCONV(ICONV(OCONV(ICONV(SAGE.SUM.ACTUAL.CHARGE, 'MD2'), 'MD2'), 'MD2'), 'MD2')
+                           IF ABS(SAGE.SUM.ACTUAL.CHARGE) # ABS(OLD.CHECK.AMT) THEN
+                              FATAL.ERRORS<-1> = 'For Check # ':OLD.CHECK.ID:', The SUM of the SAGE Acutal Charges in the Download of ':SAGE.SUM.ACTUAL.CHARGE:' is different than the Check Amount of ':OLD.CHECK.AMT
+                           END
+                        END
+
+                     END
+                     DTL.SEQ.NUM = 0
+                     OLD.CHECK.AMT = CHECK.AMT
+                     SUM.FB.8 = 0
+                     SUM.OOB.8 = 0
+                     SAGE.SUM.ACTUAL.CHARGE = 0
+                     SAGE.SUM.INVOICE.AMT.PAID = 0
+                  END
+
+                  SAGE.SUM.ACTUAL.CHARGE += SAGE.ACTUAL.CHARGE
+                  SAGE.SUM.INVOICE.AMT.PAID += SAGE.INVOICE.AMT.PAID
+
+                  ACTUAL.CHARGE = 0
+                  OPEN.DATES.REC = ''
+
+                  OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS.HIST THEN
+                     PROCESS.CLIENT = 1
+
+*As of 06/06/15, we expect upper case ids but some times get lower case ids
+                     READ TEST.REC FROM F.BILLS.HIST,PRO.ID ELSE
+*We know the upper case id doesn't exist. Change it to lower case. If that isn't found, it means neither exists.
+*If it is found, from now on, this id will be in lower case to maintain consistency.
+                        PRO.ID = DOWNCASE(PRO.ID)
+                     END
+
+                     READ CUTBACK.ITEM FROM F.CUTBACK.FBS, PRO.ID THEN
+                        GOTO END.OF.LC.LOOP
+                     END
+                     READ PRO.REC FROM F.BILLS.HIST,PRO.ID THEN
+                        IF PRO.REC<13> = '' OR PRO.REC<14> = '' OR PRO.REC<15> = '' THEN
+*This is not really out-of-balance but if any of the bills do not have fields 13, 14 or 15
+*filled in, the bill hasn't been updated as having been 100% paid. Whether it should have
+*been marked as having been paid will have to be investigated.
+                           SUM.OOB.8 += ACTUAL.CHARGE
+                        END ELSE
+                           IF PRO.REC<13> # ICONV.CHECK.AMT THEN
+                              FATAL.ERRORS<-1> = 'Line # ':LC 'R#6':' with PRO ':PRO.ID:' in FB.BILLS.HIST has Check Amount of ':OCONV(PRO.REC<13>, 'D2/'):' but Check ':CHECK.ID:' has check # of ':CHECK.AMT
+                           END
+                           IF PRO.REC<14> # CHECK.NUM:'*':BANK.ID THEN
+                              FATAL.ERRORS<-1> = 'Line # ':LC 'R#6':' with PRO ':PRO.ID:' has Check# ':CHECK.NUM:'*':BANK.ID:' shows Frt Bill already paid by Check# ':PRO.REC<14>
+                           END
+                           IF PRO.REC<15> # ICONV.CHECK.DATE THEN
+                              FATAL.ERRORS<-1> = 'Line # ':LC 'R#6':' with PRO ':PRO.ID:' in FB.BILLS.HIST has Check Date of ':OCONV(PRO.REC<15>, 'MD2'):' but Check ':CHECK.ID:' has Check Date of ':CHECK.DATE
+                           END
+
+                           ACTUAL.CHARGE = PRO.REC<8>
+                           OCONV.ACTUAL.CHARGE = OCONV(ACTUAL.CHARGE, 'MD2')
+                        END
+
+                        SUM.FB.8 += ACTUAL.CHARGE
+                     END ELSE
+                        FATAL.ERRORS<-1> = 'Line # ':LC 'R#6':' - Cannot read ':PRO.ID:' from FB.BILLS.HIST,':CLIENT:' file.'
+                     END
+
+                  END ELSE
+                     FATAL.ERRORS<-1> = 'Line # ':LC 'R#6':' - Cannot open FB.BILLS.HIST,':CLIENT
+                  END
+                  CLOSE F.BILLS.HIST
+
+END.OF.LC.LOOP:
+               NEXT LC
+
+*We have finished Pass 1 for an IMPORT.ID. If errors were detected, then stop.
+*If errors weren't detected then proceed to Pass 2 which will actually do the updates.
+
+               IF FATAL.ERRORS # '' THEN
+                  CRT '453 ':DCOUNT(FATAL.ERRORS, @FM)
+                  GOSUB SEND.EMAIL
+           *****       DEBUG
+
+                  STOP
+               END
+               IF SOFT.ERRORS # '' THEN
+                  GOSUB SEND.EMAIL
+               END
+
+               IF TESTING AND DISPLAY.CRTS THEN
+                  CRT 'ID read' 'L#40':'ID written'
+               END
+
+               ERRORS.EMAIL.SUBJECT = 'Sage Cutback email generation Part 2 had errors.'
+
+               SOFT.ERRORS.PT.2 = ''
+               DATE.NAME = FIELD(IMPORT.ID, '.', 1)
+               FILE.EXT = FIELD(IMPORT.ID, '.', 2)
+               OCONV.IMPORT.DATE = FIELD(DATE.NAME, '_', 1)
+               ICONV.IMPORT.DATE = ICONV(OCONV.IMPORT.DATE, 'D2-')
+               IMPORT.TYPE = FIELD(DATE.NAME, '_', 2)
+               CUTBACK.TEXT=''
+               CUTBACK.INFO.ADDTL = ''
+               CUTBACK.INFO=CUTBACK.HDR.LINE
+               IF DEBUGGING THEN DEBUG
+
+               PREV.CLIENT = '&$#'
+               PREV.CARRIER = '$#@&'
+               PREV.BANK.ID = '&*@#$%'
+               PREV.CHECK.NUM = '#$@&*'
+
+               CUTBACKS.IN.IMPORT = ''
+               IF DEBUGGING THEN DEBUG
+               CHECK.IMPORT = CHANGE(CHECK.IMPORT, '"', '')
+               LINE.CNT = DCOUNT(CHECK.IMPORT, @FM)
+               FOR LC = 1 TO LINE.CNT
+                  INFO = CHECK.IMPORT<LC>
+                  INFO = CHANGE(INFO, TAB.CHAR, @VM)
+                  IF TESTING AND DISPLAY.CRTS THEN CRT LC 'R#3':' - ':INFO
+
+                  CARRIER = INFO<1, 1>
+                  CLIENT = INFO<1, 6>
+                  IF DEBUGGING THEN DEBUG
+                  IF CLIENT # PREV.CLIENT THEN
+                     IF PREV.CLIENT # '&$#' THEN
+
+                        CLOSE F.BILLS.HIST
+                     END
+                     PREV.CLIENT = CLIENT
+TRY.AGAIN:           ***
+                     PROCESS.CLIENT = 0
+                     IF TESTING THEN
+                        CLIENT.ID.READ = PREV.CLIENT
+                     END
+                     READ CLIENT.REC FROM F.CLIENTS,CLIENT THEN
+                        IF TESTING THEN
+                           OLD.CLIENT = CLIENT
+                           OLD.CLIENT.REC = CLIENT.REC
+                        END
+                        OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS.HIST THEN
+                           PROCESS.CLIENT = 1
+                        END ELSE
+                           FATAL.ERRORS<-1> = 'Cannot open FB.BILLS.HIST,':CLIENT:'. No check info updated for Client ':CLIENT
+                           PROCESS.CLIENT = 0
+                           GOSUB SEND.EMAIL
+                           STOP
+                        END
+                     END ELSE
+                        FATAL.ERROR = 1
+                        FATAL.ERRORS<-1> = 'Cannot read ':CLIENT:' from CLIENTS file. Stopping....'
+                        PROCESS.CLIENT = 0
+                        GOSUB SEND.EMAIL
+                        STOP
+                     END
+                  END
+                  IF TESTING AND DISPLAY.CRTS THEN CRT '360 LC=':LC:' - PROCESS.CLIENT=':PROCESS.CLIENT
+                  IF PROCESS.CLIENT THEN
+
+                     CHECK.NUM = INFO<1, 5> 'R#7'
+                     IF CHECK.NUM[1,1]='0' THEN CHECK.NUM=CHECK.NUM[2,6]
+         
+                     SAGE.BANK.CODE = INFO<1, 7>
+                     BANK.ID = SAGE.BANK.CODE
+                     IF SAGE.BANK.CODE = 'F2' THEN BANK.ID = 'F'
+                     IF SAGE.BANK.CODE = 'FW' THEN BANK.ID = 'F'
+                     IF SAGE.BANK.CODE = 'R3' THEN BANK.ID = 'R'
+                     IF PREV.CHECK.NUM = '#$@&*' THEN PREV.CHECK.NUM=CHECK.NUM      ; * DRF01
+                     IF PREV.BANK.ID = '#$@&*' THEN PREV.BANK.ID=BANK.ID      ; * DRF01
+
+                     PRO.NUM = INFO<1, 2>
+                     LEN.PRO.NUM = LEN(PRO.NUM)
+                     IF PRO.NUM[LEN.PRO.NUM - 2, 3] = '-rp' OR PRO.NUM[LEN.PRO.NUM - 2, 3] = '-RP' THEN
+*Per Jonathan on 05/27/15, a '-RP' as the last 3 digits of the Freight Bill id indicates it was
+*'re-processed' in SAGE and means this line in the SAGE Export should be ignored.
+*Then, approxamately June 30, I was told that I should, in essence, remove the -RP from the Pro # and update that Freight Bill.
+                        PRO.NUM = PRO.NUM[1, LEN.PRO.NUM - 3]
+                     END
+
+                     CHECK.DATE = INFO<1, 3>
+                     ICONV.CHECK.DATE = ICONV(CHECK.DATE, 'D4/')
+                     CHECK.AMT = INFO<1, 4>
+                     ICONV.CHECK.AMT = ICONV(CHECK.AMT, 'MD2')
+                     IF TESTING AND DISPLAY.CRTS THEN CRT '372 CHECK.NUM=':CHECK.NUM:' BANK.ID=':BANK.ID
+
+                     IF DEBUGGING THEN DEBUG
+                     IF CARRIER # PREV.CARRIER THEN
+
+                        IF DEBUGGING THEN DEBUG
+                        IF CHECK.NUM # PREV.CHECK.NUM OR BANK.ID # PREV.BANK.ID THEN
+                           IF DEBUGGING THEN DEBUG
+
+                           IF CUTBACK.TEXT#'' THEN
+                              GOSUB EMAIL.CUTBACKS           ; * Email Cut Backs and Reasons
+                           END
+
+                           CHECK.ID = CHECK.NUM:'*':BANK.ID
+                           IF TESTING AND DISPLAY.CRTS THEN CRT '383 LC=':LC:' CHECK.NUM=':CHECK.NUM:' CHECK.ID=':CHECK.ID
+
+                           PREV.CHECK.NUM = CHECK.NUM
+                           PREV.BANK.ID = BANK.ID
+CHECK.READ.LOCK:
+                           IF DEBUGGING THEN DEBUG
+                        END
+
+                        PREV.CARRIER = CARRIER
+
+                        READ CARRIER.REC FROM F.CARRIERS, CARRIER ELSE
+                           FATAL.ERRORS<-1> = 'Cannot read CARRIERS file ':CARRIER:'. Stopping....'
+                           GOSUB SEND.EMAIL
+                           STOP
+                           PROCESS.CLIENT = 0
+                        END
+                     END
+
+                     PRO.ID = CARRIER:'*':PRO.NUM:'*':VERSION
+                     READ TEST.REC FROM F.BILLS.HIST,PRO.ID ELSE
+                        PRO.ID = DOWNCASE(PRO.ID)
+                     END
+
+HIST.READ.LOCK:
+                     READ CUTBACK.ITEM FROM F.CUTBACK.FBS, PRO.ID ELSE
+*If the PRO.ID doesn't exsist in the SAGE.CUTBACK.FBS file, it is elgible to have a Cutback email sent,
+*if it meets the criteria for a Cutback. If it does exist in the SAGE.CUTBACK.FBS file, a Cutback email has
+*already been sent and normally shouldn't be sent again
+                        IF DEBUGGING THEN DEBUG
+                        OLD.PRO.REC = ''
+
+                        READ PRO.REC FROM F.BILLS.HIST,PRO.ID THEN
+                           OLD.PRO.REC = PRO.REC
+
+                           IF PRO.REC<14> = '' THEN
+                              FATAL.ERRORS<-1> = 'FB.BILLS.HIST ':" for client ":CLIENT:" ":PRO.ID:' has a Check NUMBER of ':PRO.REC<14>:' but the check # being downloaded is ':CHECK.NUM
+                              GOSUB SEND.EMAIL
+                              STOP
+                           END
+
+                           GOSUB DETERMINE.CUTBACKS
+                           IF DEBUGGING THEN DEBUG
+
+CRX.READ.LOCK:
+                           IF DEBUGGING THEN DEBUG
+
+                           CHECK.PRINT.DATE = INT.TODAY
+                           PROCESS.DATE = PRO.REC<37>
+
+                        END ELSE
+                           IF TESTING AND DISPLAY.CRTS THEN CRT PRO.ID
+                           FATAL.ERRORS<-1> = 'Cannot read FB.BILLS.HIST,':CLIENT:' ':PRO.ID:' No updates performed.'
+                           GOSUB SEND.EMAIL
+                           STOP
+                        END
+                     END
+                  END
+
+               NEXT LC
+               IF DEBUGGING THEN DEBUG
+
+               IF CUTBACK.TEXT#'' THEN
+                  PREV.CHECK.NUM = CHECK.NUM     ; * DRF01
+                  PREV.BANK.ID = BANK.ID     ; * DRF01
+                  GOSUB EMAIL.CUTBACKS   ; * Email Cut Backs and Reasons
+               END
+            END ELSE
+               FATAL.ERROR = 1
+               FATAL.ERRORS<-1> = 'Cannot read ':IMPORT.ID:' from SAGE.UV.IN.CUTBACKS.NEEDED'
+               GOSUB SEND.EMAIL
+               STOP
+            END
+
+            IF FATAL.ERRORS = '' THEN
+               IF NOT(TESTING) THEN
+                  WRITE CHECK.IMPORT ON F.IN.HIST, IMPORT.ID
+                  DELETE F.IN.CUTBACKS, IMPORT.ID
+               END
+            END
+SKIP.IMPORT.ID:
+         REPEAT
+
+         IF INVALID.IMPORTS THEN
+            VIN = ''
+            VOUT = ''
+            VIN<1> = 'david@afs.net':@VM:'nmeddaugh@afs.net'
+            VIN<4> = 'SAGE.CHECK.CUTBACKS@afs.net'
+            VIN<5> = 'Imports invalid for sending Cutback emails'
+            VIN<6> = 'The following SAGE imports are invalid for generating cutbacks'
+            VIN<6, -1> = 'because they do not have the 8th and 9th columns of the SAGE'
+            VIN<6, -1> = 'Actual Charge and the SAGE Invoice Amount Paid.'
+
+            II.CNT = DCOUNT(INVALID.IMPORTS, @FM)
+            FOR II = 1 TO II.CNT
+               VIN<6, -1> = INVALID.IMPORTS<II>
+            NEXT II
+
+            CALL SENDMAIL(VIN,VOUT)
+            VIN = ''
+            VOUT = ''
+         END
+
+      END ELSE
+         FATAL.ERRORS<-1> = 'No SAGE download records were found to process by ':PROG.NAME
+      END
+      IF SOFT.ERRORS # '' OR FATAL.ERRORS # '' THEN
+         GOSUB SEND.EMAIL
+      END ELSE
+*This finished normally which SHOULD mean all ...Cleared_Cks... and all ...FP-checks... records were
+*voided, imported and had Cutback emails generated.
+         EVIN=''
+         EVOUT=''
+         EVIN<1>='david@afs.net':@VM:'nmeddaugh@afs.net'
+
+         EVIN<2>='cbeasley@afs.net':@VM:'jattaway@afs.net'
+         EVIN<4> = 'SAGE.CHECK.CUTBACKS@AFS.NET'
+
+         EVIN<5> = 'Sage Check process completed.'
+         CALL SENDMAIL(EVIN, EVOUT)
+
+*Set up the control record so that SAGE.CHECK.CLEAR.VOID will be ready to run 'tomorrow'
+         WRITE 'VOID' ON F.TABLES, 'SAGE.IMPORT.STATUS'
+         RELEASE F.TABLES, 'SAGE.IMPORT.STATUS'
+      END
+* Begin GRB01
+      VIN1=''
+      VIN1<1> = PROG.NAME
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "E"
+      CALL PROGTRACK(VIN1,VOUT1)
+* End GRB01
+
+      STOP
+*****************************************************************
+SEND.EMAIL:
+*****************************************************************
+      IF DEBUGGING THEN DEBUG
+      VIN = ''
+      VOUT = ''
+      IF FATAL.ERRORS = '' THEN
+         VIN<1> = 'david@afs.net':@VM:'nmeddaugh@afs.net'
+         VIN<4> = 'SAGE.CHECK.CUTBACKS@afs.net'
+         VIN.5 = IMPORT.ID:' download from SAGE imported to Universe successfully'
+         IF SOFT.ERRORS # '' THEN
+            VIN.5 := ' with soft errors'
+            SE.CNT = DCOUNT(SOFT.ERRORS, @FM)
+            FOR SEC = 1 TO SE.CNT
+               VIN<6, SEC> = SOFT.ERRORS<SEC>
+            NEXT SEC
+            SOFT.ERRORS = ''
+         END
+         VIN<5> = VIN.5
+      END ELSE
+         VIN<1> = 'david@afs.net':@VM:'nmeddaugh@afs.net'
+         VIN<4> = 'SAGE.CHECK.CUTBACKS@afs.net'
+         VIN<5> = ERRORS.EMAIL.SUBJECT
+         FE.CNT = DCOUNT(FATAL.ERRORS, @FM)
+         FOR FEC = 1 TO FE.CNT
+            VIN<6, FEC> = FATAL.ERRORS<FEC>
+         NEXT FEC
+         FOR V6 = 1 TO 3
+            VIN<6, -1> = ''
+         NEXT V6
+         VIN<6, -1> = 'Non-fatal errors: '
+         SE.CNT = DCOUNT(SOFT.ERRORS, @FM)
+         IF SE.CNT > 20 THEN
+            SE.CNT.LIMIT = 20
+            VIN<6, -1> = 'There are ':SE.CNT:' soft errors. Listing the first ':SE.CNT.LIMIT
+            VIN<6, -1> = ' '
+         END ELSE
+            SE.CNT.LIMIT = SE.CNT
+         END
+         FOR SEC = 1 TO SE.CNT.LIMIT
+            VIN<6, -1> = SOFT.ERRORS<SEC>
+         NEXT SEC
+
+         SOFT.ERRORS = ''
+      END
+      CALL SENDMAIL(VIN,VOUT)
+
+      RETURN
+*****************************************************************
+DETERMINE.CUTBACKS:
+*****************************************************************
+      PRO.DATE=PRO.REC<1>
+      PRO.AMT=PRO.REC<8>
+      BILL.AMT=PRO.REC<8>-PRO.REC<11>-PRO.REC<10>
+      CLIENT.NAME = CLIENT.REC<2>
+      AUDITOR.NAME = CLIENT.REC<71>
+
+      CUT.DESC=''
+      CUT.COUNT=0
+* Don't even look at the logisitcs description in 3... we dont need it!
+      FOR I=1 TO 2
+         IF TRIM(PRO.REC<41,I>) NE '' THEN
+            IF CUT.DESC='' THEN
+               CUT.DESC=' <--':TRIM(PRO.REC<41,I>)
+            END ELSE
+               CUT.DESC=CUT.DESC:',':TRIM(PRO.REC<41,I>)
+            END
+         END
+      NEXT I
+
+      IF BILL.AMT-PRO.AMT > 1 THEN        ;* Limit autocutback emails to cutbacks over 1 cent 
+
+         AUDITOR.FULL.NAME=''
+         AUDITOR.EMAIL=''                ; * JMK28
+         IF PRO.REC<89>#'' THEN
+            AUDIT.ID=PRO.REC<89>
+            READ AUDITOR.INFO FROM F.BCTRL,AUDIT.ID ELSE AUDITOR.INFO=''
+            AUDITOR.FULL.NAME=AUDITOR.INFO<13>
+            AUDITOR.EMAIL=AUDITOR.INFO<20>
+         END
+         IF AUDITOR.FULL.NAME='' THEN
+            AUDITOR.FULL.NAME=AUDITOR.NAME
+         END
+         CUTBACK.TEXT<1,-1>=CLIENT.NAME'L(#30 )':AUDITOR.FULL.NAME'L(#25 )':PRO.DATE'D2-':' ':PRO.NUM'L#14':BILL.AMT'R26,#10':(BILL.AMT-PRO.AMT)'R26,#10':PRO.AMT'R26,#10':CUT.DESC
+         CUTBACK.LINE=CLIENT.NAME:@VM:AUDITOR.FULL.NAME:@VM:AUDITOR.EMAIL:@VM:PRO.DATE'D2-':@VM:PRO.NUM:@VM:BILL.AMT'R26,':@VM:(BILL.AMT-PRO.AMT)'R26,':@VM:PRO.AMT'R26,':@VM:CUT.DESC
+         CUTBACK.INFO<-1>=CUTBACK.LINE
+         CUTBACK.INFO.ADDTL<-1> = CLIENT:@VM:CARRIER.REC<81>:@VM:CARRIER.REC<83>:@VM:IMPORT.ID:@VM:SAGE.BANK.CODE:@VM:CHECK.NUM
+         CUTBACK.IN.IMPORT.LINE = CUTBACK.LINE:@VM:CLIENT:@VM:CARRIER.REC<81>:@VM:CARRIER.REC<83>:@VM:IMPORT.ID:@VM:SAGE.BANK.CODE:@VM:CHECK.NUM
+         CUTBACK.IN.IMPORT.LINE<1, 5> = "'":CUTBACK.IN.IMPORT.LINE<1, 5>
+         CUTBACKS.IN.IMPORT<-1> = CUTBACK.IN.IMPORT.LINE
+      END
+
+      RETURN
+*****************************************************************
+EMAIL.CUTBACKS:
+*****************************************************************
+
+*DFCALL ELINE ('PRESS BREAK')
+      CAR.DESC = ''
+      BEGIN CASE
+         CASE PREV.CARRIER = '00015'
+            CAR.DESC<1>='FedEx ERS'
+            CAR.DESC<2>='PO Box 371741'
+            CAR.DESC<3>='Pittsburgh, PA  15250-7741'
+         CASE PREV.CARRIER = '00143'
+            EMAIL.OUT=''
+            IF TESTING THEN
+               EMAIL.OUT<1>=TESTING.EMAIL
+            END ELSE
+              
+               EMAIL.OUT<1,-1>='CBeasley@afs.net'  ; * JMK38
+               EMAIL.OUT<1,-1>='KShelton@afs.net'  ; * DRF03
+             
+               EMAIL.OUT<2>='DFriend@afs.net'      ; * JMK38
+               LOCATE 'CarrierRemittance@afs.net' IN EMAIL.OUT<3> SETTING CPOS ELSE        ; * JMK32
+                  EMAIL.OUT<3,-1>='CarrierRemittance@afs.net'          ; * JMK08 ; * JMK32
+               END                       ; * JMK32
+            END
+            EMAIL.OUT<5>='Printed an EDI Airborne check'
+            EMAIL.OUT<6,2>='Check # ':CHECK.NUM'R%7':' was printed'
+            VIN=EMAIL.OUT
+            CALL SENDMAIL(VIN,VOUT)
+            CAR.DESC<1>='Airborne Express'
+            CAR.DESC<2>='Attn: Check Research/RDI Dept.'
+            CAR.DESC<3>='PO Box 662'
+            CAR.DESC<4>='Seattle, WA 98111'
+         CASE PREV.CARRIER='00365'
+            CAR.DESC<1>='DHL Express (USA), Inc'
+            CAR.DESC<2>='RDI Lockbox'
+            CAR.DESC<3>='14097 Collections Center Drive'
+            CAR.DESC<4>='Chicago, IL 60693'
+         CASE 1
+            CAR.DESC<-1>=CARRIER.REC<1>
+            IF CARRIER.REC<2,1> NE '' THEN CAR.DESC<-1>=CARRIER.REC<2,1>
+            IF CARRIER.REC<2,2> NE '' THEN CAR.DESC<-1>=CARRIER.REC<2,2>
+            IF CARRIER.REC<2,3> NE '' THEN CAR.DESC<-1>=CARRIER.REC<2,3>         ; * Added 05-04-04 OH
+            IF CARRIER.REC<2,4> NE '' THEN CAR.DESC<-1>=CARRIER.REC<2,4>         ; * Added 05-04-04 OH
+            IF CARRIER.REC<3> NE '' THEN
+               CAR.DESC<-1>=CARRIER.REC<3>:', ':CARRIER.REC<4>:'  ':CARRIER.REC<5>
+            END
+            CAR.DESC<-1>=CARRIER.REC<7>
+      END CASE
+
+      CUTBACK.INFO.VM = CUTBACK.INFO
+      CUTBACK.INFO=CHANGE(CUTBACK.INFO,@VM,CHAR(9))          ; *Swap Values to Tabs
+
+      WRITE CUTBACK.INFO ON F.EREMIT,PREV.CHECK.NUM'R%7':'-':PREV.BANK.ID:'-CUTBACKS.XLS'
+      TO.EMAIL=CARRIER.REC<81>
+      IF TESTING THEN TO.EMAIL<1,-1>=TESTING.EMAIL
+      CC.EMAIL=CARRIER.REC<83>
+      IF TESTING THEN
+         TO.EMAIL=TESTING.EMAIL
+         CC.EMAIL=''
+      END
+
+      IF OVERRIDE.EMAIL.ADDR AND TO.EMAIL#'' THEN
+         ORIG.TO.EMAIL = TO.EMAIL
+         ORIG.CC.EMAIL = CC.EMAIL
+         TO.EMAIL = 'cbeasley@afs.net'
+              END
+      IF TO.EMAIL='' THEN
+         CUTBACKS.IN.IMPORT = CHANGE(CUTBACKS.IN.IMPORT, @VM, TAB.CHAR)
+         WRITE CUTBACKS.IN.IMPORT ON F.BILLDATA, IMPORT.ID:'*CUTBACKS.XLS'
+         CI.CNT = DCOUNT(CUTBACK.INFO, @FM)
+         FOR CIC = 2 TO CI.CNT
+*The first line is the headings
+            CUTBACK.REC = CUTBACK.INFO.ADDTL<CIC - 1, 1>     ; * Client #
+            CUTBACK.REC<2> = CHECK.ID
+            CUTBACK.REC<3> = CUTBACK.INFO.ADDTL<CIC - 1, 4>  ; * Import file ID
+            CUTBACK.REC<4> = INT.TODAY
+            CUTBACK.REC<5> = ICONV.CHECK.DATE
+            CUTBACK.REC<6> = CUTBACK.INFO.ADDTL<CIC - 1, 2>  ; * CARRIERS field 81
+            CUTBACK.REC<7> = CUTBACK.INFO.ADDTL<CIC - 1, 3>  ; * CARRIERS field 83
+            CUTBACK.REC<8> = 'TO'
+            WRITE CUTBACK.REC ON F.CUTBACK.FBS, PREV.CARRIER:'*':CUTBACK.INFO.VM<CIC, 5>:'*0'
+
+         NEXT CIC
+         CUTBACK.INFO = CUTBACK.HDR.LINE
+         CUTBACK.TEXT = ''
+         CUTBACK.INFO.ADDTL = ''
+         RETURN                          ; * No Name to "Send" to
+      END
+
+      IF PREV.CARRIER='24334' THEN RETURN
+      MVIN=''
+      SUBJ=PREV.CARRIER:' Bills that have been paid short'
+      TEXT='This message is best viewed with a fixed pitch font like courier.'
+      TEXT<1,-1>=' '
+      TEXT<1,-1>=' '
+      CAR.INFO=CHANGE(CAR.DESC,@VM,' ')
+      FOR X=1 TO 5
+         IF CAR.INFO<X>#'' THEN TEXT<1,-1>=CAR.INFO<X>
+      NEXT X
+      ATTN=CARRIER.REC<80>
+      CC=CARRIER.REC<82>
+      FOR X=1 TO 5
+         IF X=1 THEN FILLER='Attn  ' ELSE FILLER='      '
+         IF ATTN<1,X> # '' THEN TEXT<1,-1>=FILLER:ATTN<1,X>
+      NEXT X
+      FOR X=1 TO 5
+         IF X=1 THEN FILLER='cc    ' ELSE FILLER='      '
+         IF CC<1,X> # '' THEN TEXT<1,-1>=FILLER:CC<1,X>
+      NEXT X
+      TEXT<1,-1>=' '
+      TEXT<1,-1>='Check Number: ':CHECK.NUM'R%7':' printed on ':CHECK.DATE'D2-':' contains payment for the following bills that were paid short'
+      TEXT<1,-1>=' '
+      TEXT<1,-1>='Note: this information along with payment status is available on our web site at: www.afs.net '        ; * JMK18
+      TEXT<1,-1>=' '
+      TEXT<1,-1>=CUTBACK.HEAD
+      TEXT<1,-1>=CUTBACK.TEXT
+      MVIN=''
+      MVIN<1>=TO.EMAIL
+      MVIN<2>=CC.EMAIL
+      
+      MVIN<3>='CarrierRemittance@afs.net'          ; * SWB02
+      MVIN<4>='FBresolution@afs.net'     ; * JMK39
+      MVIN<5>=SUBJ
+      MVIN<6>=TEXT
+      MVIN<11>='E:\ARDENT\PUBLIC\EREMIT\'
+      MVIN<11>:=PREV.CHECK.NUM'R%7':'-':PREV.BANK.ID:'-CUTBACKS.XLS'
+
+      CALL SENDMAIL(MVIN,MVOUT)
+      IF MVOUT#'' THEN
+*****         CRT MVOUT
+      END
+
+      CUTBACKS.IN.IMPORT = CHANGE(CUTBACKS.IN.IMPORT, @VM, TAB.CHAR)
+      WRITE CUTBACKS.IN.IMPORT ON F.BILLDATA, IMPORT.ID:'*CUTBACKS.XLS'
+      CI.CNT = DCOUNT(CUTBACK.INFO, @FM)
+      FOR CIC = 2 TO CI.CNT
+*The first line is the headings
+         CUTBACK.REC = CUTBACK.INFO.ADDTL<CIC - 1, 1>        ; * Client #
+         CUTBACK.REC<2> = CHECK.ID
+         CUTBACK.REC<3> = CUTBACK.INFO.ADDTL<CIC - 1, 4>     ; * Import file ID
+         CUTBACK.REC<4> = INT.TODAY
+         CUTBACK.REC<5> = ICONV.CHECK.DATE
+         CUTBACK.REC<6> = CUTBACK.INFO.ADDTL<CIC - 1, 2>     ; * CARRIERS field 81
+         CUTBACK.REC<7> = CUTBACK.INFO.ADDTL<CIC - 1, 3>     ; * CARRIERS field 83
+         CUTBACK.REC<8> = 'SENT'
+         WRITE CUTBACK.REC ON F.CUTBACK.FBS, PREV.CARRIER:'*':CUTBACK.INFO.VM<CIC, 5>:'*0'
+
+      NEXT CIC
+      CUTBACK.INFO = CUTBACK.HDR.LINE
+      CUTBACK.TEXT = ''
+      CUTBACK.INFO.ADDTL = ''
+      RETURN
+
+   END

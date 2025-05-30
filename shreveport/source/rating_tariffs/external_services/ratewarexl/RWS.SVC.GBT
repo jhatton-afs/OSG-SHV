@@ -1,0 +1,750 @@
+      SUBROUTINE RWS.SVC(VIN,VOUT,F.TABLES)        ; * JMK07 ; * JMK09
+*    SUBROUTINE RWS.SVC(VIN,VOUT)       ; * JMK07 ; * JMK09
+*    SUBROUTINE RWS.SVC(VIN,VOUT,SOCKETHANDLE)    ; * JMK07
+*******************************************************************************
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR:      MIKE KERBOW & KEVIN MESSENGER
+* DATE:        OCTOBER 2005
+* DESCRIPTION: THIS PROGRAM WILL SUBMIT A TEXT FILE TO RATEWARE
+*              TO RATE A BILL AND EXTRACT THE RESULTS
+*
+* DIN - Data Sent In to Be Processed
+* DOUT - Data Returned that was processed (Answers)
+* NOTE:  On Mode READ DIN MUST BE SUPPLIED for DOUT to be Created!
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE EXPRESS
+* WRITTEN CONSENT OF SAME.
+*
+*******************************************************************************
+* 012306 - JMK01 - CHANGE IP ADDRESS TO DNS NAME
+* 031306 - JMK02 - USE RWS ERROR DESCRIPTIONS FOR ERROR CODES
+* 031706 - JMK03 - ADD CALL TO GET CARRIER UPDATE DATE
+* 032006 - JMK04 - ADD TIME LOOP TO ALLOW NETWORK ACCESS
+* 071106 - JMK05 - UPDATE RWS ERROR DESCRIPTIONS FOR STATUS CODES
+* 051107 - JMK06 - T200705110002 / priority 2  / Vitran Southwest (SMC information)
+* 022508 - NPR03 - ADDED CALL TO UPD.PROCESS.LOG to monitor response time issues. Temporary change - m
+* 022708 - JMK07 - T080590 - Rate Estimate unresponsive 4:00 - 6:30 EST.
+* 031108 - JMK08 - T080590 - Rate Estimate unresponsive 4:00 - 6:30 EST.
+* 051308 - JMK09 - ADD F.TABLES TO ARGUMENTS
+* 051308 - JMK10 - READ RWS SERVER NAME FROM FILE RECORD
+* 121708 - JMK11 - T082707 - Service days showing NA for FedEx West
+* 121808 - JMK12 - T082716 - No Inbound Joint Line Pricing ; FedEx Freight East
+* 021810 - JMK13 - CHANGE SERVER ADDRESS FOR RATEWARE CALLS
+* 052914 - JMK14 - SysAid#9946 - Shipment not rating, although previously rating for client
+* 061614 - JMK15 - SysAid#10251 - Skyline cannot quote inbound with Estes
+* 080515 - DRF01 - SysAid 19089 - Changed to point to SHVRATING instead of AFS
+*******************************************************************************
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+      COMMON PROG.PARAMS(24)
+      EQU CH.NUM TO PROG.PARAMS(1)
+      EQU USER TO PROG.PARAMS(2)
+      EQU SERVER.NAME TO PROG.PARAMS(3)
+      EQU DISP.FLG TO PROG.PARAMS(4)
+*
+*
+* Initialize variables
+*
+      PROG.NAME='RWS.SVC'
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'RWS.SVC' ; UPL.VOUT = ''        ; * NPR_UPL 04/23/2010
+*****      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+ ***     CALL CHANNEL(CH.NUM)
+  *****    CALL GET.USER(USER)
+      * Begin GRB01
+      VIN1=""
+      VIN1<1> = UPL.VIN<2>
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "S"
+*****       CALL PROGTRACK(VIN1,VOUT1)
+
+      VOUT=''
+      LINE.OUT=''
+      PROMPT ''
+      RQC.ARRAY=''
+      RTN.ARRAY=''
+      RQC.PFX.REC = SPACE(10)            ; * 10 Character Long
+      RQC.CCD.REC = SPACE(18)            ; * 18 Characters Long
+      RQC.CCS.REC = SPACE(81)            ; * 81 Characters Long Spaces Unless Used
+      RQC.CCT.REC = SPACE(61)
+      RQC.CNT.REC = SPACE(378)
+      RQC.FLR.REC = SPACE(54)            ; * 54 Filler Block
+      RTN.REC=''
+      RTN.OREC=''
+      RTN.DREC=''
+      RTN.SVC.TDYS=''
+      RTN.SVC.OTYP=''
+      RTN.SVC.DTYP=''
+      RTN.SVC.CTYP=''
+      RTN.OCCT.NAME=''
+      RTN.OCCT.CODE=''
+      RTN.OCNT.ADR1=''
+      RTN.OCNT.ADR2=''
+      RTN.OCNT.CITY=''
+      RTN.OCNT.ST=''
+      RTN.OCNT.ZIP=''
+      RTN.OCNT.PHONE=''
+      RTN.OCNT.TPHONE=''
+      RTN.OCNT.FAX=''
+      RTN.OCNT.EMAIL=''
+      RTN.OCNT.NAME=''
+      RTN.OCNT.TITLE=''
+      RTN.DCCT.NAME=''
+      RTN.DCCT.CODE=''
+      RTN.DCNT.ADR1=''
+      RTN.DCNT.ADR2=''
+      RTN.DCNT.CITY=''
+      RTN.DCNT.ST=''
+      RTN.DCNT.ZIP=''
+      RTN.DCNT.PHONE=''
+      RTN.DCNT.TPHONE=''
+      RTN.DCNT.FAX=''
+      RTN.DCNT.EMAIL=''
+      RTN.DCNT.NAME=''
+      RTN.DCNT.TITLE=''
+      CCCarrInfoDataDate=''              ; * JMK03
+      ERROR.MODE='F'
+      RATE.MODE='1'
+*      IF VIN='CLOSE' THEN                ; * JMK07
+*
+* CLOSE SOCKET
+*
+*         RESULT = closeSocket(SOCKETHANDLE)        ; * JMK07
+*         RETURN                          ; * JMK07
+*      END                                ; * JMK07
+*
+* Rateware Socket Information
+*
+*     SERVER.IP.ADDRESS = "192.168.1.31" ; *HostName ; * JMK01
+*     SERVER.IP.ADDRESS = "RATEWARE"     ; *HostName ; * JMK01 ; * JMK10
+      READ RWS.REC FROM F.TABLES,'RWS.SVC' ELSE    ; * JMK10
+         RWS.REC=''                      ; * JMK10
+*        RWS.REC<1>='RATEWARE'           ; * JMK10 ; * JMK13
+*        RWS.REC<2>='BACKUPUV'           ; * JMK10 ; * JMK13
+*DF         RWS.REC<1>='AFS-FS'             ; * JMK10 ; * JMK13 ; * DRF01
+         RWS.REC<1>='SHVRATING'          ; * DRF01
+*DF         RWS.REC<2>='AFS'                ; * JMK10 ; * JMK13 ; * DRF01
+         RWS.REC<2>='SHVRATING'          ; * DRF01
+         WRITE RWS.REC ON F.TABLES,'RWS.SVC'       ; * JMK10
+      END                                ; * JMK10
+      SERVER.IP.ADDRESS=RWS.REC<1>       ; * JMK10
+      IF USER='NO-MKERBOW' THEN
+         SERVER.IP.ADDRESS='AFS-FS'
+      END
+      SOCKET.PORT = "23700"              ; *Port to Use
+      SOCKETMODE = "1"                   ; * 0=non-blocking, 1=blocking
+*     SOCKETHANDLE = ""                  ; * socket handle ; * JMK07
+*     TIMEOUT = 10000                    ; * milliseconds ; * JMK07
+      TIMEOUT = 0                        ; * milliseconds ; * JMK07
+      SERFLAG = "-1"
+      OPEN.CNT=0
+
+*
+      ST.TIME = TIME()                   ; *NPR03
+      SOCKETINFO=''                      ; * JMK07
+*
+GET.SOCKET:* GET SOCKET INFORMATION
+*
+*      RESULT=getSocketInformation(SOCKETHANDLE,SERFLAG,SOCKETINFO)     ; * JMK07
+*      IF SOCKETINFO<1,1>='open' THEN     ; * JMK07
+*         GO SOCKET.GOOD                  ; * JMK07
+*      END                                ; * JMK07
+*
+OPEN.SOCKET:* OPEN SOCKET
+*
+      IF USER='DAVID' THEN
+*         SERVER.IP.ADDRESS='SHVRATING'
+
+      END
+      RESULT = openSocket(SERVER.IP.ADDRESS,SOCKET.PORT,SOCKETMODE,TIMEOUT,SOCKETHANDLE)
+      IF RESULT <> 0 THEN
+         NEWRESULT = getSocketErrorMessage(RESULT,ERR)
+         OPEN.CNT+=1
+
+*        IF OPEN.CNT<10 THEN GO OPEN.SOCKET ; * JMK04
+         IF OPEN.CNT<10 THEN             ; * NPR03
+*           CRT @(0,22):"RWS openSocket attempt ":OPEN.CNT:" of 10"     ; *NPR03
+            SLEEP 1                      ; * JMK04
+            GO OPEN.SOCKET               ; * JMK04
+         END                             ; * JMK04
+         IF SERVER.IP.ADDRESS#RWS.REC<1> THEN      ; * JMK10
+            EMAIL.OUT=''                 ; * JMK10
+            EMAIL.OUT<1,-1>='HelpDesk@afs.net'     ; * JMK10
+
+*           EMAIL.OUT<2,-1>='PDalton@afs.net' ; * JMK10
+
+            EMAIL.OUT<4>='FBBP_RWS.SVC@afs.net'    ; * JMK10
+            EMAIL.OUT<5>='Activating ':RWS.REC<1>:' Carrier Connect Engine.'     ; * JMK10
+            EMAIL.OUT<6>='FBBP RWS.SVC could not connect for user ':USER:' on ':OCONV(DATE(),'D2/'):' at ':OCONV(TIME(),'MTHS'):'.'          ; * JMK10
+            EMAIL.OUT<6>:='  Please confirm Carrier Connect engine servers are working correctly.'   ; * JMK10
+            EVIN=EMAIL.OUT               ; * JMK10
+            EVOUT=''                     ; * JMK10
+            CALL SENDMAIL(EVIN,EVOUT)    ; * JMK10
+            SERVER.IP.ADDRESS=RWS.REC<2>           ; * JMK10
+            IDATE=DATE()
+            ITIME=TIME()
+            TIME.BLOCK=INT(ITIME/600)
+            RWS.CHECK.ID='RWS*':IDATE:'*':TIME.BLOCK
+            READ TEST FROM F.TABLES,RWS.CHECK.ID ELSE TEST=''
+            TEST<1>+=1
+            WRITE TEST ON F.TABLES,RWS.CHECK.ID
+            IF TEST<1>>10 THEN
+               READ RWS.REC FROM F.TABLES,'RWS.SVC' ELSE
+                  RWS.REC=''
+                  RWS.REC<1>='AFS'
+                  RWS.REC<2>='AFS-FS'
+               END
+               HOLD.RWS.REC=RWS.REC
+               RWS.REC<1>=HOLD.RWS.REC<2>
+               RWS.REC<2>=HOLD.RWS.REC<1>
+               WRITE RWS.REC ON F.TABLES,'RWS.SVC'
+               EMAIL.OUT=''
+               EMAIL.OUT<1>='URGENT_RWS_ERRORS@afs.net'
+               IF USER='MKERBOW' THEN
+                  EMAIL.OUT<1>='mkerbow@afs.net'
+                  EMAIL.OUT<2>=''
+               END
+               EMAIL.OUT<4>='FBBP_RWS.SVC@afs.net'
+               EMAIL.OUT<5>='Changing AFS Carrier Connect Engine.'
+               EMAIL.OUT<6>='FBBP RWS.SVC could not connect for ':TEST<1>:' times within the past 10 minute block.  The primary server has been changed from ':HOLD.RWS.REC<1>:' to ':RWS.REC<1>:'.'
+               EMAIL.OUT<6>:='  Please confirm rating engine servers are working correctly----NOW!!!'          ; * JMK14
+               EMAIL.OUT<8>='PRIO'
+               EVIN=EMAIL.OUT            ; * JMK14
+               EVOUT=''                  ; * JMK14
+               CALL SENDMAIL(EVIN,EVOUT)           ; * JMK14
+            END
+            GO OPEN.SOCKET               ; * JMK10
+         END                             ; * JMK10
+*        VOUT<1>=ERR:RESULT              ; * JMK08
+         VOUT<1>='SCK-':ERR:'_':RESULT   ; * JMK08
+*NPR03
+         L.IN = PROG.NAME                ; *NPR03
+         L.IN<3> = "twoodruff@afs.net"   ; *NPR03
+***         L.IN<3,2> = "npratt@afs.net"    ; *NPR04
+         L.OUT = ST.TIME                 ; *NPR03
+         ELAPSED.TIME = TIME() - ST.TIME           ; *NPR03
+         L.OUT<2> = ELAPSED.TIME         ; *NPR03
+         L.OUT<3> = "ERROR on openSocket >> ":ERR:RESULT     ; *NPR03
+         ******CALL UPD.PROCESS.LOG(L.IN,L.OUT)          ; *NPR03 - Monitors who uses this program.
+*NPR03
+         RETURN
+      END
+*
+SOCKET.GOOD:* JMK07
+*
+*
+* Get service parameters
+*
+      SCAC=VIN<3>
+      IF SCAC='CSKL' THEN SCAC='VITR'    ; * JMK06
+*     IF SCAC='FXFW' THEN SCAC='FXFE'    ; * JMK11 ; * JMK12
+      IF SCAC='YFSY' THEN SCAC='RDWY'
+*     IF SCAC='EXLA' THEN SCAC='ESDR'    ; * JMK14 ; * JMK15
+      TYPE=VIN<4>
+      IF TYPE='' THEN TYPE='A'
+
+      IF USER='DAVID' AND SCAC='MMFW' THEN CALL ELINE('DAVID MMFW')
+      ORIG.ZIP=VIN<5>
+      DEST.ZIP=VIN<6>
+
+      SEND.CNT=0
+      GOSUB SUBMIT.SVC.REQUEST
+      GET.CNT=0
+      GOSUB GET.SVC.RESULTS
+      SEND.CNT=0
+      POINT='ORIG'
+      GOSUB SUBMIT.TRM.REQUEST
+      GET.CNT=0
+      GOSUB GET.TRM.RESULTS
+      SEND.CNT=0
+      POINT='DEST'
+      GOSUB SUBMIT.TRM.REQUEST
+      GET.CNT=0
+      GOSUB GET.TRM.RESULTS
+      SEND.CNT=0                         ; * JMK03
+      GOSUB RWS.RQCCCARINFO              ; * JMK03
+      GET.CNT=0                          ; * JMK03
+      GOSUB RWS.RSCCCARINFO              ; * JMK03
+*DFIF USER='DAVID' THEN CALL ELINE('SENDING INFO')
+      VOUT<1>=RTN.STS.REC
+      VOUT<2>=TRIM(RTN.SVC.TDYS)
+      VOUT<3>=TRIM(RTN.SVC.OTYP)
+      VOUT<4>=TRIM(RTN.SVC.DTYP)
+      VOUT<5>=TRIM(RTN.SVC.CTYP)
+      VOUT<6>=TRIM(RTN.OCCT.NAME)
+      VOUT<7>=TRIM(RTN.OCCT.CODE)
+      VOUT<8>=TRIM(RTN.OCNT.ADR1)
+      VOUT<9>=TRIM(RTN.OCNT.ADR2)
+      VOUT<10>=TRIM(RTN.OCNT.CITY)
+      VOUT<11>=TRIM(RTN.OCNT.ST)
+      VOUT<12>=TRIM(RTN.OCNT.ZIP)
+      VOUT<13>=TRIM(RTN.OCNT.PHONE)
+      VOUT<14>=TRIM(RTN.OCNT.TPHONE)
+      VOUT<15>=TRIM(RTN.OCNT.FAX)
+      VOUT<16>=TRIM(RTN.OCNT.EMAIL)
+      VOUT<17>=TRIM(RTN.OCNT.NAME)
+      VOUT<18>=TRIM(RTN.OCNT.TITLE)
+      VOUT<19>=TRIM(RTN.DCCT.NAME)
+      VOUT<20>=TRIM(RTN.DCCT.CODE)
+      VOUT<21>=TRIM(RTN.DCNT.ADR1)
+      VOUT<22>=TRIM(RTN.DCNT.ADR2)
+      VOUT<23>=TRIM(RTN.DCNT.CITY)
+      VOUT<24>=TRIM(RTN.DCNT.ST)
+      VOUT<25>=TRIM(RTN.DCNT.ZIP)
+      VOUT<26>=TRIM(RTN.DCNT.PHONE)
+      VOUT<27>=TRIM(RTN.DCNT.TPHONE)
+      VOUT<28>=TRIM(RTN.DCNT.FAX)
+      VOUT<29>=TRIM(RTN.DCNT.EMAIL)
+      VOUT<30>=TRIM(RTN.DCNT.NAME)
+      VOUT<31>=TRIM(RTN.DCNT.TITLE)
+      VOUT<32>=TRIM(CCCarrInfoDataDate)  ; * JMK03
+
+*
+* CLOSE SOCKET
+*
+      RESULT = closeSocket(SOCKETHANDLE)           ; * JMK07
+
+************************************************************************
+      GO 9999
+
+
+
+9995: *** Error - Problem with data
+      CALL ELINE(ERRLINE)
+      VOUT<1>='ERROR'
+9999: *** Exit Program
+      * Begin GRB01
+      VIN1=''
+      VIN1<1> = UPL.VIN<2>
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "E"
+*****       CALL PROGTRACK(VIN1,VOUT1)
+      * End GRB01
+      RETURN
+
+****************************************************************************
+SUBMIT.SVC.REQUEST:***
+*****************************************************************************
+*
+* Set up fields for Prefix Segment
+*
+      RQC.PFX.SIZE = 163                 ; * 4 character - length of all segments preceding 0's
+      RQC.PFX.VERSION = "0102"           ; * 4 character length currently version 0102
+      RQC.PFX.TYPE = 61                  ; * 2 character length preceding 0.  This is the type of request
+
+      RQC.CCD.REC[1,3]='UNQ' 'L#3'
+      RQC.CCD.REC[4,4]=SCAC 'L#4'
+      RQC.CCD.REC[8,1]=TYPE 'L#1'
+      RQC.CCD.REC[9,10]='1' 'L#10'
+
+      RQC.CCS.REC[1,6]=ORIG.ZIP 'L#6'
+      RQC.CCS.REC[7,6]=DEST.ZIP 'L#6'
+
+* Combine fields of Prefix segment into the PFX.REC
+      RQC.PFX.REC=SPACE(10)
+      RQC.PFX.REC[1,4]=RQC.PFX.SIZE'R%4'
+      RQC.PFX.REC[5,4]=RQC.PFX.VERSION'L#4'
+      RQC.PFX.REC[9,2]=RQC.PFX.TYPE 'L#2'
+
+* Combine all segments into the Request string [packet]
+      RQC.REC=RQC.PFX.REC:RQC.CCD.REC:RQC.CCS.REC:RQC.FLR.REC
+      RQC.ARRAY<-1>=RQC.REC
+      RESULT = 0
+      SDATLEN = ""
+      RTN.REC = ""
+      MAX_DATA_READ = 0
+      ACTSIZ = ""
+      ERR = ""
+****DEBUG
+*
+* Write request stream to the rateware server
+*
+      RESULT = writeSocket(SOCKETHANDLE,RQC.REC,TIMEOUT,SOCKETMODE,SDATLEN)
+      IF DISP.FLG = 1 THEN
+         CRT "*********"
+         CRT "size4:ver4:typ2:'unq':scac4:type1:'1'9spaces:orig.zip:dest.zip"
+         CRT "RWS.SVC RQC.REC  ":RQC.REC
+      END
+      IF RESULT <> 0 THEN
+         NEWRESULT = getSocketErrorMessage(RESULT,ERR)
+         SEND.CNT+=1
+*        IF SEND.CNT<10 THEN GO SUBMIT.SVC.REQUEST ; * JMK04
+         IF SEND.CNT<10 THEN             ; * JMK04
+            SLEEP 1                      ; * JMK04
+            GO SUBMIT.SVC.REQUEST        ; * JMK04
+         END                             ; * JMK04
+*        VOUT<1>=ERR:RESULT              ; * JMK08
+         VOUT<1>='SCK-':ERR:'_':RESULT   ; * JMK08
+         RETURN
+      END
+
+      RETURN
+
+*
+* Read the response stream from the Rateware server
+*
+*****************************************************************************
+GET.SVC.RESULTS:***
+*****************************************************************************
+      RTN.REC=''
+      RTN.PFX.REC=''
+      RTN.STS.REC=''
+      RTN.CCD.REC=''
+      RTN.CCS.REC=''
+      RESULT = readSocket(SOCKETHANDLE,RTN.REC,MAX_DATA_READ,TIMEOUT,SOCKETMODE,ACTSIZ)
+      IF DISP.FLG = 1 THEN
+         CRT "*********"
+         CRT "RWS.SVC RTN.REC  ":RTN.REC
+      END
+      IF RESULT <> 0 THEN
+         NEWRESULT = getSocketErrorMessage(RESULT,ERR)
+         GET.CNT+=1
+*        IF GET.CNT<10 THEN GO GET.SVC.RESULTS ; * JMK04
+         IF GET.CNT<10 THEN              ; * JMK04
+            SLEEP 1                      ; * JMK04
+            GO GET.SVC.RESULTS           ; * JMK04
+         END                             ; * JMK04
+*        VOUT<1>=ERR:RESULT              ; * JMK08
+         VOUT<1>='SCK-':ERR:'_':RESULT   ; * JMK08
+         RETURN
+      END
+      RTN.ARRAY<-1>=RTN.REC
+* Pull each segment out of the response stream
+      RTN.PFX.REC = RTN.REC[1,10]        ; * Prefix is the first 10 characters
+      RTN.STS.REC = RTN.REC[11,4]        ; * Error is the next 4 characters
+      RTN.CCD.REC = RTN.REC[15,18]       ; * HO Segment is the from character 15 to 168
+      RTN.CCS.REC = RTN.REC[33,81]       ; * DO Segments is 16 characters long * number of DO Segments (up to 20 DO segments)
+      STATUS=''
+*     NEWSTATUS = getSocketErrorMessage(STATUS,RTN.STS.REC) ; * JMK02
+*     CC.STATUS=RTN.STS.REC:' ':STATUS ; * JMK02
+      RWS.STATUS='RWS-':OCONV(RTN.STS.REC,'TRWS.ERRMSG;X;;1')          ; * JMK02
+      CC.STATUS=RTN.STS.REC:' ':RWS.STATUS         ; * JMK02
+
+*
+* Extract data from the results
+*
+      RTN.CCD.STATUS=RTN.CCD.REC[1,3]    ; * Information Flag
+      RTN.CCD.SCAC=RTN.CCD.REC[4,4]      ; * Tariff Authority
+      RTN.CCD.TYPE=RTN.CCD.REC[8,1]
+      RTN.CCD.LOOP.POS=RTN.CCD.REC[9,10]
+
+      RTN.SVC.OZIP=RTN.CCS.REC[1,6]
+      RTN.SVC.DZIP=RTN.CCS.REC[7,6]
+      RTN.SVC.NAME=RTN.CCS.REC[13,50]
+      RTN.SVC.OTRM=RTN.CCS.REC[63,5]
+      RTN.SVC.DTRM=RTN.CCS.REC[68,5]
+      RTN.SVC.OTYP=RTN.CCS.REC[73,1]
+      RTN.SVC.DTYP=RTN.CCS.REC[74,1]
+      RTN.SVC.CTYP=RTN.CCS.REC[75,1]
+      RTN.SVC.TDYS=RTN.CCS.REC[76,2]
+      RTN.SVC.ODYS=RTN.CCS.REC[78,2]
+      RTN.SVC.DDYS=RTN.CCS.REC[80,2]
+      RETURN
+
+*****************************************************************************
+SUBMIT.TRM.REQUEST:***
+*****************************************************************************
+*
+* Set up fields for Prefix Segment
+*
+      RQC.PFX.SIZE = 521                 ; * 4 character - length of all segments preceding 0's
+      RQC.PFX.VERSION = "0102"           ; * 4 character length currently version 0102
+      RQC.PFX.TYPE = 62                  ; * 2 character length preceding 0.  This is the type of request
+
+      RQC.CCD.REC[1,3]='UNQ' 'L#3'
+      RQC.CCD.REC[4,4]=SCAC 'L#4'
+      RQC.CCD.REC[8,1]=TYPE 'L#1'
+      RQC.CCD.REC[9,10]='1' 'L#10'
+
+      BEGIN CASE
+         CASE POINT='ORIG'
+            RQC.CCT.REC[1,6]=ORIG.ZIP 'L#6'
+         CASE POINT='DEST'
+            RQC.CCT.REC[1,6]=DEST.ZIP 'L#6'
+      END CASE
+
+* Combine fields of Prefix segment into the PFX.REC
+      RQC.PFX.REC=SPACE(10)
+      RQC.PFX.REC[1,4]=RQC.PFX.SIZE'R%4'
+      RQC.PFX.REC[5,4]=RQC.PFX.VERSION'L#4'
+      RQC.PFX.REC[9,2]=RQC.PFX.TYPE 'L#2'
+
+* Combine all segments into the Request string [packet]
+      RQC.REC=RQC.PFX.REC:RQC.CCD.REC:RQC.CCT.REC:RQC.CNT.REC:RQC.FLR.REC
+      BEGIN CASE
+         CASE POINT='ORIG' ; RQC.OREC=RQC.REC
+         CASE POINT='DEST' ; RQC.DREC=RQC.REC
+      END CASE
+      RQC.ARRAY<-1>=RQC.REC
+      RESULT = 0
+      SDATLEN = ""
+      RTN.OREC = ""
+      MAX_DATA_READ = 0
+      ACTSIZ = ""
+      ERR = ""
+
+*
+* Write request stream to the rateware server
+*
+      RESULT = writeSocket(SOCKETHANDLE,RQC.REC,TIMEOUT,SOCKETMODE,SDATLEN)
+      IF DISP.FLG = 1 THEN
+         CRT "********"
+         CRT "RWS.SVC RQC.REC ":RQC.REC
+      END
+      IF RESULT <> 0 THEN
+         NEWRESULT = getSocketErrorMessage(RESULT,ERR)
+         SEND.CNT+=1
+*        IF SEND.CNT<10 THEN GO SUBMIT.TRM.REQUEST ; * JMK04
+         IF SEND.CNT<10 THEN             ; * JMK04
+            SLEEP 1                      ; * JMK04
+            GO SUBMIT.TRM.REQUEST        ; * JMK04
+         END                             ; * JMK04
+*        VOUT<1>=ERR:RESULT              ; * JMK08
+         VOUT<1>='SCK-':ERR:'_':RESULT   ; * JMK08
+         RETURN
+      END
+
+      RETURN
+
+*
+* Read the response stream from the Rateware server
+*
+*****************************************************************************
+GET.TRM.RESULTS:***
+*****************************************************************************
+      RTN.REC=''
+      RTN.PFX.REC=''
+      RTN.STS.REC=''
+      RTN.CCT.REC=''
+      RTN.CNT.REC=''
+      RTN.CCS.REC=''
+      IF POINT='ORIG' THEN
+         RTN.OREC=''
+         RTN.OPFX.REC=''
+         RTN.OSTS.REC=''
+         RTN.OCCT.REC=''
+         RTN.OCNT.REC=''
+         RTN.OCCS.REC=''
+      END
+      IF POINT='DEST' THEN
+         RTN.DREC=''
+         RTN.DPFX.REC=''
+         RTN.DSTS.REC=''
+         RTN.DCCT.REC=''
+         RTN.DCNT.REC=''
+         RTN.DCCS.REC=''
+      END
+      RESULT = readSocket(SOCKETHANDLE,RTN.REC,MAX_DATA_READ,TIMEOUT,SOCKETMODE,ACTSIZ)
+      IF DISP.FLG = 1 THEN
+         CRT "********"
+         CRT "RWS.SVC RTN.REC ":RTN.REC
+      END
+      IF RESULT <> 0 THEN
+         NEWRESULT = getSocketErrorMessage(RESULT,ERR)
+         GET.CNT+=1
+*        IF GET.CNT<10 THEN GO GET.TRM.RESULTS ; * JMK04
+         IF GET.CNT<10 THEN              ; * JMK04
+            SLEEP 1                      ; * JMK04
+            GO GET.TRM.RESULTS           ; * JMK04
+         END                             ; * JMK04
+*        VOUT<1>=ERR:RESULT              ; * JMK08
+         VOUT<1>='SCK-':ERR:'_':RESULT   ; * JMK08
+         RETURN
+      END
+      RTN.ARRAY<-1>=RTN.REC
+* Pull each segment out of the response stream
+      BEGIN CASE
+         CASE POINT='ORIG'
+            RTN.OREC = RTN.REC
+            RTN.OPFX.REC = RTN.REC[1,10]
+            RTN.OSTS.REC = RTN.REC[11,4]
+            RTN.OCCD.REC = RTN.REC[15,18]
+            RTN.OCCT.REC = RTN.REC[33,61]
+            RTN.OCNT.REC = RTN.REC[94,378]
+*
+* Extract data from the results
+*
+            RTN.OCCD.STATUS=RTN.OCCD.REC[1,3]      ; * Information Flag
+            RTN.OCCD.SCAC=RTN.OCCD.REC[4,4]        ; * Tariff Authority
+            RTN.OCCD.TYPE=RTN.OCCD.REC[8,1]
+            RTN.OCCD.LOOP.POS=RTN.OCCD.REC[9,10]
+
+            RTN.OCCT.ZIP=RTN.OCCT.REC[1,6]
+            RTN.OCCT.NAME=RTN.OCCT.REC[7,50]
+            RTN.OCCT.CODE=RTN.OCCT.REC[57,5]
+
+            RTN.OCNT.ADR1=RTN.OCNT.REC[1,50]
+            RTN.OCNT.ADR2=RTN.OCNT.REC[51,50]
+            RTN.OCNT.CITY=RTN.OCNT.REC[101,30]
+            RTN.OCNT.ST=RTN.OCNT.REC[131,2]
+            RTN.OCNT.ZIP=RTN.OCNT.REC[133,10]
+            RTN.OCNT.PHONE=RTN.OCNT.REC[143,12]
+            RTN.OCNT.TPHONE=RTN.OCNT.REC[155,12]
+            RTN.OCNT.FAX=RTN.OCNT.REC[167,12]
+            RTN.OCNT.EMAIL=RTN.OCNT.REC[179,100]
+            RTN.OCNT.NAME=RTN.OCNT.REC[279,50]
+            RTN.OCNT.TITLE=RTN.OCNT.REC[329,50]
+         CASE POINT='DEST'
+            RTN.DREC = RTN.REC
+            RTN.DPFX.REC = RTN.REC[1,10]
+            RTN.DSTS.REC = RTN.REC[11,4]
+            RTN.DCCD.REC = RTN.REC[15,18]
+            RTN.DCCT.REC = RTN.REC[33,61]
+            RTN.DCNT.REC = RTN.REC[94,378]
+*
+* Extract data from the results
+*
+            RTN.DCCD.STATUS=RTN.DCCD.REC[1,3]      ; * Information Flag
+            RTN.DCCD.SCAC=RTN.DCCD.REC[4,4]        ; * Tariff Authority
+            RTN.DCCD.TYPE=RTN.DCCD.REC[8,1]
+            RTN.DCCD.LOOP.POS=RTN.DCCD.REC[9,10]
+
+            RTN.DCCT.ZIP=RTN.DCCT.REC[1,6]
+            RTN.DCCT.NAME=RTN.DCCT.REC[7,50]
+            RTN.DCCT.CODE=RTN.DCCT.REC[57,5]
+
+            RTN.DCNT.ADR1=RTN.DCNT.REC[1,50]
+            RTN.DCNT.ADR2=RTN.DCNT.REC[51,50]
+            RTN.DCNT.CITY=RTN.DCNT.REC[101,30]
+            RTN.DCNT.ST=RTN.DCNT.REC[131,2]
+            RTN.DCNT.ZIP=RTN.DCNT.REC[133,10]
+            RTN.DCNT.PHONE=RTN.DCNT.REC[143,12]
+            RTN.DCNT.TPHONE=RTN.DCNT.REC[155,12]
+            RTN.DCNT.FAX=RTN.DCNT.REC[167,12]
+            RTN.DCNT.EMAIL=RTN.DCNT.REC[179,100]
+            RTN.DCNT.NAME=RTN.DCNT.REC[279,50]
+            RTN.DCNT.TITLE=RTN.DCNT.REC[329,50]
+      END CASE
+
+      RETURN
+
+*****************************************************************************
+RWS.RQCCCARINFO:***
+*****************************************************************************
+*
+* Set up fields for Prefix Segment
+*
+      PrefixSize = 82                    ; * 4 character - length of all segments preceding 0's
+      PrefixVersion = "0102"             ; * 4 character length currently version 0102
+      PrefixType = 64                    ; * 2 character length preceding 0.  This is the type of request
+      PrefixRec = PrefixSize'R%4':PrefixVersion'L#4':PrefixType'R%2'
+*
+* Setup Fields for CCData2 Segment
+*
+      CCData2RecordStatus = 'UNQ'        ; * 3 Characters - Code indicating the type of record processing
+      CCData2SCAC = SCAC                 ; * 4 characters - Standard Carrier Alpha Code of the carrier
+      CCData2CarrierType = TYPE          ; * 1 character  - A=LTL, B=TL
+      CCData2CurrentRecord = '1'         ; * 10 characters - A number used to indicate the position in a loop
+      CCData2Rec = CCData2RecordStatus'L#3':CCData2SCAC'L#4':CCData2CarrierType'L#1':CCData2CurrentRecord'L#10'
+*
+* Setup Fields for Filler Segment
+*
+      FillerRec = SPACE(54)
+*
+* Create Request String
+*
+      RQCCCARINFO = PrefixRec:CCData2Rec:FillerRec
+      RQC.ARRAY<-1>=RQCCCARINFO
+      RESULT = 0
+      SDATLEN = ""
+      RTN.OREC = ""
+      MAX_DATA_READ = 0
+      ACTSIZ = ""
+      ERR = ""
+
+*
+* Write request stream to the rateware server
+*
+      RESULT = writeSocket(SOCKETHANDLE,RQCCCARINFO,TIMEOUT,SOCKETMODE,SDATLEN)
+****      DEBUG
+      IF DISP.FLG = 1 THEN
+         CRT "RWS.SVC RQCCCARINFO ":RQCCCARINFO
+      END
+      IF RESULT <> 0 THEN
+         NEWRESULT = getSocketErrorMessage(RESULT,ERR)
+         SEND.CNT+=1
+*        IF SEND.CNT<10 THEN GO RWS.RQCCCARINFO ; * JMK04
+         IF SEND.CNT<10 THEN             ; * JMK04
+            SLEEP 1                      ; * JMK04
+            GO RWS.RQCCCARINFO           ; * JMK04
+         END                             ; * JMK04
+*        VOUT<1>=ERR:RESULT              ; * JMK08
+         VOUT<1>='SCK-':ERR:'_':RESULT   ; * JMK08
+         RETURN
+      END
+
+      RETURN
+
+*
+* Read the response stream from the Rateware server
+*
+*****************************************************************************
+RWS.RSCCCARINFO:***
+*****************************************************************************
+      RSCCCARINFO = ''
+      RESULT = readSocket(SOCKETHANDLE,RSCCCARINFO,MAX_DATA_READ,TIMEOUT,SOCKETMODE,ACTSIZ)
+      IF DISP.FLG = 1 THEN
+         CRT "RWS.SVC RSCCCARINFO ":RSCCCARINFO
+      END
+      IF RESULT <> 0 THEN
+         NEWRESULT = getSocketErrorMessage(RESULT,ERR)
+         GET.CNT+=1
+         IF DISP.FLG = 1 THEN
+            CRT "RWS.SVC RSCCCARINFO ":RSCCCARINFO
+         END
+*        IF GET.CNT<10 THEN GO RWS.RSCCCARINFO ; * JMK04
+         IF GET.CNT<10 THEN              ; * JMK04
+            SLEEP 1                      ; * JMK04
+            GO RWS.RSCCCARINFO           ; * JMK04
+         END                             ; * JMK04
+*        VOUT<1>=ERR:RESULT              ; * JMK08
+         VOUT<1>='SCK-':ERR:'_':RESULT   ; * JMK08
+         RETURN
+      END
+      RTN.ARRAY<-1>=RSCCCARINFO
+*
+* Pull each segment out of the response stream
+*
+      PrefixRec = RSCCCARINFO[ 1, 10]
+      ErrorStatusCode = RSCCCARINFO[ 11, 4]
+      IF ErrorStatusCode # '1100' THEN   ; * JMK05
+         ErrorStatusDesc='RWS-':OCONV(ErrorStatusCode,'TRWS.ERRMSG;X;;1')        ; * JMK05
+      END                                ; * JMK05
+*DF      IF USER='DAVID' THEN CALL ELINE('RESULTS - PRESS BREAK')
+      CCData2Rec = RSCCCARINFO[ 15, 18]
+      CCCarrInfoRec = RSCCCARINFO[ 33, 60]
+      CCContactInfoRec = RSCCCARINFO[ 93,378]
+      FillerRec = RSCCCARINFO[471, 54]
+*
+* Extract data from the results
+*
+      PrefixSize = PrefixRec[1,4]
+      PrefixVersion = PrefixRec[5,4]
+      PrefixType = PrefixRec[9,2]
+
+      CCData2RecordStatus = CCData2Rec[1,3]
+      CCData2SCAC = CCData2Rec[4,4]
+      CCData2CarrierType = CCData2Rec[8,1]
+      CCData2CurrentRecord = CCData2Rec[9,10]
+
+      CCCarrInfoName = CCCarrInfoRec[1,50]
+      CCCarrInfoDataDate = CCCarrInfoRec[51,10]
+
+      CCContactInfoAddress1 = CCContactInfoRec[ 1, 50]
+      CCContactInfoAddress2 = CCContactInfoRec[ 51, 50]
+      CCContactInfoCity = CCContactInfoRec[101, 30]
+      CCContactInfoStateCode = CCContactInfoRec[131, 2]
+      CCContactInfoZipPostal = CCContactInfoRec[133, 10]
+      CCContactInfoPhoneNumber = CCContactInfoRec[143, 12]
+      CCContactInfoTollFreePhoneNumber = CCContactInfoRec[155, 12]
+      CCContactInfoFaxNumber = CCContactInfoRec[167, 12]
+      CCContactInfoEmailAddress = CCContactInfoRec[179,100]
+      CCContactInfoName = CCContactInfoRec[279, 50]
+      CCContactInfoTitle = CCContactInfoRec[329, 50]
+
+      RETURN
+   END

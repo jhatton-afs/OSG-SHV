@@ -1,0 +1,180 @@
+***********************************************************************
+* Analyze bills acted upon by auditors
+* Copyright (c) AFS Logistics, LLC., 2002
+*
+* AUTHOR : Owen Holman
+* Date   : January 2002
+***********************************************************************
+***********************************************************************
+!
+* Include the ODBC definitions
+!
+      $INCLUDE UNIVERSE.INCLUDE ODBC.H
+
+      form = "T##########"
+      dash = "----------"
+      Expect = ""
+      NULL=""
+      TOT.NUM.BILLS=0
+
+      CALL GET.USER(USER)
+      IF USER#'MKERBOW' THEN STOP
+      GET (ARG.,1) OBEG.DATE THEN
+         BEG.DATE=ICONV(OBEG.DATE,'D')
+      END ELSE
+         BEG.DATE=ICONV('01-01-04','D')
+      END
+      GET (ARG.,2) OEND.DATE THEN
+         END.DATE=ICONV(OEND.DATE,'D')
+      END ELSE
+         END.DATE=DATE()-1
+      END
+      GET (ARG.,3) CLIENT.LIST.NAME ELSE CLIENT.LIST.NAME=''
+      GET (ARG.,4) OPT.LIST ELSE OPT.LIST=''
+      GET (ARG.,5) START.TIME ELSE START.TIME=''
+      IF START.TIME#'' THEN
+         STMT="SLEEP ":START.TIME
+         EXECUTE STMT CAPTURING TIME.RESULTS
+      END
+      IF CLIENT.LIST.NAME#'' THEN
+         STMT='GET-LIST ':CLIENT.LIST.NAME
+      END ELSE
+         STMT='SSELECT CLIENTS WITH @ID # "9]"'
+      END
+      EXECUTE STMT RTNLIST CLIENT.LIST CAPTURING RESULTS
+      NUM.CLIENTS=@SELECTED
+
+      OPEN '','CLIENTS' TO F.CLIENT ELSE ABORT 201,'CLIENTS'
+      OPEN '','CARRIERS' TO F.CARRIER ELSE ABORT 201,'CARRIERS'
+      OPEN '','FB.TABLES' TO F.TABLES ELSE ABORT 201,'FB.TABLES'
+      READ LI.CODE.REC FROM F.TABLES,'LI.CODES' ELSE LI.CODE.REC=''
+      CRT @(0,0):@(-1):@(0,3):'UPD.SQL.FBHIST.TM - Processing Clients from ':BEG.DATE'D2/':' to ':END.DATE'D2/':'...'
+
+      CLIENT.EOF=0
+      CLIENT.CNT=0
+      CLIENT.PER=0
+      LOOP
+         READNEXT CLIENT.ID FROM CLIENT.LIST ELSE CLIENT.EOF=1
+      UNTIL CLIENT.EOF DO
+         CLIENT.CNT+=1
+         CLIENT.PCT=ICONV(CLIENT.CNT/NUM.CLIENTS*100,'MR2')
+         READ CLIENT.REC FROM F.CLIENT,CLIENT.ID THEN
+            CRT @(0,5):@(-4):CLIENT.CNT'R#4':' - ':CLIENT.PCT'R26#6':'% ':CLIENT.ID:' - ':CLIENT.REC<2>
+            CALL PROG.BAR(8,CLIENT.CNT,NUM.CLIENTS,CLIENT.PER)
+            OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILL THEN
+
+               EDI.FOUND=0
+               VC.FOUND=0
+               DIV.FOUND=0
+
+               OPEN '','EDI.BILLS.HIST,':CLIENT.ID TO F.EDI THEN EDI.FOUND=1
+               OPEN '','VEND.CUST,':CLIENT.ID TO F.VC THEN VC.FOUND=1
+               OPEN '','DIVISION.CODE,':CLIENT.ID TO F.DIV THEN DIV.FOUND=1
+
+*               STMT = 'SELECT FB.PROC.DATE.XREF,':CLIENT.ID
+*               STMT:=' WITH DATE GE "':OCONV(BEG.DATE,'D2/'):'"'
+*               STMT:=' AND WITH DATE LE "':OCONV(END.DATE,'D2/'):'"'
+*               EXECUTE STMT RTNLIST DT.LIST CAPTURING OUTPUT
+*               IF @SELECTED < 1 THEN GOTO SKIP.CLIENT
+*               STMT = 'QSELECT FB.PROC.DATE.XREF,':CLIENT.ID
+*               EXECUTE STMT PASSLIST DT.LIST RTNLIST NDX.LIST CAPTURING OUTPUT
+*               IF @SELECTED < 1 THEN GOTO SKIP.CLIENT
+               STMT='SELECT FB.BILLS.HIST,':CLIENT.ID
+               STMT:=' WITH VERSION = "0"'
+               STMT:=' AND WITH 39 # "R"'
+               STMT:=' AND WITH 37 GE "':OCONV(BEG.DATE,'D2/'):'"'
+               STMT:=' AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'
+               STMT:=' AND WITH CARRIER# = "03878"'
+               STMT:=' OR WITH VERSION = "0"'
+               STMT:=' AND WITH 39 # "R"'
+               STMT:=' AND WITH 37 GE "':OCONV(BEG.DATE,'D2/'):'"'
+               STMT:=' AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'
+               STMT:=' AND WITH CARRIER# = "14500"'
+*              STMT:=' SAVING UNIQUE @ID'
+*               EXECUTE STMT PASSLIST NDX.LIST RTNLIST BILL.LIST CAPTURING OUTPUT
+               EXECUTE STMT RTNLIST BILL.LIST CAPTURING OUTPUT
+               NUM.BILLS=@SELECTED
+               TOT.NUM.BILLS+=NUM.BILLS
+               CRT @(0,10):@(-4):' #Bills - ':NUM.BILLS'R#12':' - ':TOT.NUM.BILLS'R#15'
+               BILL.EOF=0
+               BILL.CNT=0
+               BILL.PER=0
+               LOOP
+                  READNEXT BILL.ID FROM BILL.LIST ELSE BILL.EOF=1
+               UNTIL BILL.EOF DO
+                  BILL.CNT+=1
+                  BILL.PCT=ICONV(BILL.CNT/NUM.BILLS*100,'MR2')
+                  CALL PROG.BAR(13,BILL.CNT,NUM.BILLS,BILL.PER)
+*                 IF BILL.ID='00585*1316938*0' THEN DEBUG
+*                 IF BILL.ID='00924*736038*0' THEN DEBUG
+                  CARRIER.ID=FIELD(BILL.ID,'*',1)
+                  CARRIER.CHK=0
+                  IF CARRIER.ID='03878' THEN CARRIER.CHK=1
+                  IF CARRIER.ID='14500' THEN CARRIER.CHK=1
+                  IF CARRIER.CHK=0 THEN GO SKIP.BILL
+                  READ CARRIER.REC FROM F.CARRIER,CARRIER.ID ELSE CARRIER.REC=''
+                  NEW.TM=CARRIER.REC<44>
+                  READ BILL.REC FROM F.BILL,BILL.ID THEN
+                     BILL.ORG=BILL.REC
+                     BILL.REC<21>=NEW.TM
+                     IF BILL.REC=BILL.ORG THEN GO SKIP.BILL
+                     WRITE BILL.REC ON F.BILL,BILL.ID
+                     EDI.REC=''
+                     IF EDI.FOUND THEN
+                        READ EDI.REC FROM F.EDI,BILL.ID ELSE EDI.REC=''
+                     END
+* DEFINE FIELDS TO UPDATE FROM CLIENT.REC HERE
+                     PRO=FIELD(BILL.ID,'*',2)
+                     DIV.REC=''
+                     IF DIV.FOUND THEN
+                        DIV.ID=BILL.REC<9>
+                        READ DIV.REC FROM F.DIV,DIV.ID ELSE DIV.REC=''
+                     END
+                     VC.REC=''
+                     IF VC.FOUND THEN
+                        VC.ID=BILL.REC<17>
+                        READ VC.REC FROM F.VC,VC.ID ELSE VC.REC=''
+                     END
+                     SQLVIN=''
+                     SQLVIN<1>=USER
+                     SQLVIN<2>=CLIENT.ID
+                     SQLVIN<3>=BILL.ID
+                     SQLVIN<4>='111101'
+                     IF OPT.LIST#'' THEN
+                        SQLVIN<4>=OPT.LIST
+                     END
+                     SQLVIN<5>=LI.CODE.REC<1>
+                     SQLVIN<6>=LI.CODE.REC<3>
+                     SQLVOUT=''
+                     CALL UPD.SQL.FBHIST.SUB(SQLVIN,SQLVOUT,CLIENT.REC,DIV.REC,VC.REC,BILL.REC,EDI.REC)
+                  END
+SKIP.BILL: *
+               REPEAT
+               WKENDLOAD=0
+               IF CLIENT.LIST.NAME='CLIENTFBHIST1' THEN WKENDLOAD=1
+               IF CLIENT.LIST.NAME='CLIENTFBHIST2' THEN WKENDLOAD=1
+               IF CLIENT.LIST.NAME='CLIENTFBHIST3' THEN WKENDLOAD=1
+               IF CLIENT.LIST.NAME='CLIENTFBHIST4' THEN WKENDLOAD=1
+               IF WKENDLOAD THEN
+                  MVIN=''
+*                 MVIN<1,-1>='RKosik@afs.net'
+*                 MVIN<2,-1>='PDalton@afs.net'
+                  MVIN<1,-1>='MKerbow@afs.net'
+                  MVIN<4>='AFS_UPD.SQL.FBHIST.SUB'
+                  MVIN<5>='SQL Shipment Update by Client'
+                  TEXT='On ':DATE()'D2/':' ':OCONV(TIME(),'MTHS'):', ':USER:' updated '
+                  TEXT<1,-1>='Client ':CLIENT.ID:' ':CLIENT.REC<2>:' completed the SQL update for the processing period from ':OCONV(BEG.DATE,'D4/'):' to ':OCONV(END.DATE,'D4/'):' with ':NUM.BILLS:' shipments loaded.'
+                  TEXT<1,-1>=' '
+                  MVIN<6>=TEXT
+                  MVIN<7>=1
+                  CALL SENDMAIL(MVIN,MVOUT)
+               END
+            END
+         END
+SKIP.CLIENT: *
+      REPEAT
+
+
+THE.END: ***
+*     End of program
+      STOP

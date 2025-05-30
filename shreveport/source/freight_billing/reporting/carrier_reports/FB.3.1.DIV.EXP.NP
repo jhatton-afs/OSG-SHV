@@ -1,0 +1,374 @@
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+*
+*
+      SUBROUTINE FB.3.1.DIV.EXP(CLIENT,CLIENT.REC,BEG.DATE,END.DATE)
+$OPTIONS HEADER.EJECT
+* SUMMARY REPORT OF EXPENSE CODE CHARGES BY DIVISION
+*
+* AUTHOR: VALERIE DOTY
+* DATE: DECEMBER 2, 1993
+*
+* PACKAGE: FREIGHT BILLING
+*
+* Initialize variables
+*
+      DIV.TOT=''
+      GRAND.TOT=''
+      EXP.CHG=0
+      COUNTER=0
+      OLD.EXP.CODE=''
+      PREV.DIV='FIRST'
+      ERRMSG=''
+
+      SEPARATE.DIVISIONS = '0'
+      DASH.1.COLS=SPACE(57):'---------------'
+      DASH.2.COLS=SPACE(57):'---------------'
+
+      CALL GET.USER(USER)
+      CALL CHANNEL(CH.NUM)
+*
+* Open data file
+*
+      OPEN '','FB.BILLS.HIST,':CLIENT TO F.TRANS ELSE
+        CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT,"FB.3.1.DIV.EXP")
+      END
+
+      OPEN '','DIVISION.CODES,':CLIENT TO F.DIVISION ELSE
+         CALL OPEN.ABORT('DIVISION.CODES,':CLIENT,PROG.NAME)
+      END
+
+      OPEN '','EXPENSE.CODES,':CLIENT TO F.EXPENSE ELSE
+         CALL OPEN.ABORT('EXPENSE.CODES,':CLIENT,PROG.NAME)
+      END
+
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+         END
+      END
+
+      CLEARFILE F.WORK
+
+*&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+
+DIV.LIST = ''
+
+      STMT='SSELECT DIVISION.CODES,':CLIENT:' WITH 7 # "I"'  ; * JMK32; * JMK80
+      EXECUTE STMT CAPTURING RESULT      ; * JMK32
+      EOF=0                              ; * JMK32
+      LOOP                               ; * JMK32
+         READNEXT DIV.ID ELSE EOF=1      ; * JMK32
+      UNTIL EOF DO                       ; * JMK32
+         DIV.LIST<1,-1>=DIV.ID           ; * JMK32
+      REPEAT                             ; * JMK32
+
+
+         UP.STMT='SELECT FB.UNPROCESS,':CLIENT:' WITH FILE.NAME EQ "FB.BILLS,':CLIENT:'"'
+
+*         IF SEPARATE.DIVISIONS THEN
+*            UP.STMT:=' AND WITH FB.DIV EQ "':DIVS<1,DIV.COUNT>:'"'
+*         END
+
+***         UP.STMT:=' ITEM.NAME'
+
+         EXECUTE UP.STMT CAPTURING OUTPUT
+
+         NUM.ITMS = @SELECTED
+         IF SYSTEM(11) ELSE
+            RETURN
+         END        
+
+CRT @(-1)
+CRT OUTPUT
+*DEBUG
+
+         GOSUB BUILD.TOTALS
+
+         GOSUB DO.REPORT
+
+CALL ELINE("WORK FILE = FBWORK":CH.NUM)
+
+STOP
+
+
+CRT @(-1)
+
+TOT.AMT = 0
+
+N.DIV = DCOUNT(DIVEXP.ARRAY<1>,@VM)
+FOR DV = 1 TO N.DIV
+   ID.DIV    = DIVEXP.ARRAY<1,DV>
+   DIV.TOTAL = DIVEXP.ARRAY<2,DV>
+   N.EXP = DCOUNT(WORK.REC<1>,@VM)
+   FOR EXP = 1 TO N.EXP
+      W.EXP = DIVEXP.ARRAY<3,DV,EXP>
+      W.EXP.AMT = DIVEXP.ARRAY<4,DV,EXP>
+      IF EXP = 1 THEN
+         CRT ID.DIV : " " : W.EXP : " " : OCONV(W.EXP.AMT,"MR2,") "R#10"
+      END ELSE
+         CRT SPACE(5) : " " : W.EXP : " " : OCONV(W.EXP.AMT,"MR2,") "R#10"
+      END
+   NEXT EXP
+   CRT "Total  : " : OCONV(DIV.TOTAL,"MR2,") "R#12"
+   CRT
+NEXT DV
+
+CRT ; CRT STR("*",75)
+
+FOR II = 1 TO 4
+  CRT DIVEXP.ARRAY<II>
+  CRT
+NEXT II
+
+CALL ELINE("WORK FILE = FBWORK":CH.NUM)
+
+STOP
+
+*&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+*
+*  PRINT THE HEADING
+*
+      PAGE
+      TEXT='DIVISION EXPENSE SUMMARY'
+      CALL CENTER(TEXT,132)
+      PRINT TEXT
+      TEXT=STR('=',24)
+      CALL CENTER(TEXT,132)
+      PRINT TEXT
+      PRINT
+      DARRAY=''
+*
+* Select data
+*
+      PREC='SSELECT FB.BILLS.HIST,':CLIENT:' BY 9 BY 31'
+      PREC := ' WITH 37 GE "':BEG.DATE'D2/':'"'
+      PREC := ' AND WITH 37 LE "':END.DATE'D2/':'"'
+      PREC := ' AND WITH VERSION = "0"'
+      PREC := ' AND WITH 39 # "R"'
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+      NUM.ITMS = @SELECTED
+      IF SYSTEM(11) ELSE
+        PRINT 'No transactions on file with given criteria.'
+        STOP
+      END
+*
+* Process report
+*
+      COUNTER=0
+      DONE = 0
+      LOOP
+        READNEXT ID ELSE DONE = 1
+      UNTIL DONE = 1 DO
+        COUNTER=COUNTER+1
+        CALL PROG.BAR(22,COUNTER,NUM.ITMS,PER)
+        READ REC FROM F.TRANS,ID THEN
+          EXP.CODE=REC<31>
+          DIV=REC<9>
+*DF          CHARGES=REC<8>
+          CHARGES=REC<33>
+          IF DIV NE PREV.DIV THEN GOSUB 8000; * Division break
+          EXP.COUNT=DCOUNT(EXP.CODE,CHAR(253))
+          IF EXP.COUNT=0 THEN EXP.COUNT=1
+          FOR I=1 TO EXP.COUNT
+             LOCATE EXP.CODE<1,I> IN DARRAY<1> BY 'AL' SETTING POS THEN
+                DARRAY<2,POS>=DARRAY<2,POS>+CHARGES<1,I>
+             END ELSE
+                DARRAY=INSERT(DARRAY,1,POS,0,EXP.CODE<1,I>)
+                DARRAY=INSERT(DARRAY,2,POS,0,CHARGES<1,I>)
+                DARRAY=INSERT(DARRAY,3,POS,0,DIV)
+             END
+             DIV.TOT=DIV.TOT+CHARGES<1,I>
+          NEXT I
+*DF          IF EXP.CODE # OLD.EXP.CODE THEN
+*DF            LN = PREV.DIV 'R#40' : SPACE(16) : OLD.EXP.CODE 'R#12'
+*DF            LN := SPACE(14) : EXP.CHG 'R26,#13'
+*DF            PRINT LN
+*DF            OLD.EXP.CODE = EXP.CODE
+*DF            EXP.CHG = 0
+*DF          END
+*DF          EXP.CHG += CHARGES
+*DF          DIV.TOT=DIV.TOT+CHARGES
+        END
+      REPEAT
+      GOSUB 8000; * Print division totals
+*
+* Print Grand Totals
+*
+      PRINT SPACE(82) : STR('-',13)
+      PRINT
+      PRINT SPACE(82) : GRAND.TOT 'R26,#13'
+      PRINT SPACE(82) : STR('=',13)
+*
+*DF      STOP
+       RETURN
+*
+*----------------------------------------------------------------------
+*
+* INTERNAL SUBROUTINES
+*
+*----------------------------------------------------------------------
+*
+* Print divison break totals
+*
+8000   IF PREV.DIV # 'FIRST' THEN
+         NUM.OF.ITEMS=DCOUNT(DARRAY<1>,CHAR(253))
+         FOR X = 1 TO NUM.OF.ITEMS
+            LN = DARRAY<3,X> 'R#40' : SPACE(16) : DARRAY<1,X> 'R#12'
+            LN := SPACE(14) : DARRAY<2,X> 'R26,#13'
+            PRINT LN
+         NEXT X
+*DF         LN = PREV.DIV 'R#40' : SPACE(16) : OLD.EXP.CODE 'R#12'
+*DF         LN := SPACE(14) : EXP.CHG 'R26,#13'
+*DF         PRINT LN
+         GRAND.TOT=GRAND.TOT+DIV.TOT
+         PRINT SPACE(82) : STR('-',13)
+         PRINT SPACE(62) : 'TOTAL:' : SPACE(14) : DIV.TOT 'R26,#13'
+         PRINT
+         DIV.TOT=0
+      END
+      PREV.DIV=DIV
+*DF      OLD.EXP.CODE = EXP.CODE
+*DF      EXP.CHG = 0
+      RETURN
+
+*
+BUILD.TOTALS :
+*
+EOF = "N"
+
+DIVEXP.ARRAY = DIV.LIST   ;* Start with MV list of all divisions
+
+LOOP
+   READNEXT ID.UP ELSE EOF = "Y"
+UNTIL EOF = "Y" DO
+   ID.BILL = FIELD(ID.UP,"*",2,99)
+   READ REC FROM F.TRANS,ID.BILL THEN
+      REJ.FLAG=REC<39>
+      IF REJ.FLAG = 'R' THEN CONTINUE
+      EXP.CODE=REC<31>
+      DIV=REC<9>
+      CHARGES=REC<33>
+      TOT.CHARGES = SUM(CHARGES)
+
+      LOCATE DIV IN DIVEXP.ARRAY<1> BY 'AR' SETTING DPOS THEN
+         DIVEXP.ARRAY<2,DPOS> += TOT.CHARGES
+      END ELSE
+         DIVEXP.ARRAY=INSERT(DIVEXP.ARRAY,1,DPOS,0,DIV)
+         DIVEXP.ARRAY=INSERT(DIVEXP.ARRAY,2,DPOS,0,TOT.CHARGES)
+      END
+
+      DIV.EXP.LIST = DIVEXP.ARRAY<3,DPOS>
+      CONVERT @SVM TO @VM IN DIV.EXP.LIST
+
+      DIV.EXP.AMTS  = DIVEXP.ARRAY<4,DPOS>
+      CONVERT @SVM TO @VM IN DIV.EXP.AMTS
+      DIV.EXP.LIST<2> = DIV.EXP.AMTS
+
+      EXP.COUNT=DCOUNT(EXP.CODE,CHAR(253))
+      FOR II = 1 TO EXP.COUNT
+          W.EXP.CODE = EXP.CODE<1,II>
+          W.EXP.AMT  = CHARGES<1,II>
+          
+          LOCATE W.EXP.CODE IN DIV.EXP.LIST<1> BY 'AR' SETTING EPOS THEN
+             DIV.EXP.LIST<2,EPOS> += W.EXP.AMT
+          END ELSE
+             DIV.EXP.LIST=INSERT(DIV.EXP.LIST,1,EPOS,0,W.EXP.CODE)
+             DIV.EXP.LIST=INSERT(DIV.EXP.LIST,2,EPOS,0,W.EXP.AMT)
+          END
+
+          READ WORK.REC FROM F.WORK, DIV ELSE WORK.REC = ""
+
+          LOCATE W.EXP.CODE IN WORK.REC<1> BY 'AR' SETTING POS THEN
+             WORK.REC<2,POS> += W.EXP.AMT
+          END ELSE
+             WORK.REC=INSERT(WORK.REC,1,POS,0,W.EXP.CODE)
+             WORK.REC=INSERT(WORK.REC,2,POS,0,W.EXP.AMT)
+          END
+
+          WRITE WORK.REC ON F.WORK, DIV
+      NEXT II
+
+      NEW.DIV.EXP.LIST = DIV.EXP.LIST<1>
+      NEW.DIV.EXP.AMT  = DIV.EXP.LIST<2>
+
+      CONVERT @VM TO @SVM IN NEW.DIV.EXP.LIST
+      CONVERT @VM TO @SVM IN NEW.DIV.EXP.AMT
+
+      DIVEXP.ARRAY<3,DPOS> = NEW.DIV.EXP.LIST
+      DIVEXP.ARRAY<4,DPOS> = NEW.DIV.EXP.AMT
+      
+   END
+REPEAT 
+
+*
+RETURN
+*
+DO.REPORT :
+*
+   DIV.EXP.GTOT = 0
+   LINE=' '
+   GOSUB BUILD.EMAIL.REPORT
+   LINE=SPACE(55):'SUMMARY OF EXPENSES BY DIVISION'
+   GOSUB BUILD.EMAIL.REPORT
+   LINE=SPACE(55):'==============================='
+   GOSUB BUILD.EMAIL.REPORT
+
+   N.DIV = DCOUNT(DIVEXP.ARRAY<1>,@VM)
+   FOR DV = 1 TO N.DIV
+      ID.DIV    = DIVEXP.ARRAY<1,DV>
+      DIV.TOTAL = DIVEXP.ARRAY<2,DV>
+
+      READ DIV.REC FROM F.DIVISION,ID.DIV ELSE DIV.REC = ''
+      IF DIV.REC<1> NE "" THEN
+         DIV.ZIP = DIV.REC<1>
+      END ELSE
+         DIV.ZIP=' '
+      END
+
+      DIV.LOC.STR = DIV.REC<16> : ", ":DIV.REC<17> : ", ":DIV.ZIP
+
+      LINE=' '
+      GOSUB BUILD.EMAIL.REPORT
+      LINE=SPACE(5) : ID.DIV : " - " : DIV.LOC.STR
+      GOSUB BUILD.EMAIL.REPORT
+      LINE=' '
+      GOSUB BUILD.EMAIL.REPORT
+
+      TIMES=DCOUNT(DIVEXP.ARRAY<3,DV>,CHAR(252))
+      Y=0
+      FOR COUNT=1 TO TIMES
+            IF DIVEXP.ARRAY<4,DV,COUNT>'R0' = 0 ELSE
+               READV EXP.DESC FROM F.EXPENSE,DIVEXP.ARRAY<3,DV,COUNT>,1 ELSE
+                  EXP.DESC=' ~~~ Not on file ~~~'
+               END
+               IF DIVEXP.ARRAY<3,DV,COUNT> = EXP.DESC THEN EXP.DESC = ""
+               Y=Y+1
+               LINE=SPACE(20) : DIVEXP.ARRAY<3,DV,COUNT>'L#19':EXP.DESC'L#25':DIVEXP.ARRAY<4,DV,COUNT>'R26,#16'
+***               ROW.CNT += 1
+               GOSUB BUILD.EMAIL.REPORT
+***               Y.OUT.CHG.DUE+=DIVEXP.ARRAY<4,DV,COUNT>
+            END
+      NEXT COUNT
+
+      LINE=SPACE(8):DASH.1.COLS
+      GOSUB BUILD.EMAIL.REPORT
+      LINE= SPACE(64) : DIV.TOTAL 'R26,#16'
+      GOSUB BUILD.EMAIL.REPORT
+      DIV.EXP.GTOT += DIV.TOTAL
+   NEXT DV
+
+   LINE=SPACE(8):SPACE(57):'==============='
+   GOSUB BUILD.EMAIL.REPORT
+   LINE= SPACE(64) : DIV.EXP.GTOT 'R26,#16'
+   GOSUB BUILD.EMAIL.REPORT
+
+RETURN
+*
+BUILD.EMAIL.REPORT :
+
+PRINT LINE
+RETURN
+*
+   END

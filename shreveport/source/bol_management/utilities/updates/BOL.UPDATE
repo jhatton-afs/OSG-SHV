@@ -1,0 +1,432 @@
+********************************************************************************
+* Program     : FBBP BOL.UPDATE
+*
+* Description : Creates a spreadsheet for H&K Dallas based on the
+*               FB.BOL.CRX,01057 file and emails it to them. It is
+*               invoked by FB.3.1.NEW before weekly process emails
+*               are sent. Although dates are sent in, the select
+*               statement ignores those dates and returns all items
+*               in the file.
+*
+* Author      : James Barberousse
+*
+* Date        : April 26, 2002
+*
+*       Copyright (c) 2002 by AFS Logistics, LLC. - All Rights Reserved
+********************************************************************************
+* 020507 - JMK01 - C200612140004   RE: Shipment Information File via FTP FOR 00850 & 01433
+* 072312 - RLM01 - Sysaid #3073 - Replace former employees' email addresseswith current employees
+
+* Initialize general variables
+
+      PROMPT''
+      CALL GET.USER(USER)
+      USER=OCONV(USER,'MCU')
+      CALL CHANNEL(CH.NUM)
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+      MASK.CHAR='-'
+      PROG.NAME='BOL.UPDATE'
+      PROG.DESC='Create BOL Spreadsheet'
+      PACK.NAME='FREIGHT PAYMENT'
+
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'BOL.UPDATE' ; UPL.VOUT = ''                    ;* NPR_UPL 04/22/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/22/2010
+* Initialize inputs to defaults
+
+      CLIENT=''
+      CLIENT.NAME=''
+      CLIENT.STATUS=''
+      DARLING=0                          ; * JMK01
+      BEG.DATE=''
+      END.DATE=''
+
+* Display screen heading
+
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+      GOSUB DISPLAY.PROMPTS
+
+* Open files
+
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','EMAILDATA' TO F.EMAILDATA ELSE
+         CALL OPEN.ABORT('EMAILDATA',PROG.NAME)
+      END
+
+* Get client
+
+100:  MASK=CLIENT:STR(MASK.CHAR,5-LEN(CLIENT))
+      HELP='Enter Client ID or letters for search. [X]=Exit [EX]it'
+      CALL GEN.IN(23,4,MASK:@(-4),'',Q,0,20,'','',2,23,4,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX' OR QI='X'
+            GOTO EXIT.PROGRAM
+         CASE QI=''
+            IF CLIENT='' THEN GOTO 100
+            QI=CLIENT
+         CASE NOT(QI MATCHES '0N')
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            GOSUB DISPLAY.PROMPTS
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 100
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 100
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO 100
+            END CASE
+         CASE NUM(QI)
+            QI=QI'R%5'
+         CASE 1
+            GOTO 100
+      END CASE
+      CLIENT=QI
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT THEN
+         CLIENT.NAME=CLIENT.REC<2>
+         BEGIN CASE
+            CASE CLIENT.REC<30>='A'
+               CLIENT.STATUS='Active'
+            CASE 1
+               CLIENT.STATUS='Inactive'
+         END CASE
+      END ELSE
+         CALL ELINE('Client ':CLIENT:' not on file.')
+         GOTO 100
+      END
+      CRT @(23,4):CLIENT:' ':CLIENT.NAME:' (':CLIENT.STATUS:')':@(-4)
+      IF CLIENT='00850' OR CLIENT='01433' THEN DARLING=1     ; * JMK01
+
+* Get beginning date
+
+200:  IF BEG.DATE='' THEN MASK='MM/DD/YY' ELSE MASK=BEG.DATE'D2/'
+      HELP='Enter beginning date. [T]oday [X]=Exit [EX]it'
+      CALL GEN.IN(23,6,MASK,'DATE',Q,0,8,'','',2,23,6,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='X'
+            GOTO 100
+         CASE QI='T'
+            Q=DATE()
+         CASE QI=''
+            IF BEG.DATE='' THEN
+               CALL ELINE('Invalid entry. Try again.')
+               GOTO 200
+            END ELSE
+               Q=BEG.DATE
+            END
+         CASE ALPHA(QI)
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO 200
+      END CASE
+      BEG.DATE=Q
+      CRT @(23,6):BEG.DATE'D2/':@(-4)
+
+* Get ending date
+
+300:  IF END.DATE='' THEN MASK='MM/DD/YY' ELSE MASK=END.DATE'D2/'
+      HELP='Enter ending date. [T]oday [X]=Back [EX]it'
+      CALL GEN.IN(23,8,MASK,'DATE',Q,0,8,'','',2,23,8,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='X'
+            GOTO 200
+         CASE QI='T'
+            Q=DATE()
+         CASE QI=''
+            IF END.DATE='' THEN
+               CALL ELINE('Invalid entry. Try again.')
+               GOTO 300
+            END ELSE
+               Q=END.DATE
+            END
+         CASE ALPHA(QI)
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO 300
+      END CASE
+      END.DATE=Q
+      CRT @(23,8):END.DATE'D2/':@(-4)
+      IF END.DATE LT BEG.DATE THEN
+         CALL ELINE('Ending date is before beginning date. Try again.')
+         GOTO 300
+      END
+
+* Verify that selection criteria is correct
+
+1000: CRT @(0,22):'Select :'
+      MASK='C':MASK.CHAR
+      HELP='[C]ontinue [X]=Back [EX]it'
+      CALL GEN.IN(9,22,MASK,'',Q,0,2,'','',2,9,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI='C'
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='X'
+            CRT @(0,22):@(-4)
+            GOTO 300
+         CASE QI='C'
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO 1000
+      END CASE
+
+      CRT @(0,17):'Processing...':@(-3)
+
+      OPEN '','FB.BOL.CRX,':CLIENT TO F.BOL ELSE
+         CALL OPEN.ABORT('FB.BOL.CRX,':CLIENT,PROG.NAME)
+      END
+      OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS ELSE        ; * JMK01
+         CALL OPEN.ABORT('FB.BILLS.HIST,':CLIENT,PROG.NAME)  ; * JMK01
+      END                                ; * JMK01
+
+* Set beginning and ending dates for display
+
+      OUT.BEG.DATE=OCONV(BEG.DATE,'D2/')
+      BEG.MONTH=FIELD(OUT.BEG.DATE,'/',1)
+      BEG.DAY=FIELD(OUT.BEG.DATE,'/',2)
+      BEG.YEAR=FIELD(OUT.BEG.DATE,'/',3)
+
+      OUT.END.DATE=OCONV(END.DATE,'D2/')
+      END.MONTH=FIELD(OUT.END.DATE,'/',1)
+      END.DAY=FIELD(OUT.END.DATE,'/',2)
+      END.YEAR=FIELD(OUT.END.DATE,'/',3)
+
+* Select bills to process
+
+      STMT ='SSELECT FB.BOL.CRX,':CLIENT
+      *
+      * Take out date parameters and return everything JMB 6-12-2002
+      * STMT:=' WITH 4 >= "':BEG.DATE:'" AND WITH 4 <= "':END.DATE:'"'
+      *
+      STMT:=' BY 2 BY 4'
+      IF DARLING THEN                    ; * JMK01
+         STMT:=' WITH 50 >= "':BEG.DATE:' AND WITH 50 <= "':END.DATE:'" AND WITH 52 # "" AND WITH DAR.PPC = "PPA"'       ; * JMK01
+         STMT:=' OR WITH UPD.DT >= "':BEG.DATE:' AND WITH UPD.DT <= "':END.DATE:'" AND WITH 52 # "" AND WITH DAR.PPC = "PPA"'      ; * JMK01
+      END                                ; * JMK01
+      EXECUTE STMT PASSLIST CAPTURING OUTPUT
+      NUM.ITEMS=@SELECTED
+      IF NUM.ITEMS=0 THEN
+         CALL ELINE('There was no data selected for ':CLIENT.NAME:'.')
+         CALL ELINE('Spreadsheet NOT being written and NOT being emailed.')
+         GOTO EXIT.PROGRAM
+      END
+
+* Build the spreadsheet
+
+      BOL.SPREADSHEET=''
+
+      IF DARLING THEN                    ; * JMK01
+         LINE='Bill of Lading Accrual Spreadsheet for ':CLIENT:' ':CLIENT.NAME:' from ':OUT.BEG.DATE:' to ':OUT.END.DATE:' run by ':USER:' at ':OCONV(TIME(),'MTHS'):' on ':DATE()'D4-'        ; * JMK01
+      END ELSE                           ; * JMK01
+         LINE='Bill of Lading Cross Reference Spreadsheet for ':CLIENT:' ':CLIENT.NAME:' run by ':USER:' at ':OCONV(TIME(),'MTHS'):' on ':DATE()'D4-'
+      END                                ; * JMK01
+      BOL.SPREADSHEET<-1>=LINE
+
+      LINE=' '
+      BOL.SPREADSHEET<-1>=LINE
+
+      LINE=''
+      BEGIN CASE                         ; * JMK01
+         CASE DARLING=1                  ; * JMK01
+            LINE<1, 1>='BOL'             ; * JMK01
+            LINE<1, 2>='Ship Date'       ; * JMK01
+            LINE<1, 3>='Shipper'         ; * JMK01
+            LINE<1, 4>='Address'         ; * JMK01
+            LINE<1, 5>='City'            ; * JMK01
+            LINE<1, 6>='State'           ; * JMK01
+            LINE<1, 7>='Country'         ; * JMK01
+            LINE<1, 8>='Zip'             ; * JMK01
+            LINE<1, 9>='Consignee'       ; * JMK01
+            LINE<1,10>='Address'         ; * JMK01
+            LINE<1,11>='City'            ; * JMK01
+            LINE<1,12>='State'           ; * JMK01
+            LINE<1,13>='Country'         ; * JMK01
+            LINE<1,14>='Zip'             ; * JMK01
+            LINE<1,15>='Weight'          ; * JMK01
+            LINE<1,16>='IOT'             ; * JMK01
+            LINE<1,17>='Pro'             ; * JMK01
+            LINE<1,18>='Loc'             ; * JMK01
+            LINE<1,19>='PPC'             ; * JMK01
+            LINE<1,20>='Exp'             ; * JMK01
+            LINE<1,21>=''                ; * JMK01
+            LINE<1,22>='Action'          ; * JMK01
+            LINE<1,23>='Class'           ; * JMK01
+            LINE<1,24>='Weight'          ; * JMK01
+            LINE<1,25>='ShipMeth'        ; * JMK01
+            LINE<1,26>='Description'     ; * JMK01
+            LINE<1,27>='AFS Carrier#'    ; * JMK01
+            LINE<1,28>='Estimated Charge'          ; * JMK01
+            LINE<1,29>='Actual Charge'   ; * JMK01
+         CASE 1                          ; * JMK01
+            LINE<1,1>='H&K Sales Order Number'
+            LINE<1,2>='H&K Suffix'
+            LINE<1,3>='H&K Invoice Amount'
+            LINE<1,4>='H&K Invoice Date'
+            LINE<1,5>='AFS Paid'
+            LINE<1,6>='AFS Date Updated'
+            LINE<1,7>='H&K Invoice Number-Suffix'
+            LINE<1,8>='H&K General Ledger Number'
+      END CASE                           ; * JMK01
+      BOL.SPREADSHEET<-1>=LINE
+
+      LINE=' '
+      BOL.SPREADSHEET<-1>=LINE
+
+      DONE=0
+      LOOP
+         READNEXT BOL.ID ELSE DONE=1
+      UNTIL DONE DO
+         READ BOL.DA FROM F.BOL,BOL.ID THEN
+            LINE=''
+            BEGIN CASE                   ; * JMK01
+               CASE DARLING=1            ; * JMK01
+                  LINE<1, 1>=BOL.ID      ; * JMK01
+                  LINE<1, 2>=OCONV(BOL.DA<2>,'D4/')          ; * JMK01
+                  LINE<1, 3>=BOL.DA<10>  ; * JMK01
+                  LINE<1, 4>=BOL.DA<11>  ; * JMK01
+                  LINE<1, 5>=BOL.DA<12>  ; * JMK01
+                  LINE<1, 6>=BOL.DA<13>  ; * JMK01
+                  LINE<1, 7>=BOL.DA<14>  ; * JMK01
+                  LINE<1, 8>=BOL.DA<15>  ; * JMK01
+                  LINE<1, 9>=BOL.DA<16>  ; * JMK01
+                  LINE<1,10>=BOL.DA<17>  ; * JMK01
+                  LINE<1,11>=BOL.DA<18>  ; * JMK01
+                  LINE<1,12>=BOL.DA<19>  ; * JMK01
+                  LINE<1,13>=BOL.DA<20>  ; * JMK01
+                  LINE<1,14>=BOL.DA<21>  ; * JMK01
+                  LINE<1,15>=BOL.DA<22>  ; * JMK01
+                  LINE<1,16>=BOL.DA<23>  ; * JMK01
+                  LINE<1,17>=BOL.DA<26>  ; * JMK01
+                  LINE<1,18>=BOL.DA<27>  ; * JMK01
+                  LINE<1,19>=BOL.DA<28>  ; * JMK01
+                  LINE<1,20>=BOL.DA<29>  ; * JMK01
+                  LINE<1,21>=BOL.DA<30>  ; * JMK01
+                  LINE<1,22>=BOL.DA<31>  ; * JMK01
+                  LINE<1,23>=CHANGE(BOL.DA<32>,@VM,'/')      ; * JMK01
+                  LINE<1,24>=CHANGE(BOL.DA<33>,@VM,'/')      ; * JMK01
+                  LINE<1,25>=BOL.DA<34>  ; * JMK01
+                  LINE<1,26>=BOL.DA<35>  ; * JMK01
+                  LINE<1,27>=BOL.DA<36>  ; * JMK01
+                  LINE<1,28>=OCONV(BOL.DA<37,1>,'MD2')       ; * JMK01
+                  LINE<1,29>=OCONV(BOL.DA< 3>,'MD2')         ; * JMK01
+               CASE 1                    ; * JMK01
+                  LINE<1,1>=FIELD(BOL.ID,'-',1)
+                  LINE<1,2>=FIELD(BOL.ID,'-',2)
+                  LINE<1,3>=OCONV(BOL.DA<1>,'MR2')
+                  LINE<1,4>=OCONV(BOL.DA<2>,'D4-')
+                  LINE<1,5>=OCONV(BOL.DA<3>,'MR2')
+                  LINE<1,6>=OCONV(BOL.DA<4>,'D4-')
+                  LINE<1,7>=BOL.DA<8>
+                  LINE<1,8>=BOL.DA<9>
+            END CASE                     ; * JMK01
+            BOL.SPREADSHEET<-1>=LINE
+         END
+      REPEAT
+
+      BOL.SPREADSHEET=CHANGE(BOL.SPREADSHEET,@VM,TAB)
+
+      * Write file to EmailData directory and email it automatically
+      SEND.EMAIL=1
+      EMAIL.OUT=''
+      EMAIL.OUT<1>=TRIM(CLIENT.REC<125>)           ; * To: Email addresses
+      IF EMAIL.OUT<1>='' THEN            ; * No To: addresses
+         SEND.EMAIL=0
+         CALL ELINE('No TO: email addresses on file for ':CLIENT.NAME:'.')
+         CALL ELINE('BOL spreadsheet IS NOT being emailed to ':CLIENT.NAME:'.')
+      END
+      EMAIL.OUT<2>=TRIM(CLIENT.REC<126>)           ; * CC: Email addresses
+      EMAIL.OUT<3>=TRIM(CLIENT.REC<127>)           ; * BCC: Email addresses
+      IF DARLING THEN                    ; * JMK01
+******         EMAIL.OUT<1>='MKerbow@afs.net'  ; * JMK01
+         EMAIL.OUT<2>=''
+         EMAIL.OUT<3>=''
+      END                                ; * JMK01
+      EMAIL.OUT<4>='Reports@afs.net'     ; * From Email address
+      EMAIL.OUT<5>=CLIENT:' - ':CLIENT.NAME:' BOL Spreadsheet'         ; * Subject of Email
+      * EMAIL.OUT<5>:=' for ':OUT.BEG.DATE:' to ':OUT.END.DATE
+
+      * Email body
+      EMAIL.OUT<6,-1>='AFS Logistics, LLC.                                        Phone: 318.798.2111'
+*DF      EMAIL.OUT<6,-1>='330 Marshall Street, Suite 400                               FAX: 318.797.3628'
+      EMAIL.OUT<6,-1>='670 Emberwood Drive                                          FAX: 318.797.3628'
+*DF      EMAIL.OUT<6,-1>='Shreveport, LA 71101                                      WWW.AFSLogistics.Com'
+      EMAIL.OUT<6,-1>='Shreveport, LA 71106                                      WWW.AFSLogistics.Com'
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>='This report includes all bills processed.'      ; * from ':OUT.BEG.DATE:' thru ':OUT.END.DATE:':'
+      EMAIL.OUT<6,-1>='------------------------------------------------------------------------------'
+
+      EMAIL.PATH='E:\ARDENT\PUBLIC\EMAILDATA\'
+      EMAIL.FILENAME=CLIENT:'-':BEG.YEAR:BEG.MONTH:BEG.DAY:'-':END.YEAR:END.MONTH:END.DAY:'-BOL.XLS'
+
+      WRITE BOL.SPREADSHEET ON F.EMAILDATA,EMAIL.FILENAME THEN
+         IF DARLING THEN                 ; * JMK01
+            EMAIL.OUT<6,-1>='BOL Accrual Cross-Reference Excel Spreadsheet      ':EMAIL.FILENAME     ; * JMK01
+         END ELSE                        ; * JMK01
+            EMAIL.OUT<6,-1>='BOL Cross-Reference Excel Spreadsheet              ':EMAIL.FILENAME
+         END                             ; * JMK01
+         EMAIL.OUT<11,-1>=EMAIL.PATH:EMAIL.FILENAME
+      END ELSE
+         SEND.EMAIL=0
+         CALL ELINE('Could not write ':EMAIL.FILENAME:' - Call IS Department.')
+         CALL ELINE('BOL spreadsheet IS NOT being emailed to ':CLIENT.NAME:'.')
+      END
+
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>='                         Thank You For Your Business'
+
+      EMAIL.OUT<7>=1                     ; * Auto format (add carriage returns to end of text)
+
+      * Add our email addresses to the list of addresses for record keeping
+      IF DARLING ELSE                    ; * JMK01
+*     EMAIL.OUT<2,-1>='J-ames@afs.net';         * CC: Email addresses
+*****         EMAIL.OUT<2,-1>='Myra@afs.net'  ; * CC: Email addresses
+*        EMAIL.OUT<2,-1>='oweninfo@afs.net'  ; * CC: Email addresses  ; * RLM01
+*        EMAIL.OUT<2,-1>='bfranklin@afs.net'  ; * CC: Email addresses  ; * RLM01
+      END                                ; * JMK01
+
+*     IF USER='J-AMES' THEN
+*        EMAIL.OUT<1>='J-ames@afs.net';         * To: Email addresses
+*        EMAIL.OUT<2>='oweninfo@afs.net';          * CC: Email addresses
+*        EMAIL.OUT<3>='';                               * BCC: Email addresses
+*     END
+      IF SEND.EMAIL THEN
+         VIN=EMAIL.OUT
+         VOUT=''
+         CALL SENDMAIL(VIN,VOUT)
+      END
+
+      GOTO EXIT.PROGRAM
+
+********************************************************************************
+
+DISPLAY.PROMPTS:***
+      CRT @(0,4):'Enter Client ID      :'
+      CRT @(0,6):'Enter Beginning Date :'
+      CRT @(0,8):'Enter Ending Date    :'
+      RETURN
+
+********************************************************************************
+
+EXIT.PROGRAM:***
+      CRT @(0,17):@(-3)
+      CRT @(0,22):
+      STOP
+   END

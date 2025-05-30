@@ -1,0 +1,166 @@
+*** Attempt to match FB.BILLS.HIST records to FCD.XREF records
+*
+*
+* 100813 - JMK01 - SysAid#7335 - FBBP FIND.FCD.CLIENTS has an error in LINE 104.
+STMT = 'SLEEP 23:45'
+CRT STMT
+EXECUTE STMT
+*
+*
+      EXECUTE 'DATE'
+      ***
+      *** OPEN FILES
+      ***
+      OPEN 'FCD.XREF' TO F.XREF ELSE
+        CRT 'COULD NOT OPEN FCD.XREF FILE'
+        STOP
+      END
+      OPEN 'BP.JCW' TO F.JCW ELSE
+        CRT 'COULD NOT OPEN BP.JCW FILE'
+        STOP
+      END
+      ***
+      *** GET LIST OF DONE CLIENTS
+      ***
+      READ DONE.REC FROM F.JCW, 'DONE' ELSE
+        CRT 'COULD NOT READ THE DONE RECORD FROM BP.JCW'
+        STOP
+      END
+      ***
+      *** GET LIST OF CLIENTS TO PROCESS
+      ***
+      STMT = 'GET-LIST JCW.CLIENTS'
+      CRT STMT
+      EXECUTE STMT RTNLIST CLIENT.LIST CAPTURING MSG
+      IF @SELECTED < 1 THEN
+        CRT 'NO CLIENT RECORDS SELECTED'
+        STOP
+      END
+      DONE = 0
+      LOOP UNTIL DONE DO
+        READNEXT CLIENT.ID FROM CLIENT.LIST THEN
+          LOCATE CLIENT.ID IN DONE.REC BY 'AR' SETTING POS THEN GOTO NEXT.CLIENT
+          STMT = 'SELECT FB.BILLS.HIST,':CLIENT.ID
+          CRT STMT
+          EXECUTE 'TIME' CAPTURING START.TIME
+          EXECUTE STMT RTNLIST XREF.LIST CAPTURING MSG
+          IF @SELECTED < 1 THEN GOTO NEXT.CLIENT
+          REC.CNT = @SELECTED
+          CRT REC.CNT:' RECORDS SELECTED FROM FB.BILLS.HIST,':CLIENT.ID
+          OPEN 'FB.BILLS.HIST,':CLIENT.ID TO F.HIST ELSE
+            CRT 'COULD NOT OPEN FB.BILLS.HIST,':CLIENT.ID
+            GOTO NEXT.CLIENT
+          END
+          *** PROCESS A CLIENT SUB-FILE
+          DONE1 = 0
+          LOOP UNTIL DONE1 DO
+            READNEXT XREF.ID FROM XREF.LIST THEN
+              READ XREF.REC FROM F.XREF, XREF.ID THEN
+                READ BILL.REC FROM F.HIST, XREF.ID THEN
+                  *** DISPLAY WARNINGS IF FCD.XREF RECORD IS "DIFFERENT"
+                  IF XREF.REC<4> # '' THEN
+                    GOSUB CHECK.DUP
+                    GOTO NEXT.BILL
+                  END
+                  IF XREF.REC<3> # '' THEN
+                    GOSUB CLIENT.DUP
+                    GOTO NEXT.BILL
+                  END
+                  *** TEST FOR A COMPLETE MATCH
+                  BILL.CHK.NUM = BILL.REC<14>
+                  BILL.AMT = BILL.REC<8>
+                  FCD.ID = XREF.REC<1>
+                  XREF.CHK.NUM = OCONV(FCD.ID,'G0*2')
+                  XREF.AMT = XREF.REC<2>
+                  IF BILL.CHK.NUM = XREF.CHK.NUM AND BILL.AMT = XREF.AMT THEN
+                    XREF.REC<3> = CLIENT.ID
+                    WRITE XREF.REC TO F.XREF, XREF.ID ELSE
+                      CRT 'COULD NOT WRITE FCD.XREF RECORD ':XREF.ID
+                    END
+                    GOTO NEXT.BILL
+                  END
+                  *** DISPLAY WARNINGS ABOUT INCOMPLETE MATCHES
+                  IF BILL.CHK.NUM # XREF.CHK.NUM THEN
+*                   CRT 'CHECK NUMBER MISMATCH IN ':XREF.ID:'!'
+*                   CRT 'BILL.CHK.NUM = ':BILL.CHK.NUM
+*                   CRT 'XREF.CHK.NUM = ':XREF.CHK.NUM
+                  END
+                  IF BILL.AMT # XREF.AMT THEN
+*                   CRT 'AMOUNT MISMATCH IN ':XREF.ID:'!'
+*                   CRT 'BILL.AMT = ':BILL.AMT
+*                   CRT 'XREF.AMT = ':XREF.AMT
+                  END
+                END ELSE
+                  CRT 'COULD NOT READ FB.BILLS.HIST,':CLIENT.ID:' RECORD ':XREF.ID
+                  GOTO NEXT.BILL
+                END
+              END
+            END ELSE
+              DONE1 = 1
+            END
+NEXT.BILL:
+          REPEAT
+          EXECUTE 'TIME' CAPTURING END.TIME
+          CRT REC.CNT:' records processed; started ':START.TIME:'; finnished ':END.TIME
+*         LOCATE CLIENT.ID IN DONE.REC 'AR' SETTING POS ELSE           ; * JMK01
+          LOCATE CLIENT.ID IN DONE.REC BY 'AR' SETTING POS ELSE        ; * JMK01
+            INS CLIENT.ID BEFORE DONE.REC<POS>
+          END
+          WRITE DONE.REC TO F.JCW, 'DONE' ELSE
+            CRT 'COULD NOT WRITE DONE RECORD TO BP.JCW'
+          END
+        END ELSE
+          DONE = 1
+        END
+NEXT.CLIENT:
+      REPEAT
+
+
+
+CHECK.DUP:
+      CHK.MATCHED = 0
+      BILL.CHK.NUM = BILL.REC<14>
+      CHK.NUMS = XREF.REC<1>
+      CHK.CNT = DCOUNT(CHK.NUMS,CHAR(253))
+      FOR I = 1 TO CHK.CNT
+        FCD.ID = CHK.NUMS<1,I>
+        CURR.CHK.NUM = OCONV(FCD.ID,'G0*2')
+        IF CURR.CHK.NUM = BILL.CHK.NUM THEN
+          CHK.MATCHED = 1
+          POS = I
+          EXIT
+        END
+      NEXT I
+      IF CHK.MATCHED = 0 THEN
+*       CRT 'CHECK NUMBER NOT MATCHED ON ':XREF.ID
+*       CRT 'BILL.CHK.NUM = ':BILL.REC<14>
+*       CRT 'XREF.CHK.NUMS = ':CHK.NUMS
+        RETURN
+      END
+      IF XREF.REC<2,POS> # BILL.REC<8> THEN
+*       CRT 'AMOUNT NOT MATCHED ON ':XREF.ID
+*       CRT 'BILL AMOUNT = ':BILL.REC<8>
+*       CRT 'XREF AMOUNTS = ':XREF.REC<2>
+        RETURN
+      END
+      XREF.REC<3,POS> = CLIENT.ID
+      WRITE XREF.REC TO F.XREF, XREF.ID ELSE
+        CRT 'COULD NOT WRITE FCD.XREF RECORD ':XREF.ID
+      END
+      RETURN
+
+
+
+CLIENT.DUP:
+      BILL.CHK.NUM = BILL.REC<14>
+      BILL.AMT = BILL.REC<8>
+      FCD.ID = XREF.REC<1>
+      XREF.CHK.NUM = OCONV(FCD.ID,'G0*2')
+      XREF.AMT = XREF.REC<2>
+      IF BILL.CHK.NUM = XREF.CHK.NUM AND BILL.AMT = XREF.AMT THEN
+        CRT 'MATCHED, BUT CLIENT ALREADY SET; ':XREF.ID
+        CRT 'CLIENT.ID = ':CLIENT.ID
+        CRT 'FCD CLIENT = ':XREF.REC<3>
+      END
+      RETURN
+

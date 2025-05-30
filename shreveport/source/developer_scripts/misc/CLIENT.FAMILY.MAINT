@@ -1,0 +1,437 @@
+****************************************************
+* Program name : CLIENT.FAMILY.MAINT
+* Author       : BOB MARKEY
+* Date written : NOVEMBER 07, 2011
+* Library      : EDIBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* PROGRAM TO UPDATE FILE 'CLIENT.FAMILY' WITH A LIST OF ASSOCIATED CLIENTS
+*         FOR VARIOUS LOGICAL RELATIONSHIPS (i.e., EDI, BOL and RATE).
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 08:41:40 on 03/21/2019.
+*
+* Start modification history
+* 03/21/19 : NKH01 : ACCU-316 Modified CREATE-FILE file sizes
+* End modification history
+*
+*******************************************************
+$OPTIONS EXEC.EQ.PERF
+ UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'CLIENT.FAMILY.MAINT' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+ CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+$OPTIONS INFO.ABORT
+$OPTIONS HEADER.EJECT
+      ERRMSG=''
+*
+* Initialize variables
+*
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+      PROMPT ''
+      INPUT CLIENT.FAMILY.TYPE
+      MASK.CHAR='-'
+      DISP.REC=''
+      LOCK.LIST=''
+      CALL GET.USER(USER)
+      CLIENT.ID=''
+*
+* Get company file information
+*
+      PROG.NAME='CLIENT.FAMILY.MAINT'
+      PROG.DESC=CLIENT.FAMILY.TYPE:' CLIENT FAMILY ENTRY AND MAINTENANCE'
+      PACK.NAME='FREIGHT PAYMENT'
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CLIENT.TITLE=''
+*
+* Open files
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CLIENT.FAMILY' TO F.CLIENT.FAMILY ELSE 
+         CALL OPEN.ABORT('CLIENT.FAMILY',PROG.NAME)   
+      END                                             
+*
+* Prompt for client
+*
+50:
+*
+      MASK='Enter Client --------------------'
+      HELP='Enter Client Number or Name. [L]=List Families [X]=Exit [EX]=Exit'
+      CALL GEN.IN(0,22,MASK,'',Q,0,20,'','',2,13,22,0,QI,HELP,0,23)   
+      QI=TRIM(OCONV(QI,'MCU'))
+      BEGIN CASE
+         CASE QI='EX' OR QI='X'
+            GOTO EXIT.PROGRAM
+         CASE QI='L'
+            GOSUB POP.UP.LIST.OF.CLIENT.FAMILIES
+            CRT @(0,2):@(-3):CLIENT.TITLE
+            IF SELECTION='NO DATA' THEN GOTO 50
+            IF SELECTION='E' THEN GOTO 50  
+            QI=CLIENT.ID
+         CASE NOT(QI MATCHES '0N') AND QI#''
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):@(-3):CLIENT.TITLE
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  CALL ELINE('No matches found.')
+                  GOTO 50
+               CASE DCOUNT(ITEM.LIST,@AM) GT 1
+                  GOTO 50
+               CASE 1
+                  DATA ITEM.LIST
+                  GOTO 50
+            END CASE
+         CASE QI=''
+            IF CLIENT.ID='' THEN
+               GOTO 50
+            END ELSE
+               QI=CLIENT.ID
+            END
+         CASE NOT(NUM(QI))
+            CALL ELINE('Invalid Client ID.')
+            GOTO 50
+      END CASE
+      CLIENT.ID=QI'R%5'   
+
+*
+*     Read client record
+*
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         CALL ELINE('Client ':CLIENT.ID:' was not found.')
+         CLIENT.ID=''
+         GOTO 50
+      END
+*
+      CLIENT.FAMILY.ID=CLIENT.ID:'*':CLIENT.FAMILY.TYPE  
+      READ CLIENT.FAMILY.REC FROM F.CLIENT.FAMILY,CLIENT.FAMILY.ID THEN   
+         DISP.REC=CLIENT.FAMILY.REC<1>
+      END ELSE   
+         DISP.REC=''
+         CLIENT.FAMILY.REC=''
+      END
+*
+      CL.STATUS=CLIENT.REC<30>
+      BEGIN CASE
+         CASE (CL.STATUS='I' OR CL.STATUS='O') AND CLIENT.FAMILY.REC=''
+            MSG='Client ':CLIENT.ID:' is not in Active status, '
+            MSG=MSG:'unable to be a Family member.'
+            CALL ELINE(MSG)
+            GOTO 50
+         CASE CL.STATUS='I' OR CL.STATUS='O'
+            MSG='Client ':CLIENT.ID:' is not Active, '
+            MSG='change status or delete from Family.'
+            CALL ELINE(MSG)
+      END CASE
+*
+      DISP.REC.ORG=DISP.REC
+      CLIENT.TITLE=CLIENT.ID:' ':CLIENT.REC<2>
+      CALL CENTER(CLIENT.TITLE,80)
+      CRT @(0,2):@(-3):CLIENT.TITLE
+*
+* First page of Family members
+*
+      PAGE=1
+      GOSUB 9000  ; * Display array
+*
+* Enter selection code
+*
+100:
+*
+      VAL.COUNT=DCOUNT(DISP.REC<1>,@VM) 
+      LAST.PAGE=INT(VAL.COUNT/18)       
+*
+      HELP="Enter line # 'B'=Back 'T'=Top ''=Next page 'U'=Update 'X'=Restart 'EX'=Exit"
+      CALL GEN.IN(0,22,"Enter line number. ###",'',Q,0,3,'','',1,-3,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI=''
+            PAGE=PAGE+1
+            T.START=(PAGE*18)-17
+            T.STOP=START+17
+            IF DISP.REC<1,T.STOP> = "" THEN
+               CALL ELINE("No more pages")
+            END ELSE
+               GOSUB 9000  ; * Display array
+            END
+         CASE QI='B'
+            PAGE=PAGE-1
+            IF PAGE=0 THEN
+               CALL ELINE("You're on the first page")
+               PAGE=1
+            END
+            GOSUB 9000  ; * Display array
+         CASE QI='T'
+            PAGE=1
+            GOSUB 9000  ; * Display array
+         CASE QI='X'
+            DISP.REC.ORG=''
+            DISP.REC=''
+            CRT @(0,2):@(-3)
+            GOTO 50
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE NUM(QI)
+            SEL=QI
+            IF SEL LT START ! SEL GT SSTOP THEN
+               CALL ELINE('Invalid selection.')
+               GOTO 100
+            END
+            GOSUB 8000
+         CASE QI='U'
+            GOSUB 200; * Remove null values from DISP.REC
+            GOSUB 300; * Sort DISP.REC by CLIENT.ID
+            IF DISP.REC NE DISP.REC.ORG THEN
+               LOCK.LIST=DISP.REC.ORG
+               GOSUB 400; * Lock existing CLIENT.FAMILY records
+               GOSUB 500; * Delete existing CLIENT.FAMILY records
+               LOCK.LIST=DISP.REC
+               GOSUB 400; * Lock new CLIENT.FAMILY records
+               GOSUB 600; * Write new CLIENT.FAMILY records
+            END
+            DISP.REC.ORG=''
+            DISP.REC=''
+            CRT @(0,2):@(-3)
+            GOTO 50
+         CASE 1
+            CALL ELINE('Invalid selection.')
+      END CASE
+      GOTO 100
+*
+EXIT.PROGRAM:
+*
+STOP
+*
+*------------------------------------------------------------------------
+* INTERNAL SUBROUTINES
+*------------------------------------------------------------------------
+*
+POP.UP.LIST.OF.CLIENT.FAMILIES:                          
+*     Display list of client families
+      CLIENT.ID=''                                          
+      CL.FAMILY.LIST=''                                        
+      STMT="SSELECT CLIENT.FAMILY BY MEMBERS BY CLIENT.NAME"
+      STMT=STMT:' WITH FAMILY.TYPE "':CLIENT.FAMILY.TYPE:'"'
+      EXECUTE STMT CAPTURING OUTPUT                            
+      NUM.CLIENT.FAMILIES=@SELECTED                                 
+      IF NUM.CLIENT.FAMILIES < 1 THEN                               
+         CALL ELINE('No Client Families on file.')       
+         SELECTION='NO DATA'                                   
+         RETURN                                                
+      END                                                      
+      DONE=0                                                   
+      FAMILY.NUM=0
+      FAMILY.MEMBERS=''
+      LOOP                                                     
+         READNEXT CLIENT.FAMILY.ID ELSE DONE=1                     
+      UNTIL DONE=1                                             
+         READ CLF.REC FROM F.CLIENT.FAMILY,CLIENT.FAMILY.ID THEN
+            CL.ID=FIELD(CLIENT.FAMILY.ID,'*',1)
+            READ CL.REC FROM F.CLIENTS,CL.ID THEN
+               DLINE=CLIENT.FAMILY.ID'L%9'               
+               DLINE=DLINE:SPACE(10):CL.REC<2>'L#49'    
+               IF CLF.REC<1> NE FAMILY.MEMBERS THEN
+                  FAMILY.NUM=FAMILY.NUM+1
+                  FAMILY.MEMBERS=CLF.REC<1>
+               END
+               DLINE=DLINE:SPACE(3):FAMILY.NUM'R#7'
+               CL.FAMILY.LIST<-1>=DLINE                        
+               DLINE=''                                        
+            END                                                
+         END
+      REPEAT                                                   
+      LIST.ATT.CNT = DCOUNT(CL.FAMILY.LIST,@AM)                
+      FOR X=1 TO LIST.ATT.CNT                                  
+         CL.FAMILY.LIST<X>:=SPACE(79-LEN(CL.FAMILY.LIST<X>))   
+      NEXT X                                                   
+      HEADING='Family ID':SPACE(10):'Client Name':SPACE(41):'Family#'
+      HEADING:=SPACE(79-LEN(HEADING))                          
+      SELECTION=''                                             
+      CRT @(0,23):'Select Client Family record.':@(-4): 
+      CALL POP.UP.LIST(CL.FAMILY.LIST,HEADING,7,16,SELECTION)  
+      IF SELECTION#'E' THEN ; * User made selection from list  
+         CLIENT.ID=TRIM(CL.FAMILY.LIST<SELECTION>[1,5])    
+      END                                                      
+      RETURN ; * from POP.UP.LIST.FAMILY.MEMBERS internal subr 
+*
+200 * Remove null values from DISP.REC
+*
+      X=DCOUNT(DISP.REC<1>,CHAR(253))
+      FOR I=X TO 1 STEP -1
+         IF DISP.REC<1,I>='' THEN
+            DISP.REC=DELETE(DISP.REC,1,I)
+         END
+      NEXT I
+      RETURN
+*
+300 * Sort DISP.REC by CLIENT.ID
+*
+      SORTED.CFLIST=''
+      MEMBER.CNT=DCOUNT(DISP.REC,@VM)
+      FOR I=1 TO MEMBER.CNT
+         CL.ID=DISP.REC<1,I>
+         LOCATE CL.ID IN SORTED.CFLIST<1> BY "AR" SETTING VPOS ELSE
+            SORTED.CFLIST=INSERT(SORTED.CFLIST,1,VPOS;CL.ID)
+         END
+      NEXT I
+*     Make sure the current client ID is a member in FAMILY
+      IF DISP.REC NE '' THEN
+         LOCATE CLIENT.ID IN SORTED.CFLIST<1> BY "AR" SETTING VPOS ELSE
+            SORTED.CFLIST=INSERT(SORTED.CFLIST,1,VPOS;CLIENT.ID)
+         END
+      END
+      DISP.REC=SORTED.CFLIST
+      RETURN
+*
+400 * Lock CLIENT.FAMILY records
+*
+      LOCK.LIST.CNT=DCOUNT(LOCK.LIST,@VM)
+      FOR I=1 TO LOCK.LIST.CNT
+         CLIENT.FAMILY.ID=LOCK.LIST<1,I>:'*':CLIENT.FAMILY.TYPE
+         READU MEMBER.REC FROM F.CLIENT.FAMILY,CLIENT.FAMILY.ID LOCKED
+            FIND.LOCKED.NAME = CLIENT.FAMILY.ID
+            GOSUB FIND.LOCKED
+            GOTO 400
+         END THEN
+            NULL
+         END ELSE
+            NULL
+         END
+      NEXT I
+      RETURN
+*--------------------------------------------------------------------------
+* FIND.LOCKED:
+* Find the person who has locked the file FIND.LOCKED.NAME and displays it
+* on the screen
+*--------------------------------------------------------------------------
+FIND.LOCKED:
+
+      STMT = 'LIST.READU EVERY'
+      EXECUTE STMT CAPTURING OUTPUT
+      FL.LEN = DCOUNT(OUTPUT,@AM)
+      FL.USER = 'Someone'
+      FOUND = FALSE
+
+      FOR X = 1 TO FL.LEN UNTIL FOUND
+         T.USER = OCONV(TRIM(OUTPUT<X>[44,9]),'MCU')
+         T.FILE = TRIM(OUTPUT<X>[53,17])
+         IF T.FILE = FIND.LOCKED.NAME THEN
+            FL.USER = T.USER
+            FOUND = TRUE
+         END
+      NEXT
+
+      CALL ELINE(FL.USER:" is in CLIENT.FAMILY record ":FIND.LOCKED.NAME:". Find them and tell them to get out of that CLIENT.FAMILY record!")
+
+      RETURN
+*
+500 * Delete existing CLIENT.FAMILY records
+*
+      MEMBER.ORG.CNT=DCOUNT(DISP.REC.ORG,@VM)
+      FOR I=1 TO MEMBER.ORG.CNT
+         MEMBER.ID=DISP.REC.ORG<1,I>:'*':CLIENT.FAMILY.TYPE
+         DELETE F.CLIENT.FAMILY,MEMBER.ID
+      NEXT I
+      RELEASE F.CLIENT.FAMILY
+      RETURN
+*
+600 * Write new CLIENT.FAMILY records
+*
+      MEMBER.CNT=DCOUNT(DISP.REC,@VM)
+      FOR I=1 TO MEMBER.CNT
+         MEMBER.ID=DISP.REC<1,I>:'*':CLIENT.FAMILY.TYPE
+         WRITE DISP.REC ON F.CLIENT.FAMILY,MEMBER.ID
+         CL.ID=FIELD(MEMBER.ID,'*',1)
+         GOSUB CHECK.EDI.FILE.EXISTS
+      NEXT I
+      RELEASE F.CLIENT.FAMILY
+      RETURN
+*
+CHECK.EDI.FILE.EXISTS:
+*
+      OPEN '','EDI.BILLS.HIST,':CL.ID TO F.TO.EDI.BILLS.HIST ELSE
+         STMT = 'CREATE-FILE DATA EDI.BILLS.HIST,':CL.ID:' 1009,2'      ; * NKH01
+         EXECUTE STMT CAPTURING MSG
+         OPEN '','EDI.BILLS.HIST,':CL.ID TO F.TO.EDI.BILLS.HIST ELSE
+            CALL ELINE('Cannot open EDI.BILLS.HIST,':CL.ID:'. Call Help Desk.')
+         END
+      END
+      RETURN
+*
+* Edit Client Family members
+*
+8000: ROW=3+REM(SEL,18)
+      IF ROW=3 THEN ROW=21
+      MEMBER=DISP.REC<1,SEL>
+8010: HELP="Enter Client ID or Name of Family Member. ''=Accept. 'D'=Delete. 'X'=Exit."
+      CALL GEN.IN(5,ROW,MEMBER'R#14','',Q,0,50,'','',2,5,ROW,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCT')   
+      BEGIN CASE
+         CASE QI='X'
+            GOSUB 9000; * Display array
+            RETURN
+         CASE QI='D'
+            DISP.REC=DELETE(DISP.REC,1,SEL)
+            GOSUB 9000  ; * Display array
+            RETURN
+         CASE NOT(QI MATCHES '0N') AND QI#''
+            SAVE.ROW=ROW
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):@(-3):CLIENT.TITLE
+            GOSUB 9000; * Display array
+            ROW=SAVE.ROW
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  CALL ELINE('No matches found.')
+                  GOTO 8010
+               CASE DCOUNT(ITEM.LIST,@AM) GT 1
+                  GOTO 8010
+               CASE 1
+                  DATA ITEM.LIST
+                  GOTO 8010
+            END CASE
+         CASE QI=''
+            Q=MEMBER
+            QI=MEMBER
+      END CASE
+      MEMBER=QI'R%5'
+*
+      READ MEMBER.REC FROM F.CLIENTS,MEMBER ELSE MEMBER.REC=''
+*
+      CL.STATUS=MEMBER.REC<30>
+      IF CL.STATUS='I' OR CL.STATUS='O' THEN
+         MSG='Client ':MEMBER:' is not in Active status, '
+         MSG=MSG:'unable to be a Family member.'
+         CALL ELINE(MSG)
+         MEMBER=''
+         GOTO 8010
+      END
+*
+      DISP.REC.ORG=DISP.REC
+      CLIENT.TITLE=CLIENT.ID:' ':CLIENT.REC<2>
+      CALL CENTER(CLIENT.TITLE,80)
+      CRT @(0,ROW):SEL"R#3":SPACE(2):MEMBER"R#14":SPACE(3):MEMBER.REC<2>"L#59"
+      DISP.REC<1,SEL>=MEMBER
+      RETURN
+*
+* Display array
+*
+9000*
+*
+      CRT @(0,3):@(-3):"  #":@(5,3):"Member Client#   Name"
+      START=(PAGE*18)-17
+      IF START GT 108 THEN
+         CALL ELINE("Maximum family members allowed is 108")
+         START=1
+         PAGE=1
+      END
+      SSTOP=START+17
+      FOR I=START TO SSTOP STEP 1
+         ROW=3+REM(I,18)
+         IF ROW=3 THEN ROW=21
+         MEMBER=DISP.REC<1,I>
+         READV MEMBER.NAME FROM F.CLIENTS,MEMBER,2 ELSE MEMBER.NAME=''
+         CRT @(0,ROW):I"R#3":SPACE(2):MEMBER"R#14":SPACE(3):MEMBER.NAME"L#59"
+      NEXT I
+      RETURN

@@ -1,0 +1,1668 @@
+***********************************************************************
+* Program name :  FB.IMPORT.FTP.BOL
+* Author       :  unknown
+* Date written :  November 2006
+* Library      :  AFS.SOURCE
+$* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+*Import Shipment Information File data
+* Last updated by afs (nmeddaugh) at 07:33:13 on 02/16/2022.
+*
+* Start modification history
+* Mod nn  mm/dd/yy, init, req #, description
+* 020707 - JMK01 - ADD LEISURE ARTS TO CLIENT IMPORTS (00761)
+* 020707 - JMK02 - C200610190010 / Rector Seal
+* 020707 - JMK03 - C200611020002  FW: Dietrich US & Can - FTP; Fw: Freight Files
+* 020707 - JMK04 - C200611020003  FW: Robroy FTP; Fw: Daily Freight File?
+* 020807 - JMK05 - DO NOT REPORT AUTO ACTIONS NOT SENT BY CLIENT
+* 032007 - JMK06 - T200703150002 / priority 2** / Rectorseal FTP problems / concerns
+* 060607 - JMK07 - T200705240005 /    FW: Billing issue 000761
+* 072607 - JMK08 - C200707090006 / 7/13/07 /  FW: Inline Plastics Weekly BOL File
+* 042108 - JMK09 - C080902 - Electronic BOL file FOR Dover Chemical 01636
+* 052708 - JMK10 - T081331 - PO distribution for 01645
+* 070708 - JMK11 - C081442 - BOL file from Ideal Chemical
+* 092308 - JMK12 - T082197 - Results;   FB.IMPORT.FTP.BOL - Import Of New PO/BOL  01053 Ideal Chemical & Supply Co
+* 111808 - NPR01 - T082535 - Extract transportation accrual cost Ideal Chemical 01053
+* 012709 - JMK13 - Change file format for Marsh Industries
+* 022609 - JMK14 - Remove the "SO" prefix from BOL number if it exists for Marsh Ind (01613).
+* 032409 - JMK15 - Automate the Ebill Import Process
+* 110509 - NPR02 - t999999 - Add logic for files extracted from AFS SQL Database "CLIENT.ID" = AFS_BOL
+* 050510 - NPR03 - T091391 - Added updating of new FB.BOL.REFNO.XREF,CLIENT files.
+* 062910 - NPR04 - T999999 - Added updating of new Pallet, Pieces and Handling Units from AFS BOL interface.
+* 070610 - NPR05 - T100617 - Added client 01441 American Fan to clients importing data
+* 071910 - NPR06 - T100531 - Added totaling of weights per class for AFS BOL imports (Carrier connect doesn't like more than 20 lines)
+* 091510 - NPR07 - Added udate to Ensure that PRO numbers added to the PRO.BOL.XREF file for client 01492 - for now
+* 102110 - NPR08 - Added cross referencing by PRO No. for Airgas Safety (01457).
+* 102710 - NPR09 - T101045 - Added processing for client 01329 Latrobe Steel.
+* 120910 - NPR10 - T999999 - Added Hazarduos material code UN9999 - Mainly for Airgas ZONE A gases and Carrier ABF
+* 011011 - NPR11 - T999999 - Added field for gas type e.g. 2.3 - this to check for shipments that SAIA are not permitted to make.
+* 030311 - NPR12 - T110176 - Strip out Apostrophes and double quotes in names in incoming data from AFS Web interface.
+* 072011 - JMK16 - T110824 - AER Sales freight bills going under AER and should not be
+* 092111 - JMK17 - R111240 - Ideal Chemical: remove Karen Tynes and replace with Gyn Moore
+* 092611 - JMK18 - C111130 - AER Sales FB updates with bad division and expense codes
+* 102711 - JMK19 - SysAid#186 - Total Biz EDI BOL
+* 040912 - JMK20 - SysAid#2206 - Setup Match Pay file for new client
+* 060313 - DRF01 - Task 260 - 219-Add "Inco" terms to Airgas BOL
+* 062013 - JMK21 - SysAid#6301 - Rectorseal Email Add
+* 072513 - JMK22 - SysAid#6126 - Dietrich Match Pay File
+* 073113 - DRF02 - Ticket 6625 - Add delivery number to Airgas BOL
+* 060914 - JMK23 - SysAid#9922 - Hollaender Match Pay
+* 072814 - JMK24 - Springs Window Fashions Match Pay
+* 111715 - SWB01 - Send email to plam instead of raju
+* 021617 - TAG01 - Divide charges proportionately among expense codes based on total weight
+* 121621 - NKH01 - ACCU-1493 Added weight and class for client 1862
+* 021622 - NKH02 - ACCU-1569 Added serial number and part number for client 1862
+* 122823 - NKH03 - ACCU-2535 Totaled weights for client 2427
+* 051224 - GRB01 - ACCU-2672 use spot market for BFG
+* 102824 - GRB02 - ACCU-2786 REF for bishop
+* End modification history
+***********************************************************************
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+* Initialize general variables
+      PROMPT''
+      CALL GET.USER.NEW(USER.NAME,CH.NUM)
+******      CALL CHANNEL(CH.NUM)
+      CMD.LINE=@SENTENCE
+      NWORDS=DCOUNT(CMD.LINE,' ')
+      IF NWORDS>1 THEN
+         CLIENT.ID=FIELD(CMD.LINE,' ',2)
+         AUTO=1
+      END ELSE
+         CLIENT.ID=''
+         AUTO=0
+      END
+
+      PROG.NAME='FB.IMPORT.FTP.BOL'
+      PROG.DESC='Import Shipment Information Data'
+      PACK.NAME='Freight Payment'
+      MASK.CHAR='-'
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.IMPORT.FTP.BOL' ; UPL.VOUT = ''        ; * NPR_UPL 04/23/2010
+      UPL.VIN<3> = USER.NAME
+      UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+      EMAIL.SENT=0
+      TESTING=0
+      TODAY=DATE()
+      OTODAY=OCONV(TODAY,'D4/')
+      ERROR.ARRAY=''                     ; * JMK01
+      WARNING.ARRAY=''                   ; * JMK16
+
+* Restrict program usage
+      VALID.USER=1
+      BEGIN CASE
+         CASE USER.NAME='OLEDBAFS' AND TESTING=0
+         CASE USER.NAME='SV.UVAUTO' AND TESTING=0
+         CASE USER.NAME='DAVID' AND TESTING=0
+         CASE USER.NAME='GBINO' AND TESTING=0
+         CASE USER.NAME='NMEDDAUGH' AND TESTING=0
+         CASE 1
+            VALID.USER=0
+      END CASE
+
+      IF USER.NAME='OLEDBAFS' OR AUTO=1 THEN
+         CMD=1
+      END ELSE
+         CMD=0
+      END
+
+      IF NOT(VALID.USER) THEN
+         IF CMD THEN
+            ERROR.ARRAY<-1>='**  This is a restricted access application  **'
+         END ELSE
+            TEMP='**  This is a restricted access application  **'
+            CALL CENTER(TEMP,80)
+            CRT @(0,12):TEMP
+         END
+         GOTO THE.END
+      END
+
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot Open CLIENTS File!'
+            GOTO THE.END
+         END ELSE
+            CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+         END
+      END
+      OPEN '','SCAC.XREF' TO F.SCAC.XREF ELSE
+         CALL OPEN.ABORT('SCAC.XREF',PROG.NAME)
+      END
+
+      OPEN '','PRO.BOL.XREF' TO F.PBX ELSE         ; * JMK04   ;* NPR07
+         CALL OPEN.ABORT('PRO.BOL.XREF',PROG.NAME)           ; * JMK04   ;* NPR07
+      END                                ; * JMK04   ;* NPR07
+
+      IF CMD ELSE
+         CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+         CRT @(0,2):STR('=',79)
+      END
+***********************************************************************
+50:   * Open client file and read record for client
+***********************************************************************
+      IF CLIENT.ID='' THEN
+         CRT @(0,3):"Client.. ":
+         SEQ.FLAG = 0
+         HELP = "Enter the client number. [X]=Exit [EX]=Exit"
+         IF CLIENT.ID = '' THEN MASK = '#####' ELSE MASK = CLIENT.ID
+         CALL GEN.IN(9,3,MASK,'',Q,0,20,'','',2,-5,3,1,QI,HELP,0,23)
+         QI = OCONV(QI,'MCU')
+         IF QI MATCHES "5N'E'" THEN
+            QI=QI[1,5]
+            END.FLAG='Y'
+         END ELSE
+            END.FLAG='N'
+         END
+         BEGIN CASE
+            CASE QI = 'EX' ! QI = 'X'
+               STOP
+            CASE QI = '' & CLIENT.ID = ''
+               STOP
+            CASE QI = ''
+               Q = CLIENT.ID
+            CASE QI = "AFS_BOL"          ; * NPR02
+               CLIENT.ID = "AFS_BOL"     ; * NPR02
+            CASE QI = "PULSETMS_BOL"     ; * NPR02
+               CLIENT.ID = "PULSETMS_BOL"          ; * NPR02
+            CASE NOT(QI MATCHES "0N")
+               VIN=0                     ; * Starting Chars In
+               VOUT=''
+               CALL SOUNDEX.DISPLAY.NEW(VIN,VOUT,QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+               CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+               CRT @(0,3):"Client.. ":
+               BEGIN CASE
+                  CASE ITEM.LIST = ''
+                     GOTO 50             ; * START OVER
+                  CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                     GOTO 50             ; * START OVER
+                  CASE 1
+                     IF NUM(ITEM.LIST<1,1>) THEN SND.DATA=ITEM.LIST<1,1> ; DATA SND.DATA
+                     GOTO 50             ; * START OVER
+               END CASE
+            CASE NUM(QI)
+               Q = QI'R%5'
+            CASE 1
+               GOTO 50                   ; * START OVER
+         END CASE
+         IF CLIENT.ID # Q THEN CLIENT.ID = Q'R%5'
+         CRT @(9,3):CLIENT.ID:@(-3):
+      END
+*---- Read client name
+
+      IF CLIENT.ID = "AFS_BOL" OR CLIENT.ID = "PULSETMS_BOL" THEN
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+            OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+               CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+            END
+         END
+         CLEARFILE F.WORK
+      END
+
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         IF CLIENT.ID = "AFS_BOL" OR CLIENT.ID = "PULSETMS_BOL" THEN   ; *NPR02
+            CLIENT.REC = ''              ; *NPR02
+            CLIENT.REC<2> = "AFS SQL Data"         ; *NPR02
+            GOTO 100                     ; *NPR02
+         END                             ; *NPR02
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Could not read client information.'
+            GOTO THE.END
+         END ELSE
+            CALL ELINE('Could not read client file.')
+         END
+         GOTO THE.END
+      END
+***********************************************************************
+100:  ***
+***********************************************************************
+      IF CMD THEN
+         QI='Y'
+      END ELSE
+         LN='Are you ready to import PO Bill of Lading codes from ':CLIENT.ID:' ':CLIENT.REC<2>:'? '
+         MASK='N-'
+         HELP='[Y]=Yes [N]=No [EX]=Exit'
+         CALL GEN.IN(0,5,LN:MASK,'',Q,0,2,'','',2,-2,5,1,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+      END
+      BEGIN CASE
+         CASE QI='EX' OR QI='N' OR QI=''
+            GOTO THE.END
+         CASE QI='Y'
+            NULL
+         CASE 1
+            GOTO 100
+      END CASE
+
+* Open other files
+      OPEN '','FTP.':CLIENT.ID:'.HISTORY' TO F.FTP.HIST ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot Open FTP.':CLIENT.ID:'.HISTORY File!'
+            GOTO THE.END
+         END ELSE
+            CALL OPEN.ABORT('FTP.':CLIENT.ID:'.HISTORY',PROG.NAME)
+         END
+      END
+
+      IF CLIENT.ID NE "AFS_BOL" AND CLIENT.ID NE "PULSETMS_BOL" THEN   ; *NPR02
+         OPEN '','FB.BOL.CRX,':CLIENT.ID TO F.BOL ELSE
+            EXECUTE 'CREATE-FILE DATA FB.BOL.CRX,':CLIENT.ID:' 503,1' CAPTURING OUTPUT
+            OPEN '','FB.BOL.CRX,':CLIENT.ID TO F.BOL ELSE
+               IF CMD THEN
+                  ERROR.ARRAY<-1>='Cannot Open FB.BOL.CRX,':CLIENT.ID:' File!'
+                  GOTO THE.END
+               END ELSE
+                  CALL OPEN.ABORT('FB.BOL.CRX,':CLIENT.ID,PROG.NAME)
+               END
+            END
+         END
+         IF CLIENT.ID='05702' THEN
+            OPEN '','FB.BOL.CRX,05904' TO F.BOL.A ELSE
+               EXECUTE 'CREATE-FILE DATA FB.BOL.CRX,05904 503,1' CAPTURING OUTPUT
+               OPEN '','FB.BOL.CRX,05904' TO F.BOL.A ELSE
+                  IF CMD THEN
+                     ERROR.ARRAY<-1>='Cannot Open FB.BOL.CRX,05904 File!'
+                     GOTO THE.END
+                  END ELSE
+                     CALL OPEN.ABORT('FB.BOL.CRX,05904',PROG.NAME)
+                  END
+               END
+            END
+         END
+      END                                ; *NPR02
+
+      OPEN '','FTP.':CLIENT.ID TO F.FTP ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot Open FTP.':CLIENT.ID:' File!'
+            GOTO THE.END
+         END ELSE
+            CALL OPEN.ABORT('FTP.':CLIENT.ID,PROG.NAME)
+         END
+      END
+
+* Set update date
+      UPDATE.DATE=CLIENT.REC<82>+1       ; * Last processed + 1 day
+      IF UPDATE.DATE<DATE() THEN
+         UPDATE.DATE=DATE()
+      END
+
+      ST.DATE = DATE()                   ; * NPR02
+      ST.TIME = TIME()                   ; * NPR02
+
+* Start processing any files
+      STMT='SSELECT FTP.':CLIENT.ID:' WITH IDU = "':CLIENT.ID:'_]" BY FTP.DATE'  ; * JMK07
+      IF CLIENT.ID="PULSETMS_BOL" THEN
+         STMT='SSELECT FTP.PULSETMS_BOL WITH @ID = "pulseTMS_BOL_]" "PULSETMS_BOL_]"'
+      END
+      EXECUTE STMT RTNLIST FTP.LIST CAPTURING RESULTS
+
+      NITMS=@SELECTED
+
+      IF NITMS=0 THEN
+         IF CMD THEN
+         END ELSE
+            CALL ELINE('No file to process for ':CLIENT.REC<2>:'.')
+         END
+         GOTO THE.END
+      END
+      ATTACH.LIST=''                     ; * JMK02
+      EOF=0
+      LOOP
+         READNEXT FTP.ID FROM FTP.LIST ELSE EOF=1
+      UNTIL EOF DO
+
+* Make sure that we have read the file completely and it is not ; * JMK06
+* still transferring via FTP.            ; * JMK06
+
+         PRV.FTP.REC=""                  ; * JMK06
+FTP.READ.AGAIN:*                        ; * JMK06
+         READ FTP.REC FROM F.FTP,FTP.ID ELSE
+            IF CMD THEN
+               ERROR.ARRAY<-1>='Cannot read ':FTP.ID:'. Aborting process.'
+            END ELSE
+               CALL ELINE('Cannot read ':FTP.ID:'. Aborting process.')
+            END
+            GOTO THE.END
+         END
+         IF FTP.REC#PRV.FTP.REC THEN     ; * JMK06
+            SLEEP                      ; * JMK06
+            PRV.FTP.REC=FTP.REC          ; * JMK06
+            GO FTP.READ.AGAIN            ; * JMK06
+         END                             ; * JMK06
+         ATTACH.LIST<1,-1>=FTP.ID        ; * JMK02
+
+* Read in the existing Client text file
+         FTP.ORIG.REC=FTP.REC            ; * JMK02
+         FTP.REC=CHANGE(FTP.REC,CHAR(12),'')
+         FTP.REC=CHANGE(FTP.REC,CHAR(26),'')
+         FTP.REC=CHANGE(FTP.REC,'"','')
+         FTP.REC=CHANGE(FTP.REC,CHAR(9),@VM)
+
+
+         IF CLIENT.ID='01524' THEN       ; * JMK19
+            IF FTP.REC<1,1>='OriginName' THEN DEL FTP.REC<1>           ; * JMK19
+         END                             ; * JMK19
+         IF CLIENT.ID='05702' THEN       ; * JMK19
+            IF FTP.REC<1,1>='OriginName' THEN DEL FTP.REC<1>           ; * JMK19
+         END                             ; * JMK19
+         IF CLIENT.ID='01862' THEN       ; * JMK19
+            IF FTP.REC<1,1>='OriginName' THEN DEL FTP.REC<1>           ; * JMK19
+         END                             ; * JMK19
+         IF CLIENT.ID='02038' THEN       ; * JMK19
+            IF FTP.REC<1,1>='OriginName' THEN DEL FTP.REC<1>           ; * JMK19
+         END                             ; * JMK19
+         IF CLIENT.ID='01308' THEN       ; * JMK19
+            IF FTP.REC<1,1>='OriginName' THEN DEL FTP.REC<1>           ; * JMK19
+         END                             ; * JMK19
+         IF CLIENT.ID='05806' THEN       ; * JMK19
+            IF FTP.REC<1,1>='SONumber' THEN DEL FTP.REC<1>           ; * JMK19
+         END                             ; * JMK19
+
+         FTP.LAST.REC=FTP.REC            ; * Save file for writing as "last"
+         FTP.ID=OCONV(FTP.ID,'MCU')
+         IF CLIENT.ID = "AFS_BOL" OR CLIENT.ID = "PULSETMS_BOL" THEN   ; * NPR02
+            FTP.DT=FIELD(FTP.ID,'_',3)   ; * NPR02
+            FTP.DT=FIELD(FTP.DT,'.',1)   ; * NPR02
+         END ELSE                        ; * NPR02
+            FTP.DT=FIELD(FTP.ID,'_',2)   ; * JMK01
+         END                             ; * NPR02
+
+         FTP.MM = FTP.DT[1,2]            ; * NPR02
+         FTP.DD = FTP.DT[3,2]            ; * NPR02
+         IF LEN(FTP.DT) = 6 THEN YR.CHARS = 2 ELSE YR.CHARS = 4        ; * NPR02
+         FTP.YR = FTP.DT[5,YR.CHARS]     ; * NPR02
+         FTP.DATE=ICONV(FTP.MM:'/':FTP.DD:'/':FTP.YR,'D')    ; * NPR02
+
+* Status lines
+
+         IF CLIENT.ID = "AFS_BOL" OR CLIENT.ID = "PULSETMS_BOL" THEN   ; * NPR02
+            NATT=DCOUNT(FTP.REC,@AM)     ; * NPR02
+            FOR NN = 1 TO NATT           ; * NPR02
+               IF FTP.REC<NN> = "" THEN DEL FTP.REC<NN>      ; * NPR02
+            NEXT                         ; * NPR02
+         END                             ; * NPR02
+         NATT=DCOUNT(FTP.REC,@AM)
+
+         IF CMD ELSE
+            CRT @(0,5):'Total items in import file = ':NATT:@(-4)
+            CRT @(0,7):'Total Items processed'
+            CRT @(0,8):'---------------------'
+         END
+
+* Check for an anticipated complete file transfer  ; * JMK06
+* by testing the last line in the transfer for all ; * JMK06
+* anticipated fields                     ; * JMK06
+
+         FIRST.LINE=FTP.REC<1>           ; * JMK07
+         LAST.LINE=FTP.REC<NATT>         ; * JMK06
+         FIRST.FIELDS=DCOUNT(FIRST.LINE,@VM)       ; * JMK07
+         LAST.FIELDS=DCOUNT(LAST.LINE,@VM)         ; * JMK07
+*DFIF USER.NAME='DAVID' THEN CALL ELINE('PRESS BREAK')
+         EST.COMPLETE=1                  ; * JMK06
+         IF FIRST.FIELDS#LAST.FIELDS THEN          ; * JMK07
+            EST.COMPLETE=0               ; * JMK07
+         END                             ; * JMK07
+
+         IF EST.COMPLETE=0 THEN          ; * JMK06
+            IF CMD THEN                  ; * JMK06
+               ERROR.ARRAY<-1>=FTP.ID:' may have been received incomplete. Please re-send.  Aborting process.'           ; * JMK06
+            END ELSE                     ; * JMK06
+               CALL ELINE(FTP.ID:' may have been received incomplete. Please re-send.  Aborting process.')     ; * JMK06
+            END                          ; * JMK06
+            GOTO SKIP.FILE               ; * JMK06 ; * JMK16
+         END                             ; * JMK06
+
+         CRT @(10,12):"Processing file ":FTP.ID    ; * ZZ Remove
+
+* Set counters for processing
+
+         GOSUB INITIALIZE.VARS
+         IF CLIENT.ID = "AFS_BOL" OR CLIENT.ID = "PULSETMS_BOL" THEN
+            CL.LIST = ''
+            GOSUB BUILD.CL.RECS
+
+*** Process Clients from Work file
+
+            CL.STATS = ''
+            CL.CNT = DCOUNT(CL.LIST,@AM)
+            FOR CLX = 1 TO CL.CNT
+               WRK.CLIENT = CL.LIST<CLX>
+               IF CMD ELSE
+                  CRT @(0,9):"Processing client ": WRK.CLIENT
+                  CALL PROG.BAR(11,CLX,CL.CNT,PERC)
+               END
+               CL.STATS<1,CLX> = WRK.CLIENT
+               GOSUB PROCESS.AFS.CLIENTS
+               DELETE F.WORK, WRK.CLIENT
+            NEXT CLX
+
+            IF CMD ELSE CALL ELINE("")
+            GOTO AFS.BOL.END
+         END
+         
+* Prepare the file for processing
+         FOR ATT=1 TO NATT
+            IF CMD ELSE
+               CRT @(0,9):ATT'R#21'
+               CALL PROG.BAR(11,ATT,NATT,PERC)
+            END
+            PASS=1                       ; * JMK07
+            FTP.LINE=FTP.REC<ATT>
+            NXT.FTP.LINE=FTP.REC<ATT+1>
+***********************************************************************
+NEXT.PASS:  ***
+***********************************************************************
+            BEGIN CASE
+               CASE CLIENT.ID='00761' AND DCOUNT(FTP.LINE,@VM) > 3     ; * JMK01
+                  SHIP.DATE=FTP.DATE     ; * JMK01
+                  PO.NO=TRIM(FTP.LINE<1,1>)        ; * JMK01
+                  DEST.NAME=TRIM(FTP.LINE<1,2>)    ; * JMK01
+                  DEST.ZIP=TRIM(FTP.LINE<1,3>)     ; * JMK01
+                  SCAC.CODE=TRIM(FTP.LINE<1,4>)    ; * JMK01
+                  BOL.NO=TRIM(FTP.LINE<1,5>)       ; * JMK01
+                  PRO.NO=TRIM(FTP.LINE<1,6>)       ; * JMK01
+                  TRACK.NO=TRIM(FTP.LINE<1,7>)     ; * JMK01
+                  DIV.NO=TRIM(FTP.LINE<1,8>)'R%5'  ; * JMK01
+                  SHIP.DIR=TRIM(FTP.LINE<1,9>)     ; * JMK01
+                  SHIP.NO=''             ; * JMK07
+                  BEGIN CASE             ; * JMK07
+                     CASE PASS=1         ; * JMK07
+                        SHIP.NO=BOL.NO   ; * JMK01
+                        IF SHIP.DIR='O' AND BOL.NO#'' AND NOT(BOL.NO MATCHES '9N') AND FTP.DATE>=ICONV('06-04-07','D') THEN        ; * JMK07
+                           LINE=''
+                           LINE<1,1>='File ':FTP.ID:', Line ':ATT:', BOL ':BOL.NO
+                           LINE<1,2>='This BOL number does not conform to 9 characters for this outbound shipment.'
+                           WARNING.ARRAY<-1>=LINE
+                           WARNING.ARRAY<-1>=' '
+                           WARNING.ARRAY<-1>=' '
+                        END              ; * JMK07
+                     CASE PASS=2         ; * JMK07
+
+                        CALL GET.ROOT.NUMBER(PO.NO,SHIP.NO)  ; * JMK07
+
+                     CASE PASS=3         ; * JMK07
+                        VIN=''           ; * JMK07
+                        VIN<1>=PRO.NO    ; * JMK07
+                        VOUT=''          ; * JMK07
+                        CALL GET.ROOT.NUMBER(VIN,VOUT)       ; * JMK07
+                        SHIP.NO=VOUT<1>  ; * JMK07
+                     CASE PASS=4         ; * JMK07
+                        VIN=''           ; * JMK07
+                        VIN<1>=TRACK.NO  ; * JMK07
+                        VOUT=''          ; * JMK07
+                        CALL GET.ROOT.NUMBER(VIN,VOUT)       ; * JMK07
+                        SHIP.NO=VOUT<1>  ; * JMK07
+                  END CASE               ; * JMK07
+                  ACTION='C'             ; * JMK01
+                  RPT.CHG=0              ; * JMK05
+               CASE CLIENT.ID='00761' AND DCOUNT(FTP.LINE,@VM)>=2      ; * JMK01 ; * JMK07
+                  SHIP.DATE=FTP.DATE     ; * JMK01
+                  SHIP.NO=TRIM(FTP.LINE<1,1>)      ; * JMK01
+                  DIV.NO=TRIM(FTP.LINE<1,2>)       ; * JMK01
+                  SHIP.DIR=TRIM(FTP.LINE<1,3>)     ; * JMK01
+                  IF SHIP.DIR='' THEN SHIP.DIR='O'           ; * JMK07
+                  IF SHIP.DIR='I' THEN   ; * JMK07
+                     PO.NO=SHIP.NO       ; * JMK07
+                  END ELSE               ; * JMK07
+                     BOL.NO=SHIP.NO      ; * JMK07
+                  END                    ; * JMK07
+                  ACTION='C'             ; * JMK01
+                  RPT.CHG=0              ; * JMK05
+               CASE CLIENT.ID='00883'
+                  SHIP.DATE=FTP.DATE     ; * JMK01
+                  SHIP.NO=TRIM(FTP.LINE<1,1>)      ; * JMK01
+                  IF SHIP.NO='Delivery' THEN GO NEXT.ATT
+                  ORIG.CITY.ST=TRIM(FTP.LINE<1,2>)
+                  ORIG.CITY.ST=CHANGE(ORIG.CITY.ST,'"','')
+                  ORIG.CITY=FIELD(ORIG.CITY.ST,',',1)
+                  ORIG.STATE=FIELD(ORIG.CITY.ST,',',2)
+                  ORIG.STATE=TRIM(ORIG.STATE)
+                  ORIG.NAME=ORIG.CITY.ST
+                  DEST.NAME=TRIM(FTP.LINE<1,3>)
+                  DEST.CITY=TRIM(FTP.LINE<1,4>)
+
+                  PRO.NO=TRIM(FTP.LINE<1,7>)
+                  SHIP.WT=TRIM(FTP.LINE<1,8>)
+                  PPD.COLL=TRIM(FTP.LINE<1,9>)
+                  ACTION='C'             ; * JMK01
+                  RPT.CHG=0              ; * JMK05
+
+               CASE CLIENT.ID='01349' OR CLIENT.ID='01350' OR CLIENT.ID='01645'  ; * JMK04 ; * JMK10
+                  RR.BOL =TRIM(FTP.LINE[ 1,15])    ; * BOL
+                  RR.CARRIER=TRIM(FTP.LINE[ 18,20])          ; * Carrier Description
+                  RR.SDATE =TRIM(FTP.LINE[ 40, 8])           ; * Ship Date
+                  RR.SDATE =ICONV(RR.SDATE,'D')    ; * CONVERT TO INTERNAL FORMAT
+                  RR.SCITY =TRIM(FTP.LINE[ 51,15])           ; * City
+                  RR.SST =TRIM(FTP.LINE[ 68, 2])   ; * State
+                  RR.SZIP =TRIM(FTP.LINE[ 72, 5])  ; * Zip
+                  RR.CONS =TRIM(FTP.LINE[ 79,25])  ; * Consignee
+                  RR.CCITY =TRIM(FTP.LINE[106,15])           ; * City
+                  RR.CST =TRIM(FTP.LINE[123, 2])   ; * State
+                  RR.CZIP =TRIM(FTP.LINE[127, 5])  ; * Zip
+                  RR.PRO =TRIM(FTP.LINE[135,20])   ; * Pro
+                  RR.PRO=OCONV(RR.PRO,'MCU')       ; * JMK05
+                  RR.WT =TRIM(FTP.LINE[155, 9])    ; * Weight ; * JMK02
+                  RR.CCODE =TRIM(FTP.LINE[167, 4])           ; * Carrier Code ; * JMK03
+                  CLIENT.NO='01349'
+                  IF RR.BOL[1,3]='MLB' THEN CLIENT.NO='01350'
+                  IF RR.BOL[1,3]='MLM' THEN CLIENT.NO='01645'          ; * JMK10
+                  IF CLIENT.NO#PREV.CLIENT.NO THEN
+                     OPEN '','FB.BOL.CRX,':CLIENT.NO TO F.BOL ELSE
+                        CALL OPEN.ABORT('FB.BOL.CRX,':CLIENT.NO,PROG.NAME)
+                     END
+                     PREV.CLIENT.NO=CLIENT.NO
+                  END
+                  SHIP.NO=RR.BOL         ; * JMK05
+                  ACTION='C'
+                  RPT.CHG=0              ; * JMK05
+               CASE 1                    ; * JMK19
+                  ORIG.NAME=TRIM(FTP.LINE<1,1>)    ; * JMK19
+                  ORIG.ADD1=TRIM(FTP.LINE<1,2>)    ; * JMK19
+                  ORIG.ADD2=TRIM(FTP.LINE<1,3>)    ; * JMK19
+                  ORIG.CITY=TRIM(FTP.LINE<1,4>)    ; * JMK19
+                  ORIG.STATE=TRIM(FTP.LINE<1,5>)   ; * JMK19
+                  ORIG.COUNTRY=TRIM(FTP.LINE<1,6>)           ; * JMK19
+                  ORIG.ZIP=TRIM(FTP.LINE<1,7>)     ; * JMK19
+                  DEST.NAME=TRIM(FTP.LINE<1,8>)    ; * JMK19
+                  DEST.ADD1=TRIM(FTP.LINE<1,9>)    ; * JMK19
+                  DEST.ADD2=TRIM(FTP.LINE<1,10>)   ; * JMK19
+                  DEST.CITY=TRIM(FTP.LINE<1,11>)   ; * JMK19
+                  DEST.STATE=TRIM(FTP.LINE<1,12>)  ; * JMK19
+                  DEST.COUNTRY=TRIM(FTP.LINE<1,13>)          ; * JMK19
+                  DEST.ZIP=TRIM(FTP.LINE<1,14>)    ; * JMK19
+                  SHIP.DATE=ICONV(TRIM(FTP.LINE<1,15>),'D')  ; * JMK19
+                  SHIP.WT=TRIM(FTP.LINE<1,16>)     ; * JMK19
+                  IF CLIENT.ID='01862' THEN SHIP.WT=ICONV(SHIP.WT,'MR0')
+                  IF CLIENT.ID='02038' THEN SHIP.WT=ICONV(SHIP.WT,'MR0')
+                  IF CLIENT.ID='01308' THEN SHIP.WY=ICONV(SHIP.WT,'MR0')
+                  SHIP.DIR=TRIM(FTP.LINE<1,17>)    ; * JMK19
+                  SHIP.NO=TRIM(FTP.LINE<1,18>)     ; * JMK19
+                  CONS.ACNT.NO=TRIM(FTP.LINE<1,19>)          ; * JMK19
+                  REF.NO=TRIM(FTP.LINE<1,20>)      ; * JMK19
+                  PRO.NO=TRIM(FTP.LINE<1,21>)      ; * JMK19
+                  LOC.CODE=TRIM(FTP.LINE<1,22>)    ; * JMK19
+                  PPD.COLL=TRIM(FTP.LINE<1,23>)    ; * JMK19
+                  IF CLIENT.ID='01308' THEN PPD.COLL=PPD.COLL[1,1]
+                  EXP.CODE=TRIM(FTP.LINE<1,24>)    ; * JMK19
+                  EXP.RATIO=TRIM(FTP.LINE<1,25>)   ; * JMK19
+                  IF EXP.RATIO='1' THEN  ; * JMK19
+                     EXP.RATIO=SHIP.WT   ; * JMK19
+                  END                    ; * JMK19
+                  ACTION=TRIM(FTP.LINE<1,26>)      ; * JMK19
+                  IF CLIENT.ID='01308' THEN
+                     ACTION=''
+                     SCAC.CODE=TRIM(FTP.LINE<1,26>)
+                  END
+                  IF CLIENT.ID='05806' THEN
+                     SHIP.NO=FTP.LINE<1,1>
+                     REF.NO2=FTP.LINE<1,2>
+                     REF.NO3=FTP.LINE<1,3>
+                     ORIG.NAME=''
+                     ORIG.ADD1=''
+                     ORIG.ADD2=''
+                  END
+                   * Begin GRB02
+                  IF CLIENT.ID = '07466' OR CLIENT.ID = '07461' OR CLIENT.ID = '07437' OR CLIENT.ID = '07502' THEN
+                     REF.SPC = TRIM(FTP.LINE<1,58>)                    
+                  END
+                  * End GRB02            
+                  * Begin NKH02
+                  IF CLIENT.ID = '01862' THEN
+                     REF.NO2 = TRIM(FTP.LINE<1,32>)                    
+                     REF.NO3 = TRIM(FTP.LINE<1,33>)
+                  END
+                  * End NKH02                  
+                  IF ACTION='' THEN ACTION='C'     ; * JMK19
+                  FB.CLASSES=TRIM(FTP.LINE<1,27>)  ; * JMK19
+                  IF CLIENT.ID='01308' THEN
+                     FB.CLASSES=''
+                  END
+                  FB.WEIGHTS=TRIM(FTP.LINE<1,28>)  ; * JMK19
+                  CONTRACT.PRICE=ICONV(TRIM(FTP.LINE<1,29>),'MD2')        ; * JMK19
+                  ACCESS.CODES=TRIM(FTP.LINE<1,30>)          ; * JMK19
+                  ACCESS.CHRGS=TRIM(FTP.LINE<1,31>)          ; * JMK19
+                  ACCR.COSTS=ICONV(TRIM(FTP.LINE<1,32>),'MD2')         ; * JMK22
+                  RPT.CHG=0              ; * JMK19
+            END CASE
+
+            IF SHIP.NO#'' THEN
+               LOCATE ATT IN UPD.LIST<1> SETTING UPOS THEN   ; * JMK07
+                  UPD.CNT=0              ; * JMK07
+               END ELSE                  ; * JMK07
+                  UPD.LIST<1,-1>=ATT     ; * JMK07
+                  UPD.CNT=1              ; * JMK07
+               END                       ; * JMK07
+               BEGIN CASE
+                  CASE ACTION='A'
+                     READU BOL.REC FROM F.BOL,SHIP.NO THEN
+                        IF RPT.ADD THEN  ; * JMK05
+                           LINE=''
+                           LINE<1,1>='BOL/PO ITEM.ID ':SHIP.NO
+                           LINE<1,2>='Cannot add.  This record is already on file.'
+                           LINE<1,3>='Sales Order Number    = ':SHIP.NO
+                           LINE<1,4>='Existing Order Date   = ':BOL.REC<2>'D4/'
+                           LINE<1,5>='New Order Date        = ':SHIP.DATE'D4/'
+                           ERROR.ARRAY<-1>=LINE
+                           ERROR.ARRAY<-1>=' '
+                           ERROR.ARRAY<-1>=' '
+                           ADD.ERR.ITEMS+=(1*UPD.CNT)        ; * JMK07
+                        END              ; * JMK05
+                     END ELSE
+                        BOL.REC=''
+                        BOL.ORG=BOL.REC
+                        GOSUB UPDATE.BOL.REC
+                        IF BOL.REC#BOL.ORG THEN
+
+                           ADD.ITEMS+=(1*UPD.CNT)  ; * JMK07
+                           LOCATE FTP.ID IN BOL.REC<52> SETTING FPOS ELSE
+                              NVAL=DCOUNT(BOL.REC<50>,@VM)
+                              BOL.REC<50,NVAL+1>=DATE()
+                              BOL.REC<51,NVAL+1>=TIME()
+                              BOL.REC<52,NVAL+1>=FTP.ID
+                              BOL.REC<53,NVAL+1>=ATT         ; * JMK07
+                           END
+                           WRITE BOL.REC ON F.BOL,SHIP.NO
+                           IF CLIENT.ID='05702' THEN
+                              WRITE BOL.REC ON F.BOL.A,SHIP.NO
+                           END
+                        END ELSE
+                           NOCHG.ITEMS+=(1*UPD.CNT)          ; * JMK07
+                        END
+                     END
+                  CASE ACTION='C'
+                     READU BOL.REC FROM F.BOL,SHIP.NO THEN
+                        BOL.ORG=BOL.REC
+                        GOSUB UPDATE.BOL.REC
+                        IF BOL.REC#BOL.ORG THEN
+
+                           CHG.ITEMS+=(1*UPD.CNT)  ; * JMK07
+                           LOCATE FTP.ID IN BOL.REC<52> SETTING FPOS ELSE
+                              NVAL=DCOUNT(BOL.REC<50>,@VM)
+                              BOL.REC<50,NVAL+1>=DATE()
+                              BOL.REC<51,NVAL+1>=TIME()
+                              BOL.REC<52,NVAL+1>=FTP.ID
+                              BOL.REC<53,NVAL+1>=ATT         ; * JMK07
+                           END
+                           WRITE BOL.REC ON F.BOL,SHIP.NO
+                           IF CLIENT.ID='05702' THEN
+                              WRITE BOL.REC ON F.BOL.A,SHIP.NO
+                           END
+                        END ELSE
+                           NOCHG.ITEMS+=(1*UPD.CNT)          ; * JMK07
+                        END
+                     END ELSE
+                        IF RPT.CHG THEN  ; * JMK05
+                           LINE=''
+                           LINE<1,1>='BOL/PO ITEM.ID ':SHIP.NO
+                           LINE<1,2>='This record was not on file, but we added the shipping information.'
+                           LINE<1,3>='Sales Order Number    = ':SHIP.NO
+                           LINE<1,4>='New Order Date        = ':SHIP.DATE'D4/'
+                           ERROR.ARRAY<-1>=LINE
+                           ERROR.ARRAY<-1>=' '
+                           ERROR.ARRAY<-1>=' '
+                        END              ; * JMK05
+                        BOL.REC=''
+                        BOL.ORG=BOL.REC
+                        GOSUB UPDATE.BOL.REC
+                        IF BOL.REC#BOL.ORG THEN
+                           CHG.ADD.ITEMS+=(1*UPD.CNT)        ; * JMK07
+                           LOCATE FTP.ID IN BOL.REC<52> SETTING FPOS ELSE
+                              NVAL=DCOUNT(BOL.REC<50>,@VM)
+                              BOL.REC<50,NVAL+1>=DATE()
+                              BOL.REC<51,NVAL+1>=TIME()
+                              BOL.REC<52,NVAL+1>=FTP.ID
+                              BOL.REC<53,NVAL+1>=ATT         ; * JMK07
+                           END
+                           WRITE BOL.REC ON F.BOL,SHIP.NO
+                           IF CLIENT.ID='05702' THEN
+                              WRITE BOL.REC ON F.BOL.A,SHIP.NO
+                           END
+                        END ELSE
+                           NOCHG.ITEMS+=(1*UPD.CNT)          ; * JMK07
+                        END
+                     END
+                  CASE ACTION='D'
+                     READU BOL.REC FROM F.BOL,SHIP.NO THEN
+                        BOL.ORG=BOL.REC
+                        GOSUB UPDATE.BOL.REC
+                        IF BOL.REC#BOL.ORG THEN
+                           DEL.ITEMS+=(1*UPD.CNT)  ; * JMK07
+                           LOCATE FTP.ID IN BOL.REC<52> SETTING FPOS ELSE
+                              NVAL=DCOUNT(BOL.REC<50>,@VM)
+                              BOL.REC<50,NVAL+1>=DATE()
+                              BOL.REC<51,NVAL+1>=TIME()
+                              BOL.REC<52,NVAL+1>=FTP.ID
+                              BOL.REC<53,NVAL+1>=ATT         ; * JMK07
+                           END
+                           WRITE BOL.REC ON F.BOL,SHIP.NO
+                           IF CLIENT.ID='05702' THEN
+                              WRITE BOL.REC ON F.BOL.A,SHIP.NO
+                           END
+                        END ELSE
+                           NOCHG.ITEMS+=(1*UPD.CNT)          ; * JMK07
+                        END
+                     END ELSE
+                        IF RPT.DEL THEN  ; * JMK05
+                           LINE=''
+                           LINE<1,1>='BOL/PO ITEM.ID ':SHIP.NO
+                           LINE<1,2>='This record was not on file, but we marked the shipping information as deleted.'
+                           LINE<1,3>='Sales Order Number    = ':SHIP.NO
+                           LINE<1,4>='New Order Date        = ':SHIP.DATE'D4/'
+                           ERROR.ARRAY<-1>=LINE
+                           ERROR.ARRAY<-1>=' '
+                           ERROR.ARRAY<-1>=' '
+                        END              ; * JMK05
+                        BOL.REC=''
+                        BOL.ORG=BOL.REC
+                        GOSUB UPDATE.BOL.REC
+                        IF BOL.REC#BOL.ORG THEN
+
+                           DEL.ADD.ITEMS+=(1*UPD.CNT)        ; * JMK07
+                           LOCATE FTP.ID IN BOL.REC<52> SETTING FPOS ELSE
+                              NVAL=DCOUNT(BOL.REC<50>,@VM)
+                              BOL.REC<50,NVAL+1>=DATE()
+                              BOL.REC<51,NVAL+1>=TIME()
+                              BOL.REC<52,NVAL+1>=FTP.ID
+                              BOL.REC<53,NVAL+1>=ATT         ; * JMK07
+                           END
+                           WRITE BOL.REC ON F.BOL,SHIP.NO
+                           IF CLIENT.ID='05702' THEN
+                              WRITE BOL.REC ON F.BOL.A,SHIP.NO
+                           END
+                        END ELSE
+
+                           NOCHG.ITEMS+=(1*UPD.CNT)          ; * JMK07
+                        END
+                     END
+                  CASE 1
+               END CASE
+               RELEASE F.BOL,SHIP.NO
+               BEGIN CASE
+
+                  CASE CLIENT.ID='01349' OR CLIENT.ID='01350' OR CLIENT.ID='01645'         ; * JMK04 ; * JMK10
+                     NVAL=DCOUNT(BOL.REC<19>,@VM)  ; * JMK01
+                     FOR VAL=1 TO NVAL   ; * JMK01
+                        RR.PRO=BOL.REC<19,VAL>     ; * JMK01
+                        RR.WT=BOL.REC<20,VAL>      ; * JMK01
+                        IF RR.WT='' THEN RR.WT='0.00'        ; * JMK01
+                        VIN=''           ; * JMK07
+                        VIN<1>=RR.PRO    ; * JMK07
+                        VOUT=''          ; * JMK07
+                        CALL GET.ROOT.NUMBER(VIN,VOUT)       ; * JMK07
+                        PRO.NO=VOUT<1>   ; * JMK07
+                        IF PRO.NO#'' THEN          ; * JMK01
+                           READ PBX.REC FROM F.PBX,PRO.NO ELSE PBX.REC=''        ; * JMK01
+                           PBX.ORG=PBX.REC         ; * JMK01
+                           LOCATE(RR.BOL,PBX.REC,1;SPOS) ELSE          ; * JMK01
+                              PBX.REC<1,-1>=RR.BOL           ; * JMK01
+                              PBX.REC<2,-1>=RR.WT  ; * JMK01
+                              PBX.REC<3,-1>=CLIENT.ID
+                           END           ; * JMK01
+                           IF PBX.REC#PBX.ORG THEN           ; * JMK01
+                              WRITE PBX.REC ON F.PBX,PRO.NO  ; * JMK01
+                           END           ; * JMK01
+                        END              ; * JMK01
+                     NEXT VAL            ; * JMK01
+
+                  CASE CLIENT.ID='02427'           ; * JMK24
+                     NVAL=DCOUNT(BOL.REC<26>,@VM)  ; * JMK24
+                     FOR VAL=1 TO NVAL   ; * JMK24
+                        HOL.PRO=BOL.REC<26,VAL>    ; * JMK24
+                        HOL.WT=BOL.REC<22,VAL>     ; * JMK24
+                        IF HOL.WT='' THEN HOL.WT='0.00'      ; * JMK24
+                        VIN=''           ; * JMK24
+                        VIN<1>=HOL.PRO   ; * JMK24
+                        VOUT=''          ; * JMK24
+                        CALL GET.ROOT.NUMBER(VIN,VOUT)       ; * JMK24
+                        PRO.NO=VOUT<1>   ; * JMK24
+                        IF PRO.NO#'' THEN          ; * JMK24
+                           READ PBX.REC FROM F.PBX,PRO.NO ELSE PBX.REC=''        ; * JMK24
+                           PBX.ORG=PBX.REC         ; * JMK24
+                           LOCATE(SHIP.NO,PBX.REC,1;SPOS) ELSE         ; * JMK24
+                              PBX.REC<1,-1>=SHIP.NO          ; * JMK24
+                              PBX.REC<2,-1>=HOL.WT           ; * JMK24
+                              PBX.REC<3,-1>=CLIENT.ID        ; * JMK24
+                           END           ; * JMK24
+                           IF PBX.REC#PBX.ORG THEN           ; * JMK24
+                              WRITE PBX.REC ON F.PBX,PRO.NO  ; * JMK24
+                           END           ; * JMK24
+                        END              ; * JMK24
+                     NEXT VAL            ; * JMK24
+                  CASE CLIENT.ID='40005'           ; * JMK23
+                     NVAL=DCOUNT(BOL.REC<26>,@VM)  ; * JMK23
+                     FOR VAL=1 TO NVAL   ; * JMK23
+                        HOL.PRO=BOL.REC<26,VAL>    ; * JMK23
+                        HOL.WT=BOL.REC<22,VAL>     ; * JMK23
+                        IF HOL.WT='' THEN HOL.WT='0.00'      ; * JMK23
+                        VIN=''           ; * JMK23
+                        VIN<1>=HOL.PRO   ; * JMK23
+                        VOUT=''          ; * JMK23
+                        CALL GET.ROOT.NUMBER(VIN,VOUT)       ; * JMK23
+                        PRO.NO=VOUT<1>   ; * JMK23
+                        IF PRO.NO#'' THEN          ; * JMK23
+                           READ PBX.REC FROM F.PBX,PRO.NO ELSE PBX.REC=''        ; * JMK23
+                           PBX.ORG=PBX.REC         ; * JMK23
+                           LOCATE(SHIP.NO,PBX.REC,1;SPOS) ELSE         ; * JMK23
+                              PBX.REC<1,-1>=SHIP.NO          ; * JMK23
+                              PBX.REC<2,-1>=HOL.WT           ; * JMK23
+                              PBX.REC<3,-1>=CLIENT.ID        ; * JMK23
+                           END           ; * JMK23
+                           IF PBX.REC#PBX.ORG THEN           ; * JMK23
+                              WRITE PBX.REC ON F.PBX,PRO.NO  ; * JMK23
+                           END           ; * JMK23
+                        END              ; * JMK23
+                     NEXT VAL            ; * JMK23
+               END CASE
+            END
+            BEGIN CASE                   ; * JMK07
+               CASE CLIENT.ID='00761' AND DCOUNT(FTP.LINE,@VM) > 3     ; * JMK07
+                  IF PASS < 4 THEN       ; * JMK07
+                     PASS+=1             ; * JMK07
+                     GO NEXT.PASS        ; * JMK07
+                  END                    ; * JMK07
+            END CASE                     ; * JMK07
+NEXT.ATT:   *
+         NEXT ATT
+***********************************************************************
+AFS.BOL.END:*  Because of multiple clients per file AFS_BOL "client" skips above line by line processing as for other clients
+***********************************************************************
+* Update files
+         IF NOT(TESTING) THEN
+
+            WRITE FTP.ORIG.REC ON F.FTP.HIST,FTP.ID THEN     ; * JMK02
+               DELETE F.FTP,FTP.ID       ; * Delete the original text file
+            END ELSE
+               IF CMD THEN
+                  ERROR.ARRAY<-1>='Could not write history record. Not deleting ':FTP.ID:'.'
+               END ELSE
+                  CALL ELINE('Could not write history record. Not deleting FTP record. Call Mike.')
+               END
+            END
+         END
+
+         LVIN = ST.DATE                  ; * Date started
+         LVIN<2> = ST.TIME               ; * Time started
+         LVIN<3> = PROG.NAME
+         LVIN<4> = FTP.ID                ; * Raw data file worked with
+         LVOUT = ""
+         CALL UPDATE.BOL.FTP.LOG(LVIN,LVOUT,CLIENT.ID)
+
+SKIPIT2: *
+         IF CLIENT.ID NE "AFS_BOL" AND CLIENT.ID NE "PULSETMS_BOL" THEN
+            RESULTS.ARRAY<-1>='Import Results for file ':FTP.ID
+            RESULTS.ARRAY<-1>='   1 Records Added                               = ':ADD.ITEMS'R#6'
+            RESULTS.ARRAY<-1>='   2 Records Not Found Marked To Change          = ':CHG.ADD.ITEMS'R#6'
+            RESULTS.ARRAY<-1>='   3 Records Not Found Marked To Delete          = ':DEL.ADD.ITEMS'R#6'
+            RESULTS.ARRAY<-1>='---- New records written to file                 = ':ADD.ITEMS+CHG.ADD.ITEMS+DEL.ADD.ITEMS'R#12'
+            RESULTS.ARRAY<-1>='   4 Records Changed                             = ':CHG.ITEMS'R#6'
+            RESULTS.ARRAY<-1>='   5 Records Marked To Delete                    = ':DEL.ITEMS'R#6'
+            RESULTS.ARRAY<-1>='---- Records updated                             = ':ADD.ITEMS+CHG.ADD.ITEMS+DEL.ADD.ITEMS'R#12'
+            RESULTS.ARRAY<-1>='   6 Records Marked To Add already exist on file = ':ADD.ERR.ITEMS'R#6'
+            RESULTS.ARRAY<-1>='   7 Records on file requiring no change         = ':NOCHG.ITEMS'R#6'
+            RESULTS.ARRAY<-1>='---- Total Records processed to file             = ':ADD.ITEMS+CHG.ADD.ITEMS+DEL.ADD.ITEMS+CHG.ITEMS+DEL.ITEMS+NOCHG.ITEMS'R#12'
+         END ELSE
+            T.BOL.CNT = 0
+            T.WRITE.CNT = 0
+            T.SHIP.WT = 0
+            RESULTS.ARRAY<-1>='Import Results for file ':FTP.ID
+            RESULTS.ARRAY<-1>= ' '
+            H.LINE = "Ln#" "R#3" :" ": "Client" :"  ": "Client Name" "L#30" : " "
+            H.LINE := "BOL Count" "R#9" : "  " : "Written" "R#7" :" " : "Diff." "R#5" :" ": "Weight" "R#11"
+            RESULTS.ARRAY<-1>= H.LINE
+            RESULTS.ARRAY<-1>= ' '
+            N.CL = DCOUNT(CL.STATS<1>,@VM)
+            FOR IC = 1 TO N.CL
+               R.CLIENT = CL.STATS<1,IC>
+               READV R.CLIENT.NAME FROM F.CLIENTS, R.CLIENT, 2 ELSE R.CLIENT.NAME = "??"
+               R.BOL.CNT = CL.STATS<2,IC>
+               R.WRITE.CNT = CL.STATS<3,IC>
+               R.SHIP.WT = CL.STATS<4,IC>
+               T.BOL.CNT += R.BOL.CNT
+               T.WRITE.CNT += R.WRITE.CNT
+               T.SHIP.WT += R.SHIP.WT
+               R.DIFF = R.BOL.CNT - R.WRITE.CNT
+               R.LINE = IC "R#3":" ":R.CLIENT "R%5":"   ":R.CLIENT.NAME[1,30] "L#30" : " "
+               R.LINE := R.BOL.CNT "R#9":"  ":R.WRITE.CNT "R#7" :" ":R.DIFF "R#5" : OCONV(R.SHIP.WT,"MR0,") "R#11"
+               RESULTS.ARRAY<-1> = R.LINE
+            NEXT IC
+            T.DIFF = T.BOL.CNT - T.WRITE.CNT
+            T.LINE = SPACE(3) :" ": "Total" :"   " : STR(".",30) : " "
+            T.LINE := T.BOL.CNT "R#9":"  ":T.WRITE.CNT "R#7" :" ":T.DIFF "R#5" : OCONV(T.SHIP.WT,"MR0,") "R#11"
+            RESULTS.ARRAY<-1> = T.LINE
+         END
+         RESULTS.NATT=DCOUNT(RESULTS.ARRAY,@AM)
+
+* Screen output of results
+         IF CMD THEN
+         END ELSE
+            FOR RATT=1 TO RESULTS.NATT
+               CRT @(0,RATT+10):@(-4):RESULTS.ARRAY<RATT>
+            NEXT RATT
+         END
+
+* Email output of results
+         EMAIL.OUT=''
+         IF TESTING THEN
+            EMAIL.OUT<1,1>='GBINO@afs.net'       ; * Troubleshooting
+         END ELSE
+            BEGIN CASE
+               CASE CLIENT.ID='00761'    ; * JMK01
+                  EMAIL.OUT<1,1>='hector_fernandez@leisurearts.com'    ; * To: Email addresses ; * JMK01
+               CASE CLIENT.ID='00883'
+                  EMAIL.OUT<1,1>='DFriend@afs.net'           ; * To: Email addresses
+
+               CASE CLIENT.ID='01308'
+                  EMAIL.OUT<1,1>='dfriend@afs.net'           ; * To: Email addresses
+               CASE CLIENT.ID='05806'
+                  EMAIL.OUT<1,1>='dfriend@afs.net'           ; * To: Email addresses
+
+               CASE CLIENT.ID='01311' OR CLIENT.ID='01460'
+                  EMAIL.OUT<1,1>='fplowman@dietrichindustries.com'     ; * To: Email addresses
+
+               CASE CLIENT.ID='01349' OR CLIENT.ID='01350' OR CLIENT.ID='01645'  ; * JMK10
+                  EMAIL.OUT<1,1>='ajabay@robroy.com'         ; * To: Email addresses
+                  EMAIL.OUT<1,2>='rjustice@afs.net'          ; *NPR102210
+                                         ; *NPR102210
+
+               CASE CLIENT.ID='01524'
+                  EMAIL.OUT<1,1>='gwilburn@totalbizfulfillment.com'    ; * To: Email addresses
+
+               CASE CLIENT.ID='01862'
+                  EMAIL.OUT<1,1>='dfriend@afs.net'           ; * To: Email addresses
+*DF                  EMAIL.OUT<1,-1>='mmunoz@afs.net'           ; * To: Email addresses
+               CASE CLIENT.ID='02038'
+                  EMAIL.OUT<1,1>='dfriend@afs.net'           ; * To: Email addresses
+               CASE CLIENT.ID='02427'    ; * JMK24
+                  EMAIL.OUT<1,1>='transportation@springswindowfashions.com'      ; * JMK24
+               CASE CLIENT.ID='05702'
+                  EMAIL.OUT<1,1>='dfriend@afs.net'           ; * To: Email addresses
+               CASE CLIENT.ID='40005'
+
+               CASE CLIENT.ID = "AFS_BOL"
+
+                  EMAIL.OUT<1,1>='plam@afs.net'    ; * To: Email addresses ; * 04/19/10 ; * SWB01
+                  EMAIL.OUT<1,2>='cye@afs.net'     ; * To: Email addresses ; * 04/19/10
+               CASE CLIENT.ID = "PULSETMS_BOL"
+                  EMAIL.OUT<1,2>='dfriend@afs.net'           ; * To: Email addresses ; * 04/19/10
+            END CASE
+            EMAIL.OUT<2>=''              ; * CC: Email addresses
+        ****    IF CLIENT.ID NE "AFS_BOL" THEN EMAIL.OUT<3,1>='MKerbow@afs.net'      ; * BCC: Email addresses  ;* ZZZ
+         END
+         EMAIL.OUT<4>='Imports@afs.net'  ; * From Email address
+         EMAIL.OUT<5>='Results From Running ':PROG.NAME:' - Import Of New PO/BOL Bill of Lading Code Data For ':CLIENT.ID:' ':CLIENT.REC<2>  ; * Subject of Email
+
+* Email body
+         EMAIL.OUT<6,-1>=USER.NAME:' ran ':PROG.NAME:' (':PROG.DESC:') on ':DATE()'D2/':' at ':OCONV(TIME(),'MTHS'):' with the following results:'
+         EMAIL.OUT<6,-1>=' '
+         NUM=DCOUNT(RESULTS.ARRAY,@AM)
+         FOR X=1 TO NUM
+            EMAIL.OUT<6,-1>='   ':RESULTS.ARRAY<X>
+         NEXT X
+
+         IF WARNING.ARRAY#'' THEN        ; * JMK07
+            EMAIL.OUT<6,-1>=' '          ; * JMK07
+            EMAIL.OUT<6,-1>='The following warnings exist in this import file:'  ; * JMK07
+            EMAIL.OUT<6,-1>=' '          ; * JMK07
+            NUM=DCOUNT(WARNING.ARRAY,@AM)          ; * JMK07
+            FOR X=1 TO NUM               ; * JMK07
+               EMAIL.OUT<6,-1>='   ':WARNING.ARRAY<X>        ; * JMK07
+            NEXT X                       ; * JMK07
+         END                             ; * JMK07
+
+         IF ERROR.ARRAY#'' THEN
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>='The following conflicts occurred between existing data and new data:'
+            EMAIL.OUT<6,-1>=' '
+            NUM=DCOUNT(ERROR.ARRAY,@AM)
+            FOR X=1 TO NUM
+               EMAIL.OUT<6,-1>='   ':ERROR.ARRAY<X>
+            NEXT X
+         END
+
+         IF TESTING THEN
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>='Dont forget to remove the testing flag!!'
+         END
+         EMAIL.OUT<7>=1                  ; * Auto format (add carriage returns to end of text)
+         VIN=EMAIL.OUT
+         VOUT=''
+         CALL SENDMAIL(VIN,VOUT)
+         EMAIL.SENT=1
+
+         IF CMD ELSE
+            CALL ELINE('')
+         END
+
+SKIP.FILE:***
+
+      REPEAT
+*************************************************************************
+THE.END:***
+***********************************************************************
+      IF CMD THEN
+         IF EMAIL.SENT=0 AND ERROR.ARRAY#'' THEN
+            EMAIL.OUT=''
+            IF TESTING THEN
+               EMAIL.OUT<1,1>='GBINO@afs.net'    ; * Troubleshooting
+            END ELSE
+               BEGIN CASE
+                  CASE CLIENT.ID='AFS_BOL'
+
+                  CASE CLIENT.ID='PULSETMS_BOL'
+                     EMAIL.OUT<1,1>='dfriend@afs.net'
+                  CASE CLIENT.ID='00761'           ; * JMK01
+                     EMAIL.OUT<1,1>='hector_fernandez@leisurearts.com'           ; * To: Email addresses ; * JMK01
+                  CASE CLIENT.ID='01308'
+                     EMAIL.OUT<1,1>='dfriend@afs.net'        ; * To: Email addresses
+                  CASE CLIENT.ID='05806'
+                     EMAIL.OUT<1,1>='dfriend@afs.net'        ; * To: Email addresses
+
+                  CASE CLIENT.ID='01311' OR CLIENT.ID='01460'
+                     EMAIL.OUT<1,1>='fplowman@dietrichindustries.com'  ; * To: Email addresses
+
+                  CASE CLIENT.ID='01349' OR CLIENT.ID='01350' OR CLIENT.ID='01645'         ; * JMK10
+                     EMAIL.OUT<1,1>='ajabay@robroy.com'      ; * To: Email addresses
+                  CASE CLIENT.ID='01524'
+                     EMAIL.OUT<1,1>='gwilburn@totalbizfulfillment.com'           ; * To: Email addresses
+
+                  CASE CLIENT.ID='01862'
+                     EMAIL.OUT<1,1>='dfriend@afs.net'        ; * To: Email addresses
+                     EMAIL.OUT<1,-1>='mmunoz@afs.net'           ; * To: Email addresses
+
+                  CASE CLIENT.ID='02038'
+                     EMAIL.OUT<1,1>='dfriend@afs.net'        ; * To: Email addresses
+                  CASE CLIENT.ID='02427'           ; * JMK24
+                     EMAIL.OUT<1,1>='transportation@springswindowfashions.com'   ; * JMK24
+                  CASE CLIENT.ID='05702'
+                     EMAIL.OUT<1,1>='dfriend@afs.net'        ; * To: Email addresses
+                  CASE CLIENT.ID='40005'
+
+               END CASE
+               EMAIL.OUT<2>=''           ; * CC: Email addresses
+
+            END
+            EMAIL.OUT<4>='Imports@afs.net'         ; * From Email address
+            EMAIL.OUT<5>='Warnings/Errors From Running ':PROG.NAME:' - Import Of New EDP Bill of Lading Code Data For ':CLIENT.ID:' ':CLIENT.REC<2>    ; * Subject of Email
+
+* Email body
+            EMAIL.OUT<6,-1>=USER.NAME:' ran ':PROG.NAME:' (':PROG.DESC:') on ':DATE()'D2/':' at ':OCONV(TIME(),'MTHS'):' with the following results:'
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>='The following conflicts occurred between existing data and new data:'
+            EMAIL.OUT<6,-1>=' '
+            IF WARNING.ARRAY#'' THEN     ; * JMK07
+               EMAIL.OUT<6,-1>=' '       ; * JMK07
+               EMAIL.OUT<6,-1>='The following warnings exist in this import file:'         ; * JMK07
+               EMAIL.OUT<6,-1>=' '       ; * JMK07
+               NUM=DCOUNT(WARNING.ARRAY,@AM)       ; * JMK07
+               FOR X=1 TO NUM            ; * JMK07
+                  EMAIL.OUT<6,-1>='   ':WARNING.ARRAY<X>     ; * JMK07
+               NEXT X                    ; * JMK07
+            END                          ; * JMK07
+
+            NUM=DCOUNT(ERROR.ARRAY,@AM)
+            FOR X=1 TO NUM
+               EMAIL.OUT<6,-1>='   ':ERROR.ARRAY<X>
+            NEXT X
+
+            IF TESTING THEN
+               EMAIL.OUT<6,-1>=' '
+               EMAIL.OUT<6,-1>='Dont forget to remove the testing flag!!'
+            END
+
+            EMAIL.OUT<7>=1               ; * Auto format (add carriage returns to end of text)
+
+            VIN=EMAIL.OUT
+            VOUT=''
+            CALL SENDMAIL(VIN,VOUT)
+            EMAIL.SENT=1
+         END
+      END ELSE
+         CRT @(0,23):
+      END
+
+      STOP
+***********************************************************************
+INITIALIZE.VARS:* Initialize variables
+***********************************************************************
+      ADD.ITEMS=0
+      ADD.ERR.ITEMS=0
+      RPT.ADD=1                          ; * JMK05
+      CHG.ITEMS=0
+      CHG.ADD.ITEMS=0
+      RPT.CHG=1                          ; * JMK05
+      DEL.ITEMS=0
+      DEL.ADD.ITEMS=0
+      NOCHG.ITEMS=0                      ; * JMK05
+      RPT.DEL=1                          ; * JMK05
+      RESULTS.ARRAY=''
+      ERROR.ARRAY=''
+      WARNING.ARRAY=''                   ; * JMK07
+      PERC=0
+      ORIG.NAME=""
+      ORIG.ADD1=""
+      ORIG.ADD2=""
+      ORIG.CITY=""
+      ORIG.STATE=""
+      ORIG.COUNTRY=""
+      ORIG.ZIP=""
+      DEST.NAME=""
+      DEST.ADD1=""
+      DEST.ADD2=""
+      DEST.CITY=""
+      DEST.STATE=""
+      DEST.COUNTRY=""
+      DEST.ZIP=""
+      SHIP.DATE=""
+      SHIP.WT=""
+      SHIP.DIR=""
+      SHIP.NO=""
+      CONS.ACNT.NO=""
+      REF.NO=""
+      PRO.NO=""
+      LOC.CODE=""
+      PPD.COLL=""
+      EXP.CODE=""
+      EXP.RATIO=""
+      ACTION=""
+      FB.CLASSES=""
+      FB.CLASS.CODES=""
+      FB.WEIGHTS=""
+      CONTRACT.PRICE=""
+      ACCESS.CODES=""
+      ACCESS.CHRGS=""
+      PO.NO=""                           ; * JMK01
+      BOL.NO=""                          ; * JMK01
+      DIV.NO=""                          ; * JMK01
+      SCAC.CODE=""                       ; * JMK01
+      TRACK.NO=""                        ; * JMK01
+      PREV.CLIENT.NO=""                  ; * JMK04
+      UPD.LIST=''                        ; * JMK07
+      ACCRUAL.COST = ""                  ; * NPR01
+      AFS.SQL.BOL.ID = ''                ; * NPR02
+      WRK.CLIENT = ''                    ; * NPR02
+      CL.CNT = 0                         ; * NPR02
+      SPOT.MARKET=''                     ; * GRB01
+      COVERAGE.CERT=''
+      COVERAGE.AR.AMT=''
+      REF.SPC =''                        ; * GRB02
+
+      RETURN
+***********************************************************************
+BUILD.CL.RECS:* Create workfile record per client
+*********************************************************************************************************************
+*  (O) = Optional , (P) = Preffered and (R) = Required
+*
+** Expecting a multi lined, TAB delimited file with columns as follows
+***
+***  Field No.  Name               Description
+***          1  OriginName (O)     Shipper Name
+***          2  OriginAdd1 (O)     Shipper Address Line 1
+***          3  OriginAdd2 (O)     Shipper Address Line 2
+***          4  OriginCity (O)     Shipper City Name
+***          5  OriginSt (O)       Shipper State Postal Abbreviation
+***          6  OriginCountry (O)  Shipper Country Postal Abbreviation
+***          7  OriginZip (O)      Shipper Postal Code
+***          8  DestName (O)       Consignee Name
+***          9  DestAdd1 (O)       Consignee Address Line 1
+***         10  DestAdd2 (O)       Consignee Address Line 2
+***         11  DestCity (O)       Consignee City Name
+***         12  DestSt (O)         Consignee State Postal Abbreviation
+***         13  DestCountry (O)    Consignee Country Postal Abbreviation
+***         14  DestZip (O)        Consignee Postal Code
+***         15  ShipDate (O)       Date of Shipment
+***         16  ShipWt (O)         Total weight of shipment as tendered
+***         17  ShipDir (O)        Shipment Direction ([I]nbound, [O]utbound or [T]hird Party)
+***         18  ShipNumber (R)     Shipper Number for Shipment (BOL for outbound/PO for inbound)
+***         19  ConsAcntNumber (O) Customer Account Number
+***         20  RefNumber (O)      Shipper reference number
+***         21  ProNumber (O)      Carrier Pro number for shipment (if available)
+***         22  LocCode (O)        Code for the responsible shipping location
+***         23  PPDColl (P)        Billing Status (Prepaid or Collect)
+***         24  ExpenseCode (P)    Expense Code(s) to apply to shipment. Multiple codes are to be separated by the | character.
+***         25  ExpenseRatio (P)   Expense Code Ratio(s) to apply to shipment. Multiple codes are to be separated by the | character and
+***                                should correspond to the number of Expense Codes.
+***         26  Action (O)         Action to take when updating records. A=Add, C=Change, D=Delete
+***         27  Classes (O)        National Motor Freight Classifications assigned to Freight Tendered.
+***                                This information can have multiple values for different freight items separated by the | character and
+***                                is associated with the weights in field 28.
+***         28  Weights (O)        Actual Weights for Freight Tendered. This information can have multiple values for different freight items
+***                                separated by the | character and is associated with the Classes in field 27.
+***         29  ContractPrice (O)  Contains any shipment price that would over-ride normal rates for this shipment.
+***         30  AccessCodes (O)    Accessorial Codes used by AFS to define additional charges beyond normal transportation costs.
+***                                These codes may contain multiple values and should be separated by the | character and
+***                                is associated with the AccessCharges in field 31.
+***         31  AccessCharges (O)  Accessorial Charge amounts beyond normal transportation costs.
+***                                These charges may contain multiple values and should be separated by the | character and
+***                                is associated with the AccessCodes in field 30.
+***         32  AccruedCost (O)    Accrual Cost Amounts that may or may not be used for validation.
+***         33  AFS Client #
+*
+*********************************************************************************************************************
+
+      N.LINES = DCOUNT(FTP.REC,@AM)
+      FOR II = 1 TO N.LINES
+         W.LINE = FTP.REC<II>
+         N.VALS = DCOUNT(W.LINE,@VM)
+         W.SHIP.NO = TRIM(W.LINE<1,18>)
+         W.CLIENT = TRIM(W.LINE<1,33>)
+         W.CLIENT = W.CLIENT "R%5"
+         IF W.SHIP.NO NE "ShipNumber" THEN
+            READ TST.CLIENT FROM F.CLIENTS, W.CLIENT THEN
+               READ CL.REC FROM F.WORK, W.CLIENT ELSE
+                  CL.REC = ""
+                  LOCATE W.CLIENT IN CL.LIST BY "AR" SETTING CL.POS ELSE
+
+                     INS W.CLIENT BEFORE CL.LIST<CL.POS>
+                  END
+                  CL.CNT += 1
+               END
+               CL.REC<-1> = W.LINE
+               WRITE CL.REC ON F.WORK, W.CLIENT
+            END ELSE
+               ERROR.ARRAY<-1>='Could not read client ':W.CLIENT:' information.'
+            END
+         END
+      NEXT II
+
+      RETURN
+***********************************************************************
+PROCESS.AFS.CLIENTS:*
+***********************************************************************
+      READ WORK.REC FROM F.WORK, WRK.CLIENT ELSE
+         ERROR.ARRAY<-1>='Could not read client ':WRK.CLIENT:' information from Work file.'
+         RETURN
+      END
+
+      OPEN '','FB.BOL.CRX,':WRK.CLIENT TO F.BOL ELSE
+         EXECUTE 'CREATE-FILE DATA FB.BOL.CRX,':WRK.CLIENT:' 503,1' CAPTURING OUTPUT
+         OPEN '','FB.BOL.CRX,':WRK.CLIENT TO F.BOL ELSE
+            IF CMD THEN
+               ERROR.ARRAY<-1>='Cannot Open FB.BOL.CRX,':WRK.CLIENT:' File!'
+               RETURN
+            END ELSE
+               CALL OPEN.ABORT('FB.BOL.CRX,':WRK.CLIENT,PROG.NAME)
+            END
+         END
+      END
+
+      OPEN '','FB.BOL.REFNO.XREF,':WRK.CLIENT TO F.BOL.REFNO.XREF ELSE
+         EXECUTE 'CREATE-FILE DATA FB.BOL.REFNO.XREF,':WRK.CLIENT:' 503,1' CAPTURING OUTPUT
+         OPEN '','FB.BOL.REFNO.XREF,':WRK.CLIENT TO F.BOL.REFNO.XREF ELSE
+            IF CMD THEN
+               ERROR.ARRAY<-1>='Cannot Open FB.BOL.REFNO.XREF,':WRK.CLIENT:' File!'
+               RETURN
+            END ELSE
+               CALL OPEN.ABORT('FB.BOL.REFNO.XREF,':WRK.CLIENT,PROG.NAME)
+            END
+         END
+      END
+
+*** Fields below not supplied by AFS web guys yet.
+
+      PO.NO = ''
+      SCAC.CODE = ''
+      N.LINES = DCOUNT(WORK.REC,@AM)
+      CL.STATS<2,CLX> = N.LINES
+      FOR LN = 1 TO N.LINES
+         CRT @(50,22):LN :" OF ":N.LINES : "         "
+         W.LINE = TRIM(WORK.REC<LN>)
+         ORIG.NAME = TRIM(W.LINE<1,1>)
+         ORIG.ADD1 = TRIM(W.LINE<1,2>)
+         ORIG.ADD2 = TRIM(W.LINE<1,3>)
+         ORIG.CITY = TRIM(W.LINE<1,4>)
+         ORIG.STATE = TRIM(W.LINE<1,5>)
+         ORIG.COUNTRY = TRIM(W.LINE<1,6>)
+         ORIG.ZIP = TRIM(W.LINE<1,7>)
+         DEST.NAME = TRIM(W.LINE<1,8>)
+         DEST.ADD1 = TRIM(W.LINE<1,9>)
+         DEST.ADD2 = TRIM(W.LINE<1,10>)
+         DEST.CITY = TRIM(W.LINE<1,11>)
+         DEST.STATE = TRIM(W.LINE<1,12>)
+         DEST.COUNTRY = TRIM(W.LINE<1,13>)
+         DEST.ZIP = TRIM(W.LINE<1,14>)
+         SHIP.DATE = TRIM(W.LINE<1,15>)
+         SHIP.WT = TRIM(W.LINE<1,16>)
+         SHIP.DIR = TRIM(W.LINE<1,17>)
+         SHIP.NO = TRIM(W.LINE<1,18>)
+         CONS.ACNT.NO = TRIM(W.LINE<1,19>)
+         REF.NO = TRIM(W.LINE<1,20>)
+         REF.NO1 = TRIM(W.LINE<1,20>)
+         PRO.NO = TRIM(W.LINE<1,21>)
+         LOC.CODE = TRIM(W.LINE<1,22>)
+         PPD.COLL = TRIM(W.LINE<1,23>)
+         EXP.CODE = TRIM(W.LINE<1,24>)
+         EXP.RATIO = TRIM(W.LINE<1,25>)
+         ACTION = TRIM(W.LINE<1,26>)
+         FB.CLASSES = TRIM(W.LINE<1,27>)
+         FB.WEIGHTS = TRIM(W.LINE<1,28>)
+         CONTRACT.PRICE = TRIM(W.LINE<1,29>)
+         ACC.CODES = TRIM(W.LINE<1,30>)
+         ACC.CHARGES = TRIM(W.LINE<1,31>)
+         ACCRUAL.COST = TRIM(W.LINE<1,32>)
+         AFS.SQL.BOL.ID = TRIM(W.LINE<1,33>)       ; *NPR02 - Added 04/08/10
+         REF.NO2 = TRIM(W.LINE<1,35>)    ; *NPR02 - Added 04/08/10
+         REF.NO3 = TRIM(W.LINE<1,36>)    ; *NPR02 - Added 04/08/10
+         PALLET.CNT = TRIM(W.LINE<1,37>)           ; *NPR04 - Added 06/29/10
+         PIECE.CNT = TRIM(W.LINE<1,38>)  ; *NPR04 - Added 06/29/10
+         HAZ.UN.NO = TRIM(W.LINE<1,39>)  ; *NPR10 - Added 12/09/10 - Mainly for Airgas Zone A gasses
+         HAZ.CLASS = TRIM(W.LINE<1,40>)  ; *NPR11 - Added 12/09/10 - Mainly for Airgas gas classes.
+         BILL.NAME = TRIM(W.LINE<1,41>)  ; * JMK16
+         BILL.ADD1 = TRIM(W.LINE<1,42>)  ; * JMK16
+         BILL.ADD2 = TRIM(W.LINE<1,43>)  ; * JMK16
+         BILL.STATE = TRIM(W.LINE<1,44>)           ; * JMK16
+         BILL.CITY = TRIM(W.LINE<1,45>)  ; * JMK16
+         BILL.ZIP = TRIM(W.LINE<1,46>)   ; * JMK16
+         BILL.COUNTRY = TRIM(W.LINE<1,47>)         ; * JMK16
+         REF.NO4 = TRIM(W.LINE<1,48>)    ; * DRF01
+         INCO = TRIM(W.LINE<1,49>)       ; * DRF01
+         DELIVERY.NUMBER=TRIM(W.LINE<1,50>)        ; * DRF02
+* Begin TAG01
+         NMFC.CODES = TRIM(W.LINE<1,51>)
+* End TAG01
+         REASON.NOT.LCC=TRIM(W.LINE<1,52>)
+         REASON.FOR.SHIPMENT=TRIM(W.LINE<1,53>)
+         PO.NUMBER=TRIM(W.LINE<1,54>)
+         USERNAME  =TRIM(W.LINE<1,55>)    
+         SPOT.MARKET  =TRIM(W.LINE<1,56>)                  ;* GRB01
+         REF.SPC=TRIM(W.LINE<1,57>)                        ;* GRB02
+         COVERAGE.CERT=TRIM(W.LINE<1,58>)
+         COVERAGE.AR.AMT=TRIM(W.LINE<1,59>)*100
+       
+         SHIP.YEAR = SHIP.DATE[1,4]
+         SHIP.MTH = SHIP.DATE[5,2]
+         SHIP.DAY = SHIP.DATE[7,2]
+         SHIP.DATE = SHIP.MTH:"/":SHIP.DAY:"/":SHIP.YEAR
+         SHIP.DATE = ICONV(SHIP.DATE,"D4/")
+         CONTRACT.PRICE=ICONV(CONTRACT.PRICE,'MD2')
+
+         CONVERT " " TO "" IN SHIP.NO
+         CONVERT "|" TO @VM IN FB.CLASSES
+         CONVERT "|" TO @VM IN FB.WEIGHTS
+         CONVERT "|" TO @VM IN HAZ.UN.NO           ; *NPR10 - Added 12/09/10 - Mainly for Airgas Zone A gasses
+         CONVERT "|" TO @VM IN HAZ.CLASS           ; *NPR11
+         CONVERT "|" TO @VM IN NMFC.CODES
+
+         CONVERT \'\ TO \\ IN ORIG.NAME  ; *NPR12'
+         CONVERT \"\ TO \\ IN ORIG.NAME  ; *NPR12
+
+         CONVERT \'\ TO \\ IN DEST.NAME  ; *NPR12
+         CONVERT \"\ TO \\ IN DEST.NAME  ; *NPR12
+
+         N.BOL.CLS = DCOUNT(FB.CLASSES,@VM)
+         IF N.BOL.CLS GT 20 THEN
+            NEW.CLASSES = ""
+            NEW.WEIGHTS = ""
+            FOR BL = 1 TO N.BOL.CLS
+               W.CLASS = FB.CLASSES<1,BL>
+               W.WEIGHT = FB.WEIGHTS<1,BL>
+               IF CLIENT.ID='01862' THEN W.WEIGHT=ICONV(W.WEIGHT,'MR0')
+               IF CLIENT.ID='02038' THEN W.WEIGHT=ICONV(W.WEIGHT,'MR0')
+               LOCATE W.CLASS IN NEW.CLASSES<1> SETTING CLS.POS THEN
+                  NEW.WEIGHTS<1,CLS.POS> = NEW.WEIGHTS<1,CLS.POS> + W.WEIGHT
+               END ELSE
+                  NEW.CLASSES=INSERT(NEW.CLASSES,1,CLS.POS,0,W.CLASS)
+                  NEW.WEIGHTS=INSERT(NEW.WEIGHTS,1,CLS.POS,0,W.WEIGHT)
+               END
+            NEXT BL
+            FB.CLASSES = NEW.CLASSES
+            FB.WEIGHTS = NEW.WEIGHTS
+         END
+
+         CONVERT "|" TO @VM IN PALLET.CNT          ; *NPR04 - Added 06/29/10
+         CONVERT "|" TO @VM IN PIECE.CNT           ; *NPR04 - Added 06/29/10
+
+         IF PALLET.CNT = "" THEN PALLET.CNT = 0    ; *NPR04 - Added 06/29/10
+         IF PIECE.CNT = "" THEN PIECE.CNT = 0      ; *NPR04 - Added 06/29/10
+
+         PALLET.CNT = SUM(PALLET.CNT)    ; *NPR04 - Added 06/29/10
+         PIECE.CNT = SUM(PIECE.CNT)      ; *NPR04 - Added 06/29/10
+
+         HANDLING.UNIT = 0               ; *NPR04 - Added 06/29/10
+         IF PALLET.CNT GT 0 THEN         ; *NPR04 - Added 06/29/10
+            HANDLING.UNIT = PALLET.CNT   ; *NPR04 - Added 06/29/10
+         END ELSE                        ; *NPR04 - Added 06/29/10
+            IF PIECE.CNT > 0 THEN HANDLING.UNIT = PIECE.CNT  ; *NPR04 - Added 06/29/10
+         END                             ; *NPR04 - Added 06/29/10
+
+         READ BOL.REC FROM F.BOL,SHIP.NO THEN
+         END ELSE
+            BOL.REC=''
+         END
+         GOSUB UPDATE.BOL.REC
+         LOCATE FTP.ID IN BOL.REC<52> SETTING FPOS ELSE
+            BOL.REC<50,-1>=DATE()
+            BOL.REC<51,-1>=TIME()
+            BOL.REC<52,-1>=FTP.ID
+            BOL.REC<53,-1>=LN
+            BOL.REC<54,-1>=ACTION
+         END
+         WRITE BOL.REC ON F.BOL,SHIP.NO
+         IF CLIENT.ID='05702' THEN
+            WRITE BOL.REC ON F.BOL.A,SHIP.NO
+         END
+         CL.STATS<3,CLX> += 1
+         ID.WRK = WRK.CLIENT:"*":SHIP.NO
+         WRITE BOL.REC ON F.WORK , ID.WRK
+
+         IF WRK.CLIENT = "01457" THEN    ; * 05052010 - Temporarily only for Airgas Safety
+            CALL GET.ROOT.NUMBER(REF.NO1,ID.XREF1)
+            CALL GET.ROOT.NUMBER(REF.NO2,ID.XREF2)
+            CALL GET.ROOT.NUMBER(REF.NO3,ID.XREF3)
+
+            IF ID.XREF3 NE "" AND LEN(ID.XREF3) GT 1 THEN
+               ID.XREF3 = OCONV(ID.XREF3,"MCU")
+               READ RN.XREF.REC FROM F.BOL.REFNO.XREF, ID.XREF3 ELSE RN.XREF.REC = ""
+               LOCATE SHIP.NO IN RN.XREF.REC<1> SETTING XREF.POS ELSE
+                  RN.XREF.REC<1,-1> = SHIP.NO
+               END
+               WRITE RN.XREF.REC ON F.BOL.REFNO.XREF, ID.XREF3
+            END
+            IF PRO.NO NE '' THEN         ; * NPR08
+               CALL GET.ROOT.NUMBER(PRO.NO,PRO.NO.ROOT)      ; * NPR08
+               PRO.NO.ROOT = "PRONO*":PRO.NO.ROOT  ; * NPR08
+               READ RN.XREF.REC FROM F.BOL.REFNO.XREF, PRO.NO.ROOT ELSE RN.XREF.REC = ""   ; * NPR08
+               LOCATE SHIP.NO IN RN.XREF.REC<1> SETTING XREF.POS ELSE  ; * NPR08
+                  RN.XREF.REC<1,-1> = SHIP.NO      ; * NPR08
+               END                       ; * NPR08
+               WRITE RN.XREF.REC ON F.BOL.REFNO.XREF, PRO.NO.ROOT      ; * NPR08
+            END                          ; * NPR08
+         END
+
+         IF CLIENT.ID='AFS_BOL' AND PRO.NO NE "" THEN        ; * JMK18
+            PBX.VIN=''
+            PBX.VIN<1>=PRO.NO
+            PBX.VOUT=''
+            CALL GET.ROOT.NUMBER(PBX.VIN,PBX.VOUT)
+            ID.PBX=PBX.VOUT<1>
+
+            IF ID.PBX#'' THEN
+               READ PBX.REC FROM F.PBX, ID.PBX ELSE PBX.REC = ""
+
+               LOCATE SHIP.NO IN PBX.REC<1> SETTING PBX.POS ELSE
+                  PBX.REC<1,-1> = SHIP.NO
+                  PBX.REC<2,-1> = SHIP.WT
+                  PBX.REC<3,-1> = WRK.CLIENT
+                  WRITE PBX.REC ON F.PBX, ID.PBX
+               END
+            END
+         END
+
+         CL.STATS<4,CLX> += SHIP.WT
+      NEXT LN
+
+      RETURN
+***********************************************************************
+UPDATE.BOL.REC:***
+***********************************************************************
+      BEGIN CASE
+         CASE CLIENT.ID='00761'          ; * JMK01
+            BOL.REC<2>=SHIP.DATE         ; * JMK01
+            BOL.REC<8>=SHIP.NO           ; * JMK01
+            BOL.REC<16>=DEST.NAME        ; * JMK01
+            BOL.REC<21>=DEST.ZIP         ; * JMK01
+            BOL.REC<23>=SHIP.DIR         ; * JMK01
+            BOL.REC<25>=PO.NO            ; * JMK01 ; * JMK07
+            BOL.REC<26>=PRO.NO           ; * JMK01
+            BOL.REC<31>=ACTION           ; * JMK01
+            BOL.REC<34>=SCAC.CODE        ; * JMK01
+            BOL.REC<36>=TRACK.NO         ; * JMK01
+            BOL.REC<37>=DIV.NO           ; * JMK01
+
+         CASE CLIENT.ID='01311' OR CLIENT.ID='01460'         ; * JMK03
+            BOL.REC<1>=ACCR.COSTS        ; * JMK03 ; * JMK22
+            BOL.REC<2>=SHIP.DATE         ; * JMK03
+            BOL.REC<4>=UPDATE.DATE       ; * JMK03
+            BOL.REC<8>=SHIP.NO           ; * JMK03 ; * JMK22
+            BOL.REC<9>=EXP.CODE          ; * JMK03
+
+         CASE CLIENT.ID='01349' OR CLIENT.ID='01350' OR CLIENT.ID='01645'        ; * JMK04 ; * JMK10
+            BOL.REC<2>=RR.SDATE
+            BOL.REC<4>=UPDATE.DATE
+            BOL.REC<8>=RR.BOL
+            BOL.REC<10>=RR.CARRIER
+            BOL.REC<11>=RR.SDATE
+            BOL.REC<12>=RR.SCITY
+            BOL.REC<13>=RR.SST
+            BOL.REC<14>=RR.SZIP
+            BOL.REC<15>=RR.CONS
+            BOL.REC<16>=RR.CCITY
+            BOL.REC<17>=RR.CST
+            BOL.REC<18>=RR.CZIP
+            BOL.REC<19>=RR.PRO
+            BOL.REC<20>=RR.WT            ; * JMK02
+            BOL.REC<21>=RR.CCODE         ; * JMK03
+            LOCATE(RR.PRO,BOL.REC,19;BPOS) ELSE
+               NVAL=DCOUNT(BOL.REC<19>,@VM)+1      ; * JMK03
+               BOL.REC<10,NVAL>=RR.CARRIER
+               BOL.REC<11,NVAL>=RR.SDATE
+               BOL.REC<12,NVAL>=RR.SCITY
+               BOL.REC<13,NVAL>=RR.SST
+               BOL.REC<14,NVAL>=RR.SZIP
+               BOL.REC<15,NVAL>=RR.CONS
+               BOL.REC<16,NVAL>=RR.CCITY
+               BOL.REC<17,NVAL>=RR.CST
+               BOL.REC<18,NVAL>=RR.CZIP
+               BOL.REC<19,NVAL>=RR.PRO
+               BOL.REC<20,NVAL>=RR.WT    ; * JMK02
+               BOL.REC<21,NVAL>=RR.CCODE           ; * JMK03
+            END
+
+         CASE CLIENT.ID='AFS_BOL' OR CLIENT.ID='PULSETMS_BOL'          ; * NPR02
+            BOL.REC<2>=SHIP.DATE         ; * NPR02
+            BOL.REC<8>=SHIP.NO           ; * NPR02
+            BOL.REC<10>=ORIG.NAME        ; * NPR02
+            BOL.REC<11,1>=ORIG.ADD1      ; * NPR02
+            BOL.REC<11,2>=ORIG.ADD2      ; * NPR02
+            BOL.REC<12>=ORIG.CITY        ; * NPR02
+            BOL.REC<13>=ORIG.STATE       ; * NPR02
+            BOL.REC<14>=ORIG.COUNTRY     ; * NPR02
+            BOL.REC<15>=ORIG.ZIP         ; * NPR02
+            BOL.REC<16>=DEST.NAME        ; * NPR02
+            BOL.REC<17,1>=DEST.ADD1      ; * NPR02
+            BOL.REC<17,2>=DEST.ADD2      ; * NPR02
+            BOL.REC<18>=DEST.CITY        ; * NPR02
+            BOL.REC<19>=DEST.STATE       ; * NPR02
+            BOL.REC<20>=DEST.COUNTRY     ; * NPR02
+            BOL.REC<21>=DEST.ZIP         ; * NPR02
+            BOL.REC<22>=SHIP.WT          ; * NPR02
+            BOL.REC<23>=SHIP.DIR         ; * NPR02
+            BOL.REC<24>=CONS.ACNT.NO     ; * NPR02
+            BOL.REC<25>=REF.NO           ; * NPR02
+            BOL.REC<26>=PRO.NO           ; * NPR02
+            BOL.REC<27>=LOC.CODE         ; * NPR02
+            BOL.REC<28>=PPD.COLL         ; * NPR02
+            BOL.REC<29>=EXP.CODE         ; * NPRZZ Changed 083110
+            BOL.REC<31>=ACTION           ; * NPR02
+            BOL.REC<32>=FB.CLASSES       ; * NPR02
+            BOL.REC<33>=FB.WEIGHTS       ; * NPR02
+            BOL.REC<34>=ACCESS.CODES     ; * NPR02
+            BOL.REC<35>=ACCESS.CHRGS     ; * NPR02
+            BOL.REC<36>=CONTRACT.PRICE   ; * NPR02 - Moved from 34 06/11/10
+            BOL.REC<39>=HAZ.CLASS        ; * NPR11
+            BOL.REC<42>=REF.NO2          ; * NPR02 - Added 04/08/10
+            BOL.REC<43>=REF.NO3          ; * NPR02 - Added 04/08/10
+            BOL.REC<44>=PALLET.CNT       ; * NPR04 - Added 06/29/10
+            BOL.REC<45>=PIECE.CNT        ; * NPR04 - Added 06/29/10
+            BOL.REC<46>=HANDLING.UNIT    ; * NPR04 - Added 06/29/10
+            BOL.REC<49>=HAZ.UN.NO        ; * NPR10 - Added 12/09/10 - Mainly for Airgas Zone A gasses
+            BOL.REC<54>=AFS.SQL.BOL.ID   ; * NPR02 - Added 04/08/10
+            BOL.REC<59>=BILL.NAME        ; * JMK16
+            BOL.REC<60,1>=BILL.ADD1      ; * JMK16
+            BOL.REC<60,2>=BILL.ADD2      ; * JMK16
+            BOL.REC<61>=BILL.CITY        ; * JMK16
+            BOL.REC<62>=BILL.STATE       ; * JMK16
+            BOL.REC<63>=BILL.COUNTRY     ; * JMK16
+            BOL.REC<64>=BILL.ZIP         ; * JMK16
+            BOL.REC<65>=REF.NO4          ; * DRF01
+            BOL.REC<66>=INCO             ; * DRF01
+            BOL.REC<67>=DELIVERY.NUMBER  ; * DRF02
+* Begin TAG01
+            BOL.REC<68>=NMFC.CODES
+* End TAG01
+            BOL.REC<69>=REASON.NOT.LCC
+            BOL.REC<70>=REASON.FOR.SHIPMENT
+            BOL.REC<71>=PO.NUMBER
+            BOL.REC<72>=SPOT.MARKET   ;* GRB01
+            BOL.REC<73>=COVERAGE.CERT
+            BOL.REC<74>=COVERAGE.AR.AMT
+            BOL.REC<75>=REF.SPC                ;* GRB02
+          CASE 1
+            BOL.REC<2>=SHIP.DATE
+            BOL.REC<8>=SHIP.NO
+            BOL.REC<10>=ORIG.NAME
+            BOL.REC<11,1>=ORIG.ADD1
+            BOL.REC<11,2>=ORIG.ADD2
+            BOL.REC<12>=ORIG.CITY
+            BOL.REC<13>=ORIG.STATE
+            BOL.REC<14>=ORIG.COUNTRY
+            BOL.REC<15>=ORIG.ZIP
+            BOL.REC<16>=DEST.NAME
+            BOL.REC<17,1>=DEST.ADD1
+            BOL.REC<17,2>=DEST.ADD2
+            BOL.REC<18>=DEST.CITY
+            BOL.REC<19>=DEST.STATE
+            BOL.REC<20>=DEST.COUNTRY
+            BOL.REC<21>=DEST.ZIP
+            * Begin NKH03
+            IF CLIENT.ID = '02427' THEN 
+               LOCATE FTP.ID IN BOL.REC<52> SETTING F.POS THEN 
+                  IF NOT(NUM(SHIP.WT)) THEN SHIP.WT = 0
+                  BOL.REC<22> += SHIP.WT       
+               END ELSE
+                  BOL.REC<22>=SHIP.WT
+               END
+            END ELSE
+               BOL.REC<22>=SHIP.WT            
+            END
+            * End NKH03
+            BOL.REC<23>=SHIP.DIR
+            BOL.REC<24>=CONS.ACNT.NO
+            BOL.REC<25>=REF.NO
+            BOL.REC<26>=PRO.NO
+            BOL.REC<27>=LOC.CODE
+            BOL.REC<28>=PPD.COLL
+            BOL.REC<29>=EXP.CODE
+            BOL.REC<30>=EXP.RATIO
+            BOL.REC<31>=ACTION
+            IF CLIENT.ID='01308' THEN
+               BOL.REC<34>=SCAC.CODE
+            END
+            IF CLIENT.ID='05806' THEN
+               BOL.REC<42>=REF.NO2
+               BOL.REC<43>=REF.NO3
+            END
+            IF CLIENT.ID='01862' THEN              ; * NKH01
+               CONVERT '|' TO @VM IN FB.CLASSES    ; * NKH01
+               CONVERT '|' TO @VM IN FB.WEIGHTS    ; * NKH01
+               BOL.REC<32>=FB.CLASSES              ; * NKH01
+               BOL.REC<33>=FB.WEIGHTS              ; * NKH01  
+               BOL.REC<42>=REF.NO2                 ; * NKH02
+               BOL.REC<43>=REF.NO3                 ; * NKH02
+            END                                    ; * NKH01
+      END CASE
+      RETURN
+   END

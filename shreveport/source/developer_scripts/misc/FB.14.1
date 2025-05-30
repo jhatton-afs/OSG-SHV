@@ -1,0 +1,458 @@
+$OPTIONS HEADER.EJECT
+      ERRMSG=''
+*
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+*
+* PROGRAM FB.14.1
+* PROGRAM TO CREATE OR MODIFY CARRIERS
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: BRIAN M. QUEEN
+* DATE: NOVEMBER 13, 1990
+
+*
+* Get processing type
+*
+      PROMPT''
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+
+*
+* Initialize variables
+*
+*     EXECUTE 'AUTOLOGOUT 3' ; ** Only Allow Someone in for 3 Minutes
+      ADD.FLAG=0
+      PROG.NAME='FB.14.1'
+      PROG.DESC='SCOTT CARRIER MAPPING MAINTENANCE'
+      PACK.NAME='FREIGHT BILLING'
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.14.1' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      VM = CHAR(253)
+      EXIT.IT = FALSE
+      FIND.LOCKED.NAME = ''
+
+      *
+      * Check Digit Calculation Methods Available.
+      *
+      VIN='' ; VOUT='' ; VIN<1> = 'I'
+      CALL CHECK.DIGIT(VIN,VOUT)
+      METHODS.AVAIL=VOUT<3>
+      ORG.CARRIER.XREF=''
+      T.CARRIERS=''
+
+*
+* Open files
+*
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN 'DICT','CARRIERS' TO F.DICT ELSE
+         CALL OPEN.ABORT("DICT CARRIERS",PROG.NAME)
+      END
+      OPEN '','BCTRL' TO F.BCTRL ELSE
+         CALL OPEN.ABORT("BCTRL",PROG.NAME)
+      END
+      OPEN '','FB.ADJUST.CARRIER' TO F.ADJUST.CARRIER ELSE
+         CALL OPEN.ABORT("FB.ADJUST.CARRIER",PROG.NAME)
+      END
+      OPEN '','SCAC.XREF' TO F.SCAC ELSE
+         CALL OPEN.ABORT("SCAC",PROG.NAME)
+      END
+      OPEN '','SCOTT.CARRIERS' TO F.SCOTT.CARRIERS ELSE
+         CALL OPEN.ABORT("SCOTT.CARRIERS",PROG.NAME)
+      END
+      OPEN '','SCOTT.SCAC.XREF' TO F.SCOTT.SCAC ELSE
+         CALL OPEN.ABORT("SCOTT.SCAC.XREF",PROG.NAME)
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+         CALL OPEN.ABORT("ZIPS",PROG.NAME)
+      END
+
+      CALL GET.USER(USER)
+      READ DBCTRL FROM F.BCTRL,USER ELSE DBCTRL=''
+      SUPER.USER=0
+      VIN=USER
+      CALL SUPER.USER(VIN,VOUT)
+      SUPER.USER=VOUT<1>
+      IF USER='LEM' THEN SUPER.USER=1
+      IF USER='LSMITH' THEN SUPER.USER=1
+      IF USER='BRIANS' THEN SUPER.USER=1
+      IF USER='BRIANP' THEN SUPER.USER=1
+50:   IF NOT(SUPER.USER) THEN
+         CALL ELINE('Unauthorized access!!')
+         GO EXIT.FB.14.1
+      END
+75:* GET LIST OF UNPROCESSED RECORDS FOR UPDATING
+      STMT='SELECT SCOTT.CARRIERS WITH AFS.ID=""'
+      STMT='GET-LIST SCOTT.SCAC'
+      EXECUTE STMT RTNLIST SCAC.LIST CAPTURING RESULT
+      NUM.ITMS=@SELECTED
+*
+* Display screen
+*
+100:* GET SCOTT SCAC CARRIER ID
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      IF NUM.ITMS THEN
+         READNEXT QI FROM SCAC.LIST ELSE
+            CALL ELINE('No more items to process.')
+            NUM.ITMS=0
+            GO 100
+         END
+         CARRIER.ID=''
+         CARRIER.REC=''
+      END ELSE
+         CRT @(0,2):"Scott SCAC ........."
+         HELP="Enter Scott carrier code, [EX]it."
+         CALL GEN.IN(20,2,'#####','',Q,0,20,'','',2,-5,2,0,QI,HELP,0,23)
+      END
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X' OR QI='EX' OR QI=''
+            GO EXIT.FB.14.1
+         CASE 1
+            READ SCOTT.CARRIER.REC FROM F.SCOTT.CARRIERS,QI ELSE
+               SCOTT.CARRIER.REC=''
+               SCOTT.CARRIER.ID=QI
+               GOSUB 8000
+               GOSUB 8100
+               GOSUB 120                 ; * ENTER NAME
+               GOSUB 130                 ; * ENTER ADDR1
+               GOSUB 140                 ; * ENTER ADDR2
+               GOSUB 150                 ; * ENTER CITY
+               GOSUB 160                 ; * ENTER STATE
+               GOSUB 170                 ; * ENTER ZIP
+               GOSUB 180                 ; * ENTER PHONE
+               WRITE SCOTT.CARRIER.REC ON F.SCOTT.CARRIERS,SCOTT.CARRIER.ID
+            END
+            SCOTT.CARRIER.ID=QI
+            CARRIER.ID=''
+            READ TEST FROM F.SCOTT.SCAC,QI THEN
+               IF NUM.ITMS THEN
+                  GO 100
+               END ELSE
+                  CARRIER.ID=TEST<1>
+               END
+            END
+            GOSUB 8000                   ; * Display Scott Screen
+            GOSUB 8100                   ; * Display Scott Data
+            IF CARRIER.ID#'' THEN
+               READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE CARRIER.REC=''
+               GOSUB 8200
+               GO 5000
+            END
+      END CASE
+*
+* Test for AFS SCAC code index
+*
+      READ CARRIER.SCAC FROM F.SCAC,QI THEN
+         CARRIER.ID=CARRIER.SCAC<1>
+         READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID THEN
+            GOSUB 8000
+            GOSUB 8100
+            GOSUB 8200                   ; * Display AFS Data
+            GO 5000
+         END
+      END
+      GO 1000
+*--------------------------------------------------------------------
+* Scott Carrier Name. Item 1.
+*--------------------------------------------------------------------
+120:  HELP="Enter Scott carrier's Name. [cr]=Accept."
+      IF SCOTT.CARRIER.REC<1> EQ '' THEN DVAR='-' ELSE DVAR=SCOTT.CARRIER.REC<1>'L#25'
+      CALL GEN.IN(13,3,DVAR,'',Q,0,25,'','',2,-25,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='' ; Q=SCOTT.CARRIER.REC<1>
+         CASE QI=' ' ; Q=''
+      END CASE
+      SCOTT.CARRIER.REC<1>=TRIM(Q)
+      CRT @(13,3):SCOTT.CARRIER.REC<1>'L#25'
+      RETURN
+
+*--------------------------------------------------------------------------
+* Scott Carrier Address. Item 2.
+*--------------------------------------------------------------------------
+130:  HELP="Enter Scott carrier's addr. [<]=Back. [cr]=Accept."
+      IF SCOTT.CARRIER.REC<2,1> EQ '' THEN DVAR='-' ELSE DVAR=SCOTT.CARRIER.REC<2,1>'L#25'
+      CALL GEN.IN(13,4,DVAR,'',Q,0,25,'','',2,-25,4,0,QI,HELP,0,23)
+      BEGIN CASE
+         CASE Q EQ '<'
+            CRT @(13,4):SCOTT.CARRIER.REC<2,1>'L#25'
+            GOTO 120
+         CASE QI=''
+            Q=SCOTT.CARRIER.REC<2,1>
+         CASE QI=' '
+            Q=''
+      END CASE
+      SCOTT.CARRIER.REC<2,1>=Q
+      CRT @(13,4):SCOTT.CARRIER.REC<2,1>'L#25'
+      RETURN
+
+*--------------------------------------------------------------------------
+* 2nd line of Scott carrier's address. Item 3.
+*--------------------------------------------------------------------------
+140:  HELP="Enter Scott carrier's remittance address. [<]=Back to 1st line. [cr]=Accept."
+      IF SCOTT.CARRIER.REC<2,2> EQ '' THEN DVAR='-' ELSE DVAR=SCOTT.CARRIER.REC<2,2>'L#25'
+      CALL GEN.IN(13,5,DVAR,'',Q,0,25,'','',2,-25,5,0,QI,HELP,0,23)
+      BEGIN CASE
+         CASE Q EQ '<'
+            CRT @(13,5):SCOTT.CARRIER.REC<2,2>'L#25'
+            GOTO 130
+         CASE QI=''
+            Q=SCOTT.CARRIER.REC<2,2>
+         CASE QI=' '
+            Q=''
+      END CASE
+      SCOTT.CARRIER.REC<2,2>=Q
+      CRT @(13,5):SCOTT.CARRIER.REC<2,2>'L#25'
+      RETURN
+
+*--------------------------------------------------------------------------
+* Scott Carrier's city. Item 4.
+*--------------------------------------------------------------------------
+150:  HELP="Enter Scott carrier's city or zip code. [<]=Back to 2nd address. [cr]=Accept."
+      IF SCOTT.CARRIER.REC<3> EQ '' THEN DVAR='-' ELSE DVAR=SCOTT.CARRIER.REC<3>'L#20'
+      CALL GEN.IN(13,6,DVAR,'',Q,0,20,'','',2,-20,6,0,QI,HELP,0,23)
+      ZCODE=FIELD(QI,'-',1)
+      BEGIN CASE
+         CASE QI='<'
+            CRT @(13,6):SCOTT.CARRIER.REC<3>'L#20'
+            GOTO 140
+         CASE QI=''
+            Q=SCOTT.CARRIER.REC<3>
+         CASE QI=' '
+            Q=''
+         CASE NUM(ZCODE)
+            READ ZREC FROM F.ZIPS,ZCODE THEN
+               SCOTT.CARRIER.REC<3>=ZREC<1>
+               SCOTT.CARRIER.REC<4>=ZREC<2>
+               SCOTT.CARRIER.REC<5>=Q
+               CRT @(13,6):SCOTT.CARRIER.REC<3>'L#20'
+               CRT @(13,7):SCOTT.CARRIER.REC<4>'L#2'
+               CRT @(13,8):SCOTT.CARRIER.REC<5>'L#10'
+            END ELSE
+               CALL ELINE('Zip code not on file.')
+               GOTO 150
+            END
+         CASE 1
+            SCOTT.CARRIER.REC<3>=Q
+      END CASE
+      CRT @(13,6):SCOTT.CARRIER.REC<3>'L#20'
+      RETURN
+
+*--------------------------------------------------------------------------
+* Scott Carrier's state. Item 5.
+*--------------------------------------------------------------------------
+160:  HELP="Enter Scott carrier's state. [<]=Back to city. [cr]=Accept."
+      IF SCOTT.CARRIER.REC<4> EQ '' THEN DVAR='-' ELSE DVAR=SCOTT.CARRIER.REC<4>'L#2'
+      CALL GEN.IN(13,7,DVAR,'',Q,0,2,'','',2,-2,7,0,QI,HELP,0,23)
+      BEGIN CASE
+         CASE Q EQ '<'
+            CRT @(13,7):SCOTT.CARRIER.REC<4>'L#2'
+            GOTO 150
+         CASE QI=''
+            Q=SCOTT.CARRIER.REC<4>
+         CASE QI=' '
+            Q=''
+      END CASE
+      SCOTT.CARRIER.REC<4>=Q
+      CRT @(13,7):SCOTT.CARRIER.REC<4>'L#2'
+      RETURN
+
+*--------------------------------------------------------------------------
+* Scott Carrier's zip code. Item 6.
+*--------------------------------------------------------------------------
+170:  HELP="Enter Scott carrier's zip code. [<]=Back to state. [cr]=Accept."
+      IF SCOTT.CARRIER.REC<5> EQ '' THEN DVAR='#####-####' ELSE DVAR=SCOTT.CARRIER.REC<5>'L#10'
+      CALL GEN.IN(13,8,DVAR,'',Q,0,10,'','',2,-10,8,0,QI,HELP,0,23)
+      ZCODE=FIELD(QI,'-',1)
+      BEGIN CASE
+         CASE Q EQ '<'
+            CRT @(13,8):SCOTT.CARRIER.REC<5>'L#10'
+            GOTO 160
+         CASE QI=''
+            Q=SCOTT.CARRIER.REC<5>
+         CASE QI=' '
+            Q=''
+         CASE NUM(ZCODE)
+            READ ZREC FROM F.ZIPS,ZCODE THEN
+               SCOTT.CARRIER.REC<3>=ZREC<1>
+               SCOTT.CARRIER.REC<4>=ZREC<2>
+               SCOTT.CARRIER.REC<5>=Q
+            END ELSE
+               CALL ELINE('Zip code not on file, add to master.')
+               GOTO 170
+            END
+         CASE 1
+            SCOTT.CARRIER.REC<5>=Q
+      END CASE
+      CRT @(13,6):SCOTT.CARRIER.REC<3>'L#20'
+      CRT @(13,7):SCOTT.CARRIER.REC<4>'L#2'
+      CRT @(13,8):SCOTT.CARRIER.REC<5>'L#10'
+      RETURN
+
+*--------------------------------------------------------------------------
+* Scott Carrier's phone. Item 8.
+*--------------------------------------------------------------------------
+180:  HELP="Enter Scott carrier's phone number. '<'=Back to country. ''=Accept."
+      IF SCOTT.CARRIER.REC<8> EQ '' THEN
+         DVAR="(###)###-####"
+      END ELSE
+         PIN=SCOTT.CARRIER.REC<8>
+         CALL PHONE.OUT(PIN,DVAR)
+      END
+      CALL GEN.IN(17,10,DVAR,'PHONE',Q,0,13,'','',2,-13,10,0,QI,HELP,0,23)
+      BEGIN CASE
+         CASE Q EQ '<'
+            PIN=SCOTT.CARRIER.REC<8>
+            CALL PHONE.OUT(PIN,POUT)
+            CRT @(17,10):POUT'L#13'
+            GOTO 170
+         CASE QI=''
+            Q=SCOTT.CARRIER.REC<8>
+         CASE QI=' '
+            Q=''
+      END CASE
+      SCOTT.CARRIER.REC<8>=Q
+      PIN=SCOTT.CARRIER.REC<8>
+      CALL PHONE.OUT(PIN,POUT)
+      CRT @(17,10):POUT'L#13'
+      RETURN
+
+1000:
+      IF NUM.ITMS THEN
+         HELP="Enter AFS carrier number, 'name' for search, [L]ist, [N]ext, [EX]it."
+         MASK='Enter AFS carrier ':SCOTT.CARRIER.REC<1>
+      END ELSE
+         HELP="Enter AFS carrier number, 'name' for search, [L]ist, [EX]it."
+         MASK='Enter AFS carrier #####'
+      END
+      CALL GEN.IN(0,22,MASK,'',Q,0,18,'','',22,18,22,0,QI,HELP,0,23)
+      IF NUM.ITMS AND QI='' THEN
+         QI=SCOTT.CARRIER.REC<1>
+      END
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X' OR QI='EX' OR QI=''
+            GO EXIT.FB.14.1
+         CASE NUM.ITMS AND QI='N'
+            GO 100
+         CASE QI EQ 'L'
+            EXECUTE 'SORT CARRIERS BY 1 1'
+            CALL ELINE('')
+            GOSUB REDRAW.DISPLAY
+            GO 1000
+         CASE NUM(QI)
+            CARRIER.ID=Q'R%5'
+            ORG.CARRIER.XREF='' ; T.CARRIERS='' ; XREF.LIST='' ; OLD.XREF.LIST=''
+            CRT @(54,2):CARRIER.ID
+            READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID THEN
+               GOSUB 8200                ; * Display data
+               GO 5000
+            END ELSE
+               CALL ELINE('Carrier does not exist on file')
+               GO 1000
+            END
+         CASE 1
+            CALL SOUNDEX.DISPLAY(QI,'CARRIERS','SDX.CARRIER,NAME','1,3,4',QX)
+            CT=DCOUNT(QX<1>,@VM)
+            IF CT=1 THEN
+               BEGIN CASE
+                  CASE QX<1,1>='X'
+                  CASE QX<1,1>='EX'
+                  CASE 1
+                     DATA QX<1,1>
+               END CASE
+            END
+            GOSUB 8000
+            GOSUB 8100
+            GOSUB 8200
+            GO 1000
+      END CASE
+5000:* MODIFY LINE
+      CRT @(0,22):'Option: ':@(-4)
+      IF NUM.ITMS THEN
+         OPTIONS.HELP = '[U]pdate, [N]ext, [A]FS Carrier, [EX]it'
+      END ELSE
+         OPTIONS.HELP = '[U]pdate, [A]FS Carrier, [EX]it'
+      END
+      CALL GEN.IN(8,22,'','',Q,0,3,'','',2,8,22,0,QI,OPTIONS.HELP,0,23)
+      QI=TRIM(OCONV(QI,"MCU"))
+      BEGIN CASE
+         CASE QI='EX' OR QI='X' OR QI=''
+            GO EXIT.FB.14.1
+         CASE QI='U'
+            WRITE SCOTT.CARRIER.REC ON F.SCOTT.CARRIERS,SCOTT.CARRIER.ID
+            WRITE CARRIER.ID ON F.SCOTT.SCAC,SCOTT.CARRIER.ID
+            GO 100
+         CASE QI='A'
+            GO 1000
+         CASE NUM.ITMS AND QI='N'
+            GO 100
+         CASE 1
+      END CASE
+
+EXIT.FB.14.1:
+
+
+      STOP
+
+
+*--------------------------------------------------------------------
+*
+* INTERNAL SUBROUTINES
+*
+*--------------------------------------------------------------------
+*
+* Display Screen
+*
+8000:*
+      CRT @(0, 2):@(-3):
+      CRT @(0, 2):"Scott Carrier": @(40, 2):"AFS Carrier.."
+      CRT @(0, 3):"Name.........": @(40, 3):"Name........."
+      CRT @(0, 4):"Addr 1.......": @(40, 4):"Addr 1......."
+      CRT @(0, 5):"Addr 2.......": @(40, 5):"Addr 2......."
+      CRT @(0, 6):"City.........": @(40, 6):"City........."
+      CRT @(0, 7):"State........": @(40, 7):"State........"
+      CRT @(0, 8):"Zip Code.....": @(40, 8):"Zip Code....."
+      CRT @(0, 9):"Phone Number.": @(40, 9):"Phone Number."
+      RETURN
+
+*--------------------------------------------------------------------------
+* Display Scott data
+*--------------------------------------------------------------------------
+8100: CRT @(14, 2):SCOTT.CARRIER.ID'L#5'
+      CRT @(14, 3):SCOTT.CARRIER.REC<1>'L#25'
+      CRT @(14, 4):SCOTT.CARRIER.REC<2,1>'L#25'
+      CRT @(14, 5):SCOTT.CARRIER.REC<2,2>'L#25'
+      CRT @(14, 6):SCOTT.CARRIER.REC<3>'L#20'
+      CRT @(14, 7):SCOTT.CARRIER.REC<4>'L#2'
+      CRT @(14, 8):SCOTT.CARRIER.REC<5>'L#10'
+      CRT @(14, 9):SCOTT.CARRIER.REC<8>'L#15'
+      RETURN
+
+*--------------------------------------------------------------------------
+* Display AFS data
+*--------------------------------------------------------------------------
+8200: CRT @(54, 2):CARRIER.ID'L#5'
+      CRT @(54, 3):CARRIER.REC<1>'L#25'
+      CRT @(54, 4):CARRIER.REC<2,1>'L#25'
+      CRT @(54, 5):CARRIER.REC<2,2>'L#25'
+      CRT @(54, 6):CARRIER.REC<3>'L#20'
+      CRT @(54, 7):CARRIER.REC<4>'L#2'
+      CRT @(54, 8):CARRIER.REC<5>'L#10'
+      CRT @(54, 9):CARRIER.REC<8>'L#15'
+      RETURN
+*
+*--------------------------------------------------------------------------
+* Redraw Entire Display
+*--------------------------------------------------------------------------
+REDRAW.DISPLAY:
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      GOSUB 8000
+      GOSUB 8100
+      GOSUB 8200
+      RETURN

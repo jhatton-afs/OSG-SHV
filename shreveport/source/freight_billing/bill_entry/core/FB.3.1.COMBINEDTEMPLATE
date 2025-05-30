@@ -1,0 +1,609 @@
+      SUBROUTINE FB.3.1.COMBINEDTEMPLATE( F.EmailData, ClientRecord, InvoiceNumber, WeekEnding, PaymentDueBy, BeginningDate, EndingDate, SummaryOfChargesTable, PriorToAFSTable, DuplicateSavingsTable, NonduplicateSavingsTable, AfterAFSTable, NotesTable, VOUT )
+*
+* Arguments:
+*   F.EmailData              The OPENed file pointer where the result will be stored for emailing
+*   WeekEnding               Week-ending date to be EReplaced() into the template
+*   PaymentDueBy             Payment due date to be EReplaced() into the template
+*   BeginningDate            Report beginning date to be EReplaced into the template
+*   EndingDate               Report ending date to be EReplaced into the template
+*   ClientRecord             The Client data record from F.CLIENTS, used to build the section
+*                            of the HTML page with Client name, address, etc.
+*   SummaryOfChargesTable    data section one of the HTML page
+*   PriorToAFSTable          data section two of the HTML page
+*   DuplicateSavingsTable    data section three of the HTML page
+*   NonduplicateSavingsTable data section four of the HTML page
+*   AfterAFSTable            data section five of the HTML page
+*   NotesTable               data section six of the HTML page
+*
+*  Each of these dynamic arrays is comprised of zero or more @fm-delimited
+*  attributes, one attribute per HTML row.  Each row has a label string in
+*  value 1 then some variable number of values representing dollar amounts
+*  to be loaded into the final HTML table.  These values are delivered by
+*  the mainline as integers and are formatted for printing in this
+*  subroutine.
+*
+*
+* Client Record is an artificial construct due to the fact that this
+* sub can now handle multiple divisions.  The attributes are:
+*
+*  < 1 > = Client Id number (optionally @vm division number)
+*  < 2 > = Name
+*  < 3 > = Street address
+*  < 4 > = City
+*  < 5 > = State
+*  < 6 > = Zip
+*  < 7 > = Email "To" addresses
+*  < 8 > = Email "CC" addresses
+*  < 9 > = Email "BCC" Addresses
+*
+* If the ClientRecord consists only of ClientID^DivisionId then this is a
+* divisional report and the address information (physical and email) will
+* be located in the DIVISION.CODES,DivisionId file
+*
+*  SEE FORMS->CombinedTemplate_v6.htm for a look at the data sections
+*
+      $INCLUDE HTML.INCLUDES HTML.FUNCTIONS ; * use the standardized tools for HTML
+
+*
+      If Unassigned( F.EmailData ) Then
+         Open 'EMAILDATA' To F.EmailData Else
+            VOUT = "Error: the EMAILDATA file could not be opened."
+            Return
+         End
+      End
+
+      If FileInfo( F.EmailData, 0 ) <> 1 Then
+         VOUT = "Error: EMAILDATA is not a valid file. Has the location moved?"
+         Return
+      End
+
+      Open 'FORMS' To F.Forms Else
+         VOUT = "Error: the FORMS file failed to open."
+         Return
+      End
+
+      Open 'CLIENTS' To Clients Else
+         VOUT = "Error: cannot open the CLIENTS file."
+         Return
+      End
+
+      SeparateDivisions = @false
+*
+      If DCount( ClientRecord, @vm ) = 2 Then
+         SeparateDivisions = @true
+      End
+
+      ClientId = ClientRecord< 1, 1 >
+      AccountMgrEmail = OConv( ClientRecord<264>,'TAR.SLSMAN.1000.1;X;;8')
+
+*
+* This subroutine can process for a company or for separate divisions in a company
+*
+      DivisionId = nil
+
+      If SeparateDivisions = @true Then
+
+         DivisionId = ClientRecord< 1, 2 >
+
+         Open 'DIVISION.CODES,' : ClientId To DivisionCodes Else
+            VOUT = "Error: cannot open DIVISION.CODES," : DivisionId
+            Return
+         End
+
+         Read DivisionCodes.Record From DivisionCodes, DivisionId Else
+            VOUT = "Error: division code " : DivisionId : " does not exist."
+            Return
+         End
+
+         Read Clients.Record From Clients, ClientId Else Clients.Record = ""
+
+         If DivisionCodes.Record< 9 > = nil Then Return      ; * no email if no TO addresses
+
+         ClientRecord = Clients.Record< 2 > : " "
+*        ClientRecord< 2 > := DivisionCodes.Record< 11 >     ; * name
+*        ClientRecord< 3 > = DivisionCodes.Record< 14 >      ; * address
+*        ClientRecord< 4 > = DivisionCodes.Record< 16 >      ; * city
+*        ClientRecord< 5 > = DivisionCodes.Record< 17 >      ; * ST
+*        ClientRecord< 6 > = DivisionCodes.Record< 1 >       ; * zip
+         ClientRecord< 2 > = Clients.Record< 2 >             ; * name
+         ClientRecord< 3 > = Clients.Record< 3 >             ; * address
+         ClientRecord< 4 > = Clients.Record< 4 >             ; * city
+         ClientRecord< 5 > = Clients.Record< 5 >             ; * ST
+         ClientRecord< 6 > = Clients.Record< 6 >             ; * zip
+
+         ClientRecord< 7, -1 > = DivisionCodes.Record< 9 >   ; * TO addresses
+         ClientRecord< 7 > = Trim( ClientRecord, @vm )       ; * in case division codes rec 9 is empty
+
+         ClientRecord< 8 > = DivisionCodes.Record< 12 >      ; * CC addresses
+         ClientRecord< 9 > = DivisionCodes.Record< 13 >      ; * BCC addresses
+
+      End
+
+      Read Template From F.Forms, "CombinedTemplate_v6.html" Else
+         VOUT = "Error: The CombinedTemplate_v6.html form is not in the FORMS file."
+         Return
+      End
+
+      Read Styles From F.Forms, "standard_styles.css" Else
+         VOUT = "Error: The standard_styles.css style sheet is missing from the FORMS file."
+         Return
+      End
+
+      EmailPath='E:\ARDENT\PUBLIC\EMAILDATA\'
+
+* Add the standard styles to the template
+      Template = EReplace( Template, "~STANDARD.STYLES~", Styles )
+
+      SectionTitleClass = "ghead"
+      DividerClass = "divider"
+      TotalClass = "total"
+      DetailSectionCellClass = "rowh"
+      DollarFormat = "MR2,"
+      ThousandFormat = "MR0,"
+
+      InvoiceGrandTotal = 0
+
+***********************************************************************
+*  Begin impressing the data from the argument line into the template *
+***********************************************************************
+
+      Table = nil
+*
+      DividerColSpan = 5                 ; * widest colspan of the detail table
+
+***********************************************************************
+*                       Report Header                                 *
+***********************************************************************
+
+* Client name and address
+*
+      Clients.Key = ClientRecord< 1, 1 >
+      ClientBlock = ClientRecord< 2 >
+
+      ClientBlock< -1 > = Raise( ClientRecord< 3 > )
+      ClientBlock< -1 > = ClientRecord< 4 > : ", " : ClientRecord< 5 > : " " : ClientRecord< 6 >     ; * CSZ
+
+      If DivisionId <> nil Then
+         ClientBlock< -1 > = "Division: " : DivisionId
+      End
+
+      ClientBlock = Trim( ClientBlock, @fm )       ; * remove empty lines
+*
+      RemitFromAddress = EReplace( ClientBlock, @fm, "<br />" )
+
+      Template = EReplace( Template, "~INVOICE.NUMBER~", InvoiceNumber )
+      Template = EReplace( Template, "~CLIENT.NAME.ADDRESS~", RemitFromAddress )
+      Template = EReplace( Template, "~REMIT.PAGE.CLIENT.ADDRESS~", RemitFromAddress )
+
+* Week ending date
+      If WeekEnding = nil Then WeekEnding = EndingDate
+      Template = EReplace( Template, "~WEEK.ENDING~", WeekEnding )
+
+* Payment due date
+
+      If PaymentDueBy = nil Then PaymentDueBy = OConv( Date()+7, 'D2/' )         ; * Allow override from mainline; use default otherwise
+      Template = EReplace( Template, "~PAYMENT.DUE.BY~", PaymentDueBy )
+
+* Bills processed from/to dates
+      Template = EReplace( Template, "~BILLS.PROCESSED.FROM~", BeginningDate )
+      Template = EReplace( Template, "~BILLS.PROCESSED.TO~", EndingDate )
+
+
+***********************************************************************
+*                Table A:  Summary of Charges                         *
+***********************************************************************
+*
+*  The SummaryOfCharges dynamic array in the argument line is comprised
+*  of data generated in the FB.3.1.NEW mainline.  The attributes relate
+*  to physical table rows and the values relate to columns in those
+*  rows.  INBOUND: They are (generally) as follows:
+*
+*  Outbound invoices: < 1 > label @vm NUM.EDI.OUT< 1, 1 > + NUM.EDI.OUT< 1 , 2 > @vm NUM.OUT.PAID @ vm TOT.NUM.OUT
+*  Inbound invoices:  < 2 > label @vm NUM.EDI.IN< 1, 1 > + NUM.EDI.IN< 1, 2 > @vm NUM.IN.PAID @vm TOT.NUM.IN
+*  Third Party:       < 3 > label @vm NUM.EDI.THIRD< 1, 1 > + NUM.EDI.THIRD< 1, 2 > @vm NUM.THIRD.PAID @vm TOT.NUM.THIRD
+*  Subtotal line      < 4 > label (total invoices processed) @vm TOT.EDI.BILLS @vm TOT.NON.EDI.BILLS @vm @vm PAID
+*  Duplicate invoices < 5 > label @vm @vm @vm NUM.REJ
+*  Rejected invoices  < 5 > label @vm @vm @vm NUM.NEVER.PAYS
+*  Need add'l info    < 6 > label @vm @vm @vm NUM.HOLDS
+*  Total Invoices Reviewed < 7 > label @vm @vm @vm @vm PAID
+*
+
+      TotalInvoicesReviewed = 0
+
+      Table< -1 > = \<table id="invoice_list" class="summary" width="100%">\
+      Table< -1 > = \<thead>\
+      Table< -1 > = \<tr class="divider">\
+      Table< -1 > = \<th>&nbsp;</th>\
+      Table< -1 > = \<th>EDI</th>\
+      Table< -1 > = \<th>Paper</th>\
+      Table< -1 > = \<th>Subtotal</th>\
+      Table< -1 > = \<th>Total</th>\
+      Table< -1 > = \</tr>\
+      Table< -1 > = \</thead>\
+
+      Table< -1 > = @fm : \<tbody>\
+
+      D = DCount( SummaryOfChargesTable, @fm )
+
+      For Idx = 1 To D
+*
+         Row = SummaryOfChargesTable< Idx >
+         Row = Field( Row : @vm : CatS( Reuse( '&nbsp;' ), Str( @vm, 5 ) ), @vm, 1, 5 )    ; * make sure the last row extends all the way to the right
+*
+* Sum up the number of invoices reviewed
+*
+         TotalInvoicesReviewed += Row< 1, 4 >
+*
+         V = DCount( Row, @vm )
+         Conversions = nil : @fm : CatS( Reuse( ThousandFormat ), Str( @fm, ( V - 1 ) ) )
+         Justifications = "L" : @fm : CatS( Reuse( "R" ), Str( @fm, ( V -1 ) ) )
+*
+         Table< -1 > = HTML.TableRow( Row, Justifications, nil, Conversions, nil )
+
+      Next
+*
+      Row = '<b>Total Invoices Reviewed</b>' : @vm : @vm : @vm : @vm : OConv( TotalInvoicesReviewed, ThousandFormat )
+      Table< -1 > = HTML.TableRow( Row, Justifications, nil, Conversions, nil )
+
+      Table< -1 > = @fm : \</tbody>\
+*
+      Table< -1 > = \</table>\           ; * End the SOC table
+
+      Template = EReplace( Template, "~SUMMARY.OF.CHARGES.TABLE~", Table )
+
+
+***********************************************************************
+***********************************************************************
+*                         Charge Details                              *
+***********************************************************************
+***********************************************************************
+
+* The rest of the body is one big table with subtables.  The contents
+* of the right-hand subtable (in the same major row as the row title
+* can vary depending on whether the contents are null/nil/zero.  If
+* the contents of a subtable row are found to be null/nil/zero for
+* that accounting line, the row should not be added to the subtable.
+
+      Table = nil
+
+      Table< -1 > = \<thead>\
+      Table< -1 > = \<tr class="divider">\
+      Table< -1 > = \<th>&nbsp;</th>\
+      Table< -1 > = \<th>&nbsp;</th>\
+      Table< -1 > = \<th>&nbsp;</th>\
+      Table< -1 > = \<th>Subtotal</th>\
+      Table< -1 > = \<th>Total</th>\
+      Table< -1 > = \</tr>\
+      Table< -1 > = \</thead>\
+
+      Table< -1 > = \<tbody>\
+
+***********************************************************************
+*                     Table B:  Prior to AFS                          *
+***********************************************************************
+* As with other subtables, lines will be included in the inbound array
+* (PriorToAFSTable) if they are non-zero.  The summation of freight
+* charges is done here at the last second.
+
+      TableB = PriorToAFSTable
+
+      D = DCount( PriorToAFSTable, @fm )
+
+      For Idx = D To 1 Step -1
+*
+         Row = Field( TableB< Idx >, @vm, 2, 99 )
+*
+         If Summation( Row ) = 0 Then
+            Del TableB< Idx >
+         End
+*
+      Next
+*
+      AtEnd = @false
+
+      If TableB <> nil Then
+
+         D = DCount( TableB, @fm )
+
+         For Idx = 1 To D
+*
+            Col1Data = If Idx = 1 Then "Prior to AFS" Else nil
+*
+            Row = Col1Data : @vm : PriorToAFSTable< Idx >    ; * insert a cell for the section label
+*
+            Gosub BuildRowFormats
+
+            Table< -1 > = HTML.TableRow( Row, Justifications, "middle", Conversions, CellClass )
+*
+         Next
+
+
+      End
+
+***********************************************************************
+*               Table C:  Duplicate Invoice Savings                   *
+***********************************************************************
+
+      AtEnd = @false
+
+      If Summation( DuplicateSavingsTable ) <> 0 Then
+
+* Add detail
+         D = DCount( DuplicateSavingsTable, @fm )
+
+         For Idx = 1 To D
+
+            Col1Data = If Idx = 1 Then "Duplicate Invoice Savings" Else nil
+
+            Row = Col1Data : @vm : DuplicateSavingsTable< Idx >
+*
+            Gosub BuildRowFormats
+
+            Table< -1 > = HTML.TableRow( Row, Justifications, "middle", Conversions, CellClass )
+
+         Next
+
+      End
+
+***********************************************************************
+*             Table D:  Non-Duplicate Invoice Savings                 *
+***********************************************************************
+
+      AtEnd = @false
+
+      If Summation( NonduplicateSavingsTable ) <> 0 Then
+
+         D = DCount( NonduplicateSavingsTable, @fm )
+
+         For Idx = 1 To D
+
+            Col1Data = If Idx = 1 Then "Nonduplicate Invoice Savings" Else nil
+*
+            Row = Col1Data : @vm : NonduplicateSavingsTable< Idx >     ; * insert a cell for the section label
+*
+            Gosub BuildRowFormats
+
+            Table< -1 > = HTML.TableRow( Row, Justifications, "middle", Conversions, CellClass )
+
+         Next
+
+      End
+
+***********************************************************************
+*             Table E:  Post-AFS Billing Detail                       *
+***********************************************************************
+*
+*  This table should be formatted by the mainline as follows:
+*  (label Outbound Charges Due)       @vm #####
+*  (label Inbound Charges Due)        @vm #####
+*  (label Third Party Charges Due)    @vm #####
+*  (label Freight Charges Total Due)  @vm       @vm ######
+*  (label Weekly Proc & Hdlg Fee)     @vm #####
+*  (label Postage Due)                @vm #####
+*  (label Subtotal Amount Due)        @vm       @vm ######
+*  (label Unapplied Credits)          @vm       @vm ######  (may not be present)
+*  (label ***Total Amount Due***)     @vm       @vm         @vm ########
+*
+*  If a row's dollar values sum to 0 then the row isn't added to the HTML table.
+*
+
+      AtEnd = @false
+
+      If Summation( AfterAFSTable ) <> 0 Then
+
+         D = DCount( AfterAFSTable, @fm )
+
+         For Idx = 1 To D
+
+            If Idx = ( D - 1 ) Then AtEnd = @true
+
+            Col1Data = If Idx = 1 Then "After AFS" Else nil
+            Row = Col1Data : @vm : AfterAFSTable< Idx >      ; * insert a cell for the section label
+
+            V = DCount( Row, @vm )
+*
+            If D = Idx Then
+
+               TotalAmountDue = OConv( Row< 1, 5 >, DollarFormat : "$" )
+               Template = EReplace( Template, '~TOTAL.AMOUNT.DUE~', TotalAmountDue )
+
+            End
+
+            Gosub BuildRowFormats
+
+            Table< -1 > = HTML.TableRow( Row, Justifications, "middle", Conversions, CellClass )
+
+         Next
+
+      End
+
+
+***********************************************************************
+*             Table F:  Notes - may not be present                    *
+***********************************************************************
+
+      If NotesTable <> nil Then
+
+         D = DCount( NotesTable, @fm )
+
+         For Idx = 1 To D
+
+            Col1Data = If Idx = 1 Then "Notes" Else nil
+            Row = Col1Data : @vm : NotesTable< Idx >         ; * insert a cell for the section label
+
+            V = DCount( Row, @vm )
+
+            Gosub BuildRowFormats
+
+            Table< -1 > = HTML.TableRow( Row, Justifications, "middle", Conversions, CellClass )
+
+         Next
+
+      End
+
+***********************************************************************
+***********************************************************************
+*                         End of Detail Table                         *
+***********************************************************************
+***********************************************************************
+
+      Table< -1 > = \</tbody>\
+
+      Template = EReplace( Template, "~DETAIL.TABLE~", Table )
+
+      BeginningMonth = BeginningDate[1,2]
+      BeginningDay = BeginningDate[4,2]
+      BeginningYear = BeginningDate[7,2]
+
+      EndingMonth = EndingDate[1,2]
+      EndingDay = EndingDate[4,2]
+      EndingYear = EndingDate[7,2]
+
+*     ItemId = Clients.Key : "-" : OConv( Date(), 'D2-' ) : "-" : "FB.3.1.CombinedTemplate.html"
+*
+* jwwf - If this report is being run for separate divisions, add the division id
+*      to the output file name
+*
+      ClientKey = ClientId               ; * build up the file names
+*
+      If SeparateDivisions = @true Then
+         ClientKey := "_" : DivisionId
+      End
+*
+      ItemId = ClientKey : "-" : BeginningYear : BeginningMonth : BeginningDay : '-' : EndingYear : EndingMonth : EndingDay : "-" : "NewInvoice.html"
+
+      SOCId = ClientKey : "-" : BeginningYear : BeginningMonth : BeginningDay : '-' : EndingYear : EndingMonth : EndingDay : "-" : "SOC.HTM"           ; * JMKXXX
+      INVId = ClientKey : "-" : BeginningYear : BeginningMonth : BeginningDay : '-' : EndingYear : EndingMonth : EndingDay : "-" : "INV.HTM"           ; * JMKXXX
+
+      Write Template To F.EmailData, ItemId
+*
+      Gosub SendTheEmail
+
+      VOUT = ItemId                      ; * This gets passed back to FB.3.1.NEW for attachment to Weekly Report Emails
+
+      Return
+
+
+***********************************************************************
+*  Subroutine to add a visual dividing line between report sections   *
+***********************************************************************
+
+AddDivider:
+
+      ColSpan = \ colspan=\ : DQuote( DividerColSpan )
+
+      Table< -1 > = \<tr><TD class="divider"\ : ColSpan : \>&nbsp;</TD></tr>\
+
+      Return
+
+
+***********************************************************************
+*  Subroutine to send the resulting page via email                    *
+***********************************************************************
+
+SendTheEmail:
+
+
+      EmailConfig = nil
+*
+* "TO" addresses
+*
+*     EmailConfig< 1, -1 > = 'brose@afs.net'
+*     EmailConfig< 1, -1 > = 'smatthews@afs.net'
+*     EmailConfig< 1, -1 > = 'dcurtis@afs.net'
+*     EmailConfig< 1, -1 > = 'mbutts@afs.net'
+*     EmailConfig< 1, -1 > = 'mmckay@afs.net'
+*     EmailConfig< 1, -1 > = 'bpbarker@afs.net'
+*     EmailConfig< 1, -1 > = AccountMgrEmail
+*     EmailConfig< 1, -1 > = 'BMarkey@afs.net'
+      EmailConfig< 1, -1 > = 'MKerbow@afs.net'
+*
+* "CC" addresses
+*
+*     EmailConfig< 2, -1 > = 'rwhitt@afs.net'
+*     EmailConfig< 2, -1 > = 'jervin@afs.net'
+*
+* BCC addresses
+*
+*     EmailConfig< 3, -1 > = 'oweninfo@afs.net'
+*     EmailConfig< 3, -1 > = 'mkerbow@afs.net'
+*     EmailConfig< 3, -1 > = 'jfarrell@afs.net'
+*
+
+* From Address
+      EmailConfig< 4 > = 'reports_new@afs.net'
+
+* Subject
+      Subj = ClientId : ' - ' : ClientRecord< 2 >
+      If DivisionId <> nil Then Subj := " Division " : DivisionId
+      EmailConfig< 5 > = Subj : ' ' : 'Combined Summary of Charges'
+
+* Message
+      EmailConfig< 6, -1 > = 'AFS Logistics, LLC.                                        Phone: 318-798-2111'
+      EmailConfig< 6, -1 > = '330 Marshall Street, Suite 400                               FAX: 318-797-3628'
+      EmailConfig< 6, -1 > = 'Shreveport, LA 71101                                               www.afs.net'
+
+      EmailConfig< 6, -1 > = ' '
+      EmailConfig< 6, -1 > = ' '
+
+      EmailConfig< 6, -1 > = 'The attachment is a summary of charges from bills processed from ' : BeginningDate : ' to ' : EndingDate : '.'
+
+      EmailConfig< 6, -1 > = ' '
+      EmailConfig< 6, -1 > = EmailPath : ItemId
+      EmailConfig< 6, -1 > = EmailPath : SOCId
+      EmailConfig< 6, -1 > = EmailPath : INVId
+      EmailConfig< 6, -1 > = ' '
+
+      EmailConfig< 6, -1 > = 'Please remit amount due upon receipt.  This will ensure prompt payment to your'
+      EmailConfig< 6, -1 > = 'carriers.  We will fund your carriers when we receive your payment.'
+
+* Set autoformat to "TRUE"
+      EmailConfig< 7 > = 1
+
+* Do not delete the attachments
+      EmailConfig< 8 > = 'NODEL'         ; * JMKxxx
+
+* The item ID of the attachment to send
+      EmailConfig< 11, -1 > = EmailPath:ItemId
+
+* We are going to add the original SOC and INV to compare with
+      EmailConfig< 11, -1 > = EmailPath:SOCId      ; * JMKXXX
+      EmailConfig< 11, -1 > = EmailPath:INVId      ; * JMKXXX
+
+* Send the email
+*     CALL SENDMAIL( EmailConfig, VOUT )
+
+      Return
+
+***********************************************************************
+BuildRowFormats: * set the class for each cell in a table
+***********************************************************************
+
+      Row = Field( Row : @vm : CatS( Reuse( '&nbsp;' ), Str( @vm, 5 ) ), @vm, 1, 5 )       ; * make sure the last row extends all the way to the right
+      RowSize = DCount( Row, @vm )
+
+      Justifications = "C" : @fm : "L" : @fm : CatS( Reuse( "R" ), Str( @fm, ( RowSize - 2 ) ) )
+
+      Conversions = nil : @fm : nil : @fm : CatS( Reuse( DollarFormat ), Str( @fm, ( RowSize - 2 ) ) )
+
+      Begin Case
+
+         Case Row< 1, 1 > <> nil
+            CellClass = SectionTitleClass : @fm : CatS( Reuse( DetailSectionCellClass ), Str( @fm, RowSize - 1 ) )
+
+         Case ( Row< 1, 4 > <> nil ) Or ( Row< 1, 5 > <> nil )
+
+            If AtEnd = @false Then
+               CellClass = SectionTitleClass : @fm : CatS( Reuse( DetailSectionCellClass ), Str( @fm, RowSize - 1 ) )
+            End Else
+               CellClass = SectionTitleClass : @fm : CatS( Reuse( DetailSectionCellClass ), Str( @fm, RowSize - 4 ) ) : @fm : TotalClass : @fm : TotalClass
+            End
+
+         Case @true
+            CellClass = SectionTitleClass : @fm : CatS( Reuse( DetailSectionCellClass ), Str( @fm, RowSize - 1 ) )
+
+      End Case
+
+      Return
+
+      End

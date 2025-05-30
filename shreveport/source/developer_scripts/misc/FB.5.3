@@ -1,0 +1,969 @@
+* PROGRAM: FB.5.3
+* PROGRAM TO PRINT ACCRUAL REGISTER REPORT
+*
+* FREIGHT PAYMENT PACKAGE
+*
+* AUTHOR: BRIAN M. QUEEN
+* DATE: April 16, 1992
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF:
+*
+* VARSITY COMPUTING, INC.
+* 6060 NORTH CENTRAL EXPRESSWAY, SUITE 538
+* DALLAS, TX  75206
+* (214)692-8484
+*
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE
+* EXPRESS WRITTEN CONSENT OF SAME.
+*
+* 101504 - JMK01 - ADD BANK CODE OF 'S' FOR OPTION
+* 102704 - JMK02 - ADD BANK CODE OF 'D''H' FOR OPTION
+* 102704 - JMK03 - ADD BANK CODE NAME IN HEADING
+* 121404 - JMK04 - ADD POST.CC.AR FILTER TO REPORT
+* 100605 - JMK05 - ADD OPTION TO SEND TO DOWNLOAD FILE
+* 020906 - JMK06 - ADD NUMBER OF COPIES TO PRINT
+* 031709 - JMK07 - C090361 - Accrual Register Bills Report
+* 031710 - JMK08 - Accrual Register ACH Report
+* 061010 - JMK09 - C100490 - Requested changes to accrual report
+*********************************************************************
+*
+* Last updated by AFS.SOURCE (valerie) at 12:54:12 on 06/17/1994.
+*   PROMPT FOR DATE TO PUT ON REPORT.
+* Last updated by AFS (valerie) at 11:00:16 on 03/19/1994.
+*   UPDATED FOR OSF, TOOK OUT DUE DATE, AND ADDED PROCESS DATE TO
+*   THE REPORT.
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Initialize variables
+*
+*     DIM PAY.REC(135)                   ; * JMK09
+      DIM PAY.REC(250)                   ; * JMK09
+      CLIENT.TOTAL=0
+      CARRIER.TOTAL=0
+      GRAND.TOTAL=0
+      PROC.DATE=''
+      ACCR.ARR=''
+      GRD.COUNT=0                        ; * JMK09
+      GRD.TOTAL=0                        ; * JMK09
+      ACH.COUNT=0                        ; * JMK09
+      ACH.TOTAL=0                        ; * JMK09
+      CHK.COUNT=0                        ; * JMK09
+      CHK.TOTAL=0                        ; * JMK09
+      ERRMSG=''
+*
+      PROMPT ''
+      CALL GET.USER(USER)
+      CALL CHANNEL(CH.NUM)
+      PREV.CLIENT=''
+      PREV.CARRIER=''
+      MAT PAY.REC = ''
+      PREV.CLIENT.NAME=''                ; * JMK05
+      PREV.CARRIER.NAME=''               ; * JMK05
+      PREV.FILE.BRK=''                   ; * JMK05
+      CLIENT.NAME=''                     ; * JMK05
+      CARRIER.NAME=''                    ; * JMK05
+      FILE.BRK.TOTAL=0                   ; * JMK05
+      EQU TB TO CHAR(9)                  ; * JMK05
+*
+      PROG.NAME='FB.5.3'
+      PROG.DESC='ACCRUAL REGISTER BILLS REPORT'
+      PACK.NAME='FREIGHT PAYMENT'
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.5.3' ; UPL.VOUT = ''         ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+*
+*  SET-UP FILES
+*
+      OPEN '','FB.PAY' TO F.PAY ELSE
+         CALL OPEN.ABORT("FB.PAY",PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIER ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN '','FB.BANKS' TO F.BANK ELSE  ; * JMK03
+         CALL OPEN.ABORT("FB.BANKS",PROG.NAME)     ; * JMK03
+      END                                ; * JMK03
+      OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE  ; * JMK05
+         OPEN 'VOC' TO F.VOC ELSE CALL OPEN.ABORT('VOC',PROG.NAME)     ; * JMK05
+         READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE        ; * JMK05
+            CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')      ; * JMK05
+            STOP                         ; * JMK05
+         END                             ; * JMK05
+         BILLDATA.REC<2>:='\':USER       ; * JMK05
+         WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER ELSE   ; * JMK05
+            CALL ELINE("YOUR USER NAME '":USER:"' IS NOT IN THE BILLDATA FOLDER - PLEASE SEE OWEN/DAVID/MIKE")           ; * JMK05
+            STOP                         ; * JMK05
+         END                             ; * JMK05
+         OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE         ; * JMK05
+            CALL ELINE('UNABLE TO OPEN "BILLDATA.":USER')    ; * JMK05
+            STOP                         ; * JMK05
+         END                             ; * JMK05
+      END                                ; * JMK05
+      CLIENT.ID=''
+      BANK.ID=''
+      BANK.DESC=''                       ; * JMK03
+      SUM.DET.FLAG=''
+      RPT.DATE=DATE() -1
+*
+* GET CLIENT NUMBER OR ALL
+*
+50:   ***
+      HELP="Enter client number for report or <cr>=all. X=Exit."
+      IF CLIENT.ID='' THEN
+         MASK='#####'
+      END ELSE
+         IF CLIENT.ID='ALL' THEN
+            MASK='ALL  '
+         END ELSE
+            MASK=CLIENT.ID'R%5'
+         END
+      END
+      CALL GEN.IN(0,3,'Enter client number: ':MASK,'',Q,0,5,'','0',1,-5,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' ! QI='EX' THEN STOP
+      IF QI='' THEN QI=CLIENT.ID
+      IF QI=' ' THEN QI=''
+      CLIENT.ID=QI
+      IF CLIENT.ID='' THEN CLIENT.ID='ALL'
+      IF CLIENT.ID#'ALL' THEN
+         CLIENT.ID=CLIENT.ID'R%5'
+         READV CLIENT.NAME FROM F.CLIENTS,CLIENT.ID,2 ELSE
+            CALL ELINE('Invalid client number please try again')
+            GOTO 50
+         END
+         CRT @(21,3):CLIENT.ID:' ':CLIENT.NAME'L#25':@(-4)
+      END ELSE
+         CRT @(21,3):CLIENT.ID'L#5':@(-4)
+      END
+*
+* Get Bank ID
+*
+100:  ***
+*     HELP="Enter bank ID. F=Freight Payment Checks. V=Voucher. X=Back. EX=Exit."; * JMK01
+*     HELP="Enter bank ID. F=FP Checks. V=Voucher. S=SFP Checks. X=Back. EX=Exit."         ; * JMK01; * JMK02
+      HELP="F/M=FP Chks. V=Voucher. S=SFP Chks. D=DFP Chks. H=HBD Chks. X=Back. EX=Exit."  ; * JMK01; * JMK02
+      IF BANK.ID='' THEN MASK='#' ELSE MASK=BANK.ID
+      CALL GEN.IN(0,7,'Enter Bank: ':MASK,'',Q,0,2,'','',2,-1,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='EX' THEN STOP
+      IF QI='X' THEN
+         CRT @(12,7):BANK.ID'L#1'
+         GOTO 50
+      END
+      IF QI='' THEN QI=BANK.ID
+      ACH.FILTER=0                       ; * JMK08
+      IF LEN(QI)=2 THEN                  ; * JMK08
+         IF QI[2,1]='A' THEN             ; * JMK08
+            ACH.FILTER=1                 ; * JMK08
+            QI=QI[1,1]                   ; * JMK08
+         END                             ; * JMK08
+      END                                ; * JMK08
+      BANK.ID=QI
+      READ BANK.INFO FROM F.BANK,'BANK*':BANK.ID ELSE        ; * JMK02
+         CALL ELINE('Invalid Entry.  Please re-enter.')      ; * JMK02
+         GO 100                          ; * JMK02
+      END                                ; * JMK02
+      BANK.DESC=BANK.INFO<1>             ; * JMK02
+      IF ACH.FILTER THEN                 ; * JMK08
+         PROG.DESC='ACH ACCRUAL REGISTER BILLS REPORT'       ; * JMK08
+         CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)           ; * JMK08
+         CRT @(0,3):'Enter client number: ':       ; * JMK08
+         IF CLIENT.ID#'ALL' THEN         ; * JMK08
+            CRT @(21,3):CLIENT.ID:' ':CLIENT.NAME'L#25':@(-4)          ; * JMK08
+         END ELSE                        ; * JMK08
+            CRT @(21,3):CLIENT.ID'L#5':@(-4)       ; * JMK08
+         END                             ; * JMK08
+         CRT @(0,7):'Enter Bank: ':      ; * JMK08
+      END                                ; * JMK08
+*     IF BANK.ID # 'F' AND BANK.ID # 'V' THEN      ; * JMK01
+*        CALL ELINE('Invalid Entry. Must enter a <F>, <V>, or <X>'); * JMK01
+*     IF BANK.ID # 'F' AND BANK.ID # 'V' AND BANK.ID # 'S' THEN        ; * JMK01; * JMK02
+*        CALL ELINE('Invalid Entry. Must enter a <F>, <V>, <S>, or <X>')         ; * JMK01; * JMK02
+*        GOTO 100
+*     END
+*     CRT @(12,7):BANK.ID'L#1'           ; * JMK02
+      CRT @(12,7):BANK.ID:' ':BANK.DESC 'L#25'     ; * JMK02
+*
+* SUMMARY OR DETAIL
+*
+150:  ***
+*     HELP = "Enter S for Summary or D for Detail.  X = Back. EX = Exit."        ; * JMK09
+      HELP = "Enter S for Summary, D for Detail or F for Final.  X = Back. EX = Exit."     ; * JMK09
+      IF SUM.DET.FLAG='' THEN SUM.DET.FLAG='S'
+      MASK=SUM.DET.FLAG
+      CALL GEN.IN(0,9,'Summary or Detail: ':MASK,'',Q,0,2,'','',1,-1,9,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI = 'EX' THEN STOP
+      IF QI = 'X' THEN
+         CRT @(19,9):SUM.DET.FLAG'L#1'
+         GOTO 100
+      END
+      IF QI='' THEN QI=SUM.DET.FLAG
+*     IF QI#'S' AND QI#'D' THEN          ; * JMK09
+*        CALL ELINE("Invalid entry must be either 'S' or 'D'")         ; * JMK09
+      IF QI#'S' AND QI#'D' AND QI#'F' THEN         ; * JMK09
+         CALL ELINE("Invalid entry must be either 'S', 'D' or 'F'")    ; * JMK09
+         GOTO 150
+      END
+      SUM.DET.FLAG = QI
+      CRT @(19,9):SUM.DET.FLAG'L#1'
+      IF SUM.DET.FLAG='D' THEN
+         CALL ELINE('WARNING: You are about to run a detail report. This report may be long')
+      END
+      IF SUM.DET.FLAG='F' THEN           ; * JMK09
+         SUM.DET.FLAG='S'                ; * JMK09
+         FINAL.FLAG=1                    ; * JMK09
+      END ELSE                           ; * JMK09
+         FINAL.FLAG=0                    ; * JMK09
+      END                                ; * JMK09
+*
+*  REPORT DATE
+*
+200:  ***
+      HELP="Enter report date. nn=Day. nn/nn=Month & Day. X=Exit."
+      LN = 'Report Date: ':RPT.DATE'D2/'
+      CALL GEN.IN(0,11,LN,'DATE',Q,0,8,'','',0,-8,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'X'
+            CRT @(13,11):RPT.DATE 'D2/'
+            GOTO 150
+         CASE QI='EX'
+            STOP
+         CASE 1
+            RPT.DATE = Q
+            CRT @(13,11) : RPT.DATE 'D2/' :
+      END CASE
+*
+* Output to file or printer.
+*
+250:  * ; * JMK03
+      HELP = "Output to [F]ile or [P]rinter"       ; * JMK03
+      LN = 'Enter selection please.                 P-'      ; * JMK03
+      CALL GEN.IN(0,13,LN,'',Q,0,2,'','',0,-2,13,0,QI,HELP,0,23)       ; * JMK03
+      QI = OCONV(QI,'MCU')               ; * JMK03
+      IF QI='' THEN QI='P'               ; * JMK03
+      BEGIN CASE                         ; * JMK03
+         CASE QI = 'X'                   ; * JMK03
+            CRT @(0,13):@(-3):           ; * JMK03
+            GOTO 200                     ; * JMK03
+         CASE QI = 'EX'                  ; * JMK03
+            STOP                         ; * JMK03
+         CASE QI = '' OR QI='F' OR QI='P'          ; * JMK03
+            NULL                         ; * JMK03
+         CASE 1                          ; * JMK03
+            GOTO 250                     ; * JMK03
+      END CASE                           ; * JMK03
+      EXP.OUT=QI                         ; * JMK03
+      IF EXP.OUT = 'P' THEN              ; * JMK03
+         CRT @(40,13):'P - Printer'      ; * JMK03
+      END ELSE                           ; * JMK03
+         CRT @(40,13):'F - File'         ; * JMK03
+      END                                ; * JMK03
+*
+* Number of copies
+*
+      IF EXP.OUT='P' THEN                ; * JMK06
+500:     HELP="Enter the number of copies. 'X'=Back. 'EX'=Exit."       ; * JMK06
+         CALL GEN.IN(0,15,'Enter number of copies 1','',Q,0,2,'','',2,-1,15,0,QI,HELP,0,23)          ; * JMK06
+         QI=OCONV(QI,'MCU')              ; * JMK06
+         BEGIN CASE                      ; * JMK06
+            CASE QI=''                   ; * JMK06
+               Q=1                       ; * JMK06
+            CASE QI='X'                  ; * JMK06
+               CRT @(0,15):@(-4)         ; * JMK06
+               GOTO 250                  ; * JMK06
+            CASE QI='EX'                 ; * JMK06
+               STOP                      ; * JMK06
+            CASE NUM(QI)                 ; * JMK06
+               IF INT(QI)#QI THEN        ; * JMK06
+                  CALL ELINE('Number of copies must be a whole number')          ; * JMK06
+                  GOTO 500               ; * JMK06
+               END ELSE                  ; * JMK06
+                  IF QI < 1 THEN         ; * JMK06
+                     CALL ELINE('Number of copies must be 1 or greater')         ; * JMK06
+                     GOTO 500            ; * JMK06
+                  END                    ; * JMK06
+                  Q=QI                   ; * JMK06
+               END                       ; * JMK06
+            CASE 1                       ; * JMK06
+               CALL ELINE('Invalid entry must be a whole number')      ; * JMK06
+               GOTO 500                  ; * JMK06
+         END CASE                        ; * JMK06
+         COPIES=Q                        ; * JMK06
+         CRT @(23,15):COPIES'L#2'        ; * JMK06
+      END ELSE                           ; * JMK06
+         COPIES=1                        ; * JMK06
+      END                                ; * JMK06
+*
+* Ask if data correct
+*
+      HELP="Enter Y if information correct or N if incorrect."
+      CALL GEN.IN(0,22,'Is the information correct? Y','',Q,0,2,'','',2,-1,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='EX' THEN STOP
+      IF QI='X' THEN
+         GOTO 200
+      END
+      IF QI='Y' ! QI='' ELSE GOTO 50
+*
+* SORT AND SELECT PAY RECORDS
+*
+*     EX.REC='SSELECT FB.PAY'            ; * JMK04
+      EX.REC='SSELECT FB.PAY WITH POST.CC.AR = "Y"'          ; * JMK04
+      IF CLIENT.ID # 'ALL' THEN
+*        EX.REC := ' WITH CLIENT# = "':CLIENT.ID:'"'         ; * JMK04
+         EX.REC := ' AND WITH CLIENT# = "':CLIENT.ID:'"'     ; * JMK04
+      END
+      IF BANK.ID # '' THEN
+         IF INDEX(EX.REC,' WITH ',1) THEN
+            EX.REC := ' AND WITH BANK = "':BANK.ID:'"'
+         END ELSE
+            EX.REC := ' WITH BANK = "':BANK.ID:'"'
+         END
+      END
+      IF ACH.FILTER THEN                 ; * JMK08
+         EX.REC:= ' AND WITH ACH.STATUS = "ACH"'   ; * JMK08
+      END                                ; * JMK08
+*
+      EX.REC := ' BY CLIENT.NAME BY CARRIER.NAME'
+      IF EXP.OUT='F' THEN                ; * JMK05
+         EX.REC:=' BY 37'                ; * JMK05
+      END                                ; * JMK05
+      IF SUM.DET.FLAG # 'S' THEN EX.REC:=' BY CARRIER# BY 2 BY 1 BY PRO'
+      EXECUTE EX.REC PASSLIST CAPTURING OUTPUT
+      IF SYSTEM(11) ELSE
+         CALL ELINE('No transactions in FB.PAY file.')
+         STOP
+      END
+      EXECUTE 'SAVE-LIST ':CH.NUM PASSLIST CAPTURING OUTPUT  ; * JMK06
+      COUNTER=0
+      IF EXP.OUT#'P' THEN COPIES = 1     ; * JMK06
+      IF COPIES < 1 THEN COPIES = 1      ; * JMK06
+      FOR COPY.COUNT=1 TO COPIES         ; * JMK06
+         EXECUTE 'GET-LIST ':CH.NUM PASSLIST CAPTURING OUTPUT          ; * JMK06
+         NUM.ITMS = @SELECTED
+*
+*  SET UP PAGE HEADING
+*
+         IF EXP.OUT='P' THEN             ; * JMK05
+            VIN=''
+            VIN<3>='R6'
+            CALL LASER.CODE(VIN,VOUT)
+            IF VOUT<1>#'' THEN
+               CALL ELINE(VOUT<1>)
+               STOP
+            END
+            IF VOUT<3>#'' THEN EXECUTE VOUT<3>
+            PRINTER ON
+            IF VOUT<2>#'' THEN PRINT VOUT<2>:
+            O.RPT.DATE=OCONV(RPT.DATE,'D2/')
+            HDG1=''                      ; * JMK03
+            HDG2=''                      ; * JMK03
+            BEGIN CASE                   ; * JMK03
+               CASE BANK.ID='F' OR BANK.ID='V'     ; * JMK03
+                  HDG1='AFS Logistics, LLC'        ; * JMK03
+               CASE 1                    ; * JMK03
+                  HDG1=BANK.DESC         ; * JMK03
+                  HDG2='A Division of AFS Logistics, LLC'    ; * JMK03
+            END CASE                     ; * JMK03
+*     CALL AFS.PAGE.HEAD(PROG.NAME,'AFS Logistics, LLC','','Accrual Register Report',O.RPT.DATE,132,HED) ; * JMK03
+            CALL AFS.PAGE.HEAD(PROG.NAME,HDG1,HDG2,PROG.DESC,O.RPT.DATE,132,HED)           ; * JMK03
+            IF SUM.DET.FLAG = 'S' THEN   ; * JMK09
+               HED=HED:" 'L'Client Name               Carrier Name                                        Summary Report                         Total Charges"
+            END ELSE
+               HED=HED:" 'L'Client Name               Carrier Name              Pro Number                Bill of Lading    Date   Prc Date  Bank      Charges"
+            END
+            HEADING HED
+         END ELSE                        ; * JMK05
+            EXP.CNT=1                    ; * JMK05
+            EXP.SEQ=0                    ; * JMK05
+            EXP.ID='ACC_':CLIENT.ID:'_':SUM.DET.FLAG:'_':RPT.DATE'D2-'           ; * JMK05
+            IF ACH.FILTER THEN           ; * JMK08
+               EXP.ID='ACC_ACH_':CLIENT.ID:'_':SUM.DET.FLAG:'_':RPT.DATE'D2-'    ; * JMK08
+            END                          ; * JMK08
+            EXP.REC = ''                 ; * JMK05
+            EXP.REC<-1> = PROG.DESC:' for bank ':BANK.ID:' ':BANK.DESC           ; * JMK05
+            EXP.REC<-1> = ' '            ; * JMK05
+            LINE.FMT = 'HDG'             ; * JMK05
+            GOSUB EXP.LINE               ; * JMK05
+         END                             ; * JMK05
+*
+* Read open bill item
+*
+         DONE = 0
+         LOOP
+            READNEXT PAY.ID ELSE DONE = 1
+         UNTIL DONE = 1 DO
+            COUNTER=COUNTER+1
+            CALL PROG.BAR(22,COUNTER,NUM.ITMS,PER)
+            MATREAD PAY.REC FROM F.PAY, PAY.ID ELSE MAT PAY.REC = ''
+            CARRIER=FIELD(PAY.ID,'*',2)
+            CLIENT=FIELD(PAY.ID,'*',1)
+            IF CARRIER # PREV.CARRIER OR CLIENT # PREV.CLIENT THEN
+               GOSUB 8200
+            END
+            IF CLIENT # PREV.CLIENT THEN
+               GOSUB 8100
+            END
+            PRO=FIELD(PAY.ID,'*',3)
+            IF PAY.REC(37) = '' THEN
+               PROC.DATE = SPACE(8)
+            END ELSE
+               PROC.DATE = PAY.REC(37) 'D2/'
+            END
+
+            IF EXP.OUT='F' THEN          ; * JMK05
+               FILE.BRK=CLIENT:'*':CARRIER:'*':PROC.DATE     ; * JMK05
+               IF FILE.BRK#PREV.FILE.BRK THEN      ; * JMK05
+                  PREV.CLIENT=FIELD(PREV.FILE.BRK,'*',1)     ; * JMK05
+                  READV PREV.CLIENT.NAME FROM F.CLIENTS,PREV.CLIENT,2 ELSE       ; * JMK05
+                     PREV.CLIENT.NAME='~~~ Unknown ~~~'      ; * JMK05
+                  END                    ; * JMK05
+                  PREV.CARRIER=FIELD(PREV.FILE.BRK,'*',2)    ; * JMK05
+                  READV PREV.CARRIER.NAME FROM F.CARRIER,PREV.CARRIER,1 ELSE     ; * JMK05
+                     PREV.CARRIER.NAME='~~~ Unknown ~~~'     ; * JMK05
+                  END                    ; * JMK05
+                  PREV.PROC.DATE=FIELD(PREV.FILE.BRK,'*',3)  ; * JMK05
+                  IF PREV.FILE.BRK#'' AND FILE.BRK.TOTAL+0#0 AND SUM.DET.FLAG='S' THEN     ; * JMK05
+                     LINE.FMT=SUM.DET.FLAG         ; * JMK05
+                     IF FINAL.FLAG=0 THEN          ; * JMK09
+                        GOSUB EXP.LINE   ; * JMK05
+                     END                 ; * JMK09
+                  END                    ; * JMK05
+                  PREV.FILE.BRK=FILE.BRK           ; * JMK05
+                  FILE.BRK.TOTAL=0       ; * JMK05
+               END                       ; * JMK05
+            END                          ; * JMK05
+*
+            IF SUM.DET.FLAG # 'S' THEN
+               IF EXP.OUT='P' THEN       ; * JMK05
+                  PRINT CLIENT.NAME'L#25':' ':CARRIER.NAME'L#25':' ':
+                  PAY.BOL=PAY.REC(16)
+                  PRINT PRO'L#25':' ' : PAY.BOL<1,1>'L#15':
+                  X=DCOUNT(PAY.BOL,CHAR(253))
+                  IF X LE 1 THEN
+                     PRINT ' ':PAY.REC(1)'D2/':' ':PROC.DATE:
+*                    PRINT PAY.REC(40)'R#6':PAY.REC(8)'R26,#13'        ; * JMK07
+                     PRINT PAY.REC(40)'R#6':PAY.REC(8)'R26,#13':' ':PAY.REC(135)'D2/':' ':PAY.REC(134)'D2/'    ; * JMK07
+                  END ELSE
+                     FOR I=2 TO X UNTIL I GT X
+                        PRINT
+                        PRINT SPACE(78):PAY.BOL<1,I>'L#15':
+                     NEXT I
+                     PRINT ' ':PAY.REC(1)'D2/':' ':PROC.DATE:
+*                    PRINT PAY.REC(40)'R#6':PAY.REC(8)'R26,#13'        ; * JMK07
+                     PRINT PAY.REC(40)'R#6':PAY.REC(8)'R26,#13':' ':PAY.REC(135)'D2/':' ':PAY.REC(134)'D2/'    ; * JMK07
+                  END
+               END ELSE                  ; * JMK05
+                  LINE.FMT=SUM.DET.FLAG  ; * JMK05
+                  GOSUB EXP.LINE         ; * JMK05
+               END                       ; * JMK05
+            END
+            CLIENT.TOTAL=CLIENT.TOTAL+PAY.REC(8)
+            CARRIER.TOTAL=CARRIER.TOTAL+PAY.REC(8)
+            FILE.BRK.TOTAL=FILE.BRK.TOTAL+PAY.REC(8)         ; * JMK05
+*           GRAND.TOTAL=GRAND.TOTAL+PAY.REC(8)               ; * JMK09
+*           LOCATE PAY.REC(133) IN ACCR.ARR<1> BY 'AR' SETTING CASH.POS THEN     ; * JMK09
+*              ACCR.ARR<2,CASH.POS>=ACCR.ARR<2,CASH.POS>+PAY.REC(8)    ; * JMK09
+*           END ELSE                     ; * JMK09
+*              INS PAY.REC(133) BEFORE ACCR.ARR<1,CASH.POS>  ; * JMK09
+*              INS PAY.REC(8) BEFORE ACCR.ARR<2,CASH.POS>    ; * JMK09
+*           END                          ; * JMK09
+            GOSUB BUILD.ACCR.ARR
+         REPEAT
+*
+* End of program
+*
+         IF EXP.OUT='P' THEN             ; * JMK05
+            IF FINAL.FLAG=0 THEN         ; * JMK09
+               GOSUB 8200
+               GOSUB 8100
+               PRINT
+               GOSUB 8900
+               PRINT 'Grand totals         ':SPACE(94):GRAND.TOTAL'R26,#15'      ; * JMK09
+               PRINT SPACE(116):'=============='   ; * JMK09
+               PRINT                     ; * JMK09
+            END                          ; * JMK09
+
+            PRINT SPACE(80):STR('-',15)  ; * JMK09
+            PRINT ' ACH total   ':ACH.COUNT'R#4':' ACH Trans''L#63':   ; * JMK09
+            PRINT ACH.TOTAL'R26,#15'     ; * JMK09
+            PRINT ' Check total ':CHK.COUNT'R#4':' Checks''L#63':      ; * JMK09
+            PRINT CHK.TOTAL'R26,#15'     ; * JMK09
+            PRINT ' Grand total ':GRD.COUNT'R#4':'       ''L#63':      ; * JMK09
+            PRINT GRD.TOTAL'R26,#15'     ; * JMK09
+            PRINT SPACE(80):STR('=',15)  ; * JMK09
+            PRINT                        ; * JMK09
+            PRINT "Rcpt Dt"'L#8':" ":"|--------------- Pro PPR Amt ---------------|"'L#45':" ":"|--------------- Pro ACH Amt --------------|"'L#45':" ":"Check Amt"'L#14'  ; * JMK09
+            PRINT SPACE(10):"Source CK"'L#14':" ":"Source DDS"'L#14':" ":"Source Wire"'L#14':" ":"Source CK"'L#14':" ":"Source DDS"'L#14':" ":"Source Wire"'L#14'          ; * JMK09
+            TTL.PPR.C.AMT=0              ; * JMK09
+            TTL.PPR.D.AMT=0              ; * JMK09
+            TTL.PPR.W.AMT=0              ; * JMK09
+            TTL.ACH.C.AMT=0              ; * JMK09
+            TTL.ACH.D.AMT=0              ; * JMK09
+            TTL.ACH.W.AMT=0              ; * JMK09
+            TTL.DATE.AMT=0               ; * JMK09
+            NUM.OF.CASH.DATE=DCOUNT(ACCR.ARR<1>,@VM)         ; * JMK09
+            FOR X = 1 TO NUM.OF.CASH.DATE          ; * JMK09
+               CASH.DATE=ACCR.ARR<1,X>   ; * JMK09
+               PPR.C.AMT=ACCR.ARR<5,X,1>+0         ; * JMK09
+               PPR.D.AMT=ACCR.ARR<5,X,2>+0         ; * JMK09
+               PPR.W.AMT=ACCR.ARR<5,X,3>+0         ; * JMK09
+               PPR.AMT=PPR.C.AMT+PPR.D.AMT+PPR.W.AMT         ; * JMK09
+               ACH.C.AMT=ACCR.ARR<7,X,1>+0         ; * JMK09
+               ACH.D.AMT=ACCR.ARR<7,X,2>+0         ; * JMK09
+               ACH.W.AMT=ACCR.ARR<7,X,3>+0         ; * JMK09
+               ACH.AMT=ACH.C.AMT+ACH.D.AMT+ACH.W.AMT         ; * JMK09
+               DATE.AMT=PPR.AMT+ACH.AMT  ; * JMK09
+               PRINT CASH.DATE'D2/':" ":PPR.C.AMT'MR26,#14':" ":PPR.D.AMT'MR26,#14':" ":PPR.W.AMT'MR26,#14':" ":ACH.C.AMT'MR26,#14':" ":ACH.D.AMT'MR26,#14':" ":ACH.W.AMT'MR26,#14':" ":DATE.AMT'MR26,#14'         ; * JMK09
+               TTL.PPR.C.AMT+=PPR.C.AMT  ; * JMK09
+               TTL.PPR.D.AMT+=PPR.D.AMT  ; * JMK09
+               TTL.PPR.W.AMT+=PPR.W.AMT  ; * JMK09
+               TTL.ACH.C.AMT+=ACH.C.AMT  ; * JMK09
+               TTL.ACH.D.AMT+=ACH.D.AMT  ; * JMK09
+               TTL.ACH.W.AMT+=ACH.W.AMT  ; * JMK09
+               TTL.DATE.AMT+=DATE.AMT    ; * JMK09
+            NEXT X                       ; * JMK09
+            PRINT                        ; * JMK09
+            PRINT SPACE(9):TTL.PPR.C.AMT'MR26,#14':" ":TTL.PPR.D.AMT'MR26,#14':" ":TTL.PPR.W.AMT'MR26,#14':" ":TTL.ACH.C.AMT'MR26,#14':" ":TTL.ACH.D.AMT'MR26,#14':" ":TTL.ACH.W.AMT'MR26,#14':" ":TTL.DATE.AMT'MR26,#14`'   ; * JMK09
+            PRINT                        ; * JMK09
+            PRINT "Check Dt"'L#8':" ":"|--------------- Pro PPR Amt ---------------|"'L#45':" ":"|--------------- Pro ACH Amt --------------|"'L#45':" ":"Check Amt"'L#14'           ; * JMK09
+            PRINT SPACE(10):"Source CK"'L#14':" ":"Source DDS"'L#14':" ":"Source Wire"'L#14':" ":"Source CK"'L#14':" ":"Source DDS"'L#14':" ":"Source Wire"'L#14'          ; * JMK09
+            TTL.PPR.C.AMT=0              ; * JMK09
+            TTL.PPR.D.AMT=0              ; * JMK09
+            TTL.PPR.W.AMT=0              ; * JMK09
+            TTL.ACH.C.AMT=0              ; * JMK09
+            TTL.ACH.D.AMT=0              ; * JMK09
+            TTL.ACH.W.AMT=0              ; * JMK09
+            TTL.DATE.AMT=0               ; * JMK09
+            NUM.OF.CASH.DATE=DCOUNT(ACCR.ARR<10>,@VM)        ; * JMK09
+            FOR X = 1 TO NUM.OF.CASH.DATE          ; * JMK09
+               CASH.DATE=ACCR.ARR<10,X>  ; * JMK09
+               PPR.C.AMT=ACCR.ARR<50,X,1>+0        ; * JMK09
+               PPR.D.AMT=ACCR.ARR<50,X,2>+0        ; * JMK09
+               PPR.W.AMT=ACCR.ARR<50,X,3>+0        ; * JMK09
+               PPR.AMT=PPR.C.AMT+PPR.D.AMT+PPR.W.AMT         ; * JMK09
+               ACH.C.AMT=ACCR.ARR<70,X,1>+0        ; * JMK09
+               ACH.D.AMT=ACCR.ARR<70,X,2>+0        ; * JMK09
+               ACH.W.AMT=ACCR.ARR<70,X,3>+0        ; * JMK09
+               ACH.AMT=ACH.C.AMT+ACH.D.AMT+ACH.W.AMT         ; * JMK09
+               DATE.AMT=PPR.AMT+ACH.AMT  ; * JMK09
+               PRINT CASH.DATE'D2/':" ":PPR.C.AMT'MR26,#14':" ":PPR.D.AMT'MR26,#14':" ":PPR.W.AMT'MR26,#14':" ":ACH.C.AMT'MR26,#14':" ":ACH.D.AMT'MR26,#14':" ":ACH.W.AMT'MR26,#14':" ":DATE.AMT'MR26,#14'         ; * JMK09
+               TTL.PPR.C.AMT+=PPR.C.AMT  ; * JMK09
+               TTL.PPR.D.AMT+=PPR.D.AMT  ; * JMK09
+               TTL.PPR.W.AMT+=PPR.W.AMT  ; * JMK09
+               TTL.ACH.C.AMT+=ACH.C.AMT  ; * JMK09
+               TTL.ACH.D.AMT+=ACH.D.AMT  ; * JMK09
+               TTL.ACH.W.AMT+=ACH.W.AMT  ; * JMK09
+               TTL.DATE.AMT+=DATE.AMT    ; * JMK09
+            NEXT X                       ; * JMK09
+            PRINT                        ; * JMK09
+            PRINT SPACE(9):TTL.PPR.C.AMT'MR26,#14':" ":TTL.PPR.D.AMT'MR26,#14':" ":TTL.PPR.W.AMT'MR26,#14':" ":TTL.ACH.C.AMT'MR26,#14':" ":TTL.ACH.D.AMT'MR26,#14':" ":TTL.ACH.W.AMT'MR26,#14':" ":TTL.DATE.AMT'MR26,#14`'   ; * JMK09
+            PRINTER OFF
+            PRINTER CLOSE
+         END ELSE                        ; * JMK05
+            IF SUM.DET.FLAG='S' THEN     ; * JMK05
+               PREV.CLIENT=FIELD(PREV.FILE.BRK,'*',1)        ; * JMK05
+               READV PREV.CLIENT.NAME FROM F.CLIENTS,PREV.CLIENT,2 ELSE          ; * JMK05
+                  PREV.CLIENT.NAME='~~~ Unknown ~~~'         ; * JMK05
+               END                       ; * JMK05
+               PREV.CARRIER=FIELD(PREV.FILE.BRK,'*',2)       ; * JMK05
+               READV PREV.CARRIER.NAME FROM F.CARRIER,PREV.CARRIER,1 ELSE        ; * JMK05
+                  PREV.CARRIER.NAME='~~~ Unknown ~~~'        ; * JMK05
+               END                       ; * JMK05
+               PREV.PROC.DATE=FIELD(PREV.FILE.BRK,'*',3)     ; * JMK05
+               IF PREV.FILE.BRK#'' AND FILE.BRK.TOTAL+0#0 THEN         ; * JMK05
+                  LINE.FMT=SUM.DET.FLAG  ; * JMK05
+                  GOSUB EXP.LINE         ; * JMK05
+               END                       ; * JMK05
+               IF FINAL.FLAG=0 THEN      ; * JMK09
+                  EXP.LINE=' '           ; * JMK09
+                  EXP.REC<-1>=EXP.LINE   ; * JMK09
+               END                       ; * JMK09
+               EXP.LINE=' '              ; * JMK09
+               EXP.LINE<1,1>='ACH Total'           ; * JMK09
+               EXP.LINE<1,2>=ACH.COUNT'R0'         ; * JMK09
+               EXP.LINE<1,3>='ACH Trans'           ; * JMK09
+               EXP.LINE<1,8>=ACH.TOTAL'R26'        ; * JMK09
+               CONVERT @VM TO TB IN EXP.LINE       ; * JMK09
+               EXP.REC<-1>=EXP.LINE
+               EXP.LINE=' '              ; * JMK09
+               EXP.LINE<1,1>='Check Total'         ; * JMK09
+               EXP.LINE<1,2>=CHK.COUNT'R0'         ; * JMK09
+               EXP.LINE<1,3>='Check Trans'         ; * JMK09
+               EXP.LINE<1,8>=CHK.TOTAL'R26'        ; * JMK09
+               CONVERT @VM TO TB IN EXP.LINE       ; * JMK09
+               EXP.REC<-1>=EXP.LINE
+               EXP.LINE=' '              ; * JMK09
+               EXP.LINE<1,1>='Grand Total'         ; * JMK09
+               EXP.LINE<1,2>=GRD.COUNT'R0'         ; * JMK09
+               EXP.LINE<1,3>=' '         ; * JMK09
+               EXP.LINE<1,8>=GRD.TOTAL'R26'        ; * JMK09
+               CONVERT @VM TO TB IN EXP.LINE       ; * JMK09
+               EXP.REC<-1>=EXP.LINE
+               EXP.LINE=' '              ; * JMK09
+               EXP.REC<-1>=EXP.LINE      ; * JMK09
+               EXP.LINE=' '              ; * JMK09
+               EXP.LINE<1,1>=''          ; * JMK09
+               EXP.LINE<1,2>='=========='          ; * JMK09
+               EXP.LINE<1,3>='=========='          ; * JMK09
+               EXP.LINE<1,4>='=========='          ; * JMK09
+               EXP.LINE<1,5>='=========='          ; * JMK09
+               EXP.LINE<1,6>='=========='          ; * JMK09
+               EXP.LINE<1,7>='=========='          ; * JMK09
+               EXP.LINE<1,8>='=========='          ; * JMK09
+               EXP.LINE<1,9>='=========='          ; * JMK09
+               EXP.LINE<1,10>='=========='         ; * JMK09
+               EXP.REC<-1>=EXP.LINE      ; * JMK09
+               EXP.LINE=''               ; * JMK09
+               EXP.LINE<1,1>='Rcpt Date'           ; * JMK09
+               EXP.LINE<1,2>='PPR/CK Amt'          ; * JMK09
+               EXP.LINE<1,3>='PPR/DDS Amt'         ; * JMK09
+               EXP.LINE<1,4>='PPR/Wire Amt'        ; * JMK09
+               EXP.LINE<1,5>='PPR TTL Amt'         ; * JMK09
+               EXP.LINE<1,6>='ACH/CK Amt'          ; * JMK09
+               EXP.LINE<1,7>='ACH/DDS Amt'         ; * JMK09
+               EXP.LINE<1,8>='ACH/Wire Amt'        ; * JMK09
+               EXP.LINE<1,9>='ACH TTL Amt'         ; * JMK09
+               EXP.LINE<1,10>='Total Amt'          ; * JMK09
+               EXP.REC<-1>=EXP.LINE      ; * JMK09
+               TTL.PPR.C.AMT=0           ; * JMK09
+               TTL.PPR.D.AMT=0           ; * JMK09
+               TTL.PPR.W.AMT=0           ; * JMK09
+               TTL.ACH.C.AMT=0           ; * JMK09
+               TTL.ACH.D.AMT=0           ; * JMK09
+               TTL.ACH.W.AMT=0           ; * JMK09
+               NUM.OF.CASH.DATE=DCOUNT(ACCR.ARR<1>,@VM)      ; * JMK09
+               FOR X = 1 TO NUM.OF.CASH.DATE       ; * JMK09
+                  CASH.DATE=ACCR.ARR<1,X>          ; * JMK09
+                  PPR.C.AMT=ACCR.ARR<5,X,1>+0      ; * JMK09
+                  PPR.D.AMT=ACCR.ARR<5,X,2>+0      ; * JMK09
+                  PPR.W.AMT=ACCR.ARR<5,X,3>+0      ; * JMK09
+                  PPR.AMT=PPR.C.AMT+PPR.D.AMT+PPR.W.AMT      ; * JMK09
+                  ACH.C.AMT=ACCR.ARR<7,X,1>+0      ; * JMK09
+                  ACH.D.AMT=ACCR.ARR<7,X,2>+0      ; * JMK09
+                  ACH.W.AMT=ACCR.ARR<7,X,3>+0      ; * JMK09
+                  ACH.AMT=ACH.C.AMT+ACH.D.AMT+ACH.W.AMT      ; * JMK09
+                  DATE.AMT=PPR.AMT+ACH.AMT
+                  EXP.LINE=''            ; * JMK09
+                  EXP.LINE<1,1>=CASH.DATE'D2/'     ; * JMK09
+                  EXP.LINE<1,2>=PPR.C.AMT'R26,'    ; * JMK09
+                  EXP.LINE<1,3>=PPR.D.AMT'R26,'    ; * JMK09
+                  EXP.LINE<1,4>=PPR.W.AMT'R26,'    ; * JMK09
+                  EXP.LINE<1,5>=PPR.AMT'R26,'      ; * JMK09
+                  EXP.LINE<1,6>=ACH.C.AMT'R26,'    ; * JMK09
+                  EXP.LINE<1,7>=ACH.D.AMT'R26,'    ; * JMK09
+                  EXP.LINE<1,8>=ACH.W.AMT'R26,'    ; * JMK09
+                  EXP.LINE<1,9>=ACH.AMT'R26,'      ; * JMK09
+                  EXP.LINE<1,10>=DATE.AMT'R26,'    ; * JMK09
+                  CONVERT @VM TO TB IN EXP.LINE    ; * JMK09
+                  EXP.REC<-1>=EXP.LINE   ; * JMK09
+                  TTL.PPR.C.AMT+=PPR.C.AMT         ; * JMK09
+                  TTL.PPR.D.AMT+=PPR.D.AMT         ; * JMK09
+                  TTL.PPR.W.AMT+=PPR.W.AMT         ; * JMK09
+                  TTL.ACH.C.AMT+=ACH.C.AMT         ; * JMK09
+                  TTL.ACH.D.AMT+=ACH.D.AMT         ; * JMK09
+                  TTL.ACH.W.AMT+=ACH.W.AMT         ; * JMK09
+               NEXT X                    ; * JMK09
+               TTL.PPR.AMT=TTL.PPR.C.AMT+TTL.PPR.D.AMT+TTL.PPR.W.AMT   ; * JMK09
+               TTL.ACH.AMT=TTL.ACH.C.AMT+TTL.ACH.D.AMT+TTL.ACH.W.AMT   ; * JMK09
+               TTL.AMT=TTL.PPR.AMT+TTL.ACH.AMT     ; * JMK09
+               EXP.LINE=' '              ; * JMK09
+               EXP.LINE<1,1>=''          ; * JMK09
+               EXP.LINE<1,2>='=========='          ; * JMK09
+               EXP.LINE<1,3>='=========='          ; * JMK09
+               EXP.LINE<1,4>='=========='          ; * JMK09
+               EXP.LINE<1,5>='=========='          ; * JMK09
+               EXP.LINE<1,6>='=========='          ; * JMK09
+               EXP.LINE<1,7>='=========='          ; * JMK09
+               EXP.LINE<1,8>='=========='          ; * JMK09
+               EXP.LINE<1,9>='=========='          ; * JMK09
+               EXP.LINE<1,10>='=========='         ; * JMK09
+               EXP.REC<-1>=EXP.LINE      ; * JMK09
+               EXP.LINE=''               ; * JMK09
+               EXP.LINE<1,1>=' '         ; * JMK09
+               EXP.LINE<1,2>=TTL.PPR.C.AMT'R26,'   ; * JMK09
+               EXP.LINE<1,3>=TTL.PPR.D.AMT'R26,'   ; * JMK09
+               EXP.LINE<1,4>=TTL.PPR.W.AMT'R26,'   ; * JMK09
+               EXP.LINE<1,5>=TTL.PPR.AMT'R26,'     ; * JMK09
+               EXP.LINE<1,6>=TTL.ACH.C.AMT'R26,'   ; * JMK09
+               EXP.LINE<1,7>=TTL.ACH.D.AMT'R26,'   ; * JMK09
+               EXP.LINE<1,8>=TTL.ACH.W.AMT'R26,'   ; * JMK09
+               EXP.LINE<1,9>=TTL.ACH.AMT'R26,'     ; * JMK09
+               EXP.LINE<1,10>=TTL.AMT'R26,'        ; * JMK09
+               CONVERT @VM TO TB IN EXP.LINE       ; * JMK09
+               EXP.REC<-1>=EXP.LINE      ; * JMK09
+            END                          ; * JMK05
+            IF EXP.SEQ#0 THEN            ; * JMK05
+               RECORD.NAME=EXP.ID:'_':EXP.SEQ:'.XLS'         ; * JMK05
+            END ELSE                     ; * JMK05
+               RECORD.NAME=EXP.ID:'.XLS'           ; * JMK05
+            END                          ; * JMK05
+            EXP.REC=CHANGE(EXP.REC,@VM,CHAR(9))    ; * JMK02
+            WRITE EXP.REC ON F.BILLDATA,RECORD.NAME          ; * JMK05
+            CALL ELINE('This report is on "U:\':USER:'\':EXP.ID:'"')   ; * JMK02
+         END                             ; * JMK05
+*
+         PRINTER OFF
+         PRINTER CLOSE
+*
+         RETURN
+***********************************************************************
+      NEXT COPY.COUNT                    ; * JMK06
+      STOP
+*----------------------------------------------------------------------
+*
+* INTERNAL SUBROUTINES
+*
+*----------------------------------------------------------------------
+*
+* Print current client totals
+*
+8100: IF PREV.CLIENT='' ELSE
+         IF EXP.OUT='P' THEN             ; * JMK03
+            IF FINAL.FLAG=0 THEN         ; * JMK09
+               GOSUB 8900
+               PRINT 'Totals for client ':CLIENT.NAME'L#30':SPACE(67):CLIENT.TOTAL'R26,#15':' **'
+               PRINT
+            END                          ; * JMK09
+         END                             ; * JMK05
+      END
+      PREV.CLIENT=CLIENT
+      CLIENT.TOTAL=0
+*     READV CLIENT.NAME FROM F.CLIENTS,CLIENT,2 ELSE         ; * JMK09
+*        CLIENT.NAME='~~~ Unknown ~~~'   ; * JMK09
+*     END                                ; * JMK09
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT ELSE CLIENT.REC=''         ; * JMK09
+      CLIENT.NAME=CLIENT.REC<2>          ; * JMK09
+      IF CLIENT.NAME='' THEN             ; * JMK09
+         CLIENT.NAME='~~~ Unknown ~~~'   ; * JMK09
+      END                                ; * JMK09
+      RETURN
+*
+* Print current carrier totals
+*
+8200: IF PREV.CARRIER='' ELSE
+         IF FINAL.FLAG=0 THEN            ; * JMK09
+            IF SUM.DET.FLAG = 'S' THEN
+               IF EXP.OUT='P' THEN       ; * JMK05
+                  PRINT CLIENT.NAME 'L#30' : CARRIER.NAME 'L#30' : SPACE(55) :
+                  PRINT CARRIER.TOTAL 'R26,#15' :
+                  PRINT
+               END                       ; * JMK05
+            END ELSE
+               IF EXP.OUT='P' THEN       ; * JMK05
+                  GOSUB 8900
+                  PRINT 'Totals for carrier ':CARRIER.NAME'L#30':SPACE(66):CARRIER.TOTAL'R26,#15':' *'
+               END                       ; * JMK05
+               PRINT
+            END
+         END                             ; * JMK09
+      END
+      CARRIER.TOTAL=0
+      PREV.CARRIER=CARRIER
+*     READV CARRIER.NAME FROM F.CARRIER,CARRIER,1 ELSE       ; * JMK09
+*        CARRIER.NAME='~~~ Unknown ~~~'  ; * JMK09
+*     END                                ; * JMK09
+      READ CARRIER.REC FROM F.CARRIER,CARRIER ELSE CARRIER.REC=''      ; * JMK09
+      CARRIER.NAME=CARRIER.REC<1>        ; * JMK09
+      IF CARRIER.NAME='' THEN            ; * JMK09
+         CARRIER.NAME='~~~ Unknown ~~~'  ; * JMK09
+      END                                ; * JMK09
+      ACH.FLG=(CARRIER.REC<102>='A')     ; * JMK09
+      RETURN
+*
+* Print single underscore
+*
+8900: PRINT SPACE(116):'--------------'
+      RETURN
+*
+***********************************************************************
+*
+*
+* Export Line
+*
+EXP.LINE:***
+      EXP.LN=''
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,1>='Client #'
+         CASE LINE.FMT='S'
+            EXP.LN<1,1>='=':QUOTE(PREV.CLIENT)
+         CASE LINE.FMT='D'
+            EXP.LN<1,1>='=':QUOTE(CLIENT)
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,2>='Client Name'
+         CASE LINE.FMT='S'
+            EXP.LN<1,2>=PREV.CLIENT.NAME
+         CASE LINE.FMT='D'
+            EXP.LN<1,2>=CLIENT.NAME
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,3>='Carrier #'
+         CASE LINE.FMT='S'
+            EXP.LN<1,3>='=':QUOTE(PREV.CARRIER)
+         CASE LINE.FMT='D'
+            EXP.LN<1,3>='=':QUOTE(CARRIER)
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,4>='Carrier Name'
+         CASE LINE.FMT='S'
+            EXP.LN<1,4>=PREV.CARRIER.NAME
+         CASE LINE.FMT='D'
+            EXP.LN<1,4>=CARRIER.NAME
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,5>='Process Date'
+         CASE LINE.FMT='S'
+            EXP.LN<1,5>=FIELD(PREV.FILE.BRK,'*',3)
+         CASE LINE.FMT='D'
+            EXP.LN<1,5>=PROC.DATE
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,6>='Bill Date'
+         CASE LINE.FMT='S'
+            EXP.LN<1,6>=''
+         CASE LINE.FMT='D'
+            EXP.LN<1,6>=OCONV(PAY.REC(1),'D2/')
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,7>='Pro'
+         CASE LINE.FMT='S'
+            EXP.LN<1,7>=''
+         CASE LINE.FMT='D'
+            EXP.LN<1,7>='=':QUOTE(PRO)
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,8>='Amount'
+         CASE LINE.FMT='S'
+            EXP.LN<1,8>=FILE.BRK.TOTAL 'R26,'
+         CASE LINE.FMT='D'
+            EXP.LN<1,8>=PAY.REC(8) 'R26,'
+      END CASE
+      BEGIN CASE                         ; * JMK07
+         CASE LINE.FMT='HDG'             ; * JMK07
+            EXP.LN<1,6>='Cash Rcpt Date'           ; * JMK07
+         CASE LINE.FMT='S'               ; * JMK07
+            EXP.LN<1,6>=''               ; * JMK07
+         CASE LINE.FMT='D'               ; * JMK07
+            EXP.LN<1,6>=OCONV(PAY.REC(135),'D2/')  ; * JMK07
+      END CASE                           ; * JMK07
+      BEGIN CASE                         ; * JMK07
+         CASE LINE.FMT='HDG'             ; * JMK07
+            EXP.LN<1,6>='Check Date'     ; * JMK07
+         CASE LINE.FMT='S'               ; * JMK07
+            EXP.LN<1,6>=''               ; * JMK07
+         CASE LINE.FMT='D'               ; * JMK07
+            EXP.LN<1,6>=OCONV(PAY.REC(134),'D2/')  ; * JMK07
+      END CASE                           ; * JMK07
+      CONVERT @VM TO TB IN EXP.LN
+      EXP.REC<-1>=EXP.LN
+      EXP.CNT=EXP.CNT+1
+      IF EXP.CNT >= 65000 THEN
+         RECORD.NAME=EXP.ID:'_':EXP.SEQ:'.XLS'
+         WRITE EXP.REC ON F.BILLDATA,RECORD.NAME
+         EXP.SEQ=EXP.SEQ+1
+         EXP.REC=''
+         EXP.CNT=0
+      END
+      RETURN
+*
+BUILD.ACCR.ARR:
+*
+      TYPE.OF.PYMT=PAY.REC(216)          ; * JMK09
+      LOCATE PAY.REC(133) IN ACCR.ARR<1> BY 'AR' SETTING RCPT.POS ELSE           ; * JMK09
+         INS PAY.REC(133) BEFORE ACCR.ARR<1,RCPT.POS>        ; * DEPOSIT DATE OR SELECTION DATE ; * JMK09
+         INS 0 BEFORE ACCR.ARR<2,RCPT.POS>         ; * COUNT OF FREIGHT BILLS ; * JMK09
+         INS 0 BEFORE ACCR.ARR<3,RCPT.POS>         ; * AMOUNT OF FREIGHT BILLS ; * JMK09
+         INS 0 BEFORE ACCR.ARR<4,RCPT.POS>         ; * COUNT OF CHK BILLS BY CLIENT PAY TYPE (C/D/W) ; * JMK09
+         INS 0 BEFORE ACCR.ARR<5,RCPT.POS>         ; * AMOUNT OF CHK BILLS BY CLIENT PAY TYPE (C/D/W) ; * JMK09
+         INS 0 BEFORE ACCR.ARR<6,RCPT.POS>         ; * COUNT OF ACH BILLS BY CLIENT PAY TYPE (C/D/W) ; * JMK09
+         INS 0 BEFORE ACCR.ARR<7,RCPT.POS>         ; * AMOUNT OF ACH BILLS BY CLIENT PAY TYPE (C/D/W) ; * JMK09
+      END                                ; * JMK09
+      GRD.COUNT+=1                       ; * JMK09
+      GRD.TOTAL+=PAY.REC(8)              ; * JMK09
+      ACCR.ARR<2,RCPT.POS>+=1            ; * JMK09
+      ACCR.ARR<3,RCPT.POS>+=PAY.REC(8)   ; * JMK09
+      IF ACH.FLG THEN                    ; * JMK09
+         ACH.COUNT+=1                    ; * JMK09
+         ACH.TOTAL+=PAY.REC(8)           ; * JMK09
+         BEGIN CASE                      ; * JMK09
+            CASE TYPE.OF.PYMT='D'        ; * JMK09
+               ACCR.ARR<6,RCPT.POS,2>+=1           ; * JMK09
+               ACCR.ARR<7,RCPT.POS,2>+=PAY.REC(8)  ; * JMK09
+            CASE TYPE.OF.PYMT='W'        ; * JMK09
+               ACCR.ARR<6,RCPT.POS,3>+=1           ; * JMK09
+               ACCR.ARR<7,RCPT.POS,3>+=PAY.REC(8)  ; * JMK09
+            CASE 1                       ; * JMK09
+               ACCR.ARR<6,RCPT.POS,1>+=1           ; * JMK09
+               ACCR.ARR<7,RCPT.POS,1>+=PAY.REC(8)  ; * JMK09
+         END CASE                        ; * JMK09
+      END ELSE                           ; * JMK09
+         CHK.COUNT+=1                    ; * JMK09
+         CHK.TOTAL+=PAY.REC(8)           ; * JMK09
+         BEGIN CASE                      ; * JMK09
+            CASE TYPE.OF.PYMT='D'        ; * JMK09
+               ACCR.ARR<4,RCPT.POS,2>+=1           ; * JMK09
+               ACCR.ARR<5,RCPT.POS,2>+=PAY.REC(8)  ; * JMK09
+            CASE TYPE.OF.PYMT='W'        ; * JMK09
+               ACCR.ARR<4,RCPT.POS,3>+=1           ; * JMK09
+               ACCR.ARR<5,RCPT.POS,3>+=PAY.REC(8)  ; * JMK09
+            CASE 1                       ; * JMK09
+               ACCR.ARR<4,RCPT.POS,1>+=1           ; * JMK09
+               ACCR.ARR<5,RCPT.POS,1>+=PAY.REC(8)  ; * JMK09
+         END CASE                        ; * JMK09
+      END                                ; * JMK09
+*
+      LOCATE PAY.REC(134) IN ACCR.ARR<10> BY 'AR' SETTING CHECK.POS ELSE         ; * JMK09
+         INS PAY.REC(134) BEFORE ACCR.ARR<10,CHECK.POS>      ; * DEPOSIT DATE OR SELECTION DATE ; * JMK09
+         INS 0 BEFORE ACCR.ARR<20,CHECK.POS>       ; * COUNT OF FREIGHT BILLS ; * JMK09
+         INS 0 BEFORE ACCR.ARR<30,CHECK.POS>       ; * AMOUNT OF FREIGHT BILLS ; * JMK09
+         INS 0 BEFORE ACCR.ARR<40,CHECK.POS>       ; * COUNT OF CHK BILLS BY CLIENT PAY TYPE (C/D/W) ; * JMK09
+         INS 0 BEFORE ACCR.ARR<50,CHECK.POS>       ; * AMOUNT OF CHK BILLS BY CLIENT PAY TYPE (C/D/W) ; * JMK09
+         INS 0 BEFORE ACCR.ARR<60,CHECK.POS>       ; * COUNT OF ACH BILLS BY CLIENT PAY TYPE (C/D/W) ; * JMK09
+         INS 0 BEFORE ACCR.ARR<70,CHECK.POS>       ; * AMOUNT OF ACH BILLS BY CLIENT PAY TYPE (C/D/W) ; * JMK09
+      END                                ; * JMK09
+      ACCR.ARR<20,CHECK.POS>+=1          ; * JMK09
+      ACCR.ARR<30,CHECK.POS>+=PAY.REC(8)           ; * JMK09
+      IF ACH.FLG THEN                    ; * JMK09
+         BEGIN CASE                      ; * JMK09
+            CASE TYPE.OF.PYMT='D'        ; * JMK09
+               ACCR.ARR<60,CHECK.POS,2>+=1         ; * JMK09
+               ACCR.ARR<70,CHECK.POS,2>+=PAY.REC(8)          ; * JMK09
+            CASE TYPE.OF.PYMT='W'        ; * JMK09
+               ACCR.ARR<60,CHECK.POS,3>+=1         ; * JMK09
+               ACCR.ARR<70,CHECK.POS,3>+=PAY.REC(8)          ; * JMK09
+            CASE 1                       ; * JMK09
+               ACCR.ARR<60,CHECK.POS,1>+=1         ; * JMK09
+               ACCR.ARR<70,CHECK.POS,1>+=PAY.REC(8)          ; * JMK09
+         END CASE                        ; * JMK09
+      END ELSE                           ; * JMK09
+         BEGIN CASE                      ; * JMK09
+            CASE TYPE.OF.PYMT='D'        ; * JMK09
+               ACCR.ARR<40,CHECK.POS,2>+=1         ; * JMK09
+               ACCR.ARR<50,CHECK.POS,2>+=PAY.REC(8)          ; * JMK09
+            CASE TYPE.OF.PYMT='W'        ; * JMK09
+               ACCR.ARR<40,CHECK.POS,3>+=1         ; * JMK09
+               ACCR.ARR<50,CHECK.POS,3>+=PAY.REC(8)          ; * JMK09
+            CASE 1                       ; * JMK09
+               ACCR.ARR<40,CHECK.POS,1>+=1         ; * JMK09
+               ACCR.ARR<50,CHECK.POS,1>+=PAY.REC(8)          ; * JMK09
+         END CASE                        ; * JMK09
+      END                                ; * JMK09
+*
+      RETURN                             ; * JMK09
+*
+   END

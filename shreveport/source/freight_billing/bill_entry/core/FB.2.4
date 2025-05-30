@@ -1,0 +1,240 @@
+*******************************************************
+* Program name : FB.2.10
+* Author       : Brian M. Queen
+* Date written : July 1, 1993
+* Library      : EDIBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* PROGRAM TO ENTER LOGISTICS BILLINGS
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 09:22:51 on 03/26/2019.
+*
+* Start modification history
+* 030309 - NPR01 - T090253 - Highlight Client name based on ranking
+* 032619 - NKH01 - ACCU-316 Modified CREATE-FILE file sizes
+* End modification history
+*
+*******************************************************
+
+$OPTIONS HEADER.EJECT
+ERRMSG=''
+*
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+*
+* Initialize variables
+*
+      PROMPT''
+      PROG.NAME='FB.2.4'
+      PROG.DESC='LOGISTICS FEE ENTRY'
+      PACK.NAME='FREIGHT BILLING'
+      CALL CHANNEL(CH.NUM)
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.2.4' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      CO.NAME='AFS Logistics, LLC'
+      CLIENT.ID=''
+      LOG.DATE=''
+      LOG.DIV=''
+      LOG.DIV.AMT=''
+
+      CALL GET.USER(USER)
+*
+* Display screen heading
+*
+      CALL SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+* Open general files
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      OPEN '','FB.LOGISTICS' TO F.LOG ELSE
+        EXECUTE 'CREATE-FILE FB.LOGISTICS 619,1' PASSLIST CAPTURING OUTPUT    ; * NKH01
+        OPEN '','FB.LOGISTICS' TO F.LOG ELSE CALL OPEN.ABORT("FB.LOGISTICS",PROG.NAME)
+      END
+*
+* Enter client number
+*
+100   HELP="Enter the client number [X]=Exit [EX]=Exit"
+      IF CLIENT.ID='' THEN MASK='#####' ELSE MASK=CLIENT.ID
+      CRT @(0,3):'Client Number.':MASK
+      CALL GEN.IN(14,3,MASK,'',Q,0,20,'','',2,-5,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI='EX' ! QI='X'
+          STOP
+        CASE QI='' & CLIENT.ID=''
+          STOP
+        CASE QI='' & CLIENT.ID NE ''
+          Q=CLIENT.ID
+        CASE NOT(QI MATCHES "0N")
+          CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+          CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+          BEGIN CASE
+            CASE ITEM.LIST=''
+              GOTO 100
+            CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+              GOTO 100
+            CASE ITEM.LIST NE ''
+              IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+              GOTO 100
+          END CASE
+        CASE NUM(QI)
+          Q=QI'R%5'
+        CASE 1
+          GOTO 100
+      END CASE
+*
+* Get client name
+*
+      IF CLIENT.ID NE Q THEN CLIENT.ID=Q'R%5'
+      READU CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+        CALL ELINE("ERROR - Client ":CLIENT.ID:" not on file.")
+        GOTO 100
+      END
+      CLIENT.NAME=CLIENT.REC<2>
+
+      HIN = CLIENT.REC<240>  ; HOUT = ""                              ;* NPR01  Highlight based on ranking
+      CALL CLIENT.HL(HIN,HOUT)   ; HLB = HOUT<1,1> ; HLA = HOUT<1,2>  ;* NPR01
+
+* NPR01  CRT @(14,3):CLIENT.ID:' ':CLIENT.NAME:@(-4):
+      CRT @(14,3):CLIENT.ID:' ':HLB:CLIENT.NAME:HLA:@(-4):
+
+*
+* Enter effective date of billing
+*
+200   HELP="Enter logistics billing date. [X]=Back to Client. [EX]=Exit."
+      IF LOG.DATE='' THEN LOG.DATE=DATE()
+      CALL GEN.IN(0,5,'Billing Date..':LOG.DATE'D2/','DATE',Q,0,8,'','',1,-8,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI='X'
+          CRT @(0,5):@(-3)
+          GOTO 100
+        CASE QI='EX'
+          STOP
+        CASE QI=''
+          Q=LOG.DATE
+      END CASE
+      LOG.DATE=Q
+      CRT @(14,5):LOG.DATE'D2/'
+*
+* Display logistics billing amount
+*
+300   LOG.ID=LOG.DATE:'*':CLIENT.ID
+      READ LOG.REC FROM F.LOG,LOG.ID ELSE LOG.REC=''
+      LOG.AMT=LOG.REC<2>'R0'
+      DISP='Billing amt...':LOG.AMT'L26,#13'
+      HELP="Enter billing amount. [cr]=Accept. [X]=Back to date. [EX]=Exit."
+      CALL GEN.IN(0,7,DISP,'AMT2',Q,0,13,'','',1,-13,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI=''
+          Q=LOG.AMT
+        CASE QI='X'
+          CRT @(0,5):@(-3)
+          GOTO 200
+        CASE QI='EX'
+          STOP
+        CASE QI < 0
+           CALL ELINE('Must enter a positive number')
+           GOTO 300
+        CASE 1
+          Q += LOG.AMT
+      END CASE
+      LOG.AMT=Q
+      CRT @(14,7):LOG.AMT'L26,#13'
+*
+* Display Division if client has division
+*
+400  IF CLIENT.REC<12>='Y' THEN
+         OPEN '','DIVISION.CODES,':CLIENT.ID TO F.DIV ELSE
+            CALL ELINE("Cannot open DIVISION.CODES for client ":CLIENT.ID)
+            GOTO 100
+         END
+         XX=0
+         TEMP.AMT=LOG.AMT
+450      XX=XX+1
+         LOG.DIV<1,XX>=LOG.REC<3,XX>
+         DISP='Billing Div...':LOG.DIV<1,XX>'L#5'
+         HELP="Enter billing division, [X]=Back to amount. [EX]=Exit"
+         CALL GEN.IN(0,9,DISP,'',Q,0,5,'','',1,-5,9,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+           CASE QI=''
+             IF LOG.DIV<1,XX>='' THEN
+                CALL ELINE('Entry is required')
+                GOTO 400
+             END
+             Q=LOG.DIV<1,XX>
+           CASE QI='X'
+             CRT @(0,7):@(-3)
+             GOTO 300
+           CASE QI='EX'
+             STOP
+         END CASE
+         Q=Q'R%5'
+         READ DIV.REC FROM F.DIV,Q THEN
+            IF DIV.REC<7>='I' THEN
+               CALL ELINE(Q:' is an inactive division please enter a valid division')
+               GOTO 400
+            END
+         END ELSE
+            CALL ELINE(Q:' is not a valid division please try again')
+            GOTO 400
+         END
+         LOG.DIV<1,XX>=Q
+         CRT @(14,9):LOG.DIV<1,XX>'L#5'
+500      LOG.DIV.AMT<1,XX>=LOG.REC<4,XX>
+         IF LOG.DIV.AMT<1,XX>+0=0 THEN
+            LOG.DIV.AMT<1,XX>=TEMP.AMT
+         END
+         DISP='Division amt..':LOG.DIV.AMT<1,XX>'L26#13'
+         HELP="Enter divisional amount. [cr]=Accept. [X]=Back to date. [EX]=Exit."
+         CALL GEN.IN(0,11,DISP,'AMT2',Q,0,13,'','',1,-13,11,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+           CASE QI=''
+             Q=LOG.DIV.AMT<1,XX>
+           CASE QI='X'
+             CRT @(0,9):@(-3)
+             XX=XX-1
+             GOTO 450
+           CASE QI='EX'
+             STOP
+           CASE QI < 0
+             CALL ELINE('Must be a positive number')
+             GOTO 500
+           CASE 1
+*DF             Q = LOG.DIV.AMT<1,XX>
+         END CASE
+         LOG.DIV.AMT<1,XX>=Q
+         CRT @(14,11):LOG.DIV.AMT<1,XX>'L26,#13'
+         TEMP.AMT=TEMP.AMT-LOG.DIV.AMT<1,XX>
+         IF TEMP.AMT < 0 THEN
+            CALL ELINE('You have entered more than the total amount of the billing amount')
+            GOTO 500
+         END
+         IF TEMP.AMT=0 THEN GO 600
+         CRT @(0,9):@(-3)
+         GOTO 450
+      END
+*
+* Update client record
+*
+600   HELP="Enter Y to update or N not to update."
+      CALL GEN.IN(0,22,'Update? Y','',Q,0,1,'','',1,-1,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI='' ! QI='Y'
+          LOG.REC<1>=LOG.DATE
+          LOG.REC<2>=LOG.AMT
+          LOG.REC<3>=LOG.DIV
+          LOG.REC<4>=LOG.DIV.AMT
+          WRITE LOG.REC ON F.LOG,LOG.ID
+        CASE QI='N'
+          NULL
+        CASE 1
+          GOTO 600
+      END CASE
+      CLIENT.ID=''
+      CRT @(0,3):@(-3)
+      GOTO 100

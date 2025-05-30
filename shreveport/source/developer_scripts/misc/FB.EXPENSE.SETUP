@@ -1,0 +1,1933 @@
+********************************************************************************
+*  Program name : FB.EXPENSE.SETUP
+*  Author       : James M. Barberousse
+*  Date written : March 2002
+*  Library      : FBBP
+*  COPYRIGHT (C) 1995 - 2002 by AFS LOGISTICS, LLC. - ALL RIGHTS RESERVED
+*  This program is the sole property of AFS Logistics, LLC (AUTOMATED FREIGHT
+*  SYSTEMS) and may not be used, copied, or modified without the express
+*  written consent of Brian Barker of AFS Logistics, LLC.
+*
+* Last updated by afs (AFSLOGISTICS\gbino) at 07:01:34 on 02/22/2019.
+*
+* Start modification history
+* 052104 - JMK01 - Send Email Alert for any Updates
+* 080904 - JMK02 - Refine Email Alert for Updates
+* 123004 - JMK03 - Refine Email Alert for Readability
+* 011105 - JMK04 - Subject line on Overrides to say "All" for all carriers
+* 091305 - JMK05 - Remove Myra from email list and add Brian Jeppson
+* 121508 - JMK06 - C082693 - Not enough space in "Calculate Expense Code" field for new code client 760 Garlock
+* 051611 - JMK07 - ADD OVERRIDE FIELDS TO EXPENSE CODE TO EASE ENTRY
+* 121511 - JMK08 - SysAid#790 - Alcon UPS coding
+* 073112 - JMK09 - SysAid#2924 - Little Tykes Coding
+* 022414 - JMK10 - Airgas UPS GL Coding
+* 032614 - JMK11 - Setup Expense Code Fields and Operators
+* 082317 - NKH01 - ME 5464 Fixed issue with duplicates
+* 022019 - GRB01 - lengthen expense code field to 45
+* End modification history
+**************************************************************
+      $INCLUDE FILE.DEFS INC_ADDS60.CODES; * These require specific PROCOMM settings
+
+* Equates
+      TERM.TYPE=SYSTEM(7)
+      BEGIN CASE
+         CASE TERM.TYPE='REGENT60'
+            REVERSE.BLINK.ON = TERM.ESC.SEQ:CHAR(TERM.REV+TERM.BLINK)   ; * Reverse Blinking text ON
+            REVERSE.ON = TERM.ESC.SEQ:CHAR(TERM.REV)          ; * Reverse text ON
+            REVERSE.OFF = TERM.ESC.SEQ:CHAR(TERM.NORMAL)      ; * Reverse text OFF
+         CASE 1
+            REVERSE.BLINK.ON = @(-13):@(-5)
+            REVERSE.ON = @(-13)
+            REVERSE.OFF = @(-14):@(-6)
+      END CASE
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+      EQU TAB TO CHAR(9)                 ; * JMK01
+
+* Initialize general program variables
+      PROMPT''
+     
+      CALL GET.USER.NEW(USER.NAME,CH.NUM)
+      PROG.NAME='FB.EXPENSE.SETUP'
+      PROG.DESC='Expense Setup'
+      PACK.NAME='USER : ':USER.NAME
+     CO.NAME='AFS Logistics, LLC'       ; * jmk@@@
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.EXPENSE.SETUP' ; UPL.VOUT = ''         ; * NPR_UPL 04/23/2010
+       UPL.VIN<3> = USER.NAME
+        UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      EDIT.MASK.CHAR='-'
+      PLACE.HOLDER='~~ PLACE*HOLDER ~~'
+      DASH=STR('-',80)                   ; * JMK01
+      EMAIL=0                            ; * JMK02
+      TESTING=0                          ; * JMK02
+
+* Initialize operating variables
+      PAGE.SIZE=13                       ; * Number of lines per page
+      START.Y=7                          ; * Starting y-position on the screen minus one
+      LAST.EDIT.MASK=1                   ; * Last item edited or deleted
+      WIDTH=80                           ; * Print width for printing table of overrides
+      CTR=INT(WIDTH/2)                   ; * Center of the table width
+
+      EXPENSE.REC=''
+      OLD.EXPENSE.REC=''
+      CLIENT.ID=''
+      CLIENT.NAME=''
+      CLIENT.CITY=''
+      CLIENT.STATE=''
+      CARRIER.ID=''
+      CARRIER.NAME=''
+      CARRIER.CITY=''
+      CARRIER.STATE=''
+
+* Set access privileges
+* 3 Levels of access:
+*    0 - Access Denied
+*    1 - View Access only
+*    2 - Full View/Edit Access
+* Open files
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','FB.EXPENSE' TO F.EXPENSE ELSE
+         CALL OPEN.ABORT('FB.EXPENSE',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      OPEN '','VOC' TO F.VOC ELSE        ; * JMK01
+         CALL OPEN.ABORT('VOC',PROG.NAME)          ; * JMK01
+      END                                ; * JMK01
+      OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE       ; * JMK01
+         CALL OPEN.ABORT('BILLDATA.':USER.NAME,PROG.NAME)    ; * JMK01
+      END                                ; * JMK01
+      OPEN '','BCTRL' TO F.BCTRL ELSE    ; * JMK01
+         CALL OPEN.ABORT('BCTRL',PROG.NAME)        ; * JMK01
+      END                                ; * JMK01
+      OPEN '','OPERATOR' TO F.OP ELSE CALL OPEN.ABORT("OPERATOR",PROG.NAME)      ; * GRB01
+      READV OP.FLG FROM F.OP,USER.NAME,64 ELSE
+         OP.FLG = "N"
+      END
+IF OP.FLG = "Y" THEN
+	USER.ACCESS=2
+	PROG.DESC:=' - Full Access'
+	 GOSUB DISPLAY.SCREEN
+****      BEGIN CASE
+   ****        CASE USER.NAME='MARY'
+ ****            USER.ACCESS=2
+ ****         CASE USER.NAME='DAVID'
+  ****           USER.ACCESS=2
+        
+  ****        CASE USER.NAME='GBINO'        ; * JMK01
+ ****            USER.ACCESS=2                ; * JMK01
+ ****         CASE USER.NAME='NMEDDAUGH'      ; * NKH01
+ ****            USER.ACCESS=2                ; * NKH01            
+****          CASE 1
+****             USER.ACCESS=1
+****       END CASE
+
+ ****      IF USER.ACCESS=0 THEN PROG.DESC:=' - Access Denied'
+ ****      IF USER.ACCESS=1 THEN PROG.DESC:=' - View Access'
+ ****      IF USER.ACCESS=2 THEN PROG.DESC:=' - Full Access'
+     
+END ELSE
+	USER.ACCESS = 0
+END
+      IF USER.ACCESS=0 THEN
+         CALL FB.PRINT.CENT(1,80,12,'Restricted Access Application - Access Denied')
+         CALL FB.PRINT.CENT(1,80,14,'Request access through Myra Butts')
+         CALL ELINE('')
+         GOTO THE.END
+      END
+
+
+*************************************************************
+GET.CLIENT: ***
+*************************************************************
+      IF CLIENT.ID THEN
+         EDIT.MASK=CLIENT.ID'R%5':@(-4)
+      END ELSE
+         EDIT.MASK=STR(EDIT.MASK.CHAR,5):@(-4)
+      END
+      HELP='Enter client ID. [L]ist existing client/carrier setups [EX]it'
+      CALL GEN.IN(10,3,EDIT.MASK,'',Q,0,20,'','',2,10,3,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' AND CLIENT.ID THEN QI=CLIENT.ID
+      IF QI='' AND NOT(CLIENT.ID) THEN QI='ALL'
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='L'
+            LIST.CLIENT=''
+            GOSUB DISPLAY.EXPENSES
+            GOSUB DISPLAY.SCREEN
+            GOTO GET.CLIENT
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'CLIENTS','SDX.CLIENTS,NAME','2,3,4',ITEM.LIST)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOSUB DISPLAY.SCREEN
+                  GOTO GET.CLIENT
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOSUB DISPLAY.SCREEN
+                  GOTO GET.CLIENT
+               CASE ITEM.LIST#''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOSUB DISPLAY.SCREEN
+                  GOTO GET.CLIENT
+            END CASE
+         CASE NUM(QI) AND QI#''
+            QI=QI'R%5'
+            READ CLIENT.REC FROM F.CLIENTS,QI THEN
+               CLIENT.ID=QI
+               CLIENT.NAME=CLIENT.REC<2>
+               CLIENT.CITY=CLIENT.REC<4>
+               CLIENT.STATE=CLIENT.REC<5>
+            END ELSE
+               CALL ELINE('ERROR - Client ':QI:' is not a valid client.')
+               GOTO GET.CLIENT
+            END
+         CASE 1
+            GOTO GET.CLIENT
+      END CASE
+      IF CLIENT.ID='ALL' THEN
+         CRT @(10,3):'ALL':@(-4)
+      END ELSE
+         CRT @(10,3):CLIENT.ID'R%5':' ':CLIENT.NAME:' (':CLIENT.CITY:', ':CLIENT.STATE:')':@(-4)
+         OPEN '','EXPENSE.CODES,':CLIENT.ID TO F.EXP ELSE
+            CALL ELINE('Expense codes not setup for this client')
+            GOTO GET.CLIENT
+         END
+      END
+
+*************************************************************
+GET.CARRIER: ***
+*************************************************************
+      IF CARRIER.ID THEN
+         EDIT.MASK=CARRIER.ID:@(-4)
+      END ELSE
+         EDIT.MASK=STR(EDIT.MASK.CHAR,5):@(-4)
+      END
+      HELP='Enter carrier ID. [L]ist existing client/carrier setups [ALL] [X]=Back [EX]it'
+      CALL GEN.IN(10,4,EDIT.MASK,'',Q,0,20,'','',2,10,4,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' AND CARRIER.ID THEN QI=CARRIER.ID
+      IF QI='' AND NOT(CARRIER.ID) AND CLIENT.ID#'ALL' THEN QI='ALL'
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            GOTO GET.CLIENT
+         CASE QI='ALL'
+            CARRIER.ID='ALL'
+            CARRIER.NAME='All Carriers'  ; * JMK04
+         CASE QI='L'
+            LIST.CLIENT=CLIENT.ID
+            GOSUB DISPLAY.EXPENSES
+            GOSUB DISPLAY.SCREEN
+            GOTO GET.CARRIER
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'CARRIERS','SDX.CARRIER,NAME','1,3,4',ITEM.LIST)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOSUB DISPLAY.SCREEN
+                  GOTO GET.CARRIER
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOSUB DISPLAY.SCREEN
+                  GOTO GET.CARRIER
+               CASE ITEM.LIST#''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOSUB DISPLAY.SCREEN
+                  GOTO GET.CARRIER
+            END CASE
+         CASE NUM(QI) AND QI#''
+            QI=QI'R%5'
+            READ CARRIER.REC FROM F.CARRIERS,QI THEN
+               CARRIER.ID=QI
+               CARRIER.NAME=CARRIER.REC<1>
+               CARRIER.CITY=CARRIER.REC<3>
+               CARRIER.STATE=CARRIER.REC<4>
+            END ELSE
+               CALL ELINE('ERROR - Carrier ':QI:' is not a valid carrier.')
+               GOTO GET.CARRIER
+            END
+         CASE 1
+            GOTO GET.CARRIER
+      END CASE
+
+      IF CLIENT.ID='ALL' AND CARRIER.ID='ALL' THEN
+         CALL ELINE('Cannot setup for ALL Clients and ALL Carriers')
+         GO GET.CARRIER
+      END
+      IF CARRIER.ID='ALL' THEN
+         CRT @(10,4):'ALL'
+      END ELSE
+         IF CARRIER.ID THEN
+            CRT @(10,4):CARRIER.ID'R%5':' ':CARRIER.NAME:' (':CARRIER.CITY:', ':CARRIER.STATE:')'
+         END
+      END
+
+* Load expense record
+      EXPENSE.ID=CLIENT.ID:'*':CARRIER.ID
+      READ EXPENSE.REC FROM F.EXPENSE,EXPENSE.ID ELSE
+         EXPENSE.REC=''
+      END
+      OLD.EXPENSE.REC=EXPENSE.REC
+
+* Load Expense fields
+      READ EXPENSE.FIELDS FROM F.TABLES,'EXPENSE.FIELDS' ELSE EXPENSE.FIELDS=''  ; * JMK11
+      NUM.FIELDS=DCOUNT(EXPENSE.FIELDS<1>,@VM)
+
+* Load Expense operators
+      READ EXPENSE.OPERATORS FROM F.TABLES,'EXPENSE.OPERATORS' ELSE EXPENSE.OPERATORS=''   ; * JMK11
+      NUM.OPERATORS=DCOUNT(EXPENSE.OPERATORS<1>,@VM)
+      OPERATOR.HELP=''
+      FOR X=1 TO NUM.OPERATORS
+         IF X#1 THEN OPERATOR.HELP:=' '
+         OPERATOR.HELP:='[':X:']=':EXPENSE.OPERATORS<1,X>
+      NEXT X
+
+* Calculate number of items and number of pages and set page number
+      NUM.RULES=DCOUNT(EXPENSE.REC<6>,@VM)
+      IF NUM.RULES=0 THEN
+         NUM.PAGES=0
+         PAGE.NUMBER=0
+         CALL FB.DRAW.BOX(0,START.Y+1,80,PAGE.SIZE,' ','')
+         IF CARRIER.ID='ALL' THEN
+            CALL FB.PRINT.CENT(0,78,12,'(All Carriers)')
+         END ELSE
+            CALL FB.PRINT.CENT(0,78,12,'Carrier ':CARRIER.ID'R#5':', ':CARRIER.NAME:' (':CARRIER.CITY:', ':CARRIER.STATE:')')
+         END
+         CALL FB.PRINT.CENT(0,78,13,'does not have an EXPENSE Setup')
+         CALL ELINE('')
+         IF USER.ACCESS=1 THEN GOTO THE.END
+      END ELSE
+         NUM.PAGES=INT(NUM.RULES/PAGE.SIZE)
+         IF REM(NUM.RULES,PAGE.SIZE) THEN NUM.PAGES+=1
+         PAGE.NUMBER=1
+      END
+      GOSUB DISPLAY.PAGE
+
+*************************************************************
+MAIN.START: ***
+*************************************************************
+      ADD.RULE = 0   ; * NKH01
+      IF USER.ACCESS=2 AND EXPENSE.REC='' AND OLD.EXPENSE.REC='' THEN  ; * JMK08
+         CRT @(0,22):'Enter Option : --      [C]opy [B]ack Page [F]orward Page [T]op Page [L]ast Page'         ; * JMK08
+      END ELSE                           ; * JMK08
+         CRT @(0,22):'Enter Option : --             [B]ack Page [F]orward Page [T]op Page [L]ast Page'
+      END                                ; * JMK08
+      EDIT.MASK=STR(EDIT.MASK.CHAR,2)
+      HELP='[A]dd [D]elete [E]dit [I]nsert Group [S]ort [P]rint    [U]pdate [X]=Back [EX]it'
+      CALL GEN.IN(15,22,EDIT.MASK,'',Q,0,3,'','',3,15,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'                    ; * Exit
+            IF USER.ACCESS=1 THEN GOTO THE.END
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'                     ; * Back to carrier
+            IF USER.ACCESS=1 THEN
+               GOSUB DISPLAY.SCREEN
+               GOTO GET.CARRIER
+            END
+            IF EXPENSE.REC#OLD.EXPENSE.REC THEN
+               YN.MSG='You have unsaved changes. Save before entering new carrier?'
+               YN.MASK=''
+               GOSUB ASK.Y.OR.N
+               IF YN.ANSWER='Y' THEN
+                  CRT @(0,22):'Saving...':@(-3)
+                  SLEEP 1
+                  GOSUB SORT.EXPENSE.REC
+                  GOSUB FAILSAFE.CHECK
+                  IF FAILSAFE.OK THEN
+                     GOSUB SORT.EXPENSE.REC
+                     GOSUB SAVE.EXPENSE.REC
+                     GOSUB DISPLAY.PAGE
+                  END ELSE
+                     GOSUB DISPLAY.PAGE
+                     GOTO MAIN.START     ; * X-Back aborted due to failsafe errors
+                  END
+               END
+            END
+            GOSUB DISPLAY.SCREEN
+            GOTO GET.CARRIER
+         CASE QI='U'                     ; * Update (and exit)
+            IF USER.ACCESS=1 THEN GOTO THE.END
+            IF EXPENSE.REC#OLD.EXPENSE.REC OR TESTING THEN   ; * JMK02
+               CRT @(0,22):'Saving...':@(-3)
+               SLEEP 1
+               GOSUB SORT.EXPENSE.REC
+               GOSUB FAILSAFE.CHECK
+               IF FAILSAFE.OK THEN
+                  GOSUB SORT.EXPENSE.REC
+                  GOSUB SAVE.EXPENSE.REC
+                  GOSUB DISPLAY.PAGE
+               END ELSE
+                  GOSUB DISPLAY.PAGE
+                  GOTO MAIN.START        ; * Update aborted due to failsafe errors
+               END
+            END ELSE
+               CRT @(0,22):'No changes to save.':@(-3)
+               SLEEP 1
+            END
+            GOTO THE.END
+         CASE QI='L' OR QI='LP'          ; * Last Page
+            IF NUM.PAGES#0 AND PAGE.NUMBER#NUM.PAGES THEN
+               PAGE.NUMBER=NUM.PAGES
+               GOSUB DISPLAY.PAGE
+            END ELSE
+               CALL ELINE('** LAST PAGE **')
+            END
+            GOTO MAIN.START
+         CASE QI='T' OR QI='TP'          ; * Top Page
+            IF NUM.PAGES#0 AND PAGE.NUMBER#1 THEN
+               PAGE.NUMBER=1
+               GOSUB DISPLAY.PAGE
+            END ELSE
+               CALL ELINE('** FIRST PAGE **')
+            END
+            GOTO MAIN.START
+         CASE QI='F' OR QI='FP'          ; * Forward a page
+            IF NUM.PAGES#0 AND PAGE.NUMBER<NUM.PAGES THEN
+               PAGE.NUMBER+=1
+               GOSUB DISPLAY.PAGE
+            END ELSE
+               CALL ELINE('** LAST PAGE **')
+            END
+            GOTO MAIN.START
+         CASE QI='B' OR QI='BP'          ; * Backward a page
+            IF NUM.PAGES#0 AND PAGE.NUMBER>1 THEN
+               PAGE.NUMBER-=1
+               GOSUB DISPLAY.PAGE
+            END ELSE
+               CALL ELINE('** FIRST PAGE **')
+            END
+            GOTO MAIN.START
+         CASE QI='C' AND EXPENSE.REC=''  ; * JMK08
+
+*************************************************************         
+GET.COPY.CLIENT: *** ; * JMK08
+*************************************************************
+               EDIT.MASK=STR(EDIT.MASK.CHAR,5):@(-4)         ; * JMK08
+               CRT @(0,22):'Enter original client : -----'   ; * JMK08
+               HELP='Enter copy client ID. [EX]it'           ; * JMK08
+               CALL GEN.IN(24,22,EDIT.MASK,'',Q,0,20,'','',2,24,22,1,QI,HELP,0,23)         ; * JMK08
+               QI=OCONV(QI,'MCU')        ; * JMK08
+               IF QI='' AND CLIENT.ID THEN QI=CLIENT.ID      ; * JMK08
+               IF QI='' AND NOT(CLIENT.ID) THEN QI='ALL'     ; * JMK08
+               BEGIN CASE                ; * JMK08
+                  CASE QI='EX'           ; * JMK08
+                     GOTO THE.END        ; * JMK08
+                  CASE NOT(QI MATCHES "0N")        ; * JMK08
+                     CALL SOUNDEX.DISPLAY(QI,'CLIENTS','SDX.CLIENTS,NAME','2,3,4',ITEM.LIST)         ; * JMK08
+                     BEGIN CASE          ; * JMK08
+                        CASE ITEM.LIST=''          ; * JMK08
+                           GOSUB DISPLAY.SCREEN    ; * JMK08
+                           GOTO GET.COPY.CLIENT    ; * JMK08
+                        CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1   ; * JMK08
+                           GOSUB DISPLAY.SCREEN    ; * JMK08
+                           GOTO GET.COPY.CLIENT    ; * JMK08
+                        CASE ITEM.LIST#''          ; * JMK08
+                           IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>       ; * JMK08
+                           GOSUB DISPLAY.SCREEN    ; * JMK08
+                           GOTO GET.COPY.CLIENT    ; * JMK08
+                     END CASE            ; * JMK08
+                  CASE NUM(QI) AND QI#''           ; * JMK08
+                     QI=QI'R%5'          ; * JMK08
+                     READ CCLIENT.REC FROM F.CLIENTS,QI THEN           ; * JMK08
+                        CCLIENT.ID=QI    ; * JMK08
+                        CLIENT.NAME=CCLIENT.REC<2>           ; * JMK08
+                        CLIENT.CITY=CCLIENT.REC<4>           ; * JMK08
+                        CLIENT.STATE=CCLIENT.REC<5>          ; * JMK08
+                     END ELSE            ; * JMK08
+                        CALL ELINE('ERROR - Client ':QI:' is not a valid client.')         ; * JMK08
+                        GOTO GET.COPY.CLIENT       ; * JMK08
+                     END                 ; * JMK08
+                  CASE 1                 ; * JMK08
+                     GOTO GET.COPY.CLIENT          ; * JMK08
+               END CASE   
+               
+*************************************************************                              ; * JMK08
+GET.COPY.CARRIER: *** ; * JMK08
+*************************************************************
+               EDIT.MASK=STR(EDIT.MASK.CHAR,5):@(-4)         ; * JMK08
+               CRT @(0,22):'Enter original carrier : -----'  ; * JMK08
+               HELP='Enter copy carrier ID. [EX]it'          ; * JMK08
+               CALL GEN.IN(24,22,EDIT.MASK,'',Q,0,20,'','',2,24,22,1,QI,HELP,0,23)         ; * JMK08
+               QI=OCONV(QI,'MCU')        ; * JMK08
+               IF QI='' AND CARRIER.ID THEN QI=CARRIER.ID    ; * JMK08
+               IF QI='' AND NOT(CARRIER.ID) THEN QI='ALL'    ; * JMK08
+               BEGIN CASE                ; * JMK08
+                  CASE QI='EX'           ; * JMK08
+                     GOTO THE.END        ; * JMK08
+                  CASE QI='ALL'          ; * JMK08
+                     CCARRIER.ID='ALL'   ; * JMK08
+                  CASE NOT(QI MATCHES "0N")        ; * JMK08
+                     CALL SOUNDEX.DISPLAY(QI,'CARRIERS','SDX.CARRIER,NAME','1,3,4',ITEM.LIST)        ; * JMK08
+                     BEGIN CASE          ; * JMK08
+                        CASE ITEM.LIST=''          ; * JMK08
+                           GOSUB DISPLAY.SCREEN    ; * JMK08
+                           GOTO GET.COPY.CARRIER   ; * JMK08
+                        CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1   ; * JMK08
+                           GOSUB DISPLAY.SCREEN    ; * JMK08
+                           GOTO GET.COPY.CARRIER   ; * JMK08
+                        CASE ITEM.LIST#''          ; * JMK08
+                           IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>       ; * JMK08
+                           GOSUB DISPLAY.SCREEN    ; * JMK08
+                           GOTO GET.COPY.CARRIER   ; * JMK08
+                     END CASE            ; * JMK08
+                  CASE NUM(QI) AND QI#''           ; * JMK08
+                     QI=QI'R%5'          ; * JMK08
+                     READ CCARRIER.REC FROM F.CLIENTS,QI THEN          ; * JMK08
+                        CCARRIER.ID=QI   ; * JMK08
+                        CCARRIER.NAME=CCARRIER.REC<2>        ; * JMK08
+                        CCARRIER.CITY=CCARRIER.REC<4>        ; * JMK08
+                        CCARRIER.STATE=CCARRIER.REC<5>       ; * JMK08
+                     END ELSE            ; * JMK08
+                        CALL ELINE('ERROR - Carrier ':QI:' is not a valid carrier.')       ; * JMK08
+                        GOTO GET.COPY.CARRIER      ; * JMK08
+                     END                 ; * JMK08
+                  CASE 1                 ; * JMK08
+                     GOTO GET.COPY.CARRIER         ; * JMK08
+               END CASE                  ; * JMK08
+               CEXPENSE.ID=CCLIENT.ID:'*':CCARRIER.ID
+               READ CEXPENSE.REC FROM F.EXPENSE,CEXPENSE.ID ELSE
+                  CEXPENSE.REC=''
+               END
+               EXPENSE.REC=CEXPENSE.REC
+               GOSUB SORT.EXPENSE.REC
+               GOSUB DISPLAY.PAGE
+               GOTO MAIN.START           ; * JMK08
+         CASE QI='P'                     ; * Print Expenses to printer
+            IF NUM.RULES>0 THEN
+               YN.MSG='Print Expense rules to currently selected printer?'
+               YN.MASK='Y'
+               GOSUB ASK.Y.OR.N
+               IF YN.ANSWER='Y' THEN
+                  GOSUB SORT.EXPENSE.REC
+                  GOSUB PRINT.EXPENSES
+                  GOSUB DISPLAY.SCREEN
+               END ELSE                  ; * JMK01
+                  YN.MSG='Send Expense rules to Spreadsheet?'          ; * JMK01
+                  YN.MASK='Y'            ; * JMK01
+                  GOSUB ASK.Y.OR.N       ; * JMK01
+                  IF YN.ANSWER='Y' THEN  ; * JMK01
+                     GOSUB SORT.EXPENSE.REC        ; * JMK01
+                     GOSUB DNLD.EXPENSES           ; * JMK01
+                  END                    ; * JMK01
+               END
+               GOSUB DISPLAY.PAGE
+            END ELSE
+               CALL ELINE('No rules to PRINT.')
+            END
+            GOTO MAIN.START
+         CASE QI='S'                     ; * Sort
+            IF USER.ACCESS=1 THEN GOTO MAIN.START
+            IF NUM.RULES>1 THEN
+               CRT @(0,22):'Sorting...':@(-3)
+               SLEEP 1
+               GOSUB SORT.EXPENSE.REC
+               GOSUB DISPLAY.PAGE
+            END ELSE
+               CALL ELINE('No rules to sort.')
+            END
+            GOTO MAIN.START
+         CASE QI='I' OR QI='IG'          ; * Insert a group
+            IF USER.ACCESS=1 THEN GOTO MAIN.START
+            IF NUM.RULES<1 THEN
+               CALL ELINE('No groups to INSERT before.')
+            END ELSE
+               IF EXPENSE.REC<6,NUM.RULES>#'ZZ' THEN
+                  GOSUB SORT.EXPENSE.REC
+                  GOSUB DISPLAY.PAGE
+                  AFN.MSG='Enter group to insert BEFORE :'
+                  AFN.MIN=EXPENSE.REC<6,1>
+                  AFN.MAX=EXPENSE.REC<6,NUM.RULES>
+                  AFN.MASK=AFN.MIN
+                  GOSUB ASK.FOR.NUM
+                  IF AFN.ANSWER#'X' THEN
+                     INSERT.BEFORE=AFN.ANSWER
+                     GOSUB INSERT.GROUP
+                     GOSUB DISPLAY.PAGE
+                  END
+               END ELSE
+                  CALL ELINE('Last group is ZZ and cannot go any higher.')
+               END
+            END
+            GOTO MAIN.START
+         CASE QI='E'                     ; * Edit a rule
+            IF USER.ACCESS=1 THEN GOTO MAIN.START
+            IF NUM.RULES<1 THEN
+               CALL ELINE('No rules to EDIT.')
+            END ELSE
+               EDIT.ENTRY=''
+               GOSUB EDIT.EXPENSE.RULE
+               GOSUB DISPLAY.PAGE
+            END
+            GOTO MAIN.START
+         CASE NUM(QI) AND QI#''          ; * Edit rule number
+            IF USER.ACCESS=1 THEN GOTO MAIN.START
+            IF QI>=1 AND QI<=NUM.RULES THEN
+               EDIT.ENTRY=QI
+               GOSUB EDIT.EXPENSE.RULE
+               GOSUB DISPLAY.PAGE
+            END ELSE
+               CALL ELINE('No rules to EDIT.')
+            END
+            GOTO MAIN.START
+         CASE QI='D'                     ; * Delete a rule
+            IF USER.ACCESS=1 THEN GOTO MAIN.START
+            IF NUM.RULES<1 THEN
+               CALL ELINE('No rules to DELETE.')
+            END ELSE
+               GOSUB DELETE.EXPENSE.RULE
+               GOSUB DISPLAY.PAGE
+            END
+            GOTO MAIN.START
+         CASE QI='A'                     ; * Add a rule         
+            IF USER.ACCESS=1 THEN GOTO MAIN.START
+            GOSUB ADD.EXPENSE.RULE
+            GOSUB DISPLAY.PAGE
+            GOTO MAIN.START
+         CASE QI='*' AND USER.NAME='JAMES'         ; * Show contents of EXPENSE.REC
+            CRT @(-1)
+            CRT @(0,0):EXPENSE.REC
+            CALL ELINE('Viewing DEBUG Screen.')
+            GOSUB DISPLAY.SCREEN
+            GOSUB DISPLAY.PAGE
+            GOTO MAIN.START
+         CASE 1
+            GOTO MAIN.START
+      END CASE
+
+
+*************************************************************
+DISPLAY.SCREEN: *** Display the basic screen setup
+*************************************************************
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79):
+      CRT @(0,3):'CLIENT  :'
+      CRT @(0,4):'CARRIER :'
+      CRT @(0,5):STR('=',79):
+      CRT @(0,21):STR('=',79):
+      IF CLIENT.ID THEN
+         CRT @(10,3):CLIENT.ID'R%5':' ':CLIENT.NAME:' (':CLIENT.CITY:', ':CLIENT.STATE:')'
+      END
+      IF CARRIER.ID='ALL' THEN
+         CRT @(10,4):'ALL'
+      END ELSE
+         IF CARRIER.ID THEN
+            CRT @(10,4):CARRIER.ID'R%5':' ':CARRIER.NAME:' (':CARRIER.CITY:', ':CARRIER.STATE:')'
+         END
+      END
+      CRT @(0,6):'### Grp SubGrp Expense Code                     Field  OP      Information     '   ; * JMK06 ; * JMK10
+      CRT @(0,7):'--- --- ------ -------------------------------- ------ --  --------------------'   ; * JMK06 ; * JMK10
+      RETURN
+
+*************************************************************
+DISPLAY.PAGE: *** This routine displays a given page
+*************************************************************
+      STR.OUT='[Page ':PAGE.NUMBER:' of ':NUM.PAGES:']'
+      CRT @(78-LEN(STR.OUT),5):STR.OUT
+      Y=1                                ; * Screen position
+      IF PAGE.NUMBER=0 THEN
+         LINE.NUM=1
+      END ELSE
+         LINE.NUM=(PAGE.NUMBER-1)*PAGE.SIZE+1
+      END
+      LOOP WHILE Y<=PAGE.SIZE
+         BEGIN CASE
+            CASE LINE.NUM>NUM.RULES
+* Print nothing - actually clears line
+               SCREEN.LINE=LINE.NUM'R%3'           ; * JMK06
+            CASE EXPENSE.REC<6,LINE.NUM>=''
+               SCREEN.LINE=LINE.NUM'R%3'           ; * JMK06
+            CASE 1
+               GOSUB FORMAT.LINE
+               SCREEN.LINE=FORMATTED.LINE
+         END CASE
+         CRT @(0,START.Y+Y):SCREEN.LINE:@(-4)      ; * Draw screen line
+         Y+=1                            ; * Inc screen position
+         LINE.NUM+=1
+      REPEAT
+      RETURN
+
+*************************************************************
+FORMAT.LINE: *** Format a single line for screen or printer display
+*************************************************************
+      FORMATTED.LINE=LINE.NUM'R%3 '      ; * JMK06 ; * JMK10
+      FORMATTED.LINE:=EXPENSE.REC<6,LINE.NUM>'L#3':SPACE(3)  ; * Group ; * JMK10
+      FORMATTED.LINE:=EXPENSE.REC<14,LINE.NUM>'R%2':SPACE(3)           ; * Sub-group ; * JMK10
+      FORMATTED.LINE:=EXPENSE.REC<7,LINE.NUM>'L#32 '         ; * Expense Code ; * JMK06 ; * JMK10
+      IF EMAIL THEN                      ; * JMK02
+         LOCATE(EXPENSE.REC<3,LINE.NUM>,EXPENSE.FIELDS,1;FPOS) THEN    ; * JMK02
+            FORMATTED.LINE:=EXPENSE.FIELDS<2,FPOS>'L#32':SPACE(1)      ; * Field ; * JMK02 ; * JMK03
+         END                             ; * JMK02
+         LOCATE(EXPENSE.REC<4,LINE.NUM>,EXPENSE.OPERATORS,1;OPOS) THEN           ; * JMK02
+            FORMATTED.LINE:=EXPENSE.OPERATORS<2,OPOS>'L#9':SPACE(1)    ; * Operator ; * JMK02
+         END                             ; * JMK02
+      END ELSE                           ; * JMK02
+         FORMATTED.LINE:=EXPENSE.REC<3,LINE.NUM>'L#6 '       ; * Field ; * JMK10
+         FORMATTED.LINE:=EXPENSE.REC<4,LINE.NUM>'L#2  '      ; * Operator ; * JMK10
+      END                                ; * JMK02
+      TEMP=EXPENSE.REC<5,LINE.NUM>
+      LOCATE EXPENSE.REC<3,LINE.NUM> IN EXPENSE.FIELDS<1> SETTING POS THEN
+         TYPE=EXPENSE.FIELDS<4,POS>
+         IF TYPE='' THEN TYPE='MCU'
+      END
+      IF EXPENSE.REC<3,LINE.NUM>='DIV' THEN
+         IF INDEX(EXPENSE.REC<5,LINE.NUM>,'[',1) OR INDEX(EXPENSE.REC<5,LINE.NUM>,']',1) THEN
+            TYPE=''
+         END
+      END
+      IF TYPE='R%5' THEN
+         TEMP=TEMP TYPE
+      END ELSE
+         TEMP=OCONV(TEMP,TYPE)
+      END
+      FORMATTED.LINE:=TEMP'L#20'         ; * Information
+      RETURN
+
+*************************************************************
+FORMAT.DNLD.LINE: *** Format a single line for screen or printer display
+*************************************************************
+      FORMATTED.DNLD.LINE=LINE.NUM'R%3'  ; * JMK01 ; * JMK06
+      FORMATTED.DNLD.LINE<1,-1>=EXPENSE.REC<6,LINE.NUM>'L#2'           ; * Group ; * JMK01
+      FORMATTED.DNLD.LINE<1,-1>=EXPENSE.REC<14,LINE.NUM>'R%2'          ; * Sub-group ; * JMK01
+      FORMATTED.DNLD.LINE<1,-1>=EXPENSE.REC<7,LINE.NUM>'L#32'          ; * Audit ; * JMK01 ; * JMK06
+      FORMATTED.DNLD.LINE<1,-1>=EXPENSE.REC<3,LINE.NUM>'L#6'           ; * Field ; * JMK01
+      FORMATTED.DNLD.LINE<1,-1>=EXPENSE.REC<4,LINE.NUM>'L#2'           ; * Operator ; * JMK01
+      TEMP=EXPENSE.REC<5,LINE.NUM>       ; * JMK01
+      LOCATE EXPENSE.REC<3,LINE.NUM> IN EXPENSE.FIELDS<1> SETTING POS THEN       ; * JMK01
+         TYPE=EXPENSE.FIELDS<4,POS>      ; * JMK01
+         IF TYPE='' THEN TYPE='MCU'      ; * JMK01
+      END                                ; * JMK01
+      IF TYPE='R%5' THEN                 ; * JMK01
+         TEMP=TEMP TYPE                  ; * JMK01
+      END ELSE                           ; * JMK01
+         TEMP=OCONV(TEMP,TYPE)           ; * JMK01
+      END                                ; * JMK01
+      FORMATTED.DNLD.LINE<1,-1>=TEMP'L#20'         ; * Information ; * JMK01
+      RETURN                             ; * JMK01
+
+*************************************************************
+ADD.EXPENSE.RULE: *** Make sure last page is being displayed
+*************************************************************
+      NP1=FALSE
+      NP2=FALSE
+      IF PAGE.NUMBER<NUM.PAGES THEN
+         PAGE.NUMBER=NUM.PAGES
+         NP1=TRUE
+      END
+      IF REM(NUM.RULES,PAGE.SIZE)=0 THEN
+* Go to the next clean page for entry
+         PAGE.NUMBER+=1
+         NUM.PAGES+=1
+         NP2=TRUE
+      END
+      IF NP1 OR NP2 THEN GOSUB DISPLAY.PAGE
+
+      EDIT.NUMBER=NUM.RULES+1
+      IF REM(EDIT.NUMBER,PAGE.SIZE)=0 THEN
+         Y.POS=START.Y+PAGE.SIZE
+      END ELSE
+         Y.POS=START.Y+REM(EDIT.NUMBER,PAGE.SIZE)
+      END
+
+* Make initial data assignments for a new rule instead of ASSIGN.FIELDS.OUT
+      GROUP=''
+      SUBGROUP=''
+      BEGIN.DATE=''
+      END.DATE=''
+      EXP.CODE=''
+      FIELD=''
+      OPERATOR=''
+      INFO=''
+
+      GOSUB PROCESS.DATA
+
+      IF BACK.FLAG THEN
+         IF NP2 THEN
+            PAGE.NUMBER-=1
+            NUM.PAGES-=1
+         END
+      END ELSE
+         NUM.RULES+=1
+         GOSUB ASSIGN.FIELDS.IN
+      END 
+      ADD.RULE = 1                  ; * NKH01
+      GOSUB CHECK.FOR.DUPLICATES    ; * NKH01
+      ADD.RULE = 0                  ; * NKH01
+                 
+      RETURN
+
+*************************************************************
+EDIT.EXPENSE.RULE: *** Edit an existing rule
+*************************************************************
+      IF EDIT.ENTRY='' THEN
+         AFN.MSG='Select rule to EDIT :'
+         AFN.MIN=1
+         AFN.MAX=NUM.RULES
+         AFN.MASK=LAST.EDIT.MASK
+         GOSUB ASK.FOR.NUM
+         IF AFN.ANSWER='X' THEN RETURN
+         EDIT.ENTRY=AFN.ANSWER
+      END
+      EDIT.NUMBER=EDIT.ENTRY
+      LAST.EDIT.MASK=EDIT.ENTRY
+
+      PAGE.NUMBER=INT(EDIT.NUMBER/PAGE.SIZE)
+      IF PAGE.NUMBER*PAGE.SIZE<EDIT.NUMBER THEN PAGE.NUMBER+=1
+      EDIT.Y=EDIT.NUMBER-(PAGE.NUMBER*PAGE.SIZE)+PAGE.SIZE
+      GOSUB DISPLAY.PAGE
+      Y.POS=START.Y+EDIT.Y
+
+      GOSUB ASSIGN.FIELDS.OUT
+      GOSUB PROCESS.DATA
+
+      IF NOT(BACK.FLAG) THEN
+         GOSUB ASSIGN.FIELDS.IN
+      END
+      GOSUB CHECK.FOR.DUPLICATES  ;* NKH01            
+
+      RETURN
+
+*************************************************************
+DELETE.EXPENSE.RULE: *** Delete an existing rule
+*************************************************************
+      AFN.MSG='Select rule to DELETE :'
+      AFN.MIN=1
+      AFN.MAX=NUM.RULES
+      AFN.MASK=LAST.EDIT.MASK
+      GOSUB ASK.FOR.NUM
+      IF AFN.ANSWER='X' THEN RETURN
+
+      EDIT.NUMBER=AFN.ANSWER
+      LAST.EDIT.MASK=AFN.ANSWER
+      PAGE.NUMBER=INT(EDIT.NUMBER/PAGE.SIZE)
+      IF PAGE.NUMBER*PAGE.SIZE<EDIT.NUMBER THEN PAGE.NUMBER+=1
+      EDIT.Y=EDIT.NUMBER-(PAGE.NUMBER*PAGE.SIZE)+PAGE.SIZE
+      GOSUB DISPLAY.PAGE
+
+      LINE.NUM=EDIT.NUMBER
+      GOSUB FORMAT.LINE
+      DELETE.LINE=REVERSE.ON:FORMATTED.LINE:REVERSE.OFF
+      CRT @(0,START.Y+EDIT.Y):DELETE.LINE:@(-4)    ; * Draw screen line
+
+      YN.MSG='DELETE this rule? :'
+      YN.MASK='N'
+      GOSUB ASK.Y.OR.N
+      IF YN.ANSWER='Y' THEN
+         DEL EXPENSE.REC<1,EDIT.NUMBER>
+         DEL EXPENSE.REC<2,EDIT.NUMBER>
+         DEL EXPENSE.REC<3,EDIT.NUMBER>
+         DEL EXPENSE.REC<4,EDIT.NUMBER>
+         DEL EXPENSE.REC<5,EDIT.NUMBER>
+         DEL EXPENSE.REC<6,EDIT.NUMBER>
+         DEL EXPENSE.REC<7,EDIT.NUMBER>
+         DEL EXPENSE.REC<14,EDIT.NUMBER>
+         NUM.RULES-=1
+         IF NUM.RULES=0 THEN
+            NUM.PAGES=0
+            PAGE.NUMBER=0
+         END ELSE
+            NUM.PAGES=INT(NUM.RULES/PAGE.SIZE)
+            IF REM(NUM.RULES,PAGE.SIZE) THEN NUM.PAGES+=1
+            IF REM(NUM.RULES,PAGE.SIZE)=0 AND EDIT.NUMBER=NUM.RULES+1 THEN
+               PAGE.NUMBER-=1
+            END
+         END
+         IF LAST.EDIT.MASK>NUM.RULES THEN LAST.EDIT.MASK=NUM.RULES
+         IF LAST.EDIT.MASK=0 THEN LAST.EDIT.MASK=1
+      END
+      RETURN
+
+*************************************************************
+INSERT.GROUP: *** Insert a group in between existing groups
+*************************************************************
+      NUM.RULES=DCOUNT(EXPENSE.REC<6>,@VM)
+IG:   LOCATE INSERT.BEFORE IN EXPENSE.REC<6> SETTING POS ELSE
+         INSERT.BEFORE=CHAR(SEQ(INSERT.BEFORE)+1)
+         GOTO IG
+      END
+      FOR RULE=NUM.RULES TO POS STEP -1
+         GRP=EXPENSE.REC<6,RULE>
+         BEGIN CASE
+            CASE LEN(GRP)=2
+               IF GRP[2,1]='Z' THEN
+                  EXPENSE.REC<6,RULE>=CHAR(SEQ(GRP[1,1])+1):'A'
+               END ELSE
+                  EXPENSE.REC<6,RULE>=GRP[1,1]:CHAR(SEQ(GRP[2,1])+1)
+               END
+            CASE GRP='Z'
+               EXPENSE.REC<6,RULE>='AA'
+            CASE 1
+               EXPENSE.REC<6,RULE>=CHAR(SEQ(GRP)+1)
+         END CASE
+      NEXT RULE
+      RETURN
+
+*************************************************************
+SORT.EXPENSE.REC: *** Sort rules
+*************************************************************
+      SORT.ARRAY=''                      ; * holds sort keys and pointers into EXPENSE.REC
+      SORTED.EXPENSE.REC=''              ; * sorted version of EXPENSE.REC
+      NUM.RULES=DCOUNT(EXPENSE.REC<6>,@VM)
+      FOR RULE=1 TO NUM.RULES
+         SORT.KEY =EXPENSE.REC<6,RULE>'L#2'        ; * Group
+         SORT.KEY:=EXPENSE.REC<14,RULE>'R%2'       ; * Subgroup
+         SORT.KEY:=EXPENSE.REC<3,RULE>   ; *'L#6';  * Field
+         SORT.KEY:=EXPENSE.REC<4,RULE>   ; *'L#2';  * Operator
+         SORT.KEY:=EXPENSE.REC<5,RULE>   ; *'L#20'; * Info
+         LOCATE SORT.KEY IN SORT.ARRAY<1> BY 'AL' SETTING SORT.POS THEN
+            CALL ELINE('You have a duplicate rule. Please delete one of the duplicates.')
+         END ELSE
+            INS SORT.KEY BEFORE SORT.ARRAY<1,SORT.POS>
+            INS RULE BEFORE SORT.ARRAY<2,SORT.POS>
+         END
+      NEXT RULE
+
+      FOR RULE=1 TO NUM.RULES
+         EXPENSE.PTR=SORT.ARRAY<2,RULE>
+         SORTED.EXPENSE.REC<1,RULE>=EXPENSE.REC<1,EXPENSE.PTR>
+         SORTED.EXPENSE.REC<2,RULE>=EXPENSE.REC<2,EXPENSE.PTR>
+         SORTED.EXPENSE.REC<3,RULE>=EXPENSE.REC<3,EXPENSE.PTR>
+         SORTED.EXPENSE.REC<4,RULE>=EXPENSE.REC<4,EXPENSE.PTR>
+         SORTED.EXPENSE.REC<5,RULE>=EXPENSE.REC<5,EXPENSE.PTR>
+         SORTED.EXPENSE.REC<6,RULE>=EXPENSE.REC<6,EXPENSE.PTR>
+         SORTED.EXPENSE.REC<7,RULE>=EXPENSE.REC<7,EXPENSE.PTR>
+         SORTED.EXPENSE.REC<14,RULE>=EXPENSE.REC<14,EXPENSE.PTR>
+      NEXT RULE
+
+* Copy the items not affected by the sorting
+      FOR RULE=8 TO 13
+         SORTED.EXPENSE.REC<RULE>=EXPENSE.REC<RULE>
+      NEXT RULE
+
+      EXPENSE.REC=SORTED.EXPENSE.REC
+      RETURN
+
+*************************************************************
+PRINT.EXPENSES: *** Print rules to printer
+*************************************************************
+      PRINTER ON
+      L.TAB=CTR-(LEN(PROG.DESC)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):PROG.DESC
+      R.TAB=WIDTH-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE())
+      HEAD1=PROG.NAME:SPACE(L.TAB):PROG.DESC:SPACE(R.TAB):TIMEDATE():"'L'"
+      TITLE='EXPENSE Entries'
+      L.TAB=CTR-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+      R.TAB=(WIDTH-LEN(TEMP))-20
+      HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )':"PAGE 'PL'"
+      HEAD3=STR('=',WIDTH):"'L'"
+      HEAD4='CLIENT  : ':CLIENT.ID'R#5':' ':CLIENT.NAME:' (':CLIENT.CITY:', ':CLIENT.STATE:')':"'L'"
+      HEAD5='CARRIER : ':CARRIER.ID'R#5'
+      IF CARRIER.ID#'ALL' THEN
+         HEAD5:=' ':CARRIER.NAME:' (':CARRIER.CITY:', ':CARRIER.STATE:')'
+      END
+      HEAD5:="'LL'"
+      HEAD6='##  Grp  SubGrp  Beg Date  End Date   Stack   Field  Optr      Information     ':"'L'"
+      HEAD7='-------------------------------------------------------------------------------':"'L'"
+      HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6:HEAD7
+      PAGE 1
+      HEADING HED
+      FOR LINE.NUM=1 TO NUM.RULES
+         GOSUB FORMAT.LINE
+         PRINT FORMATTED.LINE
+      NEXT
+      PRINTER OFF
+      PRINTER CLOSE
+      CALL ELINE('EXPENSE table spooled to printer.')        ; * JMK10
+      RETURN
+
+*************************************************************
+DNLD.EXPENSES: *** Download rules to spreadsheet ; * JMK01
+*************************************************************
+      DA=''                              ; * JMK01
+      L.TAB=CTR-(LEN(PROG.DESC)/2)       ; * JMK01
+      L.TAB=L.TAB-LEN(PROG.NAME)         ; * JMK01
+      TEMP=PROG.NAME:SPACE(L.TAB):PROG.DESC        ; * JMK01
+      R.TAB=WIDTH-LEN(TEMP)              ; * JMK01
+      R.TAB=R.TAB-LEN(TIMEDATE())        ; * JMK01
+      DA<1>=PROG.NAME:SPACE(L.TAB):PROG.DESC:SPACE(R.TAB):TIMEDATE()   ; * JMK01
+      TITLE='EXPENSE Entries'            ; * JMK01
+      L.TAB=CTR-(LEN(TITLE)/2)           ; * JMK01
+      L.TAB=L.TAB-LEN(CO.NAME)           ; * JMK01
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE    ; * JMK01
+      R.TAB=(WIDTH-LEN(TEMP))-20         ; * JMK01
+      DA<2>=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )'   ; * JMK01
+      DA<3>=STR('=',WIDTH)               ; * JMK01
+      DA<4>='CLIENT  : ':CLIENT.ID'R#5':' ':CLIENT.NAME:' (':CLIENT.CITY:', ':CLIENT.STATE:')'       ; * JMK01
+      DA<5>='CARRIER : ':CARRIER.ID'R#5'           ; * JMK01
+      IF CARRIER.ID#'ALL' THEN           ; * JMK01
+         DA<5>:=' ':CARRIER.NAME:' (':CARRIER.CITY:', ':CARRIER.STATE:')'        ; * JMK01
+      END                                ; * JMK01
+      DA<6,1>='##'                       ; * JMK01
+      DA<6,2>='Grp'                      ; * JMK01
+      DA<6,3>='SubGrp'                   ; * JMK01
+      DA<6,4>='Beg Date'                 ; * JMK01
+      DA<6,5>='End Date'                 ; * JMK01
+      DA<6,6>='Stack'                    ; * JMK01
+      DA<6,7>='Field'                    ; * JMK01
+      DA<6,8>='Optr'                     ; * JMK01
+      DA<6,9>='Information'              ; * JMK01
+      DA<7,1>='--'                       ; * JMK01
+      DA<7,2>='---'                      ; * JMK01
+      DA<7,3>='---'                      ; * JMK01
+      DA<7,4>='--------'                 ; * JMK01
+      DA<7,5>='--------'                 ; * JMK01
+      DA<7,6>='-----'                    ; * JMK01
+      DA<7,7>='-----'                    ; * JMK01
+      DA<7,8>='----'                     ; * JMK01
+      DA<7,9>='-----------'              ; * JMK01
+
+      FOR LINE.NUM=1 TO NUM.RULES        ; * JMK01
+         GOSUB FORMAT.DNLD.LINE          ; * JMK01
+         DA<-1>=FORMATTED.DNLD.LINE      ; * JMK01
+      NEXT                               ; * JMK01
+
+      DA.ID=CLIENT.ID:'-':CARRIER.ID:'-EXPENSES.XLS'         ; * JMK01
+      DA=CHANGE(DA,@VM,TAB)              ; * JMK01
+      WRITE DA ON F.BILLDATA,DA.ID       ; * JMK01
+      CALL ELINE('EXPENSE table downloaded to ':DA.ID:' on your user drive.')    ; * JMK01
+      RETURN                             ; * JMK01
+
+*************************************************************
+ASSIGN.FIELDS.IN: *** Grab a rule for editing
+*************************************************************
+      EXPENSE.REC<6,EDIT.NUMBER>=GROUP'L#2'
+      EXPENSE.REC<14,EDIT.NUMBER>=SUBGROUP'R%2'
+      EXPENSE.REC<1,EDIT.NUMBER>=BEGIN.DATE
+      IF END.DATE THEN
+         EXPENSE.REC<2,EDIT.NUMBER>=END.DATE
+      END ELSE
+         EXPENSE.REC<2,EDIT.NUMBER>=PLACE.HOLDER
+         EXPENSE.REC<2,EDIT.NUMBER>=END.DATE
+      END
+      EXPENSE.REC<7,EDIT.NUMBER>=EXP.CODE
+      IF FIELD='ALL' OR FIELD='INTRA' OR FIELD='INTER' OR FIELD='FLAT' OR FIELD='EDI' FIELD='NO-EDI' THEN
+         EXPENSE.REC<4,EDIT.NUMBER>=PLACE.HOLDER
+         EXPENSE.REC<5,EDIT.NUMBER>=PLACE.HOLDER
+         OPERATOR=''
+         INFO=''
+         EXPENSE.REC<4,EDIT.NUMBER>=OPERATOR
+         EXPENSE.REC<5,EDIT.NUMBER>=INFO
+      END
+      EXPENSE.REC<3,EDIT.NUMBER>=FIELD
+      EXPENSE.REC<4,EDIT.NUMBER>=OPERATOR
+      LOCATE EXPENSE.REC<3,EDIT.NUMBER> IN EXPENSE.FIELDS<1> SETTING POS THEN
+         TYPE=EXPENSE.FIELDS<4,POS>
+         IF TYPE='' THEN TYPE='MCU'
+      END
+      IF FIELD='DIV' THEN
+         IF INDEX(INFO,'[',1) OR INDEX(INFO,']',1) THEN
+            TYPE=''
+         END
+      END
+      IF TYPE='R%5' THEN
+         EXPENSE.REC<5,EDIT.NUMBER>=INFO TYPE
+      END ELSE
+         EXPENSE.REC<5,EDIT.NUMBER>=INFO
+      END
+      RETURN
+
+*************************************************************
+ASSIGN.FIELDS.OUT: *** Assign a rule to the array
+*************************************************************
+      GROUP=EXPENSE.REC<6,EDIT.NUMBER>
+      SUBGROUP=EXPENSE.REC<14,EDIT.NUMBER>
+      BEGIN.DATE=EXPENSE.REC<1,EDIT.NUMBER>
+      END.DATE=EXPENSE.REC<2,EDIT.NUMBER>
+      EXP.CODE=EXPENSE.REC<7,EDIT.NUMBER>
+      FIELD=EXPENSE.REC<3,EDIT.NUMBER>
+      OPERATOR=EXPENSE.REC<4,EDIT.NUMBER>
+      INFO=EXPENSE.REC<5,EDIT.NUMBER>
+      RETURN
+
+*************************************************************
+PROCESS.DATA: *** Go through all fields for adding or editing of one rule (line on the screen)
+*************************************************************
+      DONE=FALSE
+      FIELD.POS=1
+      LOOP WHILE NOT(DONE)
+         BEGIN CASE
+            CASE FIELD.POS=0             ; * Done
+               DONE=TRUE
+            CASE FIELD.POS=1             ; * Group
+               GOSUB GET.GROUP
+               IF NOT(BACK.FLAG) THEN
+                  IF GROUP.FIRST.EXISTS.AT#0 AND EDIT.NUMBER>GROUP.FIRST.EXISTS.AT THEN
+                     EXP.CODE=EXPENSE.REC<7,GROUP.FIRST.EXISTS.AT>
+                     CRT @(17,Y.POS):EXP.CODE'L#30'
+                  END
+               END
+            CASE FIELD.POS=2             ; * Subgroup
+               GOSUB GET.SUBGROUP
+            CASE FIELD.POS=3             ; * Audit Review
+               IF GROUP.FIRST.EXISTS.AT=0 OR EDIT.NUMBER<=GROUP.FIRST.EXISTS.AT THEN
+                  GOSUB GET.EXP.CODE
+               END
+            CASE FIELD.POS=4             ; * Field
+               GOSUB GET.FIELD
+               IF NOT(BACK.FLAG) THEN
+                  IF FIELD='ALL' OR FIELD='INTRA' OR FIELD='INTER' OR FIELD='FLAT' OR FIELD='EDI' OR FIELD='NO-EDI' THEN
+                     OPERATOR=''
+                     INFO=''
+                     FIELD.POS=6
+                  END
+               END
+            CASE FIELD.POS=5             ; * Operator
+               GOSUB GET.OPERATOR
+            CASE FIELD.POS=6             ; * Information
+               GOSUB GET.INFO
+            CASE FIELD.POS=7             ; * Done
+               DONE=TRUE
+               GOSUB FIELD.CHECK
+         END CASE
+         IF BACK.FLAG THEN
+            FIELD.POS-=1
+         END ELSE
+            FIELD.POS+=1
+         END
+      REPEAT
+      RETURN
+
+*************************************************************
+GET.GROUP: ***
+*************************************************************
+      BACK.FLAG=FALSE
+      X.POS=5
+      IF GROUP THEN
+         SAVE.GROUP=GROUP'L#2'
+         DEFAULT.GROUP=GROUP
+      END ELSE
+         SAVE.GROUP=SPACE(2)
+         DEFAULT.GROUP=EXPENSE.REC<6,NUM.RULES>
+         IF DEFAULT.GROUP='' THEN
+            DEFAULT.GROUP='AA'
+         END
+      END
+      LOCATE DEFAULT.GROUP IN EXPENSE.REC<6> BY 'AL' SETTING POS THEN
+         FIRST.OCCURRENCE.OF.DEFAULT=POS
+      END ELSE
+         FIRST.OCCURRENCE.OF.DEFAULT=0
+      END
+      EDIT.MASK=DEFAULT.GROUP:STR(EDIT.MASK.CHAR,2-LEN(DEFAULT.GROUP))
+      HELP='OPTIONS: [X]=Back [EX]it'
+GG1:  CRT @(0,22):'Enter group letter (AA-ZZ).':@(-4)
+      CALL GEN.IN(X.POS,Y.POS,EDIT.MASK,'',Q,0,2,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF GROUP#'' THEN
+         IF QI='' THEN QI=GROUP
+      END ELSE
+         IF QI='' THEN QI=DEFAULT.GROUP
+      END
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'
+            BACK.FLAG=TRUE
+            CRT @(2,Y.POS):@(-4)
+            RETURN
+         CASE ALPHA(QI) AND LEN(QI)=2
+            LOCATE QI IN EXPENSE.REC<6> BY 'AL' SETTING POS THEN
+               GROUP.FIRST.EXISTS.AT=POS
+               IF GROUP.FIRST.EXISTS.AT#FIRST.OCCURRENCE.OF.DEFAULT THEN
+                  CALL ELINE('Warning: Group ':QI:' already exists.')
+               END
+            END ELSE
+               GROUP.FIRST.EXISTS.AT=0   ; * Doesn't exist: it's a new group
+            END
+            GROUP=QI
+            CRT @(X.POS,Y.POS):GROUP'L#2'
+            RETURN
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO GG1
+      END CASE
+
+*************************************************************
+GET.SUBGROUP: ***
+*************************************************************
+      BACK.FLAG=FALSE
+      X.POS=10                           ; * JMK06
+      IF NOT(GROUP.FIRST.EXISTS.AT) THEN
+         DEFAULT.SUBGROUP=1
+      END ELSE
+         DEFAULT.SUBGROUP=EXPENSE.REC<14,GROUP.FIRST.EXISTS.AT>
+         FOR RULE=GROUP.FIRST.EXISTS.AT+1 TO NUM.RULES
+            IF GROUP=EXPENSE.REC<6,RULE> THEN
+               IF EXPENSE.REC<14,RULE> GT DEFAULT.SUBGROUP THEN
+                  DEFAULT.SUBGROUP=EXPENSE.REC<14,RULE>
+               END
+            END
+         NEXT RULE
+         DEFAULT.SUBGROUP+=1
+      END
+      IF SUBGROUP THEN
+         SAVE.SUBGROUP=SUBGROUP'R%2'
+         EDIT.MASK=SUBGROUP:STR(EDIT.MASK.CHAR,2-LEN(SUBGROUP))
+      END ELSE
+         SAVE.SUBGROUP=SPACE(2)
+         EDIT.MASK=DEFAULT.SUBGROUP:STR(EDIT.MASK.CHAR,2-LEN(DEFAULT.SUBGROUP))
+      END
+      HELP='OPTIONS: [X]=Back [EX]it'
+GS1:  CRT @(0,22):'Enter subgroup number (01-99).':@(-4)
+      CALL GEN.IN(X.POS,Y.POS,EDIT.MASK,'',Q,0,2,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF SUBGROUP#'' THEN
+         IF QI='' THEN QI=SUBGROUP
+      END ELSE
+         IF QI='' THEN QI=DEFAULT.SUBGROUP
+      END
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'
+            BACK.FLAG=TRUE
+            CRT @(X.POS,Y.POS):SAVE.SUBGROUP
+            RETURN
+         CASE NUM(QI) AND QI#'' AND QI>0 AND QI<100
+            SUBGROUP=QI
+            CRT @(X.POS,Y.POS):SUBGROUP'R%2'
+            RETURN
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO GS1
+      END CASE
+
+*************************************************************
+GET.EXP.CODE: ***
+*************************************************************
+      BACK.FLAG=FALSE
+      
+*************************************************************      
+ENTER.EXP.CODE: ***
+*************************************************************
+      X.POS=15                           ; * JMK06
+      CRT @(0,22):'Enter the Expense Code.':@(-4)
+      IF EXP.CODE THEN
+         SAVE.EXP.CODE=EXP.CODE'L#35'    ; * JMK06
+         EDIT.MASK=EXP.CODE:STR(EDIT.MASK.CHAR,3-LEN(EXP.CODE))
+      END ELSE
+         SAVE.EXP.CODE=SPACE(35)         ; * JMK06
+         EDIT.MASK=STR(EDIT.MASK.CHAR,30)
+      END
+      HELP ='Enter the expense code'
+   ***   CALL GEN.IN(X.POS,Y.POS,EDIT.MASK,'',Q,0,35,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)      ; * JMK06
+       CALL GEN.IN(X.POS,Y.POS,EDIT.MASK,'',Q,0,45,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)      ; * GRB01
+      QI=OCONV(QI,'MCU')
+      IF EXP.CODE AND QI='' THEN QI=EXP.CODE
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'
+            BACK.FLAG=TRUE
+            CRT @(X.POS,Y.POS):SAVE.EXP.CODE
+            RETURN
+         CASE 1
+            IF USER.NAME='DAVID' THEN CALL ELINE('PRESS BREAK')
+            EXP.CODE=QI
+            IF INDEX(EXP.CODE,'{',1) THEN          ; * JMK07
+               DUMMY.EXPENSE.CODE=FIELD(EXP.CODE,'{',2)      ; * JMK07
+               DUMMY.EXPENSE.CODE=FIELD(DUMMY.EXPENSE.CODE,'}',1)      ; * JMK07
+               IF INDEX(DUMMY.EXPENSE.CODE,"[",1) THEN       ; * JMK07
+                  CODE.ID=FIELD(DUMMY.EXPENSE.CODE,"[",1)    ; * JMK07
+               END ELSE                  ; * JMK07
+                  CODE.ID=DUMMY.EXPENSE.CODE       ; * JMK07
+               END                       ; * JMK07
+               LOCATE CODE.ID IN EXPENSE.FIELDS<1> SETTING XX.POS ELSE           ; * JMK07
+                  CALL ELINE(CODE.ID:' Is invalid')          ; * JMK07
+                  GOTO ENTER.EXP.CODE    ; * JMK07
+               END                       ; * JMK07
+               IF INDEX(DUMMY.EXPENSE.CODE,"[",1) THEN       ; * JMK07
+                  RANGE=FIELD(DUMMY.EXPENSE.CODE,"[",2)      ; * JMK07
+                  RANGE="[":RANGE        ; * JMK07
+                  IF RANGE[LEN(RANGE),1]#']' THEN  ; * JMK07
+                     CALL ELINE(RANGE:' Is not valid. It must end with a ]')     ; * JMK07
+                     GOTO ENTER.EXP.CODE           ; * JMK07
+                  END                    ; * JMK07
+                  IF INDEX(RANGE,",",1) ELSE       ; * JMK07
+                     CALL ELINE(RANGE: ' Is not valid. It must have a comma in it')        ; * JMK07
+                     GOTO ENTER.EXP.CODE           ; * JMK07
+                  END                    ; * JMK07
+                  ACTUAL=1               ; * JMK07
+               END                       ; * JMK07
+            END ELSE                     ; * JMK07
+               IF INDEX(EXP.CODE,"~",1) THEN
+                  DUMMY.EXPENSE.CODE=CHANGE(EXP.CODE,"~",@AM)
+                  NUM.OF.ITEMS=DCOUNT(DUMMY.EXPENSE.CODE,@AM)
+                  ACTUAL=1
+                  FOR XX = 1 TO NUM.OF.ITEMS
+                     IF ACTUAL THEN
+                        ACTUAL=0
+                     END ELSE
+                        IF INDEX(DUMMY.EXPENSE.CODE<XX>,"[",1) THEN
+                           CODE.ID=FIELD(DUMMY.EXPENSE.CODE<XX>,"[",1)
+                        END ELSE
+                           CODE.ID=DUMMY.EXPENSE.CODE<XX>
+                        END
+                        LOCATE CODE.ID IN EXPENSE.FIELDS<1> SETTING XX.POS ELSE
+                           CALL ELINE(CODE.ID:' Is invalid')
+                           GOTO ENTER.EXP.CODE
+                        END
+                        IF INDEX(DUMMY.EXPENSE.CODE<XX>,"[",1) THEN
+                           RANGE=FIELD(DUMMY.EXPENSE.CODE<XX>,"[",2)
+                           RANGE=RANGE[1,LEN(RANGE)-1]
+                           RANGE="[":RANGE
+                           IF RANGE[1,LEN(RANGE)-1]#']' THEN
+                              CALL ELINE(RANGE:' Is not valid. It must end with a ]')
+                              GOTO ENTER.EXP.CODE
+                           END
+                           IF INDEX(RANGE,",",1) ELSE
+                              CALL ELINE(RANGE: ' Is not valid. It must have a comma in it')
+                              GOTO ENTER.EXP.CODE
+                           END
+                           ACTUAL=1
+                        END
+                     END
+                  NEXT XX
+               END ELSE
+                  READ TEMP FROM F.EXP,EXP.CODE THEN
+                     IF TEMP<5>='I' THEN
+                        CALL ELINE(EXP.CODE:' Is Inactive')
+                        GOTO ENTER.EXP.CODE
+                     END
+                  END ELSE
+                     CALL ELINE(EXP.CODE:' Is Not on File')
+                     GOTO ENTER.EXP.CODE
+                  END
+               END
+            END                          ; * JMK07
+            CRT @(X.POS,Y.POS):EXP.CODE'L#35':@(-4)      ; * JMK06 GRB01
+            RETURN
+      END CASE
+
+*************************************************************
+GET.FIELD: ***
+*************************************************************
+      BACK.FLAG=FALSE
+      X.POS=48                           ; * JMK06
+      CRT @(0,22):'Enter an EXPENSE field.':@(-4)
+      IF FIELD#'' THEN
+         SAVE.FIELD=FIELD'L#6'           ; * JMK06 ; * JMK10
+         EDIT.MASK=FIELD:STR(EDIT.MASK.CHAR,6-LEN(FIELD))    ; * JMK06 ; * JMK10
+      END ELSE
+         SAVE.FIELD=SPACE(6)             ; * JMK06 ; * JMK10
+         EDIT.MASK=STR(EDIT.MASK.CHAR,6)           ; * JMK06 ; * JMK10
+      END
+      HELP='OPTIONS: [L]ist Fields [X]=Back [EX]it'
+      CALL GEN.IN(X.POS,Y.POS,EDIT.MASK,'',Q,0,6,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)       ; * JMK06 ; * JMK10
+      QI=OCONV(QI,'MCU')
+      IF FIELD#'' AND QI='' THEN QI=FIELD
+      TYPE=''
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'
+            BACK.FLAG=TRUE
+            CRT @(X.POS,Y.POS):SAVE.FIELD
+            RETURN
+         CASE QI='L'
+            CALL LIST.FIELDS('',CODE.RETURNED)
+            FIELD=CODE.RETURNED<1>
+            TYPE=CODE.RETURNED<4>
+            IF TYPE='' THEN TYPE='MCU'
+            GOSUB DISPLAY.SCREEN
+            GOSUB DISPLAY.PAGE
+            CRT @(5,Y.POS):GROUP'L#2'
+            CRT @(10,Y.POS):SUBGROUP'R%2'          ; * JMK10
+            CRT @(15,Y.POS):EXP.CODE'L#35'         ; * JMK10
+            CRT @(X.POS,Y.POS):FIELD'L#5'          ; * JMK06
+            RETURN
+         CASE NUM(QI) AND QI#''
+            IF QI<1 OR QI>NUM.FIELDS THEN
+               CALL ELINE('Invalid field. Try again.')
+               GOTO GET.FIELD
+            END
+            FIELD=EXPENSE.FIELDS<1,QI>
+            TYPE=EXPENSE.FIELDS<4,QI>
+            IF TYPE='' THEN TYPE='MCU'
+            CRT @(X.POS,Y.POS):FIELD'L#5'          ; * JMK06
+            RETURN
+         CASE 1
+            LOCATE QI IN EXPENSE.FIELDS<1> SETTING POS THEN
+               FIELD=QI
+               TYPE=EXPENSE.FIELDS<4,POS>
+               IF TYPE='' THEN TYPE='MCU'
+               CRT @(X.POS,Y.POS):FIELD'L#5'       ; * JMK06
+               RETURN
+            END ELSE
+               CALL ELINE('Invalid entry. Try again.')
+               GOTO GET.FIELD
+            END
+      END CASE
+
+*************************************************************
+GET.OPERATOR: ***
+*************************************************************
+      BACK.FLAG=FALSE
+      X.POS=55                           ; * JMK10
+      CRT @(0,22):'Enter an EXPENSE operator.':@(-4)
+      IF FIELD='OLAVAR' THEN
+         CRT @(0,22):'(OLAVAR=bill-OLA). Use LE,LT for bills under OLA Use GE,GT for bills over OLA'
+      END
+      IF OPERATOR THEN
+         SAVE.OPERATOR=OPERATOR'L#2'
+         EDIT.MASK=OPERATOR:STR(EDIT.MASK.CHAR,2-LEN(OPERATOR))
+      END ELSE
+         SAVE.OPERATOR=SPACE(2)
+         EDIT.MASK=STR(EDIT.MASK.CHAR,2)
+      END
+      HELP=OPERATOR.HELP:' [X]=Back [EX]it'
+      CALL GEN.IN(X.POS,Y.POS,EDIT.MASK,'',Q,0,2,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF OPERATOR AND QI='' THEN QI=OPERATOR
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'
+            BACK.FLAG=TRUE
+            CRT @(X.POS,Y.POS):SAVE.OPERATOR
+            RETURN
+         CASE NUM(QI) AND QI#''
+            IF QI<1 OR QI>NUM.OPERATORS THEN
+               CALL ELINE('Invalid operator. Try again.')
+               GOTO GET.OPERATOR
+            END
+            OPERATOR=EXPENSE.OPERATORS<1,QI>
+            IF FIELD='ACC' AND OPERATOR='EQ' THEN
+               CALL ELINE('For ACC you should use AP not EQ')
+               GOTO GET.OPERATOR
+            END
+            IF FIELD='ACC' AND OPERATOR='NE' THEN
+               CALL ELINE('For ACC you should use NA not NE')
+               GOTO GET.OPERATOR
+            END
+            IF FIELD='BOL' AND OPERATOR='EQ' THEN
+               CALL ELINE('For BOL you should use AP not EQ')
+               GOTO GET.OPERATOR
+            END
+            IF FIELD='BOL' AND OPERATOR='NE' THEN
+               CALL ELINE('For BOL you should use NA not NE')
+               GOTO GET.OPERATOR
+            END
+            IF FIELD='POD' AND OPERATOR='EQ' THEN
+               CALL ELINE('For POD you should use AP not EQ')
+               GOTO GET.OPERATOR
+            END
+            IF FIELD='POD' AND OPERATOR='NE' THEN
+               CALL ELINE('For POD you should use NA not NE')
+               GOTO GET.OPERATOR
+            END
+            IF FIELD='CLASS' AND OPERATOR='EQ' THEN
+               CALL ELINE('Warning For CLASS you should use AP not EQ')
+            END
+            IF FIELD='CLASS' AND OPERATOR='NE' THEN
+               CALL ELINE('Warning For CLASS you should use NA not NE')
+            END
+            IF FIELD='ACC' AND OPERATOR#'AP' AND OPERATOR#'NA' THEN
+               CALL ELINE('For ACC you should use AP or NA')
+               GOTO GET.OPERATOR
+            END
+            CRT @(X.POS,Y.POS):OPERATOR'L#2'
+            RETURN
+         CASE 1
+            LOCATE QI IN EXPENSE.OPERATORS<1> SETTING POS THEN
+               OPERATOR=QI
+               IF FIELD='ACC' AND OPERATOR='EQ' THEN
+                  CALL ELINE('For ACC you should use AP not EQ')
+                  GOTO GET.OPERATOR
+               END
+               IF FIELD='ACC' AND OPERATOR='NE' THEN
+                  CALL ELINE('For ACC you should use NA not NE')
+                  GOTO GET.OPERATOR
+               END
+               IF FIELD='BOL' AND OPERATOR='EQ' THEN
+                  CALL ELINE('For BOL you should use AP not EQ')
+                  GOTO GET.OPERATOR
+               END
+               IF FIELD='BOL' AND OPERATOR='NE' THEN
+                  CALL ELINE('For BOL you should use NA not NE')
+                  GOTO GET.OPERATOR
+               END
+               IF FIELD='POD' AND OPERATOR='EQ' THEN
+                  CALL ELINE('For POD you should use AP not EQ')
+                  GOTO GET.OPERATOR
+               END
+               IF FIELD='POD' AND OPERATOR='NE' THEN
+                  CALL ELINE('For POD you should use NA not NE')
+                  GOTO GET.OPERATOR
+               END
+               IF FIELD='CLASS' AND OPERATOR='EQ' THEN
+                  CALL ELINE('Warning For CLASS you should use AP not EQ')
+               END
+               IF FIELD='CLASS' AND OPERATOR='NE' THEN
+                  CALL ELINE('Warning For CLASS you should use NA not NE')
+               END
+               IF FIELD='ACC' AND OPERATOR#'AP' AND OPERATOR#'NA' THEN
+                  CALL ELINE('For ACC you should use AP or NA')
+                  GOTO GET.OPERATOR
+               END
+               CRT @(X.POS,Y.POS):OPERATOR'L#2'
+               RETURN
+            END ELSE
+               CALL ELINE('Invalid entry. Try again.')
+               GOTO GET.OPERATOR
+            END
+      END CASE
+
+*************************************************************
+GET.INFO: ***
+*************************************************************
+      BACK.FLAG=FALSE
+      X.POS=59
+      BEGIN CASE
+         CASE FIELD = 'CVNAME'
+            SPECIAL.FLAG=1
+         CASE FIELD = 'OCITY'
+            SPECIAL.FLAG=1
+         CASE FIELD = 'DCITY'
+            SPECIAL.FLAG=1
+         CASE FIELD = 'EXPSE'
+            SPECIAL.FLAG=1
+         CASE FIELD = 'BOL'
+            SPECIAL.FLAG=1
+         CASE FIELD = 'POD'
+            SPECIAL.FLAG=1
+         CASE FIELD = 'PRO'
+            SPECIAL.FLAG=1
+         CASE FIELD = 'ACC'
+            SPECIAL.FLAG=1
+         CASE FIELD = 'DST'
+            SPECIAL.FLAG=1
+         CASE FIELD = 'OST'
+            SPECIAL.FLAG=1
+         CASE FIELD = 'SVC'              ; * JMK08
+            SPECIAL.FLAG=1               ; * JMK08
+         CASE FIELD = 'DIV'
+            SPECIAL.FLAG=1
+         CASE FIELD = 'DREF'             ; * JMK10
+            SPECIAL.FLAG=1               ; * JMK10
+         CASE FIELD = 'OREF'             ; * JMK10
+            SPECIAL.FLAG=1               ; * JMK10
+         CASE FIELD = 'PTYP'             ; * JMK10
+            SPECIAL.FLAG=1               ; * JMK10
+         CASE FIELD = 'REF1'             ; * JMK10
+            SPECIAL.FLAG=1               ; * JMK10
+         CASE FIELD = 'REF2'             ; * JMK10
+            SPECIAL.FLAG=1               ; * JMK10
+         CASE FIELD = 'REF3'             ; * JMK10
+            SPECIAL.FLAG=1               ; * JMK10
+         CASE FIELD = 'REF4'             ; * JMK10
+            SPECIAL.FLAG=1               ; * JMK10
+         CASE FIELD = 'REF5'             ; * JMK10
+            SPECIAL.FLAG=1               ; * JMK10
+         CASE FIELD = 'DADDR'            ; * JMK10
+            SPECIAL.FLAG=1               ; * JMK10
+         CASE FIELD = 'OADDR'            ; * JMK10
+            SPECIAL.FLAG=1               ; * JMK10
+         CASE FIELD = 'TCODE'            ; * JMK10
+            SPECIAL.FLAG=1               ; * JMK10
+         CASE FIELD = 'UF1'
+            SPECIAL.FLAG=1
+         CASE FIELD = 'UF2'
+            SPECIAL.FLAG=1
+         CASE 1
+            SPECIAL.FLAG=0
+      END CASE
+      IF OPERATOR='EQ' OR OPERATOR='NE' OR OPERATOR='AP' OR OPERATOR='NA' THEN
+         IF SPECIAL.FLAG THEN
+            CRT @(0,22):'Wildcard Matching options: [Anywhere], [Right side, or Left side]':@(-4)
+         END ELSE
+            CRT @(0,22):'Enter EXPENSE information.':@(-4)
+         END
+      END ELSE
+         CRT @(0,22):'Enter EXPENSE information.':@(-4)
+      END
+      IF INFO THEN
+         SAVE.INFO=INFO'L#20'
+         EDIT.MASK=OCONV(INFO,TYPE):STR(EDIT.MASK.CHAR,20-LEN(INFO))
+      END ELSE
+         SAVE.INFO=SPACE(20)
+         EDIT.MASK=STR(EDIT.MASK.CHAR,20)
+      END
+      BEGIN CASE
+         CASE TYPE[1,2]='MR'
+            GENIN.TYPE='AMT':TYPE[3,1]
+         CASE TYPE='D2/'
+            GENIN.TYPE='DATE'
+         CASE 1
+            GENIN.TYPE=''
+      END CASE
+      HELP='OPTIONS: "NULL"=Leave Field Blank [X]=Back [EX]it'
+      CALL GEN.IN(X.POS,Y.POS,EDIT.MASK,GENIN.TYPE,Q,0,20,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      IF INFO AND QI='' THEN
+         Q=INFO
+         QI=INFO
+      END
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'
+            BACK.FLAG=TRUE
+            CRT @(X.POS,Y.POS):SAVE.INFO
+            RETURN
+         CASE 1
+            IF QI='' THEN
+               CALL ELINE('Invalid entry. Try again.')
+               GOTO GET.INFO
+            END
+            IF INDEX(QI,'[',1) OR INDEX(QI,']',1) THEN
+               IF OPERATOR # 'EQ' AND OPERATOR # 'NE' AND OPERATOR # 'AP' AND OPERATOR # 'NA' THEN
+                  CALL ELINE('You cannot use a [ or ] with this operator')
+                  GOTO GET.INFO
+               END ELSE
+                  IF NOT(SPECIAL.FLAG) THEN
+                     CALL ELINE('You cannot use a [ or ] with this field')
+                     GOTO GET.INFO
+                  END
+                  IF FIELD='DIV' THEN TYPE=''
+               END
+            END
+            IF OPERATOR = 'GE' OR OPERATOR = 'GT' OR OPERATOR = 'LE' OR OPERATOR = 'LT' THEN
+               IF NOT(NUM(QI)) THEN
+                  CALL ELINE('Using the operator ':OPERATOR:' the field should be numeric')
+                  GOTO GET.INFO
+               END
+            END
+            IF FIELD='ACC' OR FIELD='BOL' OR FIELD='POD' OR FIELD='CLASS' THEN
+               IF QI='NULL' THEN
+                  CALL ELINE('Cannot use NULL on multivalued field')
+                  GOTO GET.INFO
+               END
+            END
+            IF GENIN.TYPE='' THEN
+               INFO=QI
+            END ELSE
+               INFO=Q
+            END
+            IF TYPE='R%5' THEN
+               CRT @(X.POS,Y.POS):INFO TYPE
+            END ELSE
+               TEMP=OCONV(INFO,TYPE)
+               CRT @(X.POS,Y.POS):TEMP
+            END
+            RETURN
+      END CASE
+
+*************************************************************
+FIELD.CHECK: *** Check fields and perform rounding
+*************************************************************
+      IF FIELD='CLASS' THEN
+         IF INFO='77.5' THEN
+            INFO='77'
+            CALL ELINE('CLASS 77.5 changed to 77')
+         END
+         IF INFO='92.5' THEN
+            INFO='92'
+            CALL ELINE('CLASS 92.5 changed to 92')
+         END
+      END
+      RETURN
+
+*************************************************************
+FAILSAFE.CHECK: *** Things to make sure are correct before saving
+*************************************************************
+      FAILSAFE.OK=TRUE                   ; * Assume no problems and try to find problems
+
+* Enforce same begin date, end date, and auditor for same groups
+      OLD.GROUP='* THIS WILL NEVER OCCUR *(&*^$%%#$'
+      NUM.RULES=DCOUNT(EXPENSE.REC<6>,@VM)
+      FOR RULE=1 TO NUM.RULES
+         GROUP=EXPENSE.REC<6,RULE>
+         IF GROUP#OLD.GROUP THEN
+            OLD.GROUP=GROUP
+            SUBGROUP.NUMBER=1
+            EXP.CODE=EXPENSE.REC<7,RULE>
+         END ELSE
+            EXPENSE.REC<7,RULE>=EXP.CODE
+         END
+      NEXT RULE
+
+* Nothing must follow an "ALL" rule
+      LOCATE 'ALL' IN EXPENSE.REC<3> SETTING POS THEN
+         IF POS<NUM.RULES THEN
+            FAILSAFE.OK=FALSE
+            CALL ELINE('Any rules following an "ALL" will never be executed. Please fix.')
+         END
+      END
+
+      RETURN
+
+*************************************************************
+SAVE.EXPENSE.REC: *** Save EXPENSE record
+*************************************************************
+* Insert the user information
+      IF EXPENSE.REC<8>='' THEN          ; * This is a new record. Put in original creation info.
+         EXPENSE.REC<8>=USER.NAME
+         EXPENSE.REC<9>=DATE()
+         EXPENSE.REC<10>=TIME()
+      END ELSE                           ; * Not a new record. Put in update info.
+         IF EXPENSE.REC<11>='' THEN
+            EXPENSE.REC<11>=USER.NAME
+            EXPENSE.REC<12>=DATE()
+            EXPENSE.REC<13>=TIME()
+         END ELSE
+            EXPENSE.REC<11>=EXPENSE.REC<11>:@VM:USER.NAME
+            EXPENSE.REC<12>=EXPENSE.REC<12>:@VM:DATE()
+            EXPENSE.REC<13>=EXPENSE.REC<13>:@VM:TIME()
+         END
+      END
+
+* Write data to file
+      IF EXPENSE.REC<6>#'' THEN
+         WRITE EXPENSE.REC ON F.EXPENSE,EXPENSE.ID
+         OLD.EXPENSE.REC=EXPENSE.REC
+      END ELSE
+         DELETE F.EXPENSE,EXPENSE.ID
+         EXPENSE.REC=''
+         OLD.EXPENSE.REC=''
+      END
+
+      RETURN
+
+*************************************************************
+SEND.EMAIL.ALERT: ***
+*************************************************************
+      EMAIL=1                            ; * JMK02
+      EXPENSE.MSG='This is to confirm that changes in EXPENSEs were made for '
+      EXPENSE.MSG<1,-1>='CLIENT  : ':CLIENT.ID'R#5':' ':CLIENT.NAME:' (':CLIENT.CITY:', ':CLIENT.STATE:')'
+      EXPENSE.MSG<1,-1>='CARRIER : ':CARRIER.ID'R#5'
+      IF CARRIER.ID#'ALL' THEN
+         EXPENSE.MSG:=' ':CARRIER.NAME:' (':CARRIER.CITY:', ':CARRIER.STATE:')'
+      END
+      EXPENSE.MSG<1,-1>=''
+      EXPENSE.MSG<1,-1>='##  Grp  SubGrp  Beg Date  End Date   Stack   Field                         Optr         Information     '          ; * JMK02
+      EXPENSE.MSG<1,-1>='---------------------------------------------------------------------------------------------------------'          ; * JMK02
+      EXPENSE.MSG<1,-1>='From : '
+      HOLD.EXPENSE.REC=EXPENSE.REC
+      EXPENSE.REC=OLD.EXPENSE.REC
+      NUM.RULES=DCOUNT(EXPENSE.REC<6>,@VM)
+      FOR LINE.NUM=1 TO NUM.RULES
+         GOSUB FORMAT.LINE
+         EXPENSE.MSG<1,-1>=FORMATTED.LINE
+         IF EXPENSE.REC<6,LINE.NUM>#EXPENSE.REC<6,LINE.NUM+1> THEN     ; * JMK02
+            EXPENSE.MSG<1,-1>=' '        ; * JMK02
+         END                             ; * JMK02
+      NEXT
+      EXPENSE.REC=HOLD.EXPENSE.REC
+      EXPENSE.MSG<1,-1>=''
+      EXPENSE.MSG<1,-1>='To   : '
+      NUM.RULES=DCOUNT(EXPENSE.REC<6>,@VM)
+      FOR LINE.NUM=1 TO NUM.RULES
+         GOSUB FORMAT.LINE
+         EXPENSE.MSG<1,-1>=FORMATTED.LINE
+         IF EXPENSE.REC<6,LINE.NUM>#EXPENSE.REC<6,LINE.NUM+1> THEN     ; * JMK02
+            EXPENSE.MSG<1,-1>=' '        ; * JMK02
+         END                             ; * JMK02
+      NEXT
+      READV USER.EMAIL FROM F.BCTRL,USER.NAME,20 ELSE USER.EMAIL=''
+      EMAIL.OUT=''                       ; * JMK01
+      EMAIL.OUT<1>=USER.EMAIL            ; * JMK01
+      EMAIL.OUT<2>='BBarker@afs.net'
+      EMAIL.OUT<2,-1>='SMatthews@afs.net'
+      IF TESTING THEN                    ; * JMK02
+         EMAIL.OUT<2>='mkerbow@afs.net'   ; * JMK01; * JMK02
+      END                                ; * JMK02
+      EMAIL.OUT<5>='EXPENSE Update for ':CLIENT.NAME:' - ':CARRIER.NAME'L#25'    ; * JMK01; * JMK02
+      IF TESTING THEN                    ; * JMK02
+         EMAIL.OUT<5>='EXPENSE Update TEST for ':CLIENT.NAME'L#25':'-':CARRIER.NAME'L#25'  ; * JMK01; * JMK02
+      END                                ; * JMK02
+      EMAIL.OUT<6>=EXPENSE.MSG           ; * JMK01
+      EMAIL.OUT<7>=1                     ; * JMK01
+      CALL SENDMAIL(EMAIL.OUT,RESULT)    ; * JMK01
+      EMAIL=0                            ; * JMK02
+      RETURN
+
+*************************************************************
+DISPLAY.EXPENSES: ***
+*************************************************************
+      CRT @(0,0):@(-1)
+      STMT='SORT FB.EXPENSE'
+      IF LIST.CLIENT#'' THEN STMT:=' WITH CLIENT# = "':LIST.CLIENT:'"'
+      STMT:=' CLIENT# CLIENT CARRIER# CARRIER ID-SUPP'
+      EXECUTE STMT
+      CALL ELINE('')
+      RETURN
+
+*************************************************************
+ASK.FOR.NUM: *** A general number prompt routine
+*************************************************************
+      AFN.ANSWER=''
+
+*************************************************************
+AFN.1:
+*************************************************************
+      CRT @(0,22):AFN.MSG:@(-4)
+      HELP='Entry Options: [':AFN.MIN:'-':AFN.MAX:'] [X]=Back'
+      EDIT.MASK=AFN.MASK:' '
+      CALL GEN.IN(LEN(AFN.MSG)+1,22,EDIT.MASK,'',Q,0,LEN(AFN.MAX),'','',2,LEN(AFN.MSG)+1,22,0,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      IF QI='' THEN QI=TRIM(EDIT.MASK)
+      BEGIN CASE
+         CASE QI='X'
+         CASE QI>=AFN.MIN AND QI<=AFN.MAX
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO AFN.1
+      END CASE
+      AFN.ANSWER=QI
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+      RETURN
+
+*************************************************************
+ASK.Y.OR.N: ***
+*************************************************************
+      YN.ANSWER=''
+
+Y.OR.N:
+      CRT @(0,22):YN.MSG:@(-4)
+      HELP='Entry Options: [Y]es [N]o'
+      EDIT.MASK=YN.MASK'L#1'
+      CALL GEN.IN(LEN(YN.MSG)+1,22,EDIT.MASK,'',Q,0,1,'','',2,LEN(YN.MSG)+1,22,0,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      IF QI='' THEN QI=TRIM(EDIT.MASK)
+      BEGIN CASE
+         CASE QI='Y'
+         CASE QI='N'
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO Y.OR.N
+      END CASE
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+      YN.ANSWER=QI
+      RETURN
+
+* Begin NKH01
+*************************************************************
+CHECK.FOR.DUPLICATES: ***
+*************************************************************
+
+      SORT.ARRAY=''                      ; * holds sort keys and pointers into EXPENSE.REC
+      SORTED.EXPENSE.REC=''              ; * sorted version of EXPENSE.REC
+      NUM.RULES=DCOUNT(EXPENSE.REC<6>,@VM)
+      FOR RULE=1 TO NUM.RULES
+         SORT.KEY =EXPENSE.REC<6,RULE>'L#2'        ; * Group
+         SORT.KEY:=EXPENSE.REC<14,RULE>'R%2'       ; * Subgroup
+         SORT.KEY:=EXPENSE.REC<3,RULE>   ; *'L#6';  * Field
+         SORT.KEY:=EXPENSE.REC<4,RULE>   ; *'L#2';  * Operator
+         SORT.KEY:=EXPENSE.REC<5,RULE>   ; *'L#20'; * Info
+         LOCATE SORT.KEY IN SORT.ARRAY<1> BY 'AL' SETTING SORT.POS THEN
+            CALL ELINE('You have entered a duplicate rule.')
+            GROUP=''
+            SUBGROUP=''
+            BEGIN.DATE=''
+            END.DATE=''
+            EXP.CODE=''
+            FIELD=''
+            OPERATOR=''
+            INFO=''
+            IF ADD.RULE THEN
+               GOSUB REMOVE.DUPLICATE
+            END ELSE
+               GOSUB RESTORE.RULE
+            END 
+            GOSUB DISPLAY.PAGE                        
+         END ELSE
+            INS SORT.KEY BEFORE SORT.ARRAY<1,SORT.POS>
+            INS RULE BEFORE SORT.ARRAY<2,SORT.POS>
+         END
+      NEXT RULE
+      
+      RETURN
+
+*************************************************************
+REMOVE.DUPLICATE:
+*************************************************************
+      LINE.NUM=EDIT.NUMBER
+      GOSUB FORMAT.LINE
+      DELETE.LINE=REVERSE.ON:FORMATTED.LINE:REVERSE.OFF
+
+      DEL EXPENSE.REC<1,EDIT.NUMBER>
+      DEL EXPENSE.REC<2,EDIT.NUMBER>
+      DEL EXPENSE.REC<3,EDIT.NUMBER>
+      DEL EXPENSE.REC<4,EDIT.NUMBER>
+      DEL EXPENSE.REC<5,EDIT.NUMBER>
+      DEL EXPENSE.REC<6,EDIT.NUMBER>
+      DEL EXPENSE.REC<7,EDIT.NUMBER>
+      DEL EXPENSE.REC<14,EDIT.NUMBER>
+      NUM.RULES-=1
+      IF NUM.RULES=0 THEN
+         NUM.PAGES=0
+         PAGE.NUMBER=0
+      END ELSE
+         NUM.PAGES=INT(NUM.RULES/PAGE.SIZE)
+         IF REM(NUM.RULES,PAGE.SIZE) THEN NUM.PAGES+=1
+         IF REM(NUM.RULES,PAGE.SIZE)=0 AND EDIT.NUMBER=NUM.RULES+1 THEN
+            PAGE.NUMBER-=12
+            
+         END
+      END
+      IF LAST.EDIT.MASK>NUM.RULES THEN LAST.EDIT.MASK=NUM.RULES
+      IF LAST.EDIT.MASK=0 THEN LAST.EDIT.MASK=1
+      
+      RETURN
+
+*************************************************************      
+RESTORE.RULE:
+*************************************************************
+      EXPENSE.REC<1> = OLD.EXPENSE.REC<1>
+      EXPENSE.REC<2> = OLD.EXPENSE.REC<2>
+      EXPENSE.REC<3> = OLD.EXPENSE.REC<3>
+      EXPENSE.REC<4> = OLD.EXPENSE.REC<4>
+      EXPENSE.REC<5> = OLD.EXPENSE.REC<5>
+      EXPENSE.REC<6> = OLD.EXPENSE.REC<6>
+      EXPENSE.REC<7> = OLD.EXPENSE.REC<7>
+      EXPENSE.REC<14> = OLD.EXPENSE.REC<14>                                          
+      GOSUB DISPLAY.PAGE
+            
+      RETURN      
+      
+* End NKH01
+
+*************************************************************
+LAST.CHANCE.TO.SAVE: ***
+*************************************************************
+* If you tried to EX out and there are unsaved changes - falls thru to THE.END
+
+      IF EXPENSE.REC#OLD.EXPENSE.REC THEN
+         YN.MSG='You have unsaved changes. Save before exiting?'
+         YN.MASK=''
+         GOSUB ASK.Y.OR.N
+         IF YN.ANSWER='Y' THEN
+            CRT @(0,22):'Saving...':@(-3)
+            SLEEP 1
+            GOSUB SORT.EXPENSE.REC
+            GOSUB FAILSAFE.CHECK
+            IF FAILSAFE.OK THEN
+               GOSUB SORT.EXPENSE.REC
+               GOSUB SAVE.EXPENSE.REC
+               GOSUB DISPLAY.PAGE
+            END ELSE
+               GOSUB DISPLAY.PAGE
+               GOTO MAIN.START
+            END
+         END
+      END
+
+*************************************************************
+THE.END: ***
+*************************************************************
+      CRT @(0,22):@(-3):
+      STOP                               ; * End program

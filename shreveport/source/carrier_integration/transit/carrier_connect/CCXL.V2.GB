@@ -1,0 +1,1490 @@
+   ***   SUBROUTINE CCXL.V2(VIN,VOUT)
+************************************************************************
+* Program name : CCXL.V2
+* Author       : Nicole Hennick
+* Date written : 08/24/2017
+* Library      : FBBP
+$* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* CARRIER CONNECT CALL TO WEBSERVICE INTERFACE
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 13:59:00 on 08/04/2021.
+*
+* Start modification history
+* 08/24/17 : NKH00 : 0000 New Program
+* 01/05/18 : NKH00 : 0000 .V2-Rewrite to include all Carrier Connect XL Data
+* 01/30/18 : NKH01 : 0000 Added time log
+* 02/09/18 : NKH02 : 0000 Updated email
+* 08/13/18 : NKH03 : 0000 Modified email to only send when URL changes
+* 09/26/18 : NKH04 : 0000 Modifed time log and added XML email
+* 06/18/20 : NKH05 : ACCU-910 Removed call to Terminals By Postal Code for programs
+*                         that do not use it
+* 03/17/21 : NKH06 : ACCU-1155 Check for FAIL from Carrier Connect before Rating
+* 08/04/21 : NKH07 : ACCU-1304 Change heading on XML emails for testing
+* End modification history
+*
+********************************************************************
+*+      VIN<1> = CARRIER.SCAC
+*+      VIN<2> = DEST.COUNTRY
+*+      VIN<3> = DEST.ZIP
+*+      VIN<4> = ORIG.COUNTRY
+*+      VIN<5> = ORIG.ZIP
+*+      VIN<6> = CLIENT.ID
+*+      VIN<7> = USER.NAME
+*+      VIN<8> = PROGFROM
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE UNIVERSE.INCLUDE XML.H
+
+      * Initialize variables
+      COMMON PROG.PARAMS(24)
+      EQU CH.NUM TO PROG.PARAMS(1)
+      EQU USER TO PROG.PARAMS(2)
+      EQU SERVER.NAME TO PROG.PARAMS(3)
+      PROG.NAME='CCXL.V2' 
+      CALL GET.USER.NEW(USER,CH.NUM)
+      UPL.VIN = ''
+     
+      STATUS = ''
+      PROT = ''
+      config = ''
+      HANDLE = ''
+      RESP = ''
+      PC.RESP = ''
+      VOUT=''
+      PROMPT ''
+      RESULTS.DTL = ''
+      XML.REQUEST = ''
+      ERR.REC = ''
+      WEB.SERVICE = ''
+      SOAP.RET = ''
+      RET.DATA = 1
+      TEMP.ARRAY = ''
+      RESP.CNT = 1
+      PC.RESP.CNT = 1
+      SCAC.ARRAY = ''
+      RESP.SEQ = 0   
+      VOUT.SEQ = 0  
+      SV.COUNT = 1
+      BEG.TIME = TIME() ; * NKH01
+      TIME.REC = ''     ; * NKH01
+      * Begin NKH03
+      URL.CHANGED = 0         
+      SOAP.EMAIL.SENT = 0     
+      URL.ROLLED = 0          
+      CONNECTION.MADE = 0     
+      REQUEST.FAIL.COUNT = 0  
+      RESPONSE.RETURNED = 0  
+      END.TIME = 0
+      TIME.DIFF = 0   
+      EMAIL.RECOVER = 0      
+      * End NKH03      
+      TERM.REQUEST = ''          ; * NKH05
+      RESPONSE.DATA = ''         ; * NKH05
+      
+      VIN=''
+      * Input VIN Data from FB.AUTO 
+      IF VIN<2> = '' THEN VIN<2> = 'USA'
+      IF VIN<4> = '' THEN VIN<4> = 'USA'
+      IF VIN<2> = 'USA' THEN
+         VIN<3> = VIN<3>[1,5]
+      END 
+      IF VIN<4> = 'USA' THEN
+         VIN<5> = VIN<5>[1,5]
+      END
+      CALLING.PROG = VIN<8>                      ; * NKH05
+
+      CALL.TERMINALS = 0                         ; * NKH05      
+      IF CALLING.PROG = "INET.FB.ESTIMATOR" THEN ; * NKH05
+         CALL.TERMINALS = 1                      ; * NKH05
+      END                                        ; * NKH05
+      
+      SCAC = VIN<1>
+      CONVERT '|' TO @VM IN SCAC
+      method='LTL' ; serviceMethod = 'LTL'
+      destination.countryCode = VIN<2>
+      destination.postalCode = VIN<3>
+      origin.countryCode = VIN<4>
+      origin.postalCode = VIN<5>  
+      CLIENT.ID = VIN<6>    
+      serviceType = 'ALL_AVAILABLE'
+      TODAY = OCONV(DATE(),'D4-')
+      YEAR = TODAY[7,4]
+      MONTH = TODAY[1,2]
+      DAY = TODAY[4,2]
+      shipmentDate = YEAR:'-':MONTH:'-':DAY:'T12:00:00.000Z'
+      
+      * Update Logs
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'CCXL.V2' ; UPL.VOUT = ''
+       UPL.VIN<3> = USER
+      UPL.VIN<4> = CH.NUM
+    ***  CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+      CALL UPD.RATE.ACTIVITY(UPL.VIN,UPL.VOUT)      
+
+      * Open Files
+      OPEN '','CONTROL' TO CONTROL ELSE
+         CALL OPEN.ABORT('CONTROL',PROG.NAME)
+      END      
+      OPEN '','RATE.ERROR.LOG' TO ERR.LOG ELSE
+         CALL OPEN.ABORT('RATE.ERROR.LOG',PROG.NAME)
+      END    
+
+      AUDIT.CLIENT.ID = CLIENT.ID
+      OPEN '','FB.AUDIT,':CLIENT.ID TO F.AUDIT THEN
+         READV SUB.CLIENT FROM F.AUDIT,'SUBSTITUTE',1 THEN
+            CLIENT.ID = SUB.CLIENT
+            OPEN '','FB.AUDIT,':CLIENT.ID TO F.AUDIT ELSE
+               CALL OPEN.ABORT('FB.AUDIT,':CLIENT.ID,PROG.NAME)
+            END
+         END
+      END 
+      OPEN '','CARRIERS' TO CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END 
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      OPEN '','SCAC.XREF' TO SCAC.XREF ELSE
+         CALL OPEN.ABORT('SCAC.XREF',PROG.NAME)
+      END
+          
+      OPEN '','CCXL.TIME.LOG' TO CCXL.TIME.LOG ELSE   ; * NKH01
+         CALL OPEN.ABORT('CCXL.TIME.LOG',PROG.NAME)   ; * NKH01   
+      END                                             ; * NKH01
+                             
+      * Read in parameters
+      READ XMLPARAMS FROM CONTROL,"CCXML" THEN
+         URL.TO.USE = XMLPARAMS<1>
+         SERVER = XMLPARAMS<2>
+         SOAPACTION = XMLPARAMS<3>
+         LOGGING = XMLPARAMS<4>          
+         protlog = XMLPARAMS<5>
+         EMAIL.RECIP = XMLPARAMS<6>
+         USE.CCXL = XMLPARAMS<7>
+         SOAP.TIMEOUT = XMLPARAMS<8>
+         URL1 = XMLPARAMS<9>
+         URL2 = XMLPARAMS<10>
+         URL3 = XMLPARAMS<11>
+         USE.TIME.LOG = XMLPARAMS<12>                 ; * NKH01
+         * Begin NKH03
+         MAX.TRIES = XMLPARAMS<13>
+         MAX.PROCESS.TRIES = XMLPARAMS<14>            
+         SOAP.CONNECT.FAIL = XMLPARAMS<15>            
+         REQUEST.FAIL = XMLPARAMS<16>                 
+         DEBUG.FLAG = XMLPARAMS<17>                   
+         EMAIL.XML = XMLPARAMS<18>     
+         * End NKH03
+      END ELSE
+         URL.TO.USE = 1
+         SERVER = 'gr91vrtpa05'
+         SOAPACTION = ''
+         LOGGING = "N"
+         protlog = 'CCXL.LOG'
+         EMAIL.RECIP = 'nmeddaugh@afs.net'
+         USE.CCXL = 'Y'
+         SOAP.TIMEOUT = '30000'
+         URL1 = 'http://ccxl.smc3.com/AdminManager/services/CarrierConnectXL'
+         URL2 = 'http://ccxl-atl.smc3.com/AdminManager/services/CarrierConnectXL'
+         URL3 = 'http://ccxl-dfw.smc3.com/AdminManager/services/CarrierConnectXL'
+         USE.TIME.LOG = 'N'                           ; * NKH01
+         * Begin NKH03
+         MAX.TRIES = 3
+         MAX.PROCESS.TRIES = 3
+         SOAP.CONNECT.FAIL = 0
+         REQUEST.FAIL = XMLPARAMS<16>
+         DEBUG.FLAG = 'N'
+         EMAIL.XML = '*'         ; * NKH07
+         * End NKH03
+      END
+     URL1 = 'https://ccxl.smc3.com/AdminManager/services/CarrierConnectXL'
+                  
+      * Use this program
+      IF USE.CCXL # 'Y' THEN RETURN
+
+      * Test Credentials
+*      SMC.WEB.LICENSE.KEY='iKWMI09YN5GS'
+*      SMC.WEB.PASSWORD='demosmc3'
+*      SMC.WEB.USERNAME='demo@smc3.com'    
+      
+      * Production Credentials
+      SMC.WEB.LICENSE.KEY="wgUtt72QRKw1"
+      SMC.WEB.PASSWORD="lCKF1zBT"
+      SMC.WEB.USERNAME="xl@smartfreightware.com"
+      
+      * Email
+      EMAIL.OUT=''
+      EMAIL.OUT<1>=EMAIL.RECIP
+      EMAIL.OUT<4>='FBBP_CCXL@afs.net'
+      EMAIL.OUT<5>='Error with SMC Carrier Connect Web-Service Rating Engine.'  
+      EMAIL.OUT<6,-1>='User:':USER:' Date:':OCONV(DATE(),'D2/'):' Time:':OCONV(TIME(),'MTHS') 
+      EMAIL.OUT<6,-1>=' ':@VM         
+      SEND.EMAIL=0
+      
+      IF DEBUG.FLAG = 'Y' THEN                                                   ; * NKH03
+***         IF USER = 'NMEDDAUGH' OR USER = 'GBINO' OR USER = 'DAVID' THEN DEBUG    ; * NKH03
+      END                                                                        ; * NKH03
+      
+
+* Begin NKH03
+********************************************************************
+MAIN.LOOP:
+********************************************************************           
+      GOSUB MAIN.LOGIC     
+      FOR ML = 1 TO 2   ; * 3 possilbe URL's
+         IF URL.CHANGED THEN
+            URL.CHANGED = 0
+            GOSUB MAIN.LOGIC
+         END
+      NEXT ML
+
+      IF NOT(CONNECTION.MADE) THEN 
+         SOAP.CONNECT.FAIL = 1
+         WRITEV SOAP.CONNECT.FAIL TO CONTROL, 'CCXML', 15
+      END
+      IF REQUEST.FAIL.COUNT = MAX.PROCESS.TRIES THEN
+         REQUEST.FAIL = 1
+         WRITEV REQUEST.FAIL ON CONTROL, 'CCXML', 16
+      END
+      Ret = setHTTPDefault( "PROXY_PORT" , "") 
+      Ret = setHTTPDefault( "PROXY_NAME" , "" )           
+      RETURN
+
+* End NKH03            
+*************************************************************************
+MAIN.LOGIC:
+*************************************************************************      
+      * Turn logging on 
+      IF LOGGING = 'Y' THEN
+         stat = protocolLogging(protlog,"ON",27)
+      END
+***      IF USER = "GBINO" THEN DEBUG
+      Ret = setHTTPDefault( "BUFSIZE" , 16384 )
+      Ret = setHTTPDefault( "VERSION" , "1.1" )  
+  
+*      Ret = setHTTPDefault( "PROXY_PORT" , 3128 ) 
+*      Ret = setHTTPDefault( "PROXY_NAME" , "pladevdsm01.afslogistics.com" )       
+
+      Ret = setHTTPDefault( "PROXY_PORT" , "") 
+      Ret = setHTTPDefault( "PROXY_NAME" , "" )    
+      GOSUB OPEN.SOAP.CONNECTION
+
+      * Send transit request or error email
+      IF CONNECTION.MADE THEN       ; * Don't proceed if there is a connection error      NKH03
+         * Begin NKH03
+         READV SOAP.CONNECT.FAIL FROM CONTROL, 'CCXML', 15 ELSE SOAP.CONNECT.FAIL = 0
+         IF SOAP.CONNECT.FAIL = 1 THEN
+            SOAP.CONNECT.FAIL = 0
+            WRITEV SOAP.CONNECT.FAIL ON CONTROL, 'CCXML', 15                  
+            GOSUB SEND.CONNECT.RECOVER.EMAIL
+         END
+         * End NKH03
+
+         IF SCAC = 'ALL' THEN
+            GOSUB GET.ALL.CARRIERS
+         END ELSE
+            SCAC.ARRAY<1> = SCAC
+            SCAC.COUNT = DCOUNT(SCAC.ARRAY<1>,@VM)
+         END
+         
+         * Process transitMethod to retrieve Transit Days
+         XML.REQUEST=''
+         RESULTS.DTL=''
+         WEB.SERVICE = 'TransitMethod'   
+         GOSUB BUILD.TRANSIT.METHOD
+         GOSUB PROCESS.REQUEST
+         IF RESPONSE.RETURNED THEN    ;* Don't proceed if there was an error processing the request   NKH03
+            GOSUB PARSE.TRANSIT.METHOD.RESULTS    
+         END            
+
+         * Process terminalsByPostalCode to retrieve additional data
+         IF CALL.TERMINALS THEN  ; * NKH05  
+            XML.REQUEST=''
+            RESULTS.DTL=''   
+            WEB.SERVICE = 'TerminalsByPostalCode'
+            GOSUB BUILD.TERMINALS.BY.POSTAL.CODE   
+            GOSUB PROCESS.REQUEST                  
+            IF RESPONSE.RETURNED THEN    ;* Don't proceed if there was an error processing the request     NKH03
+               GOSUB PARSE.TERMINALS.BY.POSTAL.CODE   
+            END                     
+         END                     ; * NKH05
+         GOSUB CREATE.VOUT                
+         CLOSE.STATUS = XDOMClose(MYDOM)
+      END   
+      IF USER = EMAIL.XML AND USER # '' THEN   ; * NKH05   NKH07
+         GOSUB SEND.XML.EMAIL    ; * NKH05
+      END                        ; * NKH05
+
+      * Turn logging off
+      IF LOGGING = 'Y' THEN
+         stat = protocolLogging(protlog,"OFF",27)
+      END
+
+      * Begin NKH01
+      END.TIME = TIME()                
+      TIME.DIFF = END.TIME - BEG.TIME 
+      IF USE.TIME.LOG = 'Y' THEN          
+         TIME.LOG.ID = BEG.TIME:"*":END.TIME:"*":USER
+         TIME.REC<1> = TIME.DIFF
+         S.COUNT = DCOUNT(VOUT<1>,@VM)
+         TIME.REC<2> = S.COUNT
+         TIME.REC<3> = TM.REQUEST
+         TIME.REC<4> = TERM.REQUEST
+         TIME.REC<5> = TM.RESPONSE.DATA
+         TIME.REC<6> = TERM.RESPONSE.DATA
+         WRITE TIME.REC ON CCXL.TIME.LOG, TIME.LOG.ID
+      END
+      * End NKH01
+      
+      IF SEND.EMAIL THEN   ;* Send email if errors were encountered
+         GOSUB SEND.EMAIL
+      END               
+
+      RETURN
+      
+*************************************************************************                
+OPEN.SOAP.CONNECTION: * Unsecured connection
+*************************************************************************
+      * Begin NKH03
+      DEBUG
+      IF SOAP.EMAIL.SENT THEN RETURN
+      SoapAction=''
+      URL.TRIES = 0
+      DONE=0
+      * Will roll through all 3 URL's
+      LOOP
+         BEGIN CASE 
+            CASE URL.TRIES = MAX.TRIES
+               DONE = 1
+            CASE URL.TO.USE = 1
+               URL = URL1
+               NEXT.URL = 2
+               URL.CHG = URL2
+               FOR ZZ = 1 TO MAX.TRIES
+                  GOSUB SOAP.CONNECT
+                  IF NOT(CONNECTION.MADE) THEN SLEEP 1
+               NEXT ZZ
+               URL.TRIES += 1
+            CASE URL.TO.USE = 2
+               URL = URL2
+               URL = URL1
+               NEXT.URL = 3
+               URL.CHG = URL3
+               FOR ZZ = 1 TO MAX.TRIES
+                  GOSUB SOAP.CONNECT
+                  IF NOT(CONNECTION.MADE) THEN 
+                  	SLEEP 1  
+                  END ELSE
+                  	DONE = 1
+                  	EXIT
+                  END                
+               NEXT ZZ
+               URL.TRIES += 1
+            CASE URL.TO.USE = 3
+               URL = URL3
+               NEXT.URL = 1
+               URL.CHG = URL1
+               FOR ZZ = 1 TO MAX.TRIES
+                  GOSUB SOAP.CONNECT         
+                  IF NOT(CONNECTION.MADE) THEN SLEEP 1                  
+               NEXT ZZ
+               URL.TRIES += 1
+         END CASE      
+      UNTIL DONE
+      REPEAT
+      
+      RETURN
+      
+      * End NKH03
+*************************************************************************      
+SOAP.CONNECT:
+*************************************************************************
+      * Begin NKH03
+      SOAP.RET = SoapCreateRequest(URL , SoapAction , SoapReq)
+*SOAP.RET = 2         
+*IF URL.TO.USE # 3 THEN SOAP.RET=2         
+      IF SOAP.RET = 0 THEN
+         DONE = 1
+         CONNECTION.MADE = 1
+         SOAP.EMAIL.SENT = 0
+      END ELSE
+         IF ZZ = MAX.TRIES THEN
+            URL.TO.USE = NEXT.URL
+            * Update the URL in the CONTROL file, CCXML record
+            WRITEV URL.TO.USE ON CONTROL, 'CCXML', 1
+            * Send email letting IT know the URL reference has been changed in CONTROL, CCXML
+            EMAIL.OUT<6,-1>=@VM:'Cannot connect to SMC Carrier Connect web-service on URL: '
+            EMAIL.OUT<6,-1>=URL
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>=@VM:'CCXL URL Reference changed to '
+            EMAIL.OUT<6,-1>=URL.CHG
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>=@VM:'Command: SoapCreateRequest' ; ERR.REC<1> = 'SoapCreateRequest'             
+            SEND.EMAIL=1 
+            BEGIN CASE
+               CASE SOAP.RET = 1
+                  EMAIL.OUT<6,-1>=@VM:'Error: Invalid URL syntax' ; ERR.REC<2> = 'Invalid URL syntax'
+               CASE SOAP.RET = 2
+                  EMAIL.OUT<6,-1>=@VM:'Error: Invalid HTTP method (indicates the POST method is not supported by the HTTP server)' ; ERR.REC<2> = 'Invalid HTTP method' ; GOSUB WRITE.ERR.LOG
+            END CASE            
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>=@VM:MAX.TRIES:' previous attempts to connect were made before changing the URL'            
+            EMAIL.OUT<6,-1>='_________________________________________________________ '     
+            SEND.EMAIL=1
+         END
+      END
+
+      RETURN
+      
+      * End NKH03
+*************************************************************************
+PROCESS.REQUEST: * Unsecured request
+*************************************************************************      
+      * Clear the http default header
+      METHOD="GET"
+      stat = setHTTPDefault("HEADERS","")
+      stat = setHTTPDefault("HEADERS","Connection":@VM:"close")
+        STAT = SETHTTPDEFAULT("VERSION", "1.1")
+      STAT = CREATESECURITYCONTEXT(CTX, "TLSv1.2")
+      STAT = CREATESECUREREQUEST(URL, METHOD, RESTGET,CTX)
+      
+      
+      
+      * Set SOAP requst Content
+      
+      STATUS = soapSetRequestContent(SoapReq, XML.REQUEST, 1)      
+      IF STATUS # 0 THEN
+         EMAIL.OUT<6,-1>=@VM:'Command: soapSetRequestContent' ; ERR.REC<1> = 'soapSetRequestContent '
+         SEND.EMAIL=1
+      END
+      
+      BEGIN CASE
+         CASE STATUS = 0
+         CASE STATUS = 1         
+            EMAIL.OUT<6,-1>=@VM:'Error: Invalid Request Handle' ; ERR.REC<2> = 'Invalid Request Handle' ; GOSUB WRITE.ERR.LOG
+         CASE 1
+            EMAIL.OUT<6,-1>=@VM:'Error: Undefined Error' ; ERR.REC<2> = 'Undefined Error' ; GOSUB WRITE.ERR.LOG
+      END CASE
+   
+      * Begin NKH03
+      * Submit the request and get the response - Try mutiple times before emailing error and changing URL
+      PROCESS.TRIES = 0
+      LOOP
+         STATUS = SOAPSubmitRequest(SoapReq,SOAP.TIMEOUT,RESPONSE.HEADERS,RESPONSE.DATA,SOAP.STATUS)
+*STATUS=1
+         PROCESS.TRIES += 1 
+         BEGIN CASE
+            CASE STATUS = 0
+               PROCESS.TRIES = MAX.PROCESS.TRIES  
+               RESPONSE.RETURNED = 1  
+               READV REQUEST.FAIL FROM CONTROL, 'CCXML', 16 ELSE REQUEST.FAIL = 0
+               IF REQUEST.FAIL = 1 THEN
+                  REQUEST.FAIL = 0
+                  WRITEV REQUEST.FAIL ON CONTROL, 'CCXML', 16                                      
+                  GOSUB SEND.REQ.RECOVER.EMAIL
+               END
+            CASE STATUS # 0 AND PROCESS.TRIES # MAX.PROCESS.TRIES
+            SLEEP 1
+            CASE 1
+               SLEEP 1
+               IF NOT(REQUEST.FAIL) THEN GOSUB CREATE.EMAIL
+               RETURN
+         END CASE
+      UNTIL PROCESS.TRIES = MAX.PROCESS.TRIES
+      REPEAT
+      
+      RETURN
+      
+      * End NKH03                                          
+*************************************************************************
+CREATE.EMAIL: * Creates email if there was an error
+*************************************************************************                 
+      * Begin NKH03
+      IF STATUS # '0' AND PROCESS.TRIES = MAX.PROCESS.TRIES THEN
+        * Send email letting IT know the URL reference has been changed in CONTROL, CCXML
+        EMAIL.OUT<6,-1>=@VM:'Cannot connect to SMC Carrier Connect web-service on URL: '
+        EMAIL.OUT<6,-1>=@VM:URL 
+        EMAIL.OUT<6,-1> = ' '             
+        URL.TO.USE = NEXT.URL
+        BEGIN CASE          
+           CASE URL.TO.USE = 1
+              URL = URL1
+              NEXT.URL = 2
+              URL.CHG = URL1
+           CASE URL.TO.USE = 2
+              URL = URL2
+              NEXT.URL = 3
+              URL.CHG = URL2
+           CASE URL.TO.USE = 3
+              URL = URL3
+              NEXT.URL = 1
+              URL.CHG = URL3
+        END CASE
+        * Update the URL in the CONTROL file, CCXML record        
+        WRITEV URL.TO.USE ON CONTROL, 'CCXML', 1
+        URL.CHANGED = 1
+        EMAIL.OUT<6,-1>=@VM:'URL changed to: '
+        EMAIL.OUT<6,-1>=@VM:URL.CHG
+        EMAIL.OUT<6,-1>=' '
+        EMAIL.OUT<6,-1>=@VM:MAX.PROCESS.TRIES:' previous attempts to process the request were made before changing the URL'
+        EMAIL.OUT<6,-1>=' '
+        SEND.EMAIL=1
+      END   
+      * End NKH03
+      
+      IF STATUS # '0' THEN 
+         EMAIL.OUT<6,-1> = @VM:'Web Service Method: ':WEB.SERVICE ; ERR.REC<3> = WEB.SERVICE
+         EMAIL.OUT<6,-1> = @VM:'Command: SOAPSubmitRequest' ; ERR.REC<1> = 'SOAPSubmitRequest'      
+         SEND.EMAIL=1
+      END      
+      
+      BEGIN CASE
+         CASE STATUS = 0
+         CASE STATUS = 1
+            EMAIL.OUT<6,-1>=@VM:'Error: Invalid Request Handle' ; ERR.REC<2> = 'Invalid Request Handle' ; GOSUB WRITE.ERR.LOG
+         CASE STATUS = 2
+            EMAIL.OUT<6,-1>=@VM:'Error: Timed Out' ; ERR.REC<2> = 'Timed Out' ; GOSUB WRITE.ERR.LOG
+         CASE STATUS = 3
+            EMAIL.OUT<6,-1>=@VM:'Error: Network Connectivity Error Occurred' ; ERR.REC<2> = 'Network Connectivity Error Occurred' ; GOSUB WRITE.ERR.LOG
+         CASE STATUS = 4
+            EMAIL.OUT<6,-1>=@VM:'Error: Other Error' ; ERR.REC<2> = 'Other Error' ; GOSUB WRITE.ERR.LOG
+         CASE 1
+            EMAIL.OUT<6,-1>=@VM:'Error: Undefined Error' ; ERR.REC<2> = 'Undefined Error' ; GOSUB WRITE.ERR.LOG
+      END CASE
+      
+      IF STATUS # 0 THEN 
+         EMAIL.OUT<6,-1>=' '
+         * Begin NKH02
+         EMAIL.OUT<6,-1>='Client: ':VIN<6>         
+         EMAIL.OUT<6,-1>='SCAC: ':VIN<1>
+         EMAIL.OUT<6,-1>='Orig Cntry: ':VIN<4>
+         EMAIL.OUT<6,-1>='Orig Zip: ':VIN<5>         
+         EMAIL.OUT<6,-1>='Dest Cntry: ':VIN<2>
+         EMAIL.OUT<6,-1>='Dest ZIP: ':VIN<3>
+         EMAIL.OUT<6,-1>='Username: ':VIN<7>
+         EMAIL.OUT<6,-1>=' '
+         EMAIL.OUT<6,-1>="REQUEST"
+         EMAIL.OUT<6,-1>= XML.REQUEST 
+         EMAIL.OUT<6,-1>=' '              
+         EMAIL.OUT<6,-1>="RESPONSE"
+         EMAIL.OUT<6,-1>= RESPONSE.DATA  
+         EMAIL.OUT<6,-1>=' '          
+         * End NKH02
+      END
+            
+      RETURN
+
+* Begin NKH03
+************************************************************************
+SEND.REQ.RECOVER.EMAIL:      
+************************************************************************
+      EMAIL.OUT<6,-1>='Process Failure Recovered'
+      EMAIL.OUT<6,-1>=URL     
+      EMAIL.RECOVER = 1
+      
+      GOSUB SEND.EMAIL
+      
+      RETURN
+
+************************************************************************      
+SEND.CONNECT.RECOVER.EMAIL:      
+************************************************************************
+      EMAIL.OUT<6,-1>='Connection Failure Recovered'
+      EMAIL.OUT<6,-1>=URL
+      EMAIL.RECOVER = 1
+      
+      GOSUB SEND.EMAIL
+      
+      RETURN
+* End NKH03
+            
+*************************************************************************
+BUILD.TRANSIT.METHOD:
+*************************************************************************      
+      XML.REQUEST = ''
+      XML.REQUEST := '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:web="http://webservices.smc.com" xmlns:req="http://requests.objects.webservice.carrierconnect.smc.com" xmlns:obj="http://objects.webservice.carrierconnect.smc.com" xmlns:loc="http://location.objects.webservice.carrierconnect.smc.com">'
+      XML.REQUEST := '<soapenv:Header>'
+      XML.REQUEST := '<web:AuthenticationToken>'
+      XML.REQUEST := '<web:licenseKey>':SMC.WEB.LICENSE.KEY:'</web:licenseKey>'
+      XML.REQUEST := '<web:password>':SMC.WEB.PASSWORD:'</web:password>'
+      XML.REQUEST := '<web:username>':SMC.WEB.USERNAME:'</web:username>'
+      XML.REQUEST := '</web:AuthenticationToken>'
+      XML.REQUEST := '</soapenv:Header>'
+      XML.REQUEST := '<soapenv:Body>'
+      XML.REQUEST := '<web:TransitMethod>'
+      XML.REQUEST := '<web:TransitRequest>'
+      XML.REQUEST := '<req:carriers>'
+      XML.REQUEST := '<!--Zero or more repetitions:-->'
+      FOR SA = 1 TO SCAC.COUNT
+         XML.REQUEST := '<obj:CarrierMethodService>'
+         XML.REQUEST := '<obj:SCAC>':SCAC.ARRAY<1,SA>:'</obj:SCAC>' 
+         XML.REQUEST := '<obj:code xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+         XML.REQUEST := '<obj:method>':method:'</obj:method>'
+         XML.REQUEST := '</obj:CarrierMethodService>'         
+      NEXT SCAC.COUNT
+      XML.REQUEST := '</req:carriers>'
+      XML.REQUEST := '<req:deliveryWindow xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '<req:destination>'
+      XML.REQUEST := '<loc:address1 xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '<loc:address2 xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '<loc:city xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '<loc:countryCode>':destination.countryCode:'</loc:countryCode>'
+      XML.REQUEST := '<loc:latitude xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '<loc:localeID xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '<loc:longitude xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '<loc:postalCode>':destination.postalCode:'</loc:postalCode>'        
+      XML.REQUEST := '<loc:postalCodePlus4 xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '<loc:stateProvince xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '<loc:timeZone xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '</req:destination>'
+      XML.REQUEST := '<req:origin>'
+      XML.REQUEST := '<loc:address1 xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '<loc:address2 xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '<loc:city xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '<loc:countryCode>':origin.countryCode:'</loc:countryCode>'
+      XML.REQUEST := '<loc:latitude xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '<loc:localeID xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '<loc:longitude xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '<loc:postalCode>':origin.postalCode:'</loc:postalCode>'         
+      XML.REQUEST := '<loc:postalCodePlus4 xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '<loc:stateProvince xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '<loc:timeZone xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '</req:origin>'
+      XML.REQUEST := '<req:pickUpWindow>'
+      XML.REQUEST := '<obj:lowerBounds xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'    ;* This will use todays date
+      XML.REQUEST := '<obj:upperBounds xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'    ;* This will use todays date
+      XML.REQUEST := '</req:pickUpWindow>'
+      XML.REQUEST := '<req:shipmentId xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+      XML.REQUEST := '</web:TransitRequest>'
+      XML.REQUEST := '</web:TransitMethod>'
+      XML.REQUEST := '</soapenv:Body>'
+      XML.REQUEST := '</soapenv:Envelope>'
+      
+      TM.REQUEST = XML.REQUEST      ; * NKH01
+      
+      RETURN
+      
+*************************************************************************
+BUILD.TERMINALS.BY.POSTAL.CODE:
+*************************************************************************
+      countryCode = destination.countryCode:@VM:origin.countryCode
+      postalCode = destination.postalCode:@VM:origin.postalCode
+      terminalType = "DELIVERY":@VM:'PICKUP'
+      
+      XML.REQUEST = ''
+      XML.REQUEST := '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:web="http://webservices.smc.com" xmlns:ter="http://terminalsbypostalcode.requests.objects.webservice.carrierconnect.smc.com">'
+      XML.REQUEST := '<soapenv:Header>'
+      XML.REQUEST := '<web:AuthenticationToken>'
+      XML.REQUEST := '<web:licenseKey>':SMC.WEB.LICENSE.KEY:'</web:licenseKey>'
+      XML.REQUEST := '<web:password>':SMC.WEB.PASSWORD:'</web:password>'
+      XML.REQUEST := '<web:username>':SMC.WEB.USERNAME:'</web:username>'
+      XML.REQUEST := '</web:AuthenticationToken>'
+      XML.REQUEST := '</soapenv:Header>'
+      XML.REQUEST := '<soapenv:Body>'
+      XML.REQUEST := '<web:TerminalsByPostalCode>'
+      XML.REQUEST := '<web:TerminalsByPostalCodeRequest>'
+      XML.REQUEST := '<ter:arrayTerminalByPostalCode>'
+      FOR SA = 1 TO SCAC.COUNT
+         FOR X = 1 TO 2
+            XML.REQUEST := '<ter:TerminalByPostalCode>'
+            XML.REQUEST := '<ter:city xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+            XML.REQUEST := '<ter:countryCode>':countryCode<1,X>:'</ter:countryCode>'
+            XML.REQUEST := '<ter:postalCode>':postalCode<1,X>:'</ter:postalCode>'
+            XML.REQUEST := '<ter:SCAC>':SCAC.ARRAY<1,SA>:'</ter:SCAC>'
+            XML.REQUEST := '<ter:serviceCode xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+            XML.REQUEST := '<ter:serviceMethod>':serviceMethod:'</ter:serviceMethod>'
+            XML.REQUEST := '<ter:serviceType>':serviceType:'</ter:serviceType>'
+            XML.REQUEST := '<ter:shipmentDate>':shipmentDate:'</ter:shipmentDate>'
+            XML.REQUEST := '<ter:stateProvince xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>'
+            XML.REQUEST := '<ter:terminalType>':terminalType<1,X>:'</ter:terminalType>'
+            XML.REQUEST := '</ter:TerminalByPostalCode>'
+         NEXT X
+      NEXT SCAC.COUNT
+      XML.REQUEST := '</ter:arrayTerminalByPostalCode>'
+      XML.REQUEST := '</web:TerminalsByPostalCodeRequest>'
+      XML.REQUEST := '</web:TerminalsByPostalCode>'
+      XML.REQUEST := '</soapenv:Body>'
+      XML.REQUEST := '</soapenv:Envelope>'
+      
+      TERM.REQUEST = XML.REQUEST      ; * NKH01
+      
+*For Testing - write the parsed response to XML.PARSED to view in a browser
+*VIN.PARSE = '' ; VOUT.PARSE = ''
+*VIN.PARSE<1>=PROG.NAME:'BUILD'
+*VIN.PARSE<2>=XML.REQUEST
+*CALL XML.PARSER(VIN.PARSE,VOUT.PARSE)                      
+
+      RETURN
+
+************************************************************************      
+GET.ALL.CARRIERS:
+************************************************************************      
+      CMD = 'SELECT FB.AUDIT,':CLIENT.ID:' SAVING UNIQUE CARRIER.SCAC' 
+      EXECUTE CMD RTNLIST A.LIST CAPTURING RESULT RETURNING JUNK
+      SCAC.ARRAY=''
+      EOF=0
+      LOOP
+         READNEXT ID FROM A.LIST ELSE EOF = 1
+      UNTIL EOF
+         SCAC.ARRAY<1,-1> = ID
+      REPEAT
+
+      SCAC.COUNT = DCOUNT(SCAC.ARRAY,@VM)
+      
+      RETURN
+      
+*************************************************************************
+PARSE.TRANSIT.METHOD.RESULTS: * 
+*************************************************************************
+      TM.RESPONSE.DATA = RESPONSE.DATA    ; * NKH04
+      RESULTS.DTL = RESPONSE.DATA            
+      RESULTS.DTL = CHANGE(RESULTS.DTL, '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">', '')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, '<soap:Body>' ,'')      
+      RESULTS.DTL = CHANGE(RESULTS.DTL, 'ns1:','','')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, 'ns2:','','')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, 'ns3:','','')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, 'ns4:','','')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, '</soap:Body>', '')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, '</soap:Envelope>', '')
+
+      NODE.VALUE = ''
+      errCode = ''
+      SAVE.STAT.VAL = ''
+
+      RESULTS.DTL.CNT = (COUNT(RESULTS.DTL, 'TransitWindowResult')) / 2
+                
+      STAT.VAL = 'TransitMethod Main Document'
+      STATUS = XDOMOpen(RESULTS.DTL, XML.FROM.STRING, MYDOM)   
+            
+         STAT.VAL = 'TransitMethodResponse'
+         STATUS = XDOMLocate(MYDOM, 'TransitMethodResponse',"",TRANSIT.METHOD.RESPONSE.HANDLE)  
+      
+            STAT.VAL = 'TransitResult'
+            STATUS = XDOMLocateNode(TRANSIT.METHOD.RESPONSE.HANDLE, XDOM.CHILD, XDOM.FIRST.CHILD, XDOM.ELEMENT.NODE, TRANSIT.RESULT.HANDLE) 
+      
+               STAT.VAL = 'carriers'
+               STATUS = XDOMLocateNode(TRANSIT.RESULT.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, CARRIERS.HANDLE) 
+               
+               FOR X = 1 TO RESULTS.DTL.CNT
+                  STAT.VAL = 'TransitWindowResult'
+                  STATUS = XDOMLocateNode(CARRIERS.HANDLE, XDOM.CHILD, X, XDOM.ELEMENT.NODE, TRANSIT.WINDOW.RESULT.HANDLE) 
+
+                     STAT.VAL = 'SCAC'
+                     STATUS = XDOMLocateNode(TRANSIT.WINDOW.RESULT.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, SCAC.HANDLE)                      
+                     STATUS = XDOMGetNodeVAlue(SCAC.HANDLE, NODE.VALUE) 
+                     TEMP.ARRAY<1> = NODE.VALUE ; NODE.VALUE = ''
+      
+                     STAT.VAL = 'carrierName'
+                     STATUS = XDOMLocateNode(TRANSIT.WINDOW.RESULT.HANDLE, XDOM.CHILD, 2, XDOM.ELEMENT.NODE, CARRIER.NAME.HANDLE)                      
+                     STATUS = XDOMGetNodeVAlue(CARRIER.NAME.HANDLE, NODE.VALUE) 
+                     TEMP.ARRAY<2> = NODE.VALUE ; NODE.VALUE = ''
+
+                     STAT.VAL = 'dataGroup'
+                     STATUS = XDOMLocateNode(TRANSIT.WINDOW.RESULT.HANDLE, XDOM.CHILD, 3, XDOM.ELEMENT.NODE, DATA.GROUP.HANDLE) 
+
+                        STAT.VAL = 'dataGroup.expirationDate'
+                        STATUS = XDOMLocateNode(DATA.GROUP.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, EXPIRATION.DATE.HANDLE)                         
+                        STATUS = XDOMGetNodeVAlue(EXPIRATION.DATE.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<3> = NODE.VALUE ; NODE.VALUE = ''
+                        
+                        STAT.VAL = 'dataGroup.name'
+                        STATUS = XDOMLocateNode(DATA.GROUP.HANDLE, XDOM.CHILD, 2, XDOM.ELEMENT.NODE, NAME.HANDLE)                         
+                        STATUS = XDOMGetNodeVAlue(NAME.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<4> = NODE.VALUE ; NODE.VALUE = ''
+
+                        STAT.VAL = 'dataGroup.releaseDate'
+                        STATUS = XDOMLocateNode(DATA.GROUP.HANDLE, XDOM.CHILD, 3, XDOM.ELEMENT.NODE, RELEASE.DATE.HANDLE)                         
+                        STATUS = XDOMGetNodeVAlue(RELEASE.DATE.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<5> = NODE.VALUE ; NODE.VALUE = ''
+                        
+                        STAT.VAL = 'dataGroup.supportID'
+                        STATUS = XDOMLocateNode(DATA.GROUP.HANDLE, XDOM.CHILD, 4, XDOM.ELEMENT.NODE, SUPPORT.ID.HANDLE)                         
+                        STATUS = XDOMGetNodeVAlue(SUPPORT.ID.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<6> = NODE.VALUE ; NODE.VALUE = ''
+                        
+                     * dataGroup end
+                     
+                     STAT.VAL = 'method'
+                     STATUS = XDOMLocateNode(TRANSIT.WINDOW.RESULT.HANDLE, XDOM.CHILD, 4, XDOM.ELEMENT.NODE, METHOD.HANDLE)                      
+                     STATUS = XDOMGetNodeVAlue(METHOD.HANDLE, NODE.VALUE) 
+                     TEMP.ARRAY<7> = NODE.VALUE ; NODE.VALUE = ''
+
+                     STAT.VAL = 'serviceDetail'
+                     STATUS = XDOMLocateNode(TRANSIT.WINDOW.RESULT.HANDLE, XDOM.CHILD, 5, XDOM.ELEMENT.NODE, SERVICE.DETAIL.HANDLE) 
+
+                        STAT.VAL = 'ServiceDetail.code'
+                        STATUS = XDOMLocateNode(SERVICE.DETAIL.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, SERVICE.DETAIL.CODE.HANDLE)                         
+                        STATUS = XDOMGetNodeVAlue(SERVICE.DETAIL.CODE.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<8> = NODE.VALUE ; NODE.VALUE = ''
+                        
+                        STAT.VAL = 'ServiceDetail.destination'
+                        STATUS = XDOMLocateNode(SERVICE.DETAIL.HANDLE, XDOM.CHILD, 2, XDOM.ELEMENT.NODE, SERVICE.DETAIL.DESTINATION.HANDLE)                         
+                        STATUS = XDOMGetNodeVAlue(SERVICE.DETAIL.DESTINATION.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<9> = NODE.VALUE ; NODE.VALUE = ''
+                        
+                        STAT.VAL = 'ServiceDetail.origin'
+                        STATUS = XDOMLocateNode(SERVICE.DETAIL.HANDLE, XDOM.CHILD, 3, XDOM.ELEMENT.NODE, SERVICE.DETAIL.ORIGIN.HANDLE)                         
+                        STATUS = XDOMGetNodeVAlue(SERVICE.DETAIL.ORIGIN.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<10> = NODE.VALUE ; NODE.VALUE = ''
+
+                        STAT.VAL = 'ServiceDetail.service'
+                        STATUS = XDOMLocateNode(SERVICE.DETAIL.HANDLE, XDOM.CHILD, 4, XDOM.ELEMENT.NODE, SERVICE.DETAIL.SERVICE.HANDLE)                         
+                        STATUS = XDOMGetNodeVAlue(SERVICE.DETAIL.SERVICE.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<11> = NODE.VALUE ; NODE.VALUE = ''
+
+                     * serviceDetail end
+                     
+                     STAT.VAL = 'statusCode'
+                     STATUS = XDOMLocateNode(TRANSIT.WINDOW.RESULT.HANDLE, XDOM.CHILD, 6, XDOM.ELEMENT.NODE, STATUS.CODE.HANDLE)                      
+                     
+                        STAT.VAL = 'statusCode.message'
+                        STATUS = XDOMLocateNode(STATUS.CODE.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, MESSAGE.HANDLE)                         
+                        STATUS = XDOMGetNodeVAlue(MESSAGE.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<12> = NODE.VALUE ; NODE.VALUE = ''
+                        
+                        STAT.VAL = 'statusCode.referenceNumber'
+                        STATUS = XDOMLocateNode(STATUS.CODE.HANDLE, XDOM.CHILD, 2, XDOM.ELEMENT.NODE, REFERENCE.NUMBER.HANDLE)                         
+                        STATUS = XDOMGetNodeVAlue(REFERENCE.NUMBER.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<13> = NODE.VALUE ; NODE.VALUE = ''
+                           
+                        STAT.VAL = 'statusCode.resolution'
+                        STATUS = XDOMLocateNode(STATUS.CODE.HANDLE, XDOM.CHILD, 3, XDOM.ELEMENT.NODE, RESOLUTION.HANDLE)                         
+                        STATUS = XDOMGetNodeVAlue(RESOLUTION.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<14> = NODE.VALUE ; NODE.VALUE = ''
+
+                        STAT.VAL = 'statusCode.status'
+                        STATUS = XDOMLocateNode(STATUS.CODE.HANDLE, XDOM.CHILD, 4, XDOM.ELEMENT.NODE, STATUS.HANDLE)                         
+                        STATUS = XDOMGetNodeVAlue(STATUS.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<15> = NODE.VALUE ; NODE.VALUE = ''                     
+                     
+                     * statusCode end
+
+                     STAT.VAL = 'terminalCodes'
+                     STATUS = XDOMLocateNode(TRANSIT.WINDOW.RESULT.HANDLE, XDOM.CHILD, 7, XDOM.ELEMENT.NODE, TERMINAL.CODES.HANDLE) 
+
+                        STAT.VAL = 'TerminalCodes.destination'
+                        STATUS = XDOMLocateNode(TERMINAL.CODES.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, TERMINAL.CODES.DESTINATION.HANDLE)                         
+                        STATUS = XDOMGetNodeVAlue(TERMINAL.CODES.DESTINATION.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<16> = NODE.VALUE ; NODE.VALUE = ''
+                        
+                        STAT.VAL = 'TerminalCodes.origin'
+                        STATUS = XDOMLocateNode(TERMINAL.CODES.HANDLE, XDOM.CHILD, 2, XDOM.ELEMENT.NODE, TERMINAL.CODES.ORIGIN.HANDLE)                         
+                        STATUS = XDOMGetNodeVAlue(TERMINAL.CODES.ORIGIN.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<17> = NODE.VALUE ; NODE.VALUE = ''
+                        
+                     * terminalCodes end
+      
+                     STAT.VAL = 'transitCalendar'
+                     STATUS = XDOMLocateNode(TRANSIT.WINDOW.RESULT.HANDLE, XDOM.CHILD, 8, XDOM.ELEMENT.NODE, TRANSIT.CALENDAR.HANDLE) 
+
+                        STAT.VAL = 'transitCalendar.calendarDays'
+                        STATUS = XDOMLocateNode(TRANSIT.CALENDAR.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, CALENDAR.DAYS.HANDLE)                         
+                        STATUS = XDOMGetNodeVAlue(CALENDAR.DAYS.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<18> = NODE.VALUE ; NODE.VALUE = ''
+                        
+                        STAT.VAL = 'transitCalendar.estimatedDeliveryDate'
+                        STATUS = XDOMLocateNode(TRANSIT.CALENDAR.HANDLE, XDOM.CHILD, 2, XDOM.ELEMENT.NODE, ESTIMATED.DELIVERY.DATE.HANDLE)                         
+                        STATUS = XDOMGetNodeVAlue(ESTIMATED.DELIVERY.DATE.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<19> = NODE.VALUE ; NODE.VALUE = ''
+
+                        STAT.VAL = 'transitCalendar.pickupDate'
+                        STATUS = XDOMLocateNode(TRANSIT.CALENDAR.HANDLE, XDOM.CHILD, 3, XDOM.ELEMENT.NODE, PICKUP.DATE.HANDLE)                         
+                        STATUS = XDOMGetNodeVAlue(PICKUP.DATE.HANDLE, NODE.VALUE)                                                 
+                        TEMP.ARRAY<20> = NODE.VALUE ; NODE.VALUE = ''
+
+                     * transitCalendar end
+                     
+                     STAT.VAL = 'trasnitDays'
+                     STATUS = XDOMLocateNode(TRANSIT.WINDOW.RESULT.HANDLE, XDOM.CHILD, 9, XDOM.ELEMENT.NODE, TRANSIT.DAYS.HANDLE)                      
+                     STATUS = XDOMGetNodeVAlue(TRANSIT.DAYS.HANDLE, NODE.VALUE) 
+                     TEMP.ARRAY<21> = NODE.VALUE ; NODE.VALUE = ''
+                     
+                  * TransitWindowResult end
+                  
+               IF RET.DATA THEN
+                  FOR R = 1 TO 28
+                     RESP<R,RESP.CNT> = TEMP.ARRAY<R>
+                  NEXT R
+                  RESP.CNT+=1               
+               END
+
+               NEXT X
+
+               * carriers end
+
+               STAT.VAL = 'deliveryWindow'
+               STATUS = XDOMLocateNode(TRANSIT.RESULT.HANDLE, XDOM.CHILD, 2, XDOM.ELEMENT.NODE, DELIVERY.WINDOW.HANDLE) 
+               
+                  STAT.VAL = 'deliveryWindow.lowerBounds'
+                  STATUS = XDOMLocateNode(DELIVERY.WINDOW.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, DEL.LOWER.BOUNDS.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(DEL.LOWER.BOUNDS.HANDLE, NODE.VALUE) 
+                  RESP<22> = NODE.VALUE ; NODE.VALUE = ''
+            
+                  STAT.VAL = 'deliveryWindow.upperBounds'
+                  STATUS = XDOMLocateNode(DELIVERY.WINDOW.HANDLE, XDOM.CHILD, 2, XDOM.ELEMENT.NODE, DEL.UPPER.BOUNDS.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(DEL.UPPER.BOUNDS.HANDLE, NODE.VALUE) 
+                  RESP<23> = NODE.VALUE ; NODE.VALUE = ''
+            
+               * deliveryWindow end
+            
+               STAT.VAL = 'destination'
+               STATUS = XDOMLocateNode(TRANSIT.RESULT.HANDLE, XDOM.CHILD, 3, XDOM.ELEMENT.NODE, DESTINATION.HANDLE) 
+
+                  STAT.VAL = 'destination.address1'
+                  STATUS = XDOMLocateNode(DESTINATION.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, DESTINATION.ADDRESS1.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(DESTINATION.ADDRESS1.HANDLE, NODE.VALUE) 
+                  RESP<24> = NODE.VALUE ; NODE.VALUE = ''
+
+                  STAT.VAL = 'detination.address2'
+                  STATUS = XDOMLocateNode(DESTINATION.HANDLE, XDOM.CHILD, 2, XDOM.ELEMENT.NODE, DESTINATION.ADDRESS2.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(DESTINATION.ADDRESS2.HANDLE, NODE.VALUE) 
+                  RESP<25> = NODE.VALUE ; NODE.VALUE = ''
+
+                  STAT.VAL = 'destination.city'
+                  STATUS = XDOMLocateNode(DESTINATION.HANDLE, XDOM.CHILD, 3, XDOM.ELEMENT.NODE, DESTINATION.CITY.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(DESTINATION.CITY.HANDLE, NODE.VALUE) 
+                  RESP<26> = NODE.VALUE ; NODE.VALUE = ''
+
+                  STAT.VAL = 'destination.countyCode'
+                  STATUS = XDOMLocateNode(DESTINATION.HANDLE, XDOM.CHILD, 4, XDOM.ELEMENT.NODE, DESTINATION.COUNTY.CODE.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(DESTINATION.COUNTY.CODE.HANDLE, NODE.VALUE) 
+                  RESP<27> = NODE.VALUE ; NODE.VALUE = ''
+                  
+                  STAT.VAL = 'destination.latitude'
+                  STATUS = XDOMLocateNode(DESTINATION.HANDLE, XDOM.CHILD, 5, XDOM.ELEMENT.NODE, DESTINATION.LATITUDE.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(DESTINATION.LATITUDE.HANDLE, NODE.VALUE) 
+                  RESP<28> = NODE.VALUE ; NODE.VALUE = ''
+                  
+                  STAT.VAL = 'destination.localeID'
+                  STATUS = XDOMLocateNode(DESTINATION.HANDLE, XDOM.CHILD, 6, XDOM.ELEMENT.NODE, DESTINATION.LOCALE.ID.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(DESTINATION.LOCALE.ID.HANDLE, NODE.VALUE) 
+                  RESP<29> = NODE.VALUE ; NODE.VALUE = ''
+
+                  STAT.VAL = 'destination.longitude'
+                  STATUS = XDOMLocateNode(DESTINATION.HANDLE, XDOM.CHILD, 7, XDOM.ELEMENT.NODE, DESTINATION.LONGITUDE.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(DESTINATION.LONGITUDE.HANDLE, NODE.VALUE) 
+                  RESP<30> = NODE.VALUE ; NODE.VALUE = ''
+                  
+                  STAT.VAL = 'destination.postalCode'
+                  STATUS = XDOMLocateNode(DESTINATION.HANDLE, XDOM.CHILD, 8, XDOM.ELEMENT.NODE, DESTINATION.POSTAL.CODE.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(DESTINATION.POSTAL.CODE.HANDLE, NODE.VALUE) 
+                  RESP<31> = NODE.VALUE ; NODE.VALUE = ''
+                  
+                  STAT.VAL = 'destination.postalCodePlus4'
+                  STATUS = XDOMLocateNode(DESTINATION.HANDLE, XDOM.CHILD, 9, XDOM.ELEMENT.NODE, DESTINATION.POSTAL.CODE.PLUS4.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(DESTINATION.POSTAL.CODE.PLUS4.HANDLE, NODE.VALUE) 
+                  RESP<32> = NODE.VALUE ; NODE.VALUE = ''
+                  
+                  STAT.VAL = 'destination.stateProvince'
+                  STATUS = XDOMLocateNode(DESTINATION.HANDLE, XDOM.CHILD, 10, XDOM.ELEMENT.NODE, DESTINATION.STATE.PROVINCE.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(DESTINATION.STATE.PROVINCE.HANDLE, NODE.VALUE) 
+                  RESP<33> = NODE.VALUE ; NODE.VALUE = ''
+                  
+                  STAT.VAL = 'destination.timeZone'
+                  STATUS = XDOMLocateNode(DESTINATION.HANDLE, XDOM.CHILD, 11, XDOM.ELEMENT.NODE, DESTINATION.TIME.ZONE.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(DESTINATION.TIME.ZONE.HANDLE, NODE.VALUE) 
+                  RESP<34> = NODE.VALUE ; NODE.VALUE = ''
+   
+               * destination end
+               
+               STAT.VAL = 'origin'
+               STATUS = XDOMLocateNode(TRANSIT.RESULT.HANDLE, XDOM.CHILD, 4, XDOM.ELEMENT.NODE, ORIGIN.HANDLE) 
+
+                  STAT.VAL = 'origin.address1'
+                  STATUS = XDOMLocateNode(ORIGIN.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, ORIGIN.ADDRESS1.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(ORIGIN.ADDRESS1.HANDLE, NODE.VALUE) 
+                  RESP<35> = NODE.VALUE ; NODE.VALUE = ''
+
+                  STAT.VAL = 'origin.address2'
+                  STATUS = XDOMLocateNode(ORIGIN.HANDLE, XDOM.CHILD, 2, XDOM.ELEMENT.NODE, ORIGIN.ADDRESS2.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(ORIGIN.ADDRESS2.HANDLE, NODE.VALUE) 
+                  RESP<36> = NODE.VALUE ; NODE.VALUE = ''
+
+                  STAT.VAL = 'origin.city'
+                  STATUS = XDOMLocateNode(ORIGIN.HANDLE, XDOM.CHILD, 3, XDOM.ELEMENT.NODE, ORIGIN.CITY.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(ORIGIN.CITY.HANDLE, NODE.VALUE) 
+                  RESP<37> = NODE.VALUE ; NODE.VALUE = ''
+
+                  STAT.VAL = 'origin.countyCode'
+                  STATUS = XDOMLocateNode(ORIGIN.HANDLE, XDOM.CHILD, 4, XDOM.ELEMENT.NODE, ORIGIN.COUNTY.CODE.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(ORIGIN.COUNTY.CODE.HANDLE, NODE.VALUE) 
+                  RESP<38> = NODE.VALUE ; NODE.VALUE = ''
+                  
+                  STAT.VAL = 'origin.latitude'
+                  STATUS = XDOMLocateNode(ORIGIN.HANDLE, XDOM.CHILD, 5, XDOM.ELEMENT.NODE, ORIGIN.LATITUDE.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(ORIGIN.LATITUDE.HANDLE, NODE.VALUE) 
+                  RESP<39> = NODE.VALUE ; NODE.VALUE = ''
+                  
+                  STAT.VAL = 'origin.localeID'
+                  STATUS = XDOMLocateNode(ORIGIN.HANDLE, XDOM.CHILD, 6, XDOM.ELEMENT.NODE, ORIGIN.LOCALE.ID.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(ORIGIN.LOCALE.ID.HANDLE, NODE.VALUE) 
+                  RESP<40> = NODE.VALUE ; NODE.VALUE = ''
+
+                  STAT.VAL = 'origin.longitude'
+                  STATUS = XDOMLocateNode(ORIGIN.HANDLE, XDOM.CHILD, 7, XDOM.ELEMENT.NODE, ORIGIN.LONGITUDE.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(ORIGIN.LONGITUDE.HANDLE, NODE.VALUE) 
+                  RESP<41> = NODE.VALUE ; NODE.VALUE = ''
+                  
+                  STAT.VAL = 'origin.postalCode'
+                  STATUS = XDOMLocateNode(ORIGIN.HANDLE, XDOM.CHILD, 8, XDOM.ELEMENT.NODE, ORIGIN.POSTAL.CODE.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(ORIGIN.POSTAL.CODE.HANDLE, NODE.VALUE) 
+                  RESP<42> = NODE.VALUE ; NODE.VALUE = ''
+                  
+                  STAT.VAL = 'origin.postalCodePlus4'
+                  STATUS = XDOMLocateNode(ORIGIN.HANDLE, XDOM.CHILD, 9, XDOM.ELEMENT.NODE, ORIGIN.POSTAL.CODE.PLUS4.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(ORIGIN.POSTAL.CODE.PLUS4.HANDLE, NODE.VALUE) 
+                  RESP<43> = NODE.VALUE ; NODE.VALUE = ''
+                  
+                  STAT.VAL = 'origin.stateProvince'
+                  STATUS = XDOMLocateNode(ORIGIN.HANDLE, XDOM.CHILD, 10, XDOM.ELEMENT.NODE, ORIGIN.STATE.PROVINCE.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(ORIGIN.STATE.PROVINCE.HANDLE, NODE.VALUE) 
+                  RESP<44> = NODE.VALUE ; NODE.VALUE = ''
+                  
+                  STAT.VAL = 'origin.timeZone'
+                  STATUS = XDOMLocateNode(ORIGIN.HANDLE, XDOM.CHILD, 11, XDOM.ELEMENT.NODE, ORIGIN.TIME.ZONE.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(ORIGIN.TIME.ZONE.HANDLE, NODE.VALUE) 
+                  RESP<45> = NODE.VALUE ; NODE.VALUE = ''
+
+               * origin end
+               
+               STAT.VAL = 'pickUpWindow'
+               STATUS = XDOMLocateNode(TRANSIT.RESULT.HANDLE, XDOM.CHILD, 5, XDOM.ELEMENT.NODE, PICKUP.WINDOW.HANDLE) 
+
+                  STAT.VAL = 'pickUpWindow.lowerBounds'
+                  STATUS = XDOMLocateNode(PICKUP.WINDOW.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, PU.LOWER.BOUNDS.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(PU.LOWER.BOUNDS.HANDLE, NODE.VALUE) 
+                  RESP<46> = NODE.VALUE ; NODE.VALUE = ''
+            
+                  STAT.VAL = 'pickUpWindow.upperBounds'
+                  STATUS = XDOMLocateNode(PICKUP.WINDOW.HANDLE, XDOM.CHILD, 2, XDOM.ELEMENT.NODE, PU.UPPER.BOUNDS.HANDLE)                   
+                  STATUS = XDOMGetNodeVAlue(PU.UPPER.BOUNDS.HANDLE, NODE.VALUE) 
+                  RESP<47> = NODE.VALUE ; NODE.VALUE = ''                  
+
+               * pickupWindow end
+               
+               STAT.VAL = 'shipmentId'
+               STATUS = XDOMLocateNode(TRANSIT.RESULT.HANDLE, XDOM.CHILD, 6, XDOM.ELEMENT.NODE, SHIPMENT.ID.HANDLE)                
+               STATUS = XDOMGetNodeVAlue(SHIPMENT.ID.HANDLE, NODE.VALUE) 
+               RESP<48> = NODE.VALUE ; NODE.VALUE = ''
+
+            * TransitResult end
+            
+         * TransitMethodResponse end
+         
+      * TransitMethod Main Document end     
+               
+      RETURN
+                     
+*************************************************************************
+SEND.XML.EMAIL:    ; * NKH05
+*************************************************************************
+      * Begin NKH04
+      EMAIL.OUT<5>='XML email for research and testing'     ; * NKH07
+      EMAIL.OUT<6,-1>="TRANSIT METHOD REQUEST"
+      EMAIL.OUT<6,-1>=TM.REQUEST
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>="TRANSIT METHOD RESPONSE"
+      EMAIL.OUT<6,-1>= TM.RESPONSE.DATA
+      EMAIL.OUT<6,-1>=' '  
+      IF TERM.REQUEST > "" THEN    ; * NKH05   
+         EMAIL.OUT<6,-1>="TERMINALS BY POSTAL CODE METHOD REQUEST"
+         EMAIL.OUT<6,-1>=TERM.REQUEST
+         EMAIL.OUT<6,-1>=' '         
+         EMAIL.OUT<6,-1>="TERMINALS BY POSTAL CODE METHOD RESPONSE"
+         EMAIL.OUT<6,-1>= RESPONSE.DATA
+      END
+      GOSUB SEND.EMAIL         ; * NKH05
+      * End NKH04
+      
+      RETURN                   ; * NKH05
+
+*************************************************************************
+PARSE.TERMINALS.BY.POSTAL.CODE:
+*************************************************************************
+*For Testing - write the parsed response to XML.PARSED to view in a browser
+*VIN.PARSE = '' ; VOUT.PARSE = ''
+*VIN.PARSE<1>=PROG.NAME
+*VIN.PARSE<2>=RESPONSE.DATA
+*CALL XML.PARSER(VIN.PARSE,VOUT.PARSE)  
+
+      TERM.RESPONSE.DATA = RESPONSE.DATA  ; * NKH04
+      RESULTS.DTL = RESPONSE.DATA  
+      RESULTS.DTL = CHANGE(RESULTS.DTL, '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">', '')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, '<soap:Body>' ,'')      
+      RESULTS.DTL = CHANGE(RESULTS.DTL, 'ns1:','','')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, 'ns2:','','')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, 'ns3:','','')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, 'ns4:','','')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, '</soap:Body>', '')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, '</soap:Envelope>', '')
+
+      NODE.VALUE = ''
+      errCode = ''
+      SAVE.STAT.VAL = ''
+
+      RESULTS.DTL.CNT = (COUNT(RESULTS.DTL, 'CarrierTerminalByPostalCodeResponse')) / 2
+
+      STAT.VAL = 'TerminalsByPostalCode Main Document'
+      STATUS = XDOMOpen(RESULTS.DTL, XML.FROM.STRING, MYDOM)   
+            
+         STAT.VAL = 'TerminalsByPostalCodeResponse'      ;* Finds the root node
+         STATUS = XDOMLocate(MYDOM, 'TerminalsByPostalCodeResponse',"",TERMINALS.BY.POSTAL.CODE.RESPONSE.HANDLE)  
+      
+            STAT.VAL = 'TerminalsByPostalCodeResponses'  ;* Step down to the first child
+            STATUS = XDOMLocateNode(TERMINALS.BY.POSTAL.CODE.RESPONSE.HANDLE, XDOM.CHILD, XDOM.FIRST.CHILD, XDOM.ELEMENT.NODE, TERMINALS.BY.POSTAL.CODE.RESPONSES.HANDLE)       
+               
+               FOR X = 1 TO RESULTS.DTL.CNT              ;* Loop through all children
+               STAT.VAL = 'CarrierTerminalByPostalCodeResponse'   
+               STATUS = XDOMLocateNode(TERMINALS.BY.POSTAL.CODE.RESPONSES.HANDLE, XDOM.CHILD, X, XDOM.ELEMENT.NODE, CARRIER.TERMINAL.BY.POSTAL.CODE.RESPONSE.HANDLE) 
+                                 
+                  STAT.VAL = 'SCAC'   
+                  STATUS = XDOMLocateNode(CARRIER.TERMINAL.BY.POSTAL.CODE.RESPONSE.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, SCAC.HANDLE) 
+                  STATUS = XDOMGetNodeVAlue(SCAC.HANDLE, NODE.VALUE) 
+                  TEMP.ARRAY<1> = NODE.VALUE ; NODE.VALUE = ''
+
+                  STAT.VAL = 'statusCode' 
+                  STATUS = XDOMLocateNode(CARRIER.TERMINAL.BY.POSTAL.CODE.RESPONSE.HANDLE, XDOM.CHILD, 2, XDOM.ELEMENT.NODE, STATUS.CODE.HANDLE) 
+               
+                     STAT.VAL = 'message'
+                     STATUS = XDOMLocateNode(STATUS.CODE.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, MESSAGE.HANDLE) 
+                     STATUS = XDOMGetNodeVAlue(MESSAGE.HANDLE, NODE.VALUE) 
+                     TEMP.ARRAY<2> = NODE.VALUE ; NODE.VALUE = ''
+                     
+                     STAT.VAL = 'referenceNumber'
+                     STATUS = XDOMLocateNode(STATUS.CODE.HANDLE, XDOM.CHILD, 2, XDOM.ELEMENT.NODE, REFERENCE.NUMBER.HANDLE) 
+                     STATUS = XDOMGetNodeVAlue(REFERENCE.NUMBER.HANDLE, NODE.VALUE) 
+                     TEMP.ARRAY<3> = NODE.VALUE ; NODE.VALUE = ''
+                     
+                     STAT.VAL = 'resolution'
+                     STATUS = XDOMLocateNode(STATUS.CODE.HANDLE, XDOM.CHILD, 3, XDOM.ELEMENT.NODE, RESOLUTION.HANDLE) 
+                     STATUS = XDOMGetNodeVAlue(RESOLUTION.HANDLE, NODE.VALUE) 
+                     TEMP.ARRAY<4> = NODE.VALUE ; NODE.VALUE = ''
+                     
+                     STAT.VAL = 'status'
+                     STATUS = XDOMLocateNode(STATUS.CODE.HANDLE, XDOM.CHILD, 4, XDOM.ELEMENT.NODE, STATUS.HANDLE) 
+                     STATUS = XDOMGetNodeVAlue(STATUS.HANDLE, NODE.VALUE) 
+                     TEMP.ARRAY<5> = NODE.VALUE ; NODE.VALUE = ''
+                     
+                  * statusCode end               
+                  
+                  STAT.VAL = 'TerminalDetails'  ;* Step down to next child
+                  STATUS = XDOMLocateNode(CARRIER.TERMINAL.BY.POSTAL.CODE.RESPONSE.HANDLE, XDOM.CHILD, 3, XDOM.ELEMENT.NODE, TERMINAL.DETAILS.HANDLE)                
+   
+                     STAT.VAL = 'TerminalDetailByPostalCode'
+                     STATUS = XDOMLocateNode(TERMINAL.DETAILS.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, TERMINAL.DETAILS.BY.POSTAL.CODE.HANDLE) 
+   
+                        STAT.VAL = 'address1'
+                        STATUS = XDOMLocateNode(TERMINAL.DETAILS.BY.POSTAL.CODE.HANDLE, XDOM.CHILD, XDOM.FIRST.CHILD, XDOM.ELEMENT.NODE, ADDRESS1.HANDLE)                      
+                        STATUS = XDOMGetNodeVAlue(ADDRESS1.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<6> = NODE.VALUE ; NODE.VALUE = ''
+
+                        STAT.VAL = 'address2'
+                        STATUS = XDOMLocateNode(TERMINAL.DETAILS.BY.POSTAL.CODE.HANDLE, XDOM.CHILD, 2, XDOM.ELEMENT.NODE, ADDRESS2.HANDLE)                      
+                        STATUS = XDOMGetNodeVAlue(ADDRESS2.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<7> = NODE.VALUE ; NODE.VALUE = ''
+   
+                        STAT.VAL = 'carrierName'
+                        STATUS = XDOMLocateNode(TERMINAL.DETAILS.BY.POSTAL.CODE.HANDLE, XDOM.CHILD, 3, XDOM.ELEMENT.NODE, CARRIER.NAME.HANDLE)                      
+                        STATUS = XDOMGetNodeVAlue(CARRIER.NAME.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<8> = NODE.VALUE ; NODE.VALUE = ''
+   
+                        STAT.VAL = 'city'
+                        STATUS = XDOMLocateNode(TERMINAL.DETAILS.BY.POSTAL.CODE.HANDLE, XDOM.CHILD, 4, XDOM.ELEMENT.NODE, CITY.HANDLE)                      
+                        STATUS = XDOMGetNodeVAlue(CITY.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<9> = NODE.VALUE ; NODE.VALUE = ''
+                        
+                        STAT.VAL = 'contact'
+                        STATUS = XDOMLocateNode(TERMINAL.DETAILS.BY.POSTAL.CODE.HANDLE, XDOM.CHILD, 5, XDOM.ELEMENT.NODE, CONTACT.HANDLE)                      
+
+                           STAT.VAL = 'email'
+                           STATUS = XDOMLocateNode(CONTACT.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, EMAIL.HANDLE)                      
+                           STATUS = XDOMGetNodeVAlue(EMAIL.HANDLE, NODE.VALUE) 
+                           TEMP.ARRAY<10> = NODE.VALUE ; NODE.VALUE = ''
+                        
+                           STAT.VAL = 'fax'
+                           STATUS = XDOMLocateNode(CONTACT.HANDLE, XDOM.CHILD, 2, XDOM.ELEMENT.NODE, FAX.HANDLE)                      
+                           STATUS = XDOMGetNodeVAlue(FAX.HANDLE, NODE.VALUE) 
+                           TEMP.ARRAY<11> = NODE.VALUE ; NODE.VALUE = ''
+                        
+                           STAT.VAL = 'name'
+                           STATUS = XDOMLocateNode(CONTACT.HANDLE, XDOM.CHILD, 3, XDOM.ELEMENT.NODE, NAME.HANDLE)                      
+                           STATUS = XDOMGetNodeVAlue(NAME.HANDLE, NODE.VALUE) 
+                           TEMP.ARRAY<12> = NODE.VALUE ; NODE.VALUE = ''
+                           
+                           STAT.VAL = 'phone'
+                           STATUS = XDOMLocateNode(CONTACT.HANDLE, XDOM.CHILD, 4, XDOM.ELEMENT.NODE, PHONE.HANDLE)                      
+                           STATUS = XDOMGetNodeVAlue(PHONE.HANDLE, NODE.VALUE) 
+                           TEMP.ARRAY<13> = NODE.VALUE ; NODE.VALUE = ''
+                        
+                           STAT.VAL = 'title'
+                           STATUS = XDOMLocateNode(CONTACT.HANDLE, XDOM.CHILD, 5, XDOM.ELEMENT.NODE, TITLE.HANDLE)                      
+                           STATUS = XDOMGetNodeVAlue(TITLE.HANDLE, NODE.VALUE) 
+                           TEMP.ARRAY<14> = NODE.VALUE ; NODE.VALUE = ''                                                                        
+                        
+                           STAT.VAL = 'tollFree'
+                           STATUS = XDOMLocateNode(CONTACT.HANDLE, XDOM.CHILD, 6, XDOM.ELEMENT.NODE, TOLL.FREE.HANDLE)                      
+                           STATUS = XDOMGetNodeVAlue(TOLL.FREE.HANDLE, NODE.VALUE) 
+                           TEMP.ARRAY<15> = NODE.VALUE ; NODE.VALUE = ''                        
+
+                        * contact end
+                     
+                        STAT.VAL = 'country'
+                        STATUS = XDOMLocateNode(TERMINAL.DETAILS.BY.POSTAL.CODE.HANDLE, XDOM.CHILD, 6, XDOM.ELEMENT.NODE, COUNTRY.HANDLE)                      
+                        STATUS = XDOMGetNodeVAlue(COUNTRY.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<16> = NODE.VALUE ; NODE.VALUE = ''
+   
+                        STAT.VAL = 'dataGroup'
+                        STATUS = XDOMLocateNode(TERMINAL.DETAILS.BY.POSTAL.CODE.HANDLE, XDOM.CHILD, 7, XDOM.ELEMENT.NODE, DATA.GROUP.HANDLE)                      
+                        
+                           STAT.VAL = 'expirationDate'
+                           STATUS = XDOMLocateNode(DATA.GROUP.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, EXPERATION.DATE.HANDLE)                      
+                           STATUS = XDOMGetNodeVAlue(EXPIRATION.DATE.HANDLE, NODE.VALUE) 
+                           TEMP.ARRAY<17> = NODE.VALUE ; NODE.VALUE = ''                        
+   
+                           STAT.VAL = 'dataGroup.name'
+                           STATUS = XDOMLocateNode(DATA.GROUP.HANDLE, XDOM.CHILD, 2, XDOM.ELEMENT.NODE, DATA.GROUP.NAME.HANDLE)                      
+                           STATUS = XDOMGetNodeVAlue(DATA.GROUP.NAME.HANDLE, NODE.VALUE) 
+                           TEMP.ARRAY<18> = NODE.VALUE ; NODE.VALUE = '' 
+                           
+                           STAT.VAL = 'release.date'
+                           STATUS = XDOMLocateNode(DATA.GROUP.HANDLE, XDOM.CHILD, 3, XDOM.ELEMENT.NODE, RELEASE.DATE.HANDLE)                      
+                           STATUS = XDOMGetNodeVAlue(RELEASE.DATE.HANDLE, NODE.VALUE) 
+                           TEMP.ARRAY<19> = NODE.VALUE ; NODE.VALUE = ''
+                                
+                           STAT.VAL = 'supportId'
+                           STATUS = XDOMLocateNode(DATA.GROUP.HANDLE, XDOM.CHILD, 4, XDOM.ELEMENT.NODE, SUPPORT.ID.HANDLE)                      
+                           STATUS = XDOMGetNodeVAlue(SUPPORT.ID.HANDLE, NODE.VALUE) 
+                           TEMP.ARRAY<20> = NODE.VALUE ; NODE.VALUE = ''                                                                                            
+                     
+                        * dataGroup end
+                     
+                        STAT.VAL = 'postalCode'
+                        STATUS = XDOMLocateNode(TERMINAL.DETAILS.BY.POSTAL.CODE.HANDLE, XDOM.CHILD, 8, XDOM.ELEMENT.NODE, POSTAL.CODE.HANDLE)                      
+                        STATUS = XDOMGetNodeVAlue(POSTAL.CODE.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<21> = NODE.VALUE ; NODE.VALUE = ''
+                        
+                        STAT.VAL = 'serviceCode'
+                        STATUS = XDOMLocateNode(TERMINAL.DETAILS.BY.POSTAL.CODE.HANDLE, XDOM.CHILD, 9, XDOM.ELEMENT.NODE, SERVICE.CODE.HANDLE)                      
+                        STATUS = XDOMGetNodeVAlue(SERVICE.CODE.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<22> = NODE.VALUE ; NODE.VALUE = ''
+                        
+                        STAT.VAL = 'serviceMethod'
+                        STATUS = XDOMLocateNode(TERMINAL.DETAILS.BY.POSTAL.CODE.HANDLE, XDOM.CHILD, 10, XDOM.ELEMENT.NODE, SERVICE.METHOD.HANDLE)                      
+                        STATUS = XDOMGetNodeVAlue(SERVICE.METHOD.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<23> = NODE.VALUE ; NODE.VALUE = ''
+                     
+                        STAT.VAL = 'serviceType'
+                        STATUS = XDOMLocateNode(TERMINAL.DETAILS.BY.POSTAL.CODE.HANDLE, XDOM.CHILD, 11, XDOM.ELEMENT.NODE, SERVICE.TYPE.HANDLE)                      
+                        STATUS = XDOMGetNodeVAlue(SERVICE.TYPE.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<24> = NODE.VALUE ; NODE.VALUE = ''
+                     
+                        STAT.VAL = 'stateProvince'
+                        STATUS = XDOMLocateNode(TERMINAL.DETAILS.BY.POSTAL.CODE.HANDLE, XDOM.CHILD, 12, XDOM.ELEMENT.NODE, STATE.PROVINCE.HANDLE)                      
+                        STATUS = XDOMGetNodeVAlue(STATE.PROVINCE.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<25> = NODE.VALUE ; NODE.VALUE = ''
+                     
+                        STAT.VAL = 'terminalCode'
+                        STATUS = XDOMLocateNode(TERMINAL.DETAILS.BY.POSTAL.CODE.HANDLE, XDOM.CHILD, 13, XDOM.ELEMENT.NODE, TERMINAL.CODE.HANDLE)                      
+                        STATUS = XDOMGetNodeVAlue(TERMINAL.CODE.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<26> = NODE.VALUE ; NODE.VALUE = ''
+                
+                        STAT.VAL = 'terminalName'
+                        STATUS = XDOMLocateNode(TERMINAL.DETAILS.BY.POSTAL.CODE.HANDLE, XDOM.CHILD, 14, XDOM.ELEMENT.NODE, TERMINAL.NAME.HANDLE)                      
+                        STATUS = XDOMGetNodeVAlue(TERMINAL.NAME.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<27> = NODE.VALUE ; NODE.VALUE = ''
+                     
+                        STAT.VAL = 'terminalType'
+                        STATUS = XDOMLocateNode(TERMINAL.DETAILS.BY.POSTAL.CODE.HANDLE, XDOM.CHILD, 15, XDOM.ELEMENT.NODE, TERMINAL.TYPE.HANDLE)                      
+                        STATUS = XDOMGetNodeVAlue(TERMINAL.TYPE.HANDLE, NODE.VALUE) 
+                        TEMP.ARRAY<28> = NODE.VALUE ; NODE.VALUE = ''
+                                                                                    
+                     * TerminalDetailByPostalCode end                    
+               
+                  * TerminalDetails end
+
+               * CarrierTerminalByPostalCodeResponse end
+
+               IF RET.DATA THEN
+                  FOR R = 1 TO 28 
+                        PC.RESP<R,PC.RESP.CNT,SV.COUNT> = TEMP.ARRAY<R>   
+                  NEXT R
+                  BEGIN CASE
+                     CASE SV.COUNT = 1
+                        SV.COUNT = 2
+                     CASE SV.COUNT = 2
+                        SV.COUNT = 1
+                        PC.RESP.CNT+=1         
+                  END CASE
+               END
+               RET.DATA=1
+
+               NEXT X       
+         
+            * TerminalByPostalCodeResponses end
+      
+         * TerminalsByPostalCodeResponse Main Document end     
+         
+      * TerminalsByPostalCode Main Document end
+
+      RETURN
+
+************************************************************************      
+CREATE.VOUT:
+************************************************************************
+      IF CALL.TERMINALS THEN  ; * NKH05
+
+         * Data from Terminals By Postal Code
+         VOUT = PC.RESP ;* Populates VOUT<1> thru VOUT<28>
+
+         * Data from Transit Method
+         ORIG.ZIP = RESP<42>
+         DEST.ZIP = RESP<31>
+         RESP.CNT = DCOUNT(RESP<1>,@VM)
+         FOR TM = 1 TO RESP.CNT
+            TM.SCAC = RESP<1,TM>
+            FOR PC = 1 TO RESP.CNT
+               LOCATE(TM.SCAC,PC.RESP,1,PC;S.POS;'AL') THEN
+                  IF PC.RESP<5,PC,S.POS> = "PASS" AND RESP<15,TM,1> = 'PASS' THEN
+                     VOUT<29,PC> = RESP<21,TM,1>   ;* Transit Days
+                     VOUT<30,PC> = RESP<9,TM,1>    ;* Destination Movement Type
+                     VOUT<31,PC> = RESP<10,TM,1>   ;* Origin Movement Type
+                     VOUT<32,PC> = RESP<11,TM,1>   ;* Combined Service Movement Type
+                     VOUT<19,PC> = RESP<5,TM,1>    ;* Uses Transit Method reference date
+                     VOUT<33,PC> = RESP<15,TM,1>   ;* Status   ; * NKH06                                                         
+                  END ELSE
+                     VOUT<29,PC> = ""   ;* Transit Days
+                     VOUT<30,PC> = ""   ;* Destination Movement Type
+                     VOUT<31,PC> = ""   ;* Origin Movement Type
+                     VOUT<32,PC> = ""   ;* Combined Service Movement Type
+                     VOUT<19,PC> = ""   ;* Uses Transit Method reference date
+                     VOUT<33,PC> = RESP<15,TM,1>   ;* Status   ; * NKH06                                                         
+                  END
+                  GOSUB CHECK.TRANSIT.DAYS.OVERRIDE                
+               END
+            NEXT PC         
+         NEXT TM 
+      * Begin NKH05
+      END ELSE      
+      
+         * Data from Transit Method
+         ORIG.ZIP = RESP<42>
+         DEST.ZIP = RESP<31>
+         RESP.CNT = DCOUNT(RESP<1>,@VM)
+         FOR TM = 1 TO RESP.CNT
+            TM.SCAC = RESP<1,TM,1>         
+            LOCATE(TM.SCAC,VOUT<1>,1;S.POS;'AL') ELSE
+               IF RESP<15,TM,1> = 'PASS' THEN         
+                  VOUT<1,TM> = RESP<1,TM,1>     ;* SCAC
+                  VOUT<29,TM> = RESP<21,TM,1>   ;* Transit Days
+                  VOUT<30,TM> = RESP<9,TM,1>    ;* Destination Movement Type
+                  VOUT<31,TM> = RESP<10,TM,1>   ;* Origin Movement Type
+                  VOUT<32,TM> = RESP<11,TM,1>   ;* Combined Service Movement Type
+                  VOUT<19,TM> = RESP<5,TM,1>    ;* Uses Transit Method reference date
+                  PC=TM            
+                  GOSUB CHECK.TRANSIT.DAYS.OVERRIDE                               
+               END ELSE
+                  VOUT<29,TM> = ""   ;* Transit Days
+                  VOUT<30,TM> = ""   ;* Destination Movement Type
+                  VOUT<31,TM> = ""   ;* Origin Movement Type
+                  VOUT<32,TM> = ""   ;* Combined Service Movement Type
+                  VOUT<19,TM> = ""   ;* Uses Transit Method reference date  
+               END
+            END
+         NEXT TM       
+      END            
+      * End NKH05
+
+      RETURN
+
+************************************************************************      
+CHECK.TRANSIT.DAYS.OVERRIDE:
+************************************************************************      
+      CK.CS=0         
+      READV CARRIER.ID FROM SCAC.XREF, TM.SCAC, 1 ELSE CARRIER.ID = ''                         
+      READ NSMC.LIST FROM F.TABLES,'NSMC.CARRIERS' ELSE NSMC.LIST=''   
+      LOCATE CARRIER.ID IN NSMC.LIST SETTING WPOS THEN CK.CS=1  
+      
+      IF CLIENT.ID='01031' AND CARRIER.ID='25117' THEN  
+         TRANSIT.TIME='09'               
+         ORIG.DIR.FLG='D'                
+         DEST.DIR.FLG='D'                
+         COMB.DIR.FLG='D'                
+      END                                
+
+      DEST.FOUND=0
+      IF CK.CS THEN                      
+         VOUT<29,PC> = ''   ;* Transit Days
+         VOUT<30,PC> = ''   ;* Destination Movement Type
+         VOUT<31,PC> = ''   ;* Origin Movement Type
+         VOUT<32,PC> = ''   ;* Combined Service Movement Type
+         
+         OPEN '','CARRIER.SVC' TO F.CS THEN        
+            CS.ID=CARRIER.ID:'*':ORIG.ZIP   
+            READ CS.REC FROM F.CS,CS.ID ELSE       
+               CS.ID=CARRIER.ID:'*':ORIG.ZIP[1,3]     
+               READ CS.REC FROM F.CS,CS.ID ELSE    
+                  CS.REC=''              
+               END                       
+            END                          
+            IF CS.REC#'' THEN            
+               DEST.FOUND=0              
+               LOCATE DEST.ZIP IN CS.REC<1> SETTING DPOS THEN          
+                  DEST.FOUND=1           
+               END ELSE                  
+                  LOCATE DEST.ZIP[1,3] IN CS.REC<1> SETTING DPOS THEN  
+                     DEST.FOUND=1        
+                  END                    
+               END                       
+               IF DEST.FOUND THEN                 
+                  VOUT<29,PC>=CS.REC<3,DPOS>      ; * Transit Days
+                  VOUT<31,PC>='D'                 ; * Origin Movement Type
+                  VOUT<30,PC>=CS.REC<2,DPOS>      ; * Destination Movement Type
+                  VOUT<32,PC>=''                  ; * Combined Service Movement Type
+                  IF VOUT<30,PC> # '' THEN
+                     IF VOUT<31,PC>='D' AND VOUT<30,PC>='D' THEN     
+                        VOUT<32,PC>='D'           
+                     END ELSE            
+                        VOUT<32,PC>='I'           
+                     END                 
+                  END                    
+               END                       
+            END                          
+         END                             
+      END                                
+
+      RETURN
+      
+************************************************************************      
+SEND.EMAIL:
+************************************************************************      
+      * Begin NKH03      
+      END.TIME = TIME()                
+      TIME.DIFF = END.TIME - BEG.TIME 
+
+      IF NOT(EMAIL.RECOVER) THEN
+         EMAIL.OUT<6,-1>=' '
+         EMAIL.OUT<6,-1>='Begin Time: ':OCONV(BEG.TIME,'MTHS')
+         EMAIL.OUT<6,-1>='End Time: ':OCONV(END.TIME,'MTHS')
+         EMAIL.OUT<6,-1>='Time Diff: ':TIME.DIFF
+      END ELSE
+         EMAIL.OUT<6,-1>='Time: ':OCONV(BEG.TIME,'MTHS')
+      END
+      EMAIL.RECOVER=0
+      EVIN=EMAIL.OUT
+      EVOUT=''
+      IF NOT(SOAP.CONNECT.FAIL) THEN CALL SENDMAIL(EVIN,EVOUT) 
+      EMAIL.OUT<6>='User:':USER:' Date:':OCONV(DATE(),'D2/'):' Time:':OCONV(TIME(),'MTHS') 
+      EMAIL.OUT<6,-1>=' ':@VM   
+      SEND.EMAIL=0   
+      * End NKH03                
+
+      RETURN      
+
+************************************************************************      
+WRITE.ERR.LOG:
+************************************************************************      
+      ERR.KEY = PROG.NAME:'*':DATE():'*':TIME()      
+      WRITE ERR.REC ON ERR.LOG, ERR.KEY
+      ERR.REC = ''
+
+      RETURN
+      

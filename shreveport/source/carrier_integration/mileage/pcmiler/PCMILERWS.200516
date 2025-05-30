@@ -1,0 +1,336 @@
+      SUBROUTINE PCMILERWS(VIN,VOUT,F.TABLES,STATUS)
+*****************************************************************************
+* Program name : PCMILERXML
+* Author       : Greg Bino
+* Date written : 11-30-2015
+* Library      : FBBP
+* COPYRIGHT (C) 1998 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* PCMILER CALL TO WEBSERVICE INTERFACE
+*
+* Last updated by AFS (gbino) at 07:57:18 on 12/16/2015.
+*
+* Start modification history
+* Mod 00 11-30-15, grb, 21092.0000  New program
+* End modification history
+*
+******************************************************************************
+*
+* Initialize variables
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE UNIVERSE.INCLUDE XML.H
+      COMMON PROG.PARAMS(24)
+      EQU CH.NUM TO PROG.PARAMS(1)
+      EQU USER TO PROG.PARAMS(2)
+      EQU SERVER.NAME TO PROG.PARAMS(3)
+
+
+      CALL GET.USER.NEW(USER,CH.NUM)
+      VOUT=''
+      TIME.LINE=''
+      ST.TIME = TIME()
+      TIME.LINE<1,1,1>=TIME()            ; * start time
+      PROMPT ''
+      TIMEOUT = 10000
+      PROG.NAME='PCMILERWS'
+
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'PCMILERWS' ; UPL.VOUT = ''
+      UPL.VIN<3> = USER
+      UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+      OPEN 'CONTROL' TO FILE.CNTL ELSE
+         CALL ELINE('UNABLE TO OPEN CONTROL FILE')
+         RETURN
+      END
+ OPEN '','PCMILER.LOG' TO F.PCM ELSE
+         ERRLINE = 'UNABLE TO OPEN PCMILER'
+**         GOSUB ERROR.CONDITION
+      END
+
+      READ XMLPARAMS FROM FILE.CNTL,"PCMXML" THEN
+         URL = XMLPARAMS<1>
+         SERVER = XMLPARAMS<2>
+         SOAPACTION = XMLPARAMS<3>
+         LOGGING = XMLPARAMS<4>          ; * Y/N
+         LOGFILE = XMLPARAMS<5>
+         EMAIL.RECIP = XMLPARAMS<6>
+         TEST.FLG = XMLPARAMS<7>
+         VERSION = XMLPARAMS<8>
+      END ELSE
+         URL = "http://portal.trendsetinc.com/miler27/milerclientws.asmx"
+         SOAPACTION = "http://tempuri.org/GetMileage"
+         LOGGING = "N"
+         EMAIL.RECIP = 'gbino@afs.net'
+         TEST.FLG = @FALSE
+         VERSION = 32
+      END
+
+      IF LOGGING = "Y" OR LOGGING = 1 THEN
+         LOGGING = @TRUE
+      END ELSE
+         LOGGING = @FALSE
+      END
+      TESTING = 0
+      TESTING.URL = 0
+      RESULTS.DTL.RAW = ''
+      RESULTS.DTL = ''
+      RESULTS.HDR = ''
+      EMAIL.OUT=''
+      EMAIL.OUT<1,-1>='HelpDesk@afs.net'
+      EMAIL.OUT<2,-1>= EMAIL.RECIP
+      EMAIL.OUT<4>='FBBP_PCMXML@afs.net'
+      EMAIL.OUT<5>='Error while trying trying to access pcmiler Web-Service .'
+*
+      Ret = setHTTPDefault( "VERSION" , "1.1" )    ; * required with this webservice
+      GOSUB OPEN.SOAP.CONNECTION
+      IF SOAP.RET = 0 THEN
+         GOSUB SETREQUEST
+         IF SEND.RET = 0 THEN
+            GOSUB PARSE.RESULTS
+         END
+      END
+      STATUS = SEND.RET
+*****      IF VOUT<1> LE 0 THEN               ; * no miles so must be error
+*****         VOUT<1> = "ERROR"
+*****      END
+*
+      TIME.LINE<1,1,1>=TIME()            ; * finish time
+
+9999: * THE END
+      IF LOGGING THEN
+         LOG.RET = PROTOCOLLOGGING(LOGFILE,"OFF",10)
+      END
+      RETURN
+*************************************************************************
+OPEN.SOAP.CONNECTION:
+*************************************************************************
+      MAX.TRIES = 5
+      ATTEMPTS = 0
+      LOOP
+         ATTEMPTS = ATTEMPTS + 1
+         START.FUNCTION.TIME = TIME()
+         IF LOGGING THEN
+            LOG.RET = PROTOCOLLOGGING(LOGFILE,"ON",10)
+         END
+         SOAP.RET = SoapCreateRequest(URL , SOAPACTION , SoapReq)
+      UNTIL SOAP.RET = 0 OR ATTEMPTS > MAX.TRIES DO
+         IF SOAP.RET <> 0 THEN
+            FATAL.ERROR.SUBJ = 'Cannot connect to GREENVILLE web-service'
+            EMAIL.OUT<6>='FBBP PCMILERWS could not connect for user ':USER:' on ':OCONV(DATE(),'D2/'):' at ':OCONV(TIME(),'MTHS'):'.'
+            EMAIL.OUT<6>:='  Please confirm Greenville webservice is working correctly.'
+            GOSUB REPORT.FATAL.ERROR
+            RETURN TO 9999
+         END
+      REPEAT
+
+      RETURN
+**********************************************************************
+SETREQUEST:
+**********************************************************************
+      LINE.CNT = DCOUNT(VIN<1>,@VM)
+      PCM.FORMAT = VIN<2>
+      IF PCM.FORMAT='ZipCode' THEN
+         ZIP1 = VIN<1>[1,5]
+         ZIP2 = VIN<1>[7,5]
+         ZIP2 = VIN<3,2>
+      END ELSE
+         ZIP1 = VIN<1>[1,7]
+         ZIP2 = VIN<1>[9,6]
+         ZIP2 = VIN<3,2>
+      END
+      ORIG.ZIP = ZIP1
+      DEST.ZIP = ZIP2
+*
+      GOSUB BUILD.XML.REQUEST
+      SETREQUEST.TYPE = 1
+      SETREQUEST.STATUS = soapSetRequestContent(SoapReq, XML.REQUEST, SETREQUEST.TYPE)
+      *
+      BEGIN CASE
+         CASE SETREQUEST.STATUS = 0      ; * Successful
+            START.FUNCTION.TIME = TIME()
+            GOSUB SUBMIT.REQUEST
+         CASE 1
+            BEGIN CASE
+               CASE SETREQUEST.STATUS = 1
+                  SETREQUEST.DESC = 'Invalid request handle.'
+               CASE SETREQUEST.TYPE = 1
+                  SETREQUEST.DESC = '1'
+               CASE SETREQUEST.STATUS = 2
+                  SETREQUEST.DESC = 'Unable to Open the file named ':XML.REQUEST
+               CASE SETREQUEST.STATUS = 3
+                  SETREQUEST.DESC = 'Unable to Read the file named ':XML.REQUEST
+               CASE 1
+                  SETREQUEST.DESC = 'Undefined Status'
+            END CASE
+
+            EMAIL.OUT<5>='PCMILERXML soapSetRequest returned the following error - ': SETREQUEST.DESC
+            EMAIL.OUT<6>='FBBP PCMILERXML could not SetRequestContent for user':USER:' on ':OCONV(DATE(),'D2/'):' at ':OCONV(TIME(),'MTHS'):'.'
+            EMAIL.OUT<6>:=' Please confirm PCMILER webservice are working correctly.'
+            EMAIL.OUT<6>:= 'SETREQUEST.STATUS =':SETREQUEST.STATUS:' - ':SETREQUEST.DESC
+            GOSUB REPORT.INTERNAL.ERROR
+            RETURN TO 9999
+      END CASE
+      RETURN
+
+*****************************************************************
+BUILD.XML.REQUEST:
+*****************************************************************
+      *****    SERVER = 'gr91vrtpa05'
+      ORIG.CITY = "NA"                   ; * neccesary for web service request
+      ORIG.STATE = "NA"                  ; * neccesary for web service request
+      ** ORIG.ZIP = 97230
+      ORIG.COUNTRY = ""
+      IF ORIG.ZIP MATCHES '1A1N1A1N1A1N' THEN
+         ORIG.COUNTRY='CAN'
+      END ELSE
+         ORIG.COUNTRY='USA'
+      END
+      DEST.CITY ="NA"                    ; * neccesary for web service request
+      DEST.STATE = "NA"                  ; * neccesary for web service request
+      ****** DEST.ZIP = 64014
+      DEST.COUNTRY = ""
+      IF DEST.ZIP MATCHES '1A1N1A1N1A1N' THEN
+         DEST.COUNTRY='CAN'
+      END ELSE
+         DEST.COUNTRY='USA'
+      END
+      TIME.LINE<1,1,2>=TIME()
+      xmlns=''
+      XML.REQUEST = ''
+      XML.REQUEST := '<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+      XML.REQUEST := '<soap:Body>'
+      *****  XML.REQUEST := '<GetMileageNoCache xmlns="http://tempuri.org/">'
+      XML.REQUEST := '<GetMileage xmlns="http://tempuri.org/">'
+      XML.REQUEST := '<request>'
+      XML.REQUEST := '<OriginCity>':ORIG.CITY:'</OriginCity>'
+      XML.REQUEST := '<OriginState>':ORIG.STATE:'</OriginState>'
+      XML.REQUEST := '<OriginZip>':ORIG.ZIP:'</OriginZip>'
+      XML.REQUEST := '<OriginCountryCode>':ORIG.COUNTRY:'</OriginCountryCode>'
+      XML.REQUEST := '<DestinationCity>':DEST.CITY:'</DestinationCity>'
+      XML.REQUEST := '<DestinationState>':DEST.STATE:'</DestinationState>'
+      XML.REQUEST := '<DestinationZip>':DEST.ZIP:'</DestinationZip>'
+      XML.REQUEST := '<DestinationCountryCode>':DEST.COUNTRY:'</DestinationCountryCode>'
+      XML.REQUEST := '<version>':VERSION:'</version>'
+      XML.REQUEST := '</request>'
+  **    XML.REQUEST := '<server>':SERVER:'</server>'
+      XML.REQUEST := '</GetMileage>'
+      ****** XML.REQUEST := '</GetMileageNoCache>'
+      XML.REQUEST := '</soap:Body>'
+      XML.REQUEST := '</soap:Envelope>'
+
+      RETURN
+******************************************************************************
+SUBMIT.REQUEST:
+******************************************************************************
+      TIME.LINE<1,1,3>=TIME()
+      SEND.RET = SoapSubmitRequest(SoapReq, TIMEOUT, RESULTS.HDR, RESULTS.DTL.RAW, RESULTS.STATUS)
+      IF SEND.RET <> 0 THEN
+         FATAL.ERROR.SUBJ = 'PCMILERXML received a fatal error while submitting a web-service request'
+         FAULT.INFO = ''
+         SOAP.FAULT.STATUS = SOAPGetFault(RESULTS.DTL.RAW, FAULT.INFO)
+         BEGIN CASE
+            CASE SOAP.FAULT.STATUS = 0
+*No problem to report
+            CASE SOAP.FAULT.STATUS = 1
+            CASE SOAP.FAULT.STATUS = 2
+               EMAIL.OUT<6>='PCMILERXML reports a Soap Fault of 2'
+               EMAIL.OUT<6,-1>='A SOAP.FAULT.STATUS OF ':SOAP.FAULT.STATUS:' was returned for User ':USER:' on ':OCONV(DATE(),'D2/'):' at ':OCONV(TIME(),'MTHS'):'.'
+               EMAIL.OUT<6,-1> = 'SOAP Fault not found in response data.'
+            CASE 1
+*Unidentified cause
+               EMAIL.OUT<6>='PCMILERXML reports an Unknown Soap Fault'
+               EMAIL.OUT<6,-1>='SOAP.FAULT.STATUS=':SOAP.FAULT.STATUS:' FAULT.INFO=':FAULT.INFO
+         END CASE
+         IF SOAP.FAULT.STATUS # 0 THEN
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>='Ret=':SEND.RET
+            EMAIL.OUT<6,-1>='RESULTS.STATUS=':RESULTS.STATUS
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>='Fault Code=':FAULT.INFO<1>
+            EMAIL.OUT<6,-1>='Fault String=':FAULT.INFO<2>
+            EMAIL.OUT<6,-1>='Fault Detail=':FAULT.INFO<3>
+            EMAIL.OUT<6,-1>='Fault Actor=':FAULT.INFO<4>
+            EMAIL.OUT<6,-1>=' '
+            GOSUB REPORT.FATAL.ERROR
+            RETURN TO 9999
+         END
+      END ELSE
+         RESULTS.STATUS = ''
+      END
+      TIME.LINE<1,1,4>=TIME()
+
+      RETURN
+******************************************************************************
+PARSE.RESULTS:
+******************************************************************************
+*****DEBUG
+IF USER='DAVID' THEN CALL ELINE('RAW DATA')
+      RESULTS.DTL = RESULTS.DTL.RAW
+***WRITE RESULTS.DTL ON F.PCM,DATE():"*":TIME()
+      IF TEST.FLG THEN
+         DEBUG
+      END
+      ****      PR30 = INDEX(RESULTS.DTL,"PCMPR27",1)       ; * use practical ver 27
+      PR30 = INDEX(RESULTS.DTL,"PCMSH30",1)        ; * use shortest ver 27 12/15/15
+      PR301 = RESULTS.DTL[PR30+8,9]
+      PR302 = INDEX(PR301,"<",1)
+      PR30M = PR301[1,PR302-1]
+      IF PR30M LE 0 OR NOT(NUM(PR30M)) THEN
+         PR29 = INDEX(RESULTS.DTL,"PCMPR29",1)
+         PR291 = RESULTS.DTL[PR29+6,7]
+         PR292 = INDEX(PR291,"<",1)
+         PR29M = PR291[1,PR292-1]
+         IF PR29M LE 0 OR NOT(NUM(PR29M)) THEN
+****            VOUT<1> = "ERROR"
+            VOUT<1> = 0
+         END ELSE
+            VOUT<1> = PR29M              ; * miles
+            VOUT<2> = "V29s"               ; * version
+         END
+      END ELSE
+         VOUT<1> = PR30M                 ; * miles
+         VOUT<2> = "V30s"                ; * version
+      END
+      RETURN
+
+******************************************************************************
+REPORT.INTERNAL.ERROR:
+******************************************************************************
+      EMAIL.START.TIME = TIME()
+
+      EMAIL.OUT<6, -1> = 'URL = ':URL
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = 'XML.REQUEST = ':XML.REQUEST
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = 'RESULTS.HDR = ':RESULTS.HDR
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = 'RESULTS.DTL.RAW = ':RESULTS.DTL.RAW
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = 'RESULTS.DTL = ':RESULTS.DTL
+      EVIN=EMAIL.OUT
+      EVOUT=''
+      CALL SENDMAIL(EVIN,EVOUT)
+****      VOUT<1> = "ERROR"
+      VOUT<1> = 0
+      RETURN
+******************************************************************************
+REPORT.FATAL.ERROR:
+******************************************************************************
+      EMAIL.START.TIME = TIME()
+      EMAIL.OUT<1>=EMAIL.RECIP
+      EMAIL.OUT<1,-1> = 'khoskins@afs.net'
+      EMAIL.OUT<5>=FATAL.ERROR.SUBJ
+      EMAIL.OUT<6,-1> = 'URL = ':URL
+      EVIN=EMAIL.OUT
+      EVOUT=''
+      CALL SENDMAIL(EVIN,EVOUT)
+      IDATE=DATE()
+      ITIME=TIME()
+      TIME.BLOCK=INT(ITIME/600)
+      VOUT<1> = "ERROR"
+      RETURN
+   END

@@ -1,0 +1,189 @@
+* Program to Update YTD amounts per sales code on FB.BILLS.YTD file aTTRIBUTES 79, 80 & 81.
+*
+      OPEN '','FB.BILLS.YTD' TO F.BILLS.YTD ELSE
+         CALL ELINE("CANT OPEN FB.BILLS.YTD")
+         STOP
+      END
+*
+      OPEN '','AR.BRIDGE.LAST' TO F.AR.BRIDGE.LAST ELSE
+         CALL ELINE("CANT OPEN AR.BRIDGE.LAST")
+         STOP
+      END
+
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL ELINE("Cannot open CLIENTS file!")
+         STOP
+      END
+
+
+
+      TODAY = DATE()
+      CUTOFF.DATE = TODAY - 366  ;* Maximum of one year back.
+      O.CUTOFF.DATE = OCONV(CUTOFF.DATE,"D2/")
+
+      THIS.MONTH=OCONV(TODAY,'DM')
+      THIS.DAY=OCONV(TODAY,'DD')
+      THIS.YEAR=OCONV(TODAY,'DY')
+
+      EOF = "N"
+      CLIENT.ARRAY = ""
+      CL.CNT = 1
+
+      W.STMT = \SSELECT CLIENTS WITH 82 GE "\:O.CUTOFF.DATE:\"\
+
+      CRT @(-1)
+      CRT ; CRT ; CRT W.STMT
+
+      EXECUTE W.STMT
+
+      CALL ELINE("")
+*
+      LOOP
+         READNEXT ID.CLIENT ELSE EOF = "Y"
+      UNTIL EOF = "Y" DO
+         READ CLIENT.REC FROM F.CLIENTS, ID.CLIENT THEN
+            GOSUB GET.FISCAL.YEDATE
+            CLIENT.ARRAY<CL.CNT,1> = ID.CLIENT
+            CLIENT.ARRAY<CL.CNT,2> = FYR.DATE
+            CLIENT.ARRAY<CL.CNT,3> = CLIENT.REC<29>
+            CL.CNT += 1
+         END ELSE
+            CALL ELINE("Client ":ID.CLIENT:" Not found")
+         END
+      REPEAT
+*
+      FOR II = 1 TO CL.CNT
+         ID.CLIENT = CLIENT.ARRAY<II,1>
+         CL.FYR.START.DATE = OCONV(CLIENT.ARRAY<II,2>,"D2/")
+*   CRT "Processing Client - ":ID.CLIENT:"  ":
+*   CRT CLIENT.ARRAY<II,3> :"  ":
+*   CRT CL.FYR.START.DATE
+
+         GOSUB REBUILD.YTD.SCODE.AMOUNTS
+      NEXT II
+
+      CRT ; CRT CL.CNT:" Clients to process"
+
+      STOP
+*
+REBUILD.YTD.SCODE.AMOUNTS: *
+*
+*** Rebuild fields 79, 80 & 81 - YTD Qty and Amounts per Sales Code.
+*
+
+      CLEAR.YTD = 1   ; * Set to 1 if you wish to clear/reset fields 79 (Sales Codes) , 80 (Qty Per Code) and 81 (Amt Per Code)
+      IF CLEAR.YTD THEN GOSUB CLEAR.SCODE.VALS
+*
+      STMT = \SSELECT AR.BRIDGE.LAST WITH CLIENT# = "\:ID.CLIENT:\" \
+      STMT := \ AND WITH PROC.DATE GE "\:CL.FYR.START.DATE:\" \
+      STMT := \ BY PROC.DATE\
+
+*
+      EXECUTE STMT CAPTURING OUTPUT
+      CRT @(-1)
+
+      CRT @(0,5):"Selecting records to process for Client - ":ID.CLIENT:"  ":
+      CRT CLIENT.ARRAY<II,3> :"  from ":
+      CRT CL.FYR.START.DATE
+
+      CRT @(0,10):OUTPUT
+
+*EXECUTE "TIME"
+*CALL ELINE("")
+*RETURN
+
+      EOF = "N"
+      CNT = 0
+
+*
+      LOOP
+         READNEXT ARBL.ID ELSE EOF = "Y"
+         CNT += 1
+      UNTIL EOF = "Y"
+         READ ARBL.REC FROM F.AR.BRIDGE.LAST, ARBL.ID THEN
+            ID.CLIENT = FIELD(ARBL.ID,"*",1)
+
+            PROC.DATE = FIELD(ARBL.ID,"*",2)
+            IF PROC.DATE GE CL.FYR.START.DATE THEN
+               CRT @(0,0):CNT "R#5" : "  ":ID.CLIENT:"  ":OCONV(PROC.DATE,"D2/")
+               READU YTD.REC FROM F.BILLS.YTD, ID.CLIENT THEN
+                  UPD.FLAG = 0
+                  N.CODES = DCOUNT(ARBL.REC<1>,@VM)
+                  FOR IC = 1 TO N.CODES
+                     W.CODE = ARBL.REC<1,IC>
+                     W.QTY  = ARBL.REC<2,IC> + 0
+                     W.AMT  = ARBL.REC<3,IC> + 0
+                     LOCATE W.CODE IN YTD.REC<79> BY 'AR' SETTING YTD.POS ELSE
+                        YTD.REC=INSERT(YTD.REC,79,YTD.POS,0,W.CODE)
+                        YTD.REC=INSERT(YTD.REC,80,YTD.POS,0,"0")
+                        YTD.REC=INSERT(YTD.REC,81,YTD.POS,0,"0")
+                     END
+                     YTD.REC<80,YTD.POS>=YTD.REC<80,YTD.POS>+W.QTY
+                     YTD.REC<81,YTD.POS>=YTD.REC<81,YTD.POS>+W.AMT
+                     UPD.FLAG = 1
+                  NEXT IC
+                  IF UPD.FLAG THEN
+                     WRITE YTD.REC ON F.BILLS.YTD, ID.CLIENT
+                  END
+               END
+            END
+            RELEASE F.BILLS.YTD, ID.CLIENT
+         END
+      REPEAT
+*
+      RETURN
+*
+CLEAR.SCODE.VALS: *
+*
+*** CLEAR Out YTD Values  Per Sales code prior to re-populating
+
+      READU YTD.REC FROM F.BILLS.YTD, ID.CLIENT THEN
+         YTD.REC<79> = ""
+         YTD.REC<80> = ""
+         YTD.REC<81> = ""
+         WRITE YTD.REC ON F.BILLS.YTD, ID.CLIENT
+      END
+
+      RELEASE F.BILLS.YTD, ID.CLIENT
+
+*
+      RETURN
+*
+
+GET.FISCAL.YEDATE: *
+
+*
+* Check for beginning of year and clear year to date totals
+*
+
+**** CLIENT.REC<82> = LAST DATE PROCESSED
+*
+
+*
+* Calculate fiscal year beginning date
+*
+      FISC.MONTH=FIELD(CLIENT.REC<29>,'.',1)
+      FISC.DAY=FIELD(CLIENT.REC<29>,'.',2)
+
+      IF FISC.MONTH < 1 OR FISC.MONTH > 12 OR FISC.DAY < 1 OR FISC.DAY > 31 THEN
+         CALL ELINE('Invalid Fisc Date :':CLIENT.REC<29>:' - Please setup in client maintenance')
+         GOTO SKIP.THIS
+      END
+
+      IF FISC.MONTH > THIS.MONTH THEN
+         FISC.YEAR = (THIS.YEAR - 1) "R%2"
+      END ELSE
+         FISC.YEAR = THIS.YEAR
+      END
+
+      FYR.DATE=FISC.MONTH:'.':FISC.DAY:'.':FISC.YEAR
+      FYR.DATE=ICONV(FYR.DATE,'D2.')
+
+*      IF FISC.MONTH > THIS.MONTH THEN
+*         CRT ID.CLIENT:"  FY Start ":CLIENT.REC<29>:"  Start Date ":OCONV(FYR.DATE,"D2/"):
+*         CRT " FISC.MONTH " : FISC.MONTH : "  " : " THIS.MONTH " : THIS.MONTH
+*      END
+*
+SKIP.THIS: *
+*
+      RETURN

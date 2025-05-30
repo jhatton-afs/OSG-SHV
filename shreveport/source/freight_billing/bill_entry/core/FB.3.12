@@ -1,0 +1,952 @@
+$OPTIONS HEADER.EJECT
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+      ERRMSG=''
+* PROGRAM FB.3.12
+* PROGRAM TO PROCESS CLIENT INQUIRY LETTERS
+*
+* FREIGHT PAYMENT PACKAGE
+*
+* AUTHOR: BRIAN M. QUEEN
+* DATE: MAY 6, 1993
+* 052604 - JMK01 - CHANGE PRINTER RESOLUTION FROM 300 TO 600
+* 090806 - JCW01 - USE NEW FB.CHECKS FILES
+* 032307 - JMK02 - C200703220003 /  3/23/07 / Updating misroute letters and debit memos
+*
+* Initialize variables
+*
+      PROMPT''
+      PROG.NAME='FB.3.12'
+      PROG.DESC='CARRIER INQUIRY LETTERS'
+      PACK.NAME='FREIGHT PAYMENT'
+      CALL CHANNEL(CH.NUM)
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.3.12' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      PREV.USER=''
+      PREV.CARRIER=''
+      PREV.CLIENT=''
+      PREV.PRO=''
+      LINE.NUM=''
+      LTR.SEQ=''
+      OPTION=''
+      OPT=''
+      MORE.DATA=0
+*
+* Open files
+*
+      OPEN '','BCTRL' TO BCTRL ELSE CALL OPEN.ABORT("BCTRL",PROG.NAME)
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+*     OPEN '','FB.CHECKS' TO F.CHECKS ELSE CALL OPEN.ABORT("FB.CHECKS",PROG.NAME)         ; * JCW01
+      OPEN '','FB.CHECKS.HDR' TO F.CHECKS ELSE CALL OPEN.ABORT("FB.CHECKS.HDR",PROG.NAME)  ; * JCW01
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      OPEN '','FB.INQUIRE' TO F.INQUIRE ELSE CALL OPEN.ABORT("FB.INQUIRE",PROG.NAME)
+      OPEN '','FB.INQUIRE.HIST' TO F.INQUIRE.HIST ELSE CALL OPEN.ABORT("FB.INQUIRE.HIST",PROG.NAME)
+      OPEN '','FBSTATUS' TO F.STATUS ELSE CALL OPEN.ABORT("FBSTATUS",PROG.NAME)
+*
+* Build letter heading
+*
+*      HED="'C'AFS Logistics, LLC"
+*      HED=HED:"'LC'P.O. Box 18170"
+*      HED=HED:"'LC'Shreveport, LA 71138"
+*      HED=HED:"'LC'318-798-2111 Ext. 234"
+*      HED=HED:"'LC'318-797-3628 Fax'LLL'"
+      ESC=CHAR(27)
+      X=25
+      Y=10
+      CALL GET.AFS.LOGO.IMG(X,Y,LOGO)
+      LASER=''
+      LASER<1>=0
+      LASER<2>=6
+      LASER<3>=61
+      LASER<4>=14
+      LASER<5>=0
+      LASER<6>=0
+      LASER<7>=1
+      LASER<8>=0
+      MARGIN=5
+      HED=''
+      HED:=ESC:"&1":LASER<1>:"O"
+      HED:=ESC:"&1":LASER<2>:"D"
+      HED:=ESC:"&1":LASER<3>:"F"
+      HED:=ESC:"(s":LASER<4>:"h"
+      HED:=LASER<5>:"p"
+      HED:=LASER<6>:"s"
+      HED:="0T"
+      HED:=ESC:"&a":MARGIN:"L"
+      HED:=ESC:"*c10G"
+      HED:=LOGO
+*     HED:=ESC:'*p':X+(1.45*300):'x':Y+(.50*300):'Y'         ; * JMK01
+      HED:=ESC:'*p':X+(.725*600):'x':Y+(.25*600):'Y'         ; * JMK01
+      *HED:='Corporate Headquarters 330 Marshall Street, Suite 400, Shreveport, LA 71101 - 318-798-2111'
+      *HED:=ESC:'*p':X+(1.45*300):'x':Y+(.69*300):'Y'
+      HED:='Mailing Address: P.O. Box 18170 - Shreveport, LA 71138 - Fax 318-797-3628'
+*     HED:=ESC:'*p':X+(1.45*300):'x':Y+(.88*300):'Y'         ; * JMK01
+      HED:=ESC:'*p':X+(.725*600):'x':Y+(.44*600):'Y'         ; * JMK01
+*     HED:='Internet: WWW.AFSLOGISTICS.COM'        ; * JMK02
+      HED:='Internet: WWW.AFS.NET'       ; * JMK02
+*     HED:=ESC:'*p0x':Y+(1.25*300)       ; * JMK01
+      HED:=ESC:'*p0x':Y+(.625*600)       ; * JMK01
+      LASER<4>=10
+      HED:=ESC:"(s":LASER<4>:"h"
+
+      HEAD.TEXT=''
+      HEAD.TEXT<3>=SPACE(30):"AFS Logistics, LLC"
+      HEAD.TEXT<4>=SPACE(32):"P. O. Box 18170"
+      HEAD.TEXT<5>=SPACE(30):"Shreveport, LA 71138 "
+      USER=OCONV(SYSTEM(19),'MCU')
+      CALL GET.USER(USER)
+      CALL AFS.SCR.HEAD('','','',PROG.NAME,PROG.DESC,PACK.NAME,"AFS Logistics, LLC",TIME.DATE,1)
+
+
+*
+* Enter option <W>rite to file or <P>rint
+*
+
+ENTER.OPTION:***
+      REPROCESS='N'
+      IF OPTION='' THEN OPTION='P'
+*dF      HELP='[W]rite data to file, [P]rint data, [R]eprocess. EX=Exit.'
+      HELP='[P]rint data, [R]eprocess. EX=Exit.'
+      CALL GEN.IN(0,5,'Enter option? ':OPTION,'',Q,0,2,'','',0,-1,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=OPTION
+      BEGIN CASE
+         CASE QI='EX' OR QI='X'
+            STOP
+*df         CASE QI='W'
+*df            OPTION='W'
+         CASE QI='P'
+            OPTION='P'
+         CASE QI='R'
+            REPROCESS='Y'
+            BACK.FLAG=0
+            GOSUB GET.REPROCESS.INFO
+            IF BACK.FLAG THEN GOTO ENTER.OPTION
+         CASE 1
+            CALL ELINE('Invalid Entry')
+            GOTO ENTER.OPTION
+      END CASE
+*
+      CRT @(14,5):OPTION'L#2'
+
+*
+GET.USER:***
+*
+* Enter user name
+*
+      IF REPROCESS#'Y' THEN
+         HELP="Enter the user name or a SPACE for All"
+         MASK=USER'L#15'
+         CALL GEN.IN(0,7,"Enter User Name: ":MASK,'',Q,0,15,'','',2,-15,7,1,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='EX'
+               STOP
+            CASE QI='X'
+               CRT @(0,7):@(-4)
+               GOTO ENTER.OPTION
+            CASE QI=' '
+               Q='ALL'
+            CASE QI='' & MASK NE ''
+               Q=TRIM(MASK)
+         END CASE
+         USR.NAME=OCONV(Q,'MCU')
+         CRT @(0,7):"Enter User Name: ":USR.NAME'L#15'
+         IF USR.NAME#'ALL' THEN
+            READ DUMMY FROM BCTRL,USR.NAME ELSE
+               CALL ELINE('User is not setup')
+            END
+         END
+      END
+* Verify input data is correct
+*
+VERIFY.INPUT:***
+      HELP='Enter N to reenter data. EX=Exit.'
+      CALL GEN.IN(0,22,'Is the information correct? Y ','',Q,0,2,'','',0,-2,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='N' OR QI='X'
+            CALL AFS.SCR.HEAD('','','',PROG.NAME,PROG.DESC,PACK.NAME,"AFS Logistics, LLC",TIME.DATE,1)
+            GOTO ENTER.OPTION
+         CASE QI='EX'
+            STOP
+         CASE QI='Y' OR QI=''
+            CRT @(28,22):'Y '
+         CASE 1
+            CALL ELINE('Invalid Entry')
+            GOTO VERIFY.INPUT
+      END CASE
+*
+* Select data
+*
+      IF REPROCESS='Y' THEN
+         STMT = 'SSELECT FB.INQUIRE.HIST WITH 2 = "':OCONV(REPROCESS.DATE,'D2/'):'" AND WITH 3 = "':OCONV(REPROCESS.TIME,'MTHS'):'" BY CARRIER# BY CLIENT# BY PRO'
+      END ELSE
+         STMT = 'SSELECT FB.INQUIRE'
+         IF USR.NAME#'ALL' THEN
+            STMT = STMT:' WITH 34 = "':USR.NAME:'" '
+         END
+         STMT = STMT:' BY 34 BY CARRIER# BY CLIENT# BY PRO'
+      END
+      EXECUTE STMT PASSLIST CAPTURING OUTPUT
+      IF SYSTEM(11) ELSE
+         CALL ELINE('No inquiries on file.')
+         STOP
+      END
+      IF OPTION='P' THEN
+*DF         IF USER='DARLENE' THEN
+*DF           DATA 6,9,1,'','',''
+*DF         END ELSE
+*david           IF USER='DAVID' OR USER='OWEN' OR USER='JIM' OR USER='CODY' THEN
+*david              DATA 5,9,1,'','',''
+*david           END ELSE
+*david              DATA 4,9,1,'','',''
+*david           END
+*DF         END
+*david         EXECUTE 'SL'
+*
+         VIN=''
+         VIN<3>='N'
+         CALL LASER.CODE(VIN,VOUT)
+         IF VOUT<3>#'' THEN EXECUTE VOUT<3>
+         PRINTER ON
+         IF VOUT<2>#'' THEN PRINT VOUT<2>:
+*         HEADING HED
+         PRINT HED
+         PRINT
+         PRINT
+         PRINT
+         LINE.NUM=9
+      END ELSE
+         TEXT=HEAD.TEXT
+         LINE.NUM=9
+      END
+      TODAY=DATE()
+      NOW=TIME()'R0'
+      NUM.ITMS = @SELECTED
+*
+* Process letters
+*
+      IF REPROCESS='Y' THEN
+         OPEN '','FB.INQUIRE.HIST' TO F.INQUIRE ELSE CALL OPEN.ABORT("FB.INQUIRE.HIST",PROG.NAME)
+      END
+
+      LOOP
+         READNEXT ID ELSE ID='**'
+      UNTIL ID='**' DO
+         MORE.DATA=1
+         READ REC FROM F.INQUIRE,ID THEN
+            IF REPROCESS='Y' THEN
+               USER=REC<7>
+            END ELSE
+               USER=REC<34>
+            END
+            CLIENT.ID=FIELD(ID,'*',1)
+            CARRIER.ID=FIELD(ID,'*',2)
+            PRO.NUM=FIELD(ID,'*',3)
+            PRO.ID=CARRIER.ID:'*':PRO.NUM:'*0'
+            IF PRO.ID=PREV.PRO THEN
+               GOTO SKIP.PRINT
+            END ELSE
+               PREV.PRO=PRO.ID
+            END
+            IF PREV.USER#USER THEN
+               IF PREV.USER='' THEN
+                  PREV.USER=USER
+               END ELSE
+                  GOSUB 8000
+                  PREV.USER=USER
+               END
+               PREV.CARRIER=''
+               PREV.CLIENT=''
+            END
+            IF CARRIER.ID NE PREV.CARRIER THEN GOSUB 8000    ; * Carrier break
+            IF CLIENT.ID NE PREV.CLIENT THEN GOSUB 8100      ; * Client break
+            PRO.ID=CARRIER.ID:'*':PRO.NUM:'*0'
+*
+            READ DFH FROM F.HIST,PRO.ID ELSE DFH=''
+
+            PRO.DATE=DFH<1>
+            IF PRO.DATE#'' THEN PRO.DATE=PRO.DATE'D2/' ELSE PRO.DATE=SPACE(8)
+
+            ACT.AMT=DFH<8>
+            CHECK.ID=DFH<14>
+            READV CHECK.AMT FROM F.CHECKS,CHECK.ID,4 ELSE
+               CHECK.AMT=DFH<13>
+            END
+
+            CHECK.NUM=FIELD(CHECK.ID,"*",1)'R#6'
+
+            CHECK.DATE=DFH<15>
+            IF CHECK.DATE#'' THEN CHECK.DATE=CHECK.DATE'D2/' ELSE CHECK.DATE=SPACE(8)
+
+            PROCESS.DATE=DFH<37>
+            IF PROCESS.DATE#'' THEN PROCESS.DATE=PROCESS.DATE'D2/' ELSE PROCESS.DATE=SPACE(8)
+
+            BEGIN CASE
+               CASE DFH=''               ; * Bill Not On File
+                  BILL.STATUS='NOF' ; STATUS.DATE=''
+                  TEXT.LINE = SPACE(3):PRO.NUM'R#15':' Not On File. Resubmit Freight Bill with BOL attached!'
+                  IF OPTION='P' THEN
+                     IF LINE.NUM>=54 THEN
+                        PAGE
+                        TEMP.TEXT.LINE = SPACE(3):'                                   Processed  Check    Check'
+                        PRINT HED
+                        PRINT
+                        PRINT
+                        PRINT
+                        PRINT TEMP.TEXT.LINE
+                        TEMP.TEXT.LINE = SPACE(8):'Pro Number Pro Date    Pro Amt   Date     Date    Number      Amount'
+                        PRINT TEMP.TEXT.LINE
+                        PRINT
+                        PRINT TEXT.LINE
+                        LINE.NUM=12
+                     END ELSE
+                        LINE.NUM=LINE.NUM+1
+                     END
+                     PRINT TEXT.LINE
+                  END ELSE
+                     LINE.NUM=LINE.NUM+1
+                     TEXT<LINE.NUM>=TEXT.LINE
+                  END
+
+               CASE DFH<39>='R'          ; * Rejected
+                  BILL.STATUS='RJ' ; STATUS.DATE=''
+                  TEXT.LINE = SPACE(3):PRO.NUM'R#15'
+                  TEXT.LINE:= '   - Bill is rejected for the following reasons:'
+                  IF OPTION='P' THEN
+                     IF LINE.NUM>=54 THEN
+                        PAGE
+                        TEMP.TEXT.LINE = SPACE(3):'                                   Processed  Check    Check'
+                        PRINT HED
+                        PRINT
+                        PRINT
+                        PRINT
+                        PRINT TEMP.TEXT.LINE
+                        TEMP.TEXT.LINE = SPACE(8):'Pro Number Pro Date    Pro Amt   Date     Date    Number      Amount'
+                        PRINT TEMP.TEXT.LINE
+                        PRINT
+                        LINE.NUM=12
+                     END ELSE
+                        LINE.NUM=LINE.NUM+1
+                     END
+                     PRINT TEXT.LINE
+                  END ELSE
+                     LINE.NUM=LINE.NUM+1
+                     TEXT<LINE.NUM>=TEXT.LINE
+                  END
+                  VIN=55
+                  CALL FORMAT.REJECT.REASONS(VIN, DFH, VOUT)
+                  IF VOUT<1> = -1 THEN
+                     VOUT<1> = 1         ; * Error happened. Print it with the ForLoop
+                  END ELSE
+                     IF VOUT<1> = 0 THEN
+                        TEXT.LINE:= '   - Bill is rejected - No reject reasons on file for this bill'
+                     END ELSE
+                        TEXT.LINE:= '   - Bill is rejected for the following reasons:'
+                     END
+                  END
+                  FOR RX = 1 TO VOUT<1>
+                     NUM = VOUT<2,RX>
+                     IF NUM THEN NUM=NUM'R#2':')' ELSE NUM = '   '
+                     TEXT.LINE = SPACE(17):NUM:VOUT<3,RX>
+                     IF OPTION='P' THEN
+                        IF LINE.NUM>=54 THEN
+                           PAGE
+                           TEMP.TEXT.LINE = SPACE(3):'                                   Processed  Check    Check'
+                           PRINT HED
+                           PRINT
+                           PRINT
+                           PRINT
+                           PRINT TEMP.TEXT.LINE
+                           TEMP.TEXT.LINE = SPACE(8):'Pro Number Pro Date    Pro Amt   Date     Date    Number      Amount'
+                           PRINT TEMP.TEXT.LINE
+                           PRINT
+                           LINE.NUM=12
+                        END ELSE
+                           LINE.NUM=LINE.NUM+1
+                        END
+                        PRINT TEXT.LINE
+                     END ELSE
+                        LINE.NUM=LINE.NUM+1
+                        TEXT<LINE.NUM>=TEXT.LINE
+                     END
+                  NEXT
+
+
+               CASE DFH<37>=''           ; * Not Processed
+                  BILL.STATUS='EN' ; STATUS.DATE=DFH<30>
+                  TEXT.LINE = SPACE(3):PRO.NUM'R#15':' ':PRO.DATE:' ':ACT.AMT'R26,#10':' '
+                  TEXT.LINE=TEXT.LINE:' Entered into Payable System'
+                  IF OPTION='P' THEN
+                     IF LINE.NUM>=54 THEN
+                        PAGE
+                        TEMP.TEXT.LINE = SPACE(3):'                                   Processed  Check    Check'
+                        PRINT HED
+                        PRINT
+                        PRINT
+                        PRINT
+                        PRINT TEMP.TEXT.LINE
+                        TEMP.TEXT.LINE = SPACE(8):'Pro Number Pro Date    Pro Amt   Date     Date    Number      Amount'
+                        PRINT TEMP.TEXT.LINE
+                        PRINT
+                        LINE.NUM=12
+                     END ELSE
+                        LINE.NUM=LINE.NUM+1
+                     END
+                     PRINT TEXT.LINE
+                  END ELSE
+                     LINE.NUM=LINE.NUM+1
+                     TEXT<LINE.NUM>=TEXT.LINE
+                  END
+
+               CASE DFH<15>=''           ; * Processed Not Paid
+                  BILL.STATUS='PD' ; STATUS.DATE=DFH<37>
+                  TEXT.LINE = SPACE(3):PRO.NUM'R#15':' ':PRO.DATE:' ':ACT.AMT'R26,#10':' '
+*             TEXT.LINE=TEXT.LINE:PROCESS.DATE:' Approved for payment.'
+                  TEXT.LINE=TEXT.LINE:PROCESS.DATE:' Waiting for Client approval.'
+                  IF OPTION='P' THEN
+                     IF LINE.NUM>=54 THEN
+                        PAGE
+                        TEMP.TEXT.LINE = SPACE(3):'                                   Processed  Check    Check'
+                        PRINT HED
+                        PRINT
+                        PRINT
+                        PRINT
+                        PRINT TEMP.TEXT.LINE
+                        TEMP.TEXT.LINE = SPACE(8):'Pro Number Pro Date    Pro Amt   Date     Date    Number      Amount'
+                        PRINT TEMP.TEXT.LINE
+                        PRINT
+                        LINE.NUM=12
+                     END ELSE
+                        LINE.NUM=LINE.NUM+1
+                     END
+                     PRINT TEXT.LINE
+                  END ELSE
+                     LINE.NUM=LINE.NUM+1
+                     TEXT<LINE.NUM>=TEXT.LINE
+                  END
+
+               CASE 1                    ; * All Other Conditions
+                  BILL.STATUS='PD' ; STATUS.DATE=DFH<15>
+                  TEXT.LINE = SPACE(3):PRO.NUM'R#15':' ':PRO.DATE:' ':ACT.AMT'R26,#10':' '
+                  TEXT.LINE=TEXT.LINE:PROCESS.DATE
+                  IF DFH<7>='1' & DFH<8>=0 ELSE
+                     TEXT.LINE:=' ':CHECK.DATE:'  ':CHECK.NUM:' ':CHECK.AMT'R26,#11'
+                  END
+                  IF OPTION='P' THEN
+                     IF LINE.NUM>=54 THEN
+                        PAGE
+                        TEMP.TEXT.LINE = SPACE(3):'                                   Processed  Check    Check'
+                        PRINT HED
+                        PRINT
+                        PRINT
+                        PRINT
+                        PRINT TEMP.TEXT.LINE
+                        TEMP.TEXT.LINE = SPACE(8):'Pro Number Pro Date    Pro Amt   Date     Date    Number      Amount'
+                        PRINT TEMP.TEXT.LINE
+                        PRINT
+                        LINE.NUM=12
+                     END ELSE
+                        LINE.NUM=LINE.NUM+1
+                     END
+                     PRINT TEXT.LINE
+                     IF DFH<7>='1' & DFH<8>='0' THEN
+                        FOR X=1 TO 3
+                           IF DFH<41,X>='' THEN GO SKIP.REASON
+                           TEXT.LINE=SPACE(19):DFH<41,X>
+                           LINE.NUM+=1
+                           PRINT TEXT.LINE
+                           *
+SKIP.REASON:
+                           *
+                        NEXT X
+                     END
+                  END ELSE
+                     LINE.NUM=LINE.NUM+1
+                     TEXT<LINE.NUM>=TEXT.LINE
+                     IF DFH<7>='1' & DFH<8>='0' THEN
+                        FOR X=1 TO 3
+                           IF DFH<41,X>='' THEN GO SKIP.REASON.2
+                           TEXT.LINE=SPACE(19):DFH<41,X>
+                           LINE.NUM+=1
+                           TEXT<LINE.NUM>=TEXT.LINE
+                           *
+SKIP.REASON.2:
+                           *
+                        NEXT X
+                     END
+                  END
+            END CASE
+
+            READV PRO.DATE FROM F.HIST,PRO.ID,1 ELSE PRO.DATE=''
+
+            IF PRO.DATE NE '' THEN
+               PRO.DATE=PRO.DATE'D2/'
+            END ELSE
+               PRO.DATE=SPACE(8)
+            END
+*
+
+SKIP.PRINT:***
+            IF REPROCESS#'Y' THEN
+               DELETE F.INQUIRE,ID
+               READ HIST FROM F.INQUIRE.HIST,ID ELSE HIST=''
+               HIST<1>=USER
+               HIST<2>=TODAY
+               HIST<3>=NOW
+               HIST<4>=BILL.STATUS
+               HIST<5>=STATUS.DATE
+               HIST<6>=DFH<1>
+*DF            SEQ=0
+*DF            DONE=0
+*DF            LOOP
+*DF              SEQ+=1
+*DF            UNTIL DONE=1 DO
+*DF              HIST.ID=ID:"*":SEQ
+*DF              READV NUL FROM F.INQUIRE.HIST,HIST.ID,1 ELSE DONE=1
+*DF            REPEAT
+
+109:
+               WRITE HIST ON F.INQUIRE.HIST,ID
+            END
+
+         END
+      REPEAT
+      TEXT.LINE = '   Sincerely yours,'
+      IF OPTION='P' THEN
+         IF LINE.NUM>=54 THEN
+            PAGE
+            PRINT HED
+            PRINT
+            PRINT
+            PRINT
+            LINE.NUM=9
+         END ELSE
+            LINE.NUM=LINE.NUM+2
+         END
+         PRINT
+         PRINT
+         PRINT TEXT.LINE
+      END ELSE
+         LINE.NUM=LINE.NUM+2
+         TEXT<LINE.NUM>=TEXT.LINE
+      END
+
+      READV USER.NAME FROM BCTRL,PREV.USER,13 ELSE USER.NAME=''
+      IF USER.NAME # '' THEN
+         TEXT.LINE = '   ':USER.NAME
+
+         IF OPTION='P' THEN
+            IF LINE.NUM>=54 THEN
+               PAGE
+               PRINT HED
+               PRINT
+               PRINT
+               PRINT
+               LINE.NUM=9
+            END ELSE
+               LINE.NUM=LINE.NUM+1
+            END
+            PRINT
+            PRINT
+            PRINT
+            PRINT TEXT.LINE
+         END
+      END
+
+      TEXT.LINE = '   AFS Logistics, LLC'
+
+      IF OPTION='P' THEN
+         IF LINE.NUM>=54 THEN
+            PAGE
+            PRINT HED
+            PRINT
+            PRINT
+            PRINT
+            LINE.NUM=9
+         END ELSE
+            LINE.NUM=LINE.NUM+1
+         END
+         PRINT TEXT.LINE
+         PRINTER OFF
+         PRINTER CLOSE
+*         EXECUTE 'SP-ASSIGN'
+      END ELSE
+         LINE.NUM=LINE.NUM+3
+         TEXT<LINE.NUM>=TEXT.LINE
+         GOSUB UPDATE.FILE
+      END
+      STOP
+
+*------------------------------------------------------------------------
+*
+* INTERNAL SUBROUTINES
+*
+*------------------------------------------------------------------------
+*
+* Carrier Break
+*
+8000: IF PREV.CARRIER NE '' THEN
+         IF OPTION='P' THEN
+            PRINT
+            PRINT
+            LINE.NUM=LINE.NUM+2
+         END
+         TEXT.LINE = '   Sincerely yours,'
+         IF OPTION='P' THEN
+            IF LINE.NUM>=54 THEN
+               PAGE
+               PRINT HED
+               PRINT
+               PRINT
+               PRINT
+               LINE.NUM=9
+            END ELSE
+               LINE.NUM=LINE.NUM+2
+            END
+            PRINT TEXT.LINE
+            PRINT
+            PRINT
+            PRINT
+         END ELSE
+            LINE.NUM=LINE.NUM+2
+            TEXT<LINE.NUM>=TEXT.LINE
+            LINE.NUM=LINE.NUM+3
+         END
+         READV USER.NAME FROM BCTRL,PREV.USER,13 ELSE USER.NAME=''
+         IF USER.NAME # '' THEN
+            TEXT.LINE = '   ':USER.NAME
+
+            IF OPTION='P' THEN
+               IF LINE.NUM>=54 THEN
+                  PAGE
+                  PRINT HED
+                  PRINT
+                  PRINT
+                  PRINT
+                  LINE.NUM=9
+               END ELSE
+                  LINE.NUM=LINE.NUM+1
+               END
+               PRINT
+               PRINT
+               PRINT
+               PRINT TEXT.LINE
+            END
+         END
+         TEXT.LINE = '   AFS Logistics, LLC'
+         IF OPTION='P' THEN
+            IF LINE.NUM>=54 THEN
+               PAGE
+               PRINT HED
+               PRINT
+               PRINT
+               PRINT
+               LINE.NUM=9
+            END ELSE
+               LINE.NUM=LINE.NUM+1
+            END
+            PRINT TEXT.LINE
+            PAGE
+            LINE.NUM=0
+         END ELSE
+            TEXT<LINE.NUM>=TEXT.LINE
+            GOSUB UPDATE.FILE
+            TEXT=HEAD.TEXT
+            LINE.NUM=9
+         END
+      END
+      CALL FULL.DATE(DATE(),ALPHA.DATE)
+      IF OPTION='P' THEN
+         LINE.NUM=0
+         PRINT HED
+         PRINT
+         PRINT
+         PRINT
+         LINE.NUM=9
+         PRINT SPACE(3):ALPHA.DATE
+         PRINT
+         PRINT
+         LINE.NUM=LINE.NUM+3
+      END ELSE
+         TEXT<LINE.NUM>=SPACE(3):ALPHA.DATE
+         LINE.NUM=LINE.NUM+3
+      END
+      PREV.CARRIER=CARRIER.ID
+      READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE CARRIER.REC=''
+      CARRIER.ADDRS=''
+      IF CARRIER.REC<1> NE '' THEN CARRIER.ADDRS<-1>=CARRIER.REC<1>
+      IF CARRIER.REC<2,1> NE '' THEN CARRIER.ADDRS<-1>=CARRIER.REC<2,1>
+      IF CARRIER.REC<2,2> NE '' THEN CARRIER.ADDRS<-1>=CARRIER.REC<2,2>
+      IF CARRIER.REC<3> NE '' THEN CARRIER.ADDRS<-1>=CARRIER.REC<3>:', ':CARRIER.REC<4>:' ':CARRIER.REC<5>
+*
+      FOR I=1 TO 4
+         TEXT.LINE = SPACE(3):CARRIER.ADDRS<I>
+         IF OPTION='P' THEN
+            IF LINE.NUM>=54 THEN
+               PAGE
+               PRINT HED
+               PRINT
+               PRINT
+               PRINT
+               LINE.NUM=9
+            END ELSE
+               LINE.NUM=LINE.NUM+1
+            END
+            PRINT TEXT.LINE
+         END ELSE
+            TEXT<LINE.NUM>=TEXT.LINE
+            LINE.NUM=LINE.NUM+1
+         END
+      NEXT I
+      PRINT ; LINE.NUM+=1
+      PRINT SPACE(3):"Attn: _________________________"
+      PRINT ; LINE.NUM+=1
+      PRINT SPACE(3):"Fax:  _________________________"
+      LINE.NUM+=2
+*      TEXT.LINE = SPACE(3):"We have performed inquiry functions on the following pro's and have"
+      TEXT.LINE = SPACE(3):"The following is the current payment status of each pro you submitted."
+      IF OPTION='P' THEN
+         IF LINE.NUM>=54 THEN
+            PAGE
+            PRINT HED
+            PRINT
+            PRINT
+            PRINT
+            LINE.NUM=9
+         END ELSE
+            LINE.NUM=LINE.NUM+2
+         END
+         PRINT
+         PRINT
+         PRINT TEXT.LINE
+      END ELSE
+         LINE.NUM=LINE.NUM+2
+         TEXT<LINE.NUM>=TEXT.LINE
+      END
+*      TEXT.LINE = SPACE(3):"performed the actions below:"
+      TEXT.LINE = SPACE(3):"All checks were mailed to the address above."
+      IF OPTION='P' THEN
+         IF LINE.NUM>=54 THEN
+            PAGE
+            PRINT HED
+            PRINT
+            PRINT
+            PRINT
+            LINE.NUM=9
+         END ELSE
+            LINE.NUM=LINE.NUM+1
+         END
+         PRINT TEXT.LINE
+      END ELSE
+         LINE.NUM=LINE.NUM+1
+         TEXT<LINE.NUM>=TEXT.LINE
+      END
+      TEXT.LINE = SPACE(3):'                                   Processed  Check    Check'
+      IF OPTION='P' THEN
+         IF LINE.NUM>=54 THEN
+            PAGE
+            PRINT HED
+            PRINT
+            PRINT
+            PRINT
+            LINE.NUM=9
+         END ELSE
+            LINE.NUM=LINE.NUM+2
+         END
+         PRINT
+         PRINT TEXT.LINE
+      END ELSE
+         LINE.NUM=LINE.NUM+2
+         TEXT<LINE.NUM>=TEXT.LINE
+      END
+      TEXT.LINE = SPACE(8):'Pro Number Pro Date    Pro Amt   Date     Date    Number      Amount'
+      IF OPTION='P' THEN
+         IF LINE.NUM>=54 THEN
+            PAGE
+            PRINT HED
+            PRINT
+            PRINT
+            PRINT
+            LINE.NUM=9
+         END ELSE
+            LINE.NUM=LINE.NUM+1
+         END
+         PRINT TEXT.LINE
+      END ELSE
+         LINE.NUM=LINE.NUM+1
+         TEXT<LINE.NUM>=TEXT.LINE
+      END
+      PREV.CARRIER=CARRIER.ID
+      PREV.CLIENT=''
+      RETURN
+*
+* Client break
+*
+8100:*--- Client Break
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.HIST ELSE
+         CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,PROG.NAME)
+      END
+      READV CLIENT.NAME FROM F.CLIENTS,CLIENT.ID,2 ELSE CLIENT.NAME=''
+      TEXT.LINE = SPACE(3):CLIENT.ID:'-':CLIENT.NAME:':'
+      IF OPTION='P' THEN
+         IF LINE.NUM>=54 THEN
+            PAGE
+            PRINT HED
+            PRINT
+            PRINT
+            PRINT
+            LINE.NUM=9
+         END ELSE
+            LINE.NUM=LINE.NUM+2
+         END
+         PRINT
+         PRINT TEXT.LINE
+      END ELSE
+         LINE.NUM=LINE.NUM+2
+         TEXT<LINE.NUM>=TEXT.LINE
+      END
+      PREV.CLIENT=CLIENT.ID
+      RETURN
+UPDATE.FILE:***
+      IF LTR.SEQ='' THEN LTR.SEQ=1
+      LTR.DONE=0
+      LOOP
+      UNTIL LTR.DONE=1 DO
+         LTR.ID="ltr":LTR.SEQ:".txt"
+         READV NUL FROM F.STATUS,LTR.ID,1 ELSE LTR.DONE=1
+         LTR.SEQ=LTR.SEQ+1
+      REPEAT
+      WRITE TEXT ON F.STATUS,LTR.ID
+      RETURN
+GET.REPROCESS.INFO:***
+*
+* Enter date for reprocessing
+*
+ENTER.DATE:***
+      REPROCESS.DATE=DATE()
+      REPROCESS.TIME=''
+      MASK=OCONV(REPROCESS.DATE,'D2/')
+      HELP='Enter Date to Reprocess. EX=Exit.'
+      CALL GEN.IN(0,9,'Enter date? ':MASK,'DATE',Q,0,8,'','',0,-8,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            CALL AFS.SCR.HEAD('','','',PROG.NAME,PROG.DESC,PACK.NAME,"AFS Logistics, LLC",TIME.DATE,1)
+            BACK.FLAG=1
+            RETURN
+         CASE QI=''
+            QI=REPROCESS.DATE
+      END CASE
+      REPROCESS.DATE=QI
+      CRT @(12,9):OCONV(REPROCESS.DATE,'D2/')
+*
+* Enter time for reprocessing
+*
+ENTER.TIME:***
+      HELP='Enter Time to Reprocess. [L]ist Times. EX=Exit.'
+      IF REPROCESS.TIME='' THEN
+         MASK='HH:MM:SS  '
+      END ELSE
+         MASK=OCONV(REPROCESS.TIME,'MTHS')
+      END
+      CALL GEN.IN(0,11,'Enter time? ':MASK,'',Q,0,10,'','',0,-10,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GOTO ENTER.DATE
+         CASE QI='L'
+            STMT='SORT FB.INQUIRE.HIST WITH 2 = "':OCONV(REPROCESS.DATE,'D2/'):'" BY 2 BY 3 2 BREAK-ON 3 TOTAL CNT 1 (I,D'
+            EXECUTE STMT
+            CALL ELINE('')
+            CALL AFS.SCR.HEAD('','','',PROG.NAME,PROG.DESC,PACK.NAME,"AFS Logistics, LLC",TIME.DATE,1)
+            CRT @(0,5):'Enter option? ':OPTION'L#2'
+            CRT @(0,9):'Enter date? ':OCONV(REPROCESS.DATE,'D2/')
+            GOTO ENTER.TIME
+      END CASE
+      REPROCESS.TIME=ICONV(QI,'MTHS')
+      CRT @(12,11):OCONV(REPROCESS.TIME,'MTHS')
+*
+* Enter option <W>rite to file or <P>rint for reprocessing
+*
+ENTER.OPT:***
+      IF OPT='' THEN OPT='P'
+      HELP='[W]rite data to file, [P]rint data, EX=Exit.'
+      CALL GEN.IN(0,13,'Enter reprocessing option? ':OPT,'',Q,0,2,'','',0,-1,13,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=OPT
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GOTO ENTER.TIME
+         CASE QI='W'
+            OPTION='W'
+         CASE QI='P'
+            OPTION='P'
+         CASE 1
+            CALL ELINE('Invalid Entry')
+            GOTO ENTER.OPT
+      END CASE
+*
+      CRT @(27,13):OPT'L#2'
+      RETURN
+
+
+
+*----------------------------------------------------------------------
+* PRINT.LETTER.HEAD
+*----------------------------------------------------------------------
+PRINT.LETTER.HEAD:
+
+      X = 25
+      Y = 10
+      CALL GET.AFS.LOGO.IMG(X,Y,LOGO)
+
+      LASER = ''
+      LASER<1>= 0                        ; * Portrait
+      LASER<2>= 6                        ; * Lines per inch
+      LASER<3>= 61                       ; * Page length
+      LASER<4>= 14                       ; * Characters per inch
+      LASER<5>= 0
+      LASER<6>= 0
+      LASER<7>= 1
+      LASER<8>= 0
+      MARGIN = 5
+      ESC=CHAR(27)
+      HED=''
+      HED:=ESC:"&l":LASER<1>:"O"         ; * Set portrait
+      HED:=ESC:"&l":LASER<2>:"D"         ; * Lines per inch
+      HED:=ESC:"&l":LASER<3>:"F"         ; * Page length
+      HED:=ESC:"(s":LASER<4>:"h"         ; * Set pitch
+      HED:=LASER<5>:"p"                  ; * Proportional printing
+      HED:=LASER<6>:"s"                  ; * Italics off
+      HED:="0T"                          ; * Line Printer Font
+      HED:=ESC:"&a":MARGIN:"L"
+      HED:=ESC:'*c10G'                   ; * Grayscale Fill
+
+      HED:=LOGO
+
+*     HED:=ESC:'*p':X+(1.45*300):'x':Y+(.50*300):'Y'         ; * Position Cursor; * JMK01
+      HED:=ESC:'*p':X+(.725*600):'x':Y+(.25*600):'Y'         ; * Position Cursor; * JMK01
+      HED:='Corporate Headquarters 670 Emberwood Drive, Shreveport, LA 71106 - 318-798-2111'
+*     HED:=ESC:'*p':X+(1.45*300):'x':Y+(.69*300):'Y'         ; * JMK01
+      HED:=ESC:'*p':X+(.725*600):'x':Y+(.345*600):'Y'        ; * JMK01
+      HED:='Mailing Address: P.O. Box 18170 - Shreveport, LA 71138 - Fax 318-797-3628'
+*     HED:=ESC:'*p':X+(1.45*300):'x':Y+(.88*300):'Y'         ; * JMK01
+      HED:=ESC:'*p':X+(.725*600):'x':Y+(.44*600):'Y'         ; * JMK01
+*     HED:='Internet: WWW.AFSLOGISTICS.COM'        ; * JMK02
+      HED:='Internet: WWW.AFS.NET'       ; * JMK02
+*     HED:=ESC:'*p0x':Y+(1.25*300):'Y'   ; * 300 dpi; * JMK01
+      HED:=ESC:'*p0x':Y+(.625*600):'Y'   ; * 600 dpi; * JMK01
+
+      LASER<4>= 10                       ; * Characters per inch
+      HED:= ESC:"(s":LASER<4>:"h"        ; * Set pitch
+      PRINT HED
+
+      RETURN

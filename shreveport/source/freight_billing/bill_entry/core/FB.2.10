@@ -1,0 +1,257 @@
+*******************************************************
+* Program name : FB.2.10
+* Author       : Brian M. Queen
+* Date written : July 1, 1993
+* Library      : EDIBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* FREIGHT BILLING PACKAGE
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 09:22:51 on 03/26/2019.
+*
+* Start modification history
+* 030309 - NPR01 - T090253 - Highlight Client name based on ranking
+* 032619 - NKH01 - ACCU-316 Modified CREATE-FILE file sizes
+* End modification history
+*
+*******************************************************
+
+$OPTIONS HEADER.EJECT
+ERRMSG=''
+*
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+*
+* Initialize variables
+*
+      PROMPT''
+      PROG.NAME='FB.2.10'
+      PROG.DESC='CLAIMS FEE ENTRY'
+      PACK.NAME='FREIGHT BILLING'
+      CALL CHANNEL(CH.NUM)
+      CO.NAME='AFS Logistics, LLC'
+      CLIENT.ID=''
+      CLAIM.DATE=''
+      CLAIM.DIV=''
+      CLAIM.DIV.AMT=''
+*
+* Display screen heading
+*
+      CALL SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+* Open general files
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      OPEN '','FB.CLAIMS' TO F.CLAIMS ELSE
+        EXECUTE 'CREATE-FILE FB.CLAIMS 47,1' PASSLIST CAPTURING OUTPUT     ; * NKH01
+        OPEN '','FB.CLAIMS' TO F.CLAIMS ELSE CALL OPEN.ABORT("FB.CLAIMS",PROG.NAME)
+      END
+*
+* Enter client number
+*
+100   HELP="Enter the client number [X]=Exit [EX]=Exit"
+      IF CLIENT.ID='' THEN MASK='#####' ELSE MASK=CLIENT.ID
+      CRT @(0,3):'Client Number.':MASK
+      CALL GEN.IN(14,3,MASK,'',Q,0,20,'','',2,-5,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI='EX' ! QI='X'
+          STOP
+        CASE QI='' & CLIENT.ID=''
+          STOP
+        CASE QI='' & CLIENT.ID NE ''
+          Q=CLIENT.ID
+        CASE NOT(QI MATCHES "0N")
+          CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+          CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+          BEGIN CASE
+            CASE ITEM.LIST=''
+              GOTO 100
+            CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+              GOTO 100
+            CASE ITEM.LIST NE ''
+              IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+              GOTO 100
+          END CASE
+        CASE NUM(QI)
+          Q=QI'R%5'
+        CASE 1
+          GOTO 100
+      END CASE
+*
+* Get client name
+*
+      IF CLIENT.ID NE Q THEN CLIENT.ID=Q'R%5'
+      READU CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+        CALL ELINE("ERROR - Client ":CLIENT.ID:" not on file.")
+        GOTO 100
+      END
+      CLIENT.NAME=CLIENT.REC<2>
+
+      HIN = CLIENT.REC<240>  ; HOUT = ""                              ;* NPR01  Highlight based on ranking
+      CALL CLIENT.HL(HIN,HOUT)   ; HLB = HOUT<1,1> ; HLA = HOUT<1,2>  ;* NPR01
+
+      CRT @(14,3):CLIENT.ID:' ':HLB:CLIENT.NAME:HLA:@(-4)             ;* NPR01
+*
+* Enter effective date of billing
+*
+200 ***
+      MIN.DATE=CLIENT.REC<82>+1
+      IF MIN.DATE=''THEN MIN.DATE=DATE()
+      IF DATE()-MIN.DATE > 30 THEN MIN.DATE=DATE()
+      IF DATE()+7>MIN.DATE THEN MIN.DATE = DATE()+7
+      HELP="Enter claims billing date, ":MIN.DATE'D2/':" or later. [X]=Back  [EX]=Exit."
+      CLAIM.DATE=MIN.DATE
+*OH      IF DATE() LE CLIENT.REC<82> THEN
+*OH        CLAIM.DATE=CLIENT.REC<82>+1
+*OH      END ELSE
+*OH        CLAIM.DATE=DATE()
+*OH      END
+*DF      IF CLAIM.DATE='' THEN CLAIM.DATE=DATE()
+*DF      IF CLAIM.DATE='' THEN CLAIM.DATE=NEW.CLAIM.DATE
+      CALL GEN.IN(0,5,'Billing Date..':CLAIM.DATE'D2/','DATE',Q,0,8,'','',1,-8,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI='X'
+          CRT @(0,5):@(-3)
+          GOTO 100
+        CASE QI='EX'
+          STOP
+        CASE QI=''
+          Q=CLAIM.DATE
+        CASE ICONV(QI,'D')=''
+          CALL ELINE('Please enter a valid date')
+          GO 200
+      END CASE
+      IF Q < MIN.DATE THEN
+        CALL ELINE('The Earliest Date acceptable is ':MIN.DATE'D2/')
+        GO 200
+      END
+      IF Q-DATE() > 30 THEN
+        CALL ELINE('The Date cant be more than 30 days in the future')
+        GO 200
+      END
+      CLAIM.DATE=Q
+      CRT @(14,5):CLAIM.DATE'D2/'
+*
+* Display claims billing amount
+*
+300   CLAIM.ID=CLAIM.DATE:'*':CLIENT.ID
+      READ CLAIM.REC FROM F.CLAIMS,CLAIM.ID ELSE CLAIM.REC=''
+      CLAIM.AMT=CLAIM.REC<2>'R0'
+      DISP='Billing amt...':CLAIM.AMT'L26,#13'
+      HELP="Enter billing amount. [cr]=Accept. [X]=Back to date. [EX]=Exit."
+      CALL GEN.IN(0,7,DISP,'AMT2',Q,0,13,'','',1,-13,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI=''
+          Q=CLAIM.AMT
+        CASE QI='X'
+          CRT @(0,5):@(-3)
+          GOTO 200
+        CASE QI='EX'
+          STOP
+        CASE QI < 0
+           CALL ELINE('Must enter a positive number')
+           GOTO 300
+        CASE 1
+          Q += CLAIM.AMT
+      END CASE
+      CLAIM.AMT=Q
+      CRT @(14,7):CLAIM.AMT'L26,#13'
+*
+* Display Division if client has division
+*
+400  IF CLIENT.REC<12>='Y' THEN
+         OPEN '','DIVISION.CODES,':CLIENT.ID TO F.DIV ELSE
+            CALL ELINE("Cannot open DIVISION.CODES for client ":CLIENT.ID)
+            GOTO 100
+         END
+         XX=0
+         TEMP.AMT=CLAIM.AMT
+450      XX=XX+1
+         CLAIM.DIV<1,XX>=CLAIM.REC<3,XX>
+         DISP='Billing Div...':CLAIM.DIV<1,XX>'L#5'
+         HELP="Enter billing division, [X]=Back to amount. [EX]=Exit"
+         CALL GEN.IN(0,9,DISP,'',Q,0,5,'','',1,-5,9,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+           CASE QI=''
+             IF CLAIM.DIV<1,XX>='' THEN
+                CALL ELINE('Entry is required')
+                GOTO 400
+             END
+             Q=CLAIM.DIV<1,XX>
+           CASE QI='X'
+             CRT @(0,7):@(-3)
+             GOTO 300
+           CASE QI='EX'
+             STOP
+         END CASE
+         Q=Q'R%5'
+         READ DIV.REC FROM F.DIV,Q THEN
+            IF DIV.REC<7>='I' THEN
+               CALL ELINE(Q:' is an inactive division please enter a valid division')
+               GOTO 400
+            END
+         END ELSE
+            CALL ELINE(Q:' is not a valid division please try again')
+            GOTO 400
+         END
+         CLAIM.DIV<1,XX>=Q
+         CRT @(14,9):CLAIM.DIV<1,XX>'L#5'
+500      CLAIM.DIV.AMT<1,XX>=CLAIM.REC<4,XX>
+         IF CLAIM.DIV.AMT<1,XX>+0=0 THEN
+            CLAIM.DIV.AMT<1,XX>=TEMP.AMT
+         END
+         DISP='Division amt..':CLAIM.DIV.AMT<1,XX>'L26#13'
+         HELP="Enter divisional amount. [cr]=Accept. [X]=Back to date. [EX]=Exit."
+         CALL GEN.IN(0,11,DISP,'AMT2',Q,0,13,'','',1,-13,11,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+           CASE QI=''
+             Q=CLAIM.DIV.AMT<1,XX>
+           CASE QI='X'
+             CRT @(0,9):@(-3)
+             XX=XX-1
+             GOTO 450
+           CASE QI='EX'
+             STOP
+           CASE QI < 0
+             CALL ELINE('Must be a positive number')
+             GOTO 500
+           CASE 1
+*DF             Q = CLAIM.DIV.AMT<1,XX>
+         END CASE
+         CLAIM.DIV.AMT<1,XX>=Q
+         CRT @(14,11):CLAIM.DIV.AMT<1,XX>'L26,#13'
+         TEMP.AMT=TEMP.AMT-CLAIM.DIV.AMT<1,XX>
+         IF TEMP.AMT < 0 THEN
+            CALL ELINE('You have entered more than the total amount of the billing amount')
+            GOTO 500
+         END
+         IF TEMP.AMT=0 THEN GO 600
+         CRT @(0,9):@(-3)
+         GOTO 450
+      END
+*
+* Update client record
+*
+600   HELP="Enter Y to update or N not to update."
+      CALL GEN.IN(0,22,'Update? Y','',Q,0,1,'','',1,-1,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI='' ! QI='Y'
+          CLAIM.REC<1>=CLAIM.DATE
+          CLAIM.REC<2>=CLAIM.AMT
+          CLAIM.REC<3>=CLAIM.DIV
+          CLAIM.REC<4>=CLAIM.DIV.AMT
+          WRITE CLAIM.REC ON F.CLAIMS,CLAIM.ID
+        CASE QI='N'
+          NULL
+        CASE 1
+          GOTO 600
+      END CASE
+      CLIENT.ID=''
+      CRT @(0,3):@(-3)
+      GOTO 100

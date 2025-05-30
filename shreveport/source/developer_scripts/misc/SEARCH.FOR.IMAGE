@@ -1,0 +1,263 @@
+      ***   SUBROUTINE SEND.CLIENT.REST(VIN,VOUT,STATUS)
+***********************************************************************
+* Program name : SEND.CLIENT.REST
+* Author       : Greg Bino
+* Date written : 01-10-2019
+* Library      : FBBP
+* COPYRIGHT (C) 2019 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* SEND CLIENT TO OCR WEBSERVICE INTERFACE
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 07:52:42 on 02/23/2021.
+*
+* Start modification history
+* Mod 00 01-10-19, grb, 21092.0000  New program
+* 02/23/21 : NKH01 : ACCU-1133 Added server checking for dev
+* End modification history
+*
+************************************************************************
+*
+* Initialize variables
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE UNIVERSE.INCLUDE UDO.H
+
+      STATUS = 0
+      VIN = 1490
+
+      CLIENT.ID = VIN<1>"R%5"
+    
+IMAGE.NO = 34727707
+BATCH.NO ='ASHV128520190918'
+    
+      RESP.CNT=1
+      RESP = ''
+      VOUT=''
+      TIME.LINE=''
+      ST.TIME = TIME()
+      TIME.LINE<1,1,1>=TIME()            ; * start time
+      PROMPT ''
+      TIMEOUT = 3000
+      PROG.NAME='SEND.CLIENT.REST'
+      CALL GET.SERVER.INFO(SVR.VIN,SVR.VOUT)       ; * NKH01
+      SERVER.NAME=SVR.VOUT<1>                      ; * NKH01            
+
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'SEND.CLIENT.REST' ; UPL.VOUT = ''
+      ***    CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+      OPEN 'CONTROL' TO FILE.CNTL ELSE
+         CALL ELINE('UNABLE TO OPEN CONTROL FILE')
+         RETURN
+      END
+      OPEN 'GRB' TO F.GRB ELSE
+         CALL ELINE('UNABLE TO OPEN GRB FILE')
+         RETURN
+      END
+
+      READ XMLPARAMS FROM FILE.CNTL,"CLIENT.OCR" THEN
+         URL = XMLPARAMS<1>
+         SERVER = XMLPARAMS<2>
+         SOAPACTION = XMLPARAMS<3>
+         LOGGING = XMLPARAMS<4>          ; * Y/N
+         LOGFILE = XMLPARAMS<5>
+         EMAIL.RECIP = XMLPARAMS<6>
+         TEST.FLG = XMLPARAMS<7>
+      END ELSE
+
+ **        URL = 'https://imagingws.qa.afs.net/images/list?clientFolder=':CLIENT.ID:'&underReview=null&excludeImported=true&limit=1200'
+ **        URL = 'https://imagingws.afs.net/images/list?clientFolder=':CLIENT.ID:'&underReview=null&excludeImported=true&limit=1200'
+**         URL = 'https://imagingws.afs.net/images/list?&underReview=true&limit=1200'
+**         URL = 'https://imagingws.afs.net/images/list?imageKey=':IMAGE.NO
+****       URL = 'https://imagingws.afs.net/images/list?keyerName=NMEDDAUGH&limit=1200'
+*****      URL = 'https://imagingws.afs.net/images/list?underReview=null&KeyerName=NMEDDAUGH&limit=1200'
+ ***          URL = 'https://imagingws.afs.net/images/list?batchNo=':BATCH.NO:'&underReview=null&excludeImported=true&limit=1200'
+ ****          URL = 'https://imagingws.qa.afs.net/images/list?batchNo=':BATCH.NO:'&underReview=null&limit=1200'
+         IF SERVER.NAME = 'AFS' THEN   ; * NKH01                     
+           URL = 'https://imagingws.afs.net/images/list?clientFolder=':CLIENT.ID:'&limit=15000'
+         END ELSE                      ; * NKH01
+           URL = 'https://imagingws.qa.afs.net/images/list?clientFolder=':CLIENT.ID:'&limit=15000'    ; * NKH01
+         END                           ; * NKH01                           
+
+         LOGFILE="SEND.CLIENT.GB.LOG"
+****"importedIntoPick"
+         LOGGING = "N"
+*          EMAIL.RECIP = 'gbino@afs.net'
+         TEST.FLG = @FALSE
+      END
+
+      IF LOGGING = "Y" OR LOGGING = 1 THEN
+         LOGGING = @TRUE
+      END ELSE
+         LOGGING = @FALSE
+      END
+      IF LOGGING THEN
+         STAT = PROTOCOLLOGGING(LOGFILE, "ON", 10)
+      END
+
+      EMAIL.OUT=''
+      EMAIL.OUT<1,-1>='HelpDesk@afs.net'
+      EMAIL.OUT<2,-1>= EMAIL.RECIP
+      EMAIL.OUT<4>='FBBP_SEND.CLIENT.REST@afs.net'
+      EMAIL.OUT<5>='Error while trying to access SEND.CLIENT.REST Web-Service .'
+
+      GOSUB SEND.REST.REQUEST
+      GOSUB PARSE.RESULTS
+
+      TIME.LINE<1,1,1>=TIME()            ; * finish time
+
+9999: * THE END
+      IF LOGGING THEN
+         LOG.RET = PROTOCOLLOGGING(LOGFILE,"OFF",10)
+      END
+      WRITE RESP ON F.GRB,"OCR.RESP"
+      RETURN
+***********************************************************************
+SEND.REST.REQUEST:
+***********************************************************************
+      METHOD="GET"
+*
+      STAT = SETHTTPDEFAULT("VERSION", "1.1")
+      STAT = CREATESECURITYCONTEXT(CTX, "TLSv1.2")
+      STAT = CREATESECUREREQUEST(URL, METHOD, RESTGET,CTX)
+      STAT = SETREQUESTHEADER(RESTGET, "Content-Type", "application/json;charset=utf-8")
+      STAT = SUBMITREQUEST(RESTGET, 60000, "", HEADER, RESTDATA, HTTPSTATUS)
+
+      RETURN
+
+************************************************************************
+PARSE.RESULTS:
+************************************************************************
+
+** DEBUG
+      UDOHANDLE = ""
+      RESP = ''
+      RESP.CNT = 1
+      STATUS =UDORead(RESTDATA, UDOFORMAT_JSON, UDOHANDLE )
+
+      ST = UDOArrayGetSize(UDOHANDLE, ITEM_SIZE) ; IF ST NE UDO_SUCCESS THEN
+         ITEM_SIZE = 0
+      END
+      FOR I = 1 TO ITEM_SIZE
+         TEMP.ARRAY = ''
+         ST = UDOArrayGetItem(UDOHANDLE, I, result_udo, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         ST = UDOGetProperty(result_udo, "imageKey", IMAGE.NO, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN IMAGE.NO = ""
+         ST = UDOGetProperty(result_udo, "imagePath", IMAGE.PATH, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+
+         IF UDOTYPE = UDO_NULL THEN IMAGE.PATH = "NV"
+         IF IMAGE.PATH # "NV" THEN
+            BATCH.NO = FIELD(IMAGE.PATH,"\",9)     ; * GRB02
+            BATCH.NO = FIELD(BATCH.NO,"_",1)       ; * GRB02
+            IF LEN(BATCH.NO) LT 13 THEN
+               BATCH.NO = "NV"
+            END
+         END
+         IF UDOTYPE = UDO_NULL THEN IMAGE.PATH = ""
+         ST = UDOGetProperty(result_udo, "clientKey", CLIENTKEY, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN CLIENTKEY = ""
+         ST = UDOGetProperty(result_udo, "scac", SCAC, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN SCAC = ""
+         ST = UDOGetProperty(result_udo, "field1", FIELD1, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN FIELD1 = ""
+         ST = UDOGetProperty(result_udo, "field2", PRONUM, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN PRONUM = ""
+       
+         ST = UDOGetProperty(result_udo, "field3",FIELD3, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN FIELD3 = ""
+
+         ST = UDOGetProperty(result_udo, "carrierName",CARRIERNAME, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN CARRIERNAME = ""
+         ST = UDOGetProperty(result_udo, "importedIntoPick", UPDT.DT, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN UPDT.DT = ""
+       
+         BATCH.NO = FIELD(IMAGE.PATH,"\",9)        ; * GRB02
+         BATCH.NO = FIELD(BATCH.NO,"_",1)          ; * GRB02
+         SCAN.DT = BATCH.NO[7,8]
+         SCAN.DTI = ICONV(SCAN.DT,"D")
+     
+      
+          IF PRONUM = "SUP187665" THEN 
+         CRT IMAGE.NO:"    ":BATCH.NO:"   ":PRONUM:"    ":UPDT.DT[1,10]
+       END
+       
+         ST = UDOGetProperty(result_udo, "clientFolder", CLIENTFOLDER, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN CLIENTFOLDER = ""
+
+         ST = UDOGetProperty(result_udo,"reviewId", REVIEWID, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN REVIEWID = ""
+
+         ST = UDOGetProperty(result_udo,"needsReview", NEEDSREVIEW, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN NEEDSREVIEW = "0"
+         IF UDOTYPE = UDO_FALSE THEN NEEDSREVIEW = "0"
+         IF UDOTYPE = UDO_TRUE THEN NEEDSREVIEW = "1"
+
+         ST = UDOGetProperty(result_udo, "failedVerification", FAIL.VERIFY, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN FAIL.VERIFY = "0"
+         IF UDOTYPE = UDO_FALSE THEN FAIL.VERIFY = "0"
+         IF UDOTYPE = UDO_TRUE THEN FAIL.VERIFY = "1"
+
+         TEMP.ARRAY<3> = IMAGE.NO
+         TEMP.ARRAY<1> = FAIL.VERIFY
+       
+         TEMP.ARRAY<4> = PRONUM
+
+         RESP<1,-1> = TEMP.ARRAY<1>
+         RESP<3,-1> = TEMP.ARRAY<3>
+         RESP<4,-1> = TEMP.ARRAY<4>
+
+      NEXT I
+*      DEBUG
+      IF RESP # "" THEN
+         VOUT = RESP
+      END
+      RETURN
+****************************************************
+ERR.HANDLER:
+*****************************************************
+
+      ERRCODE = "" ; ERRMSG = ""
+      S = UDOGetLastError(ERRCODE, ERRMSG)
+      ERROR = "UDO ERROR: (":ERRCODE:") ":ERRMSG
+      VOUT<1> =ERROR
+
+      RETURN
+
+************************************************************************
+REPORT.INTERNAL.ERROR:
+************************************************************************
+      EMAIL.START.TIME = TIME()
+
+      EMAIL.OUT<6, -1> = 'URL = ':URL
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = 'CLIENT = ':CLIENT.ID
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = 'ERROR = ':ERROR
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = ' '
+
+      EVIN=EMAIL.OUT
+      EVOUT=''
+      CALL SENDMAIL(EVIN,EVOUT)
+****      VOUT<1> = "ERROR"
+      VOUT<1> = 0
+      RETURN
+************************************************************************
+REPORT.FATAL.ERROR:
+************************************************************************
+      EMAIL.START.TIME = TIME()
+      EMAIL.OUT<1>=EMAIL.RECIP
+*       EMAIL.OUT<1,-1> = 'gbino@afs.net'
+      EMAIL.OUT<1,-1> = 'dfriend@afs.net'
+      EMAIL.OUT<1,-1> = 'nmeddaugh@afs.net'
+      FATAL.ERROR.SUBJ = 'REST REQUEST ERROR'
+      EMAIL.OUT<5>=FATAL.ERROR.SUBJ
+      EMAIL.OUT<6,-1> = 'URL = ':URL
+      EVIN=EMAIL.OUT
+      EVOUT=''
+      CALL SENDMAIL(EVIN,EVOUT)
+      IDATE=DATE()
+      ITIME=TIME()
+      TIME.BLOCK=INT(ITIME/600)
+      *  VOUT<1> = "ERROR"
+      RETURN
+   END

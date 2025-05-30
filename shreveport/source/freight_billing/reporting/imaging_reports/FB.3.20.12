@@ -1,0 +1,382 @@
+********************************************************************************
+* Program     : FB.3.20.12
+* Description : Freight Payment Keying Time/Number of Bills Entered Analysis
+* Author      : James Barberousse
+* Date        : June 2002
+*
+* Copyright (c) AFS Logistics, LLC. 2002 - All Rights Reserved
+********************************************************************************
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+* 081809 - NPR01 - T091057 - Replace Sandra Long with Stacy Rittenbach wherever the former occurs
+* 100813 - JMK01 - SysAid#7327 - FBBP FB.3.20.12 has an error in line 269
+
+* Initialize general variables
+      PROMPT''
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='FB.3.20.12'
+      PROG.DESC='Freight Payment Time-Bill Analysis Report'
+      PACK.NAME='Time Accounting'
+      MASK.CHAR='-'
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.3.20.12' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+
+* Write screen header
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+
+* Restrict program usage
+      VALID.USER=1
+      BEGIN CASE
+         CASE USER.NAME='BRIAN'
+         CASE USER.NAME='KAREN'
+         CASE USER.NAME='OWEN'
+         CASE USER.NAME='CHRIS'
+*NPR01         CASE USER.NAME='SANDRA'
+         CASE USER.NAME='SRITTENBACH'     ;* NPR01
+         CASE USER.NAME='CBEASLEY'
+         CASE USER.NAME='CGOSS'
+         CASE USER.NAME='MISSY'
+         CASE USER.NAME='JMONARCH'
+         CASE USER.NAME='DAVID'
+         CASE 1
+            VALID.USER=0
+      END CASE
+
+      IF NOT(VALID.USER) THEN
+         CALL FB.PRINT.CENT(1,80,12,'Restricted Access Application - Access Denied')
+         GOTO THE.END
+      END
+
+* Initialize input variables with their defaults
+      ENTRY.PERSON=''
+      ENTRY.DATE=DATE()
+      ENTRY.CLIENT=''
+
+* Initialize other variables
+      SAVE.SCREEN.LINE.USER=''
+      SAVE.SCREEN.LINE.DATE=''
+      SAVE.SCREEN.LINE.CLIENT=''
+
+* Open files
+      OPEN '','BCTRL' TO F.BCTRL ELSE
+         CALL OPEN.ABORT('BCTRL',PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','EMP.DY.PERF' TO F.TIME ELSE
+         CALL OPEN.ABORT('EMP.DY.PERF',PROG.NAME)
+      END
+      OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+         CALL OPEN.ABORT('BILLDATA.':USER.NAME,PROG.NAME)
+      END
+
+* Display screen prompts
+      GOSUB DISPLAY.PROMPTS
+
+* Get user name
+100:***
+      MASK=ENTRY.PERSON:STR(MASK.CHAR,10-LEN(ENTRY.PERSON)):@(-4)
+      HELP='Enter UserName of user who keyed data. [L]ist Users [EX]it'
+      CALL GEN.IN(11,3,MASK,'',Q,0,10,'','',2,11,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='L'
+            HEAD1=STR(' ',12):CO.NAME:' Employee List by Departments':"'L'"
+            HEAD1:=STR(MASK.CHAR,72)
+            EXECUTE 'SORT BCTRL BY 15 BY 16 BY 13 13 15 16 17 22 HEADING "':HEAD1:'" (H'
+            CALL ELINE('')
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            GOSUB DISPLAY.PROMPTS
+            GOSUB DISPLAY.DATA
+            GOTO 100
+         CASE QI=''
+            QI=ENTRY.PERSON
+      END CASE
+      CRT @(11,3):QI:@(-4)
+      READ BCTRL.REC FROM F.BCTRL,QI ELSE
+         CALL ELINE('"':QI:'" is not a valid user.')
+         GOTO 100
+      END
+      ENTRY.PERSON=QI
+      ENTRY.PERSON.FULLNAME=BCTRL.REC<13>
+      SAVE.SCREEN.LINE.USER=ENTRY.PERSON:' ':ENTRY.PERSON.FULLNAME
+      GOSUB DISPLAY.DATA
+
+* Get date
+200:***
+      IF ENTRY.DATE='' THEN MASK='MM-DD-YYYY':@(-4) ELSE MASK=ENTRY.DATE'D4-':@(-4)
+      HELP='Enter the date. [T]oday [X]=Back [EX]it'
+      CALL GEN.IN(11,5,MASK,'',Q,0,10,'','',2,11,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            SAVE.SCREEN.LINE.DATE=''
+            GOSUB DISPLAY.DATA
+            GOTO 100
+         CASE QI='T'
+            QI=DATE()'D4-'
+         CASE QI=''
+            IF ENTRY.DATE='' THEN
+               GOTO 200
+            END ELSE
+               QI=ENTRY.DATE'D4-'
+            END
+         CASE QI MATCHES '0N'
+            BEGIN CASE
+               CASE LEN(QI)=4
+                  QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4-')[7,4]
+               CASE LEN(QI)=6
+                  IF QI[5,2]<50 THEN
+                     QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4-')[7,2]:QI[5,2]
+                  END ELSE
+                     QI=QI[1,2]:'.':QI[3,2]:'.':'19':QI[5,2]; * ((DATE()-365)'D4-')[7,2]:QI[5,2]
+                  END
+               CASE LEN(QI)=8
+                  QI=QI[1,2]:'.':QI[3,2]:'.':QI[5,4]
+               CASE 1
+                  CALL ELINE('Use one of the following formats: MMDD or MMDDYY or MMDDYYYY.')
+                  GOTO 200
+            END CASE
+      END CASE
+      ENTRY.DATE=ICONV(QI,'D')
+      IF ENTRY.DATE='' THEN
+         CALL ELINE('Invalid date.')
+         GOTO 200
+      END
+      SAVE.SCREEN.LINE.DATE=ENTRY.DATE'D4-'
+      GOSUB DISPLAY.DATA
+
+* Read time record for that user and that date
+300:***
+      DAY.ID=ENTRY.PERSON:'*':ENTRY.DATE
+      READ TIME.REC FROM F.TIME,DAY.ID ELSE TIME.REC=''
+      NUM.CLIENTS=DCOUNT(TIME.REC<3>,@VM)
+      IF NUM.CLIENTS=0 THEN
+         CALL ELINE('No clients on file for this user and this date.')
+         SAVE.SCREEN.LINE.CLIENT=''
+         GOSUB DISPLAY.DATA
+         GOTO 200
+      END
+      NUM.ENTERED=0
+      ENTERED.LIST=''
+      FOR X=1 TO NUM.CLIENTS
+         IF TIME.REC<4,X> GT 0 THEN
+            NUM.ENTERED+=1
+            ENTERED.LIST<-1>=X
+         END
+      NEXT X
+      IF NUM.ENTERED=0 THEN
+         CALL ELINE('No clients on file with ENTRY data for this user and this date.')
+         SAVE.SCREEN.LINE.CLIENT=''
+         GOSUB DISPLAY.DATA
+         GOTO 200
+      END
+      CLIENT.LIST=''
+      FOR X=1 TO NUM.ENTERED
+         CLIENT.ID=TIME.REC<3,ENTERED.LIST<X>>
+         READV CLIENT.NAME FROM F.CLIENTS,CLIENT.ID,2 ELSE CLIENT.NAME='** Name Not Found **'
+         CLIENT.LIST<-1>=CLIENT.ID:SPACE(13):CLIENT.NAME'L#61'
+      NEXT X
+      SELECTION=''
+      HEADING='CLIENT-NUMBER     CLIENT-NAME'
+      HEADING:=SPACE(79-LEN(HEADING))
+      CRT @(0,23):'Select from the list of clients with ENTERED bills.':
+      CALL POP.UP.LIST(CLIENT.LIST,HEADING,11,18,SELECTION)
+      BEGIN CASE
+         CASE SELECTION='X'
+            SAVE.SCREEN.LINE.CLIENT=''
+            GOSUB DISPLAY.DATA
+            GOTO 200
+         CASE SELECTION='E'
+            SAVE.SCREEN.LINE.USER=''
+            SAVE.SCREEN.LINE.DATE=''
+            SAVE.SCREEN.LINE.CLIENT=''
+            GOSUB DISPLAY.DATA
+            GOTO 100
+      END CASE
+      CLIENT.POS=ENTERED.LIST<SELECTION>
+      ENTRY.CLIENT=TIME.REC<3,CLIENT.POS>
+      CRT @(0,23):@(-4):
+      GOTO DISPLAY.CLIENT
+
+* Get client
+400:***
+      MASK=ENTRY.CLIENT:STR(MASK.CHAR,20-LEN(ENTRY.CLIENT)):@(-4)
+      HELP='Enter client ID or letters for search. [X]=Back [EX]it'
+      CALL GEN.IN(11,7,MASK,'',Q,0,20,'','',2,11,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            SAVE.SCREEN.LINE.CLIENT=''
+            GOSUB DISPLAY.DATA
+            GOTO 200
+         CASE QI=''
+            IF ENTRY.CLIENT='' THEN
+               GOTO 400
+            END ELSE
+               QI=ENTRY.CLIENT
+            END
+         CASE NOT(QI MATCHES '0N')
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            GOSUB DISPLAY.PROMPTS
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 400
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 400
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO 400
+            END CASE
+         CASE NUM(QI)
+            QI=QI'R%5'
+         CASE 1
+            GOTO 400
+      END CASE
+      ENTRY.CLIENT=QI
+
+DISPLAY.CLIENT:
+      READ CLIENT.REC FROM F.CLIENTS,ENTRY.CLIENT THEN
+         CLIENT.NAME=CLIENT.REC<2>
+         BEGIN CASE
+            CASE CLIENT.REC<30>='A'
+               CLIENT.STATUS='Active'
+            CASE CLIENT.REC<30>='I'
+               CLIENT.STATUS='Inactive'
+            CASE CLIENT.REC<30>='O'
+               CLIENT.STATUS='Out of Business'
+            CASE CLIENT.REC<30>=''
+               CLIENT.STATUS='null'
+            CASE 1
+               CLIENT.STATUS=CLIENT.REC<30>
+         END CASE
+         SAVE.SCREEN.LINE.CLIENT=ENTRY.CLIENT:' ':CLIENT.NAME:' (':CLIENT.STATUS:')'
+      END ELSE
+*        CALL ELINE('Client ':ENTRY.CLIENT' not on file.')   ; * JMK01
+         CALL ELINE('Client ':ENTRY.CLIENT:' not on file.')  ; * JMK01
+         GOTO 400
+      END
+      GOSUB DISPLAY.DATA
+
+* Verify data
+500:***
+      LN='Is this information correct? Select : '
+      MASK='Y':MASK.CHAR
+      HELP='[Y]es [N]o [X]=Back [EX]it'
+      CALL GEN.IN(0,21,LN:MASK,'',Q,0,2,'','',0,-2,21,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            GOTO 300
+         CASE QI='N'
+            SAVE.SCREEN.LINE.USER=''
+            SAVE.SCREEN.LINE.DATE=''
+            SAVE.SCREEN.LINE.CLIENT=''
+            GOSUB DISPLAY.DATA
+            GOTO 100
+         CASE QI='Y' OR QI=''
+         CASE 1
+            GOTO 500
+      END CASE
+
+* Build report
+      FILENAME=ENTRY.PERSON:'_':ENTRY.DATE'D4-':'_':ENTRY.CLIENT:'.XLS'
+      TOTAL.TIME=0
+      NUM.SEGMENTS=DCOUNT(TIME.REC<12,CLIENT.POS>,@SVM)
+      FOR X=1 TO NUM.SEGMENTS
+         START.TIME=TIME.REC<12,CLIENT.POS,X>
+         END.TIME=TIME.REC<13,CLIENT.POS,X>
+         DIFFERENCE=END.TIME-START.TIME
+         TOTAL.TIME+=DIFFERENCE
+      NEXT X
+      GOSUB SET.HEADINGS
+      LINE=''
+      LINE<1, 1>=ENTRY.PERSON
+      LINE<1, 2>=ENTRY.PERSON.FULLNAME
+      LINE<1, 3>=ENTRY.DATE'D4-'
+      LINE<1, 4>=ENTRY.CLIENT
+      LINE<1, 5>=CLIENT.NAME
+      LINE<1, 6>=OCONV(TOTAL.TIME,'MTS')
+      LINE<1, 7>=TIME.REC<4,CLIENT.POS>
+      LINE<1, 8>=TIME.REC<6,CLIENT.POS>
+      LINE<1, 9>=TOTAL.TIME/TIME.REC<4,CLIENT.POS>
+      FP.REPORT<-1>=LINE
+
+* Write data file
+      FP.REPORT=CHANGE(FP.REPORT,@VM,TAB)
+      WRITE FP.REPORT ON F.BILLDATA,FILENAME THEN
+         CRT @(0,21):FILENAME:' written to BILLDATA\':USER.NAME:' folder.'
+      END ELSE
+         CRT @(0,21):FILENAME:' could not be written.'
+      END
+      CALL ELINE('')
+      GOTO THE.END
+
+********************************************************************************
+
+DISPLAY.PROMPTS:***
+* Display screen prompts
+
+      CRT @(0,3):@(-3)
+      CRT @(0,3):'UserName :'
+      CRT @(0,5):'Date     :'
+      CRT @(0,7):'Client   :'
+      RETURN
+
+********************************************************************************
+
+DISPLAY.DATA:***
+* Display input data
+
+      CRT @(11,3):SAVE.SCREEN.LINE.USER:@(-4)
+      CRT @(11,5):SAVE.SCREEN.LINE.DATE:@(-4)
+      CRT @(11,7):SAVE.SCREEN.LINE.CLIENT:@(-4)
+      RETURN
+
+********************************************************************************
+
+SET.HEADINGS:***
+* Set up spreadsheet report headings
+
+      FP.REPORT=''
+      LINE=PROG.DESC:' run by ':USER.NAME:' on ':DATE()'D4-':' at ':OCONV(TIME(),'MTHS')
+      FP.REPORT<-1>=LINE
+      FP.REPORT<-1>=' '
+      LINE=''
+      LINE<1, 1>='User Name'
+      LINE<1, 2>='Full Name'
+      LINE<1, 3>='Entry Date'
+      LINE<1, 4>='Client #'
+      LINE<1, 5>='Client Name'
+      LINE<1, 6>='Time'
+      LINE<1, 7>='Num Bills'
+      LINE<1, 8>='Num Chars'
+      LINE<1, 9>='Avg Time/Bill (sec)'
+      FP.REPORT<-1>=LINE
+      FP.REPORT<-1>=' '
+      RETURN
+
+********************************************************************************
+
+THE.END:***
+* End of program
+
+      CRT @(0,23):
+      END

@@ -1,0 +1,796 @@
+***********************************************************************
+* Program name :  UPS.BENCHMARK.SETUP
+* Author       :  James M. Barberousse
+* Date written :  July 2002
+* Library      :  FBBP
+$* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* SUBROUTINE TO CREATE OR MODIFY CLIENT DIVISIONS
+*
+* Last updated by afs (AFSLOGISTICS\gbino) at 06:58:27 on 03/09/2018.
+*
+* Mod nn  mm/dd/yy, init, req #, description
+* Start modification history
+* 050808 - JMK01 - C080993 - Need for BM by locations for the same parcel carrier
+* 092909 - NPR01 - T091154 - Additonal wording to differentiate flat fee vs percentage for Ltr.
+* 032510 - JMK02 - ADD ONE MORE COLUMN FOR THE ROW NUMBER
+* 042312 - JMK03 - SysAid#2494 - Pro Comm access
+* End modification history
+**************************************************************************
+* Includes
+$INCLUDE FILE.DEFS INC_ADDS60.CODES; * These require specific PROCOMM settings
+
+* Equates
+      TERM.TYPE=SYSTEM(7)
+      BEGIN CASE
+         CASE TERM.TYPE='REGENT60'
+            REVERSE.BLINK.ON = TERM.ESC.SEQ:CHAR(TERM.REV+TERM.BLINK)  ; * Reverse Blinking text ON
+            REVERSE.ON = TERM.ESC.SEQ:CHAR(TERM.REV)         ; * Reverse text ON
+            REVERSE.OFF = TERM.ESC.SEQ:CHAR(TERM.NORMAL)     ; * Reverse text OFF
+         CASE 1
+            REVERSE.BLINK.ON = @(-13):@(-5)        ; * Reverse Blinking text ON
+            REVERSE.ON = @(-13)          ; * Reverse text ON
+            REVERSE.OFF = @(-14):@(-6)   ; * Reverse text OFF
+      END CASE
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+
+* Initialize general program variables
+      PROMPT''
+      PORT.NUM=SYSTEM(19)
+      CALL GET.USER.NEW(USER.NAME,CH.NUM)
+      PROG.NAME='UPS.BENCHMARK.SETUP'
+      PROG.DESC='Old UPS Logistics Benchmarks'
+      PACK.NAME='USER : ':USER.NAME
+      CO.NAME='AFS Logistics, LLC'
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'UPS.BM.SETUP' ; UPL.VOUT = ''   ; * NPR_UPL 04/23/2010
+      UPL.VIN<3> = USER.NAME
+      UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      EDIT.MASK.CHAR='-'
+      PLACE.HOLDER='~~ PLACE*HOLDER ~~'
+
+* Initialize operating variables
+*     PAGE.SIZE=14;       * Number of lines per page ; * JMK01
+*     START.Y=6;          * Starting y-position on the screen minus one ; * JMK01
+      PAGE.SIZE=13                       ; * Number of lines per page ; * JMK01
+      START.Y=7                          ; * Starting y-position on the screen minus one ; * JMK01
+
+      BENCHMARK.REC=''
+      OLD.BENCHMARK.REC=''
+
+      CLIENT.ID=''
+      MODE=''
+      SHIPPER=''                         ; * JMK01
+      CLIENT.NAME=''
+      CLIENT.CITY=''
+      CLIENT.STATE=''
+      * Open files
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      OPEN '','UPS.BM' TO F.UPS.BM ELSE
+         CALL OPEN.ABORT('UPS.LOGISTICS.BM',PROG.NAME)
+      END
+      OPEN '','OPERATOR' TO F.OP ELSE CALL OPEN.ABORT("OPERATOR",PROG.NAME)      ; * GRB01
+
+* Set access privileges
+* 3 Levels of access:
+*    0 - Access Denied
+*    1 - View Access only
+*    2 - Full View/Edit Access
+      READV OP.FLG FROM F.OP,USER.NAME,35 ELSE
+         OP.FLG = "N"
+      END
+      IF OP.FLG = "Y" THEN
+         USER.ACCESS=2
+      END ELSE
+         USER.ACCESS=1
+      END
+      *****    BEGIN CASE
+      *****         CASE USER.NAME='BRIAN'
+      *****            USER.ACCESS=2
+      *****         CASE USER.NAME='PBASS'
+      *****            USER.ACCESS=2
+      *****         CASE USER.NAME='DAVID'
+      *****            USER.ACCESS=2
+      *****       CASE USER.NAME='GBINO'
+      *****           USER.ACCESS=2
+      *****        CASE USER.NAME='JDARWIN'
+      *****           USER.ACCESS=2
+      *****        CASE 1
+      *****           USER.ACCESS=1
+      *****     END CASE
+      *****   END ELSE
+      IF USER.ACCESS=0 THEN PROG.DESC:=' - Access Denied'
+      IF USER.ACCESS=1 THEN PROG.DESC:=' - View Access'
+      IF USER.ACCESS=2 THEN PROG.DESC:=' - Full Access'
+      GOSUB DISPLAY.SCREEN
+
+      IF USER.ACCESS=0 THEN
+         CALL FB.PRINT.CENT(1,80,12,'Restricted Access Application - Access Denied')
+         CALL FB.PRINT.CENT(1,80,14,'Request access through Chris Mendenhall')
+         CALL ELINE('')
+         GOTO THE.END
+      END
+      *****  END
+
+************************************************************
+GET.CLIENT:***
+************************************************************
+      IF CLIENT.ID THEN
+         EDIT.MASK=CLIENT.ID'R%5'
+      END ELSE
+         EDIT.MASK=STR(EDIT.MASK.CHAR,5)
+      END
+      TEMP.UPS.BM.ID=''
+      HELP='Enter client ID, [TEMPLATE], or [ZERO-TEMPLATE]. [L]ist existing setups'
+      CALL GEN.IN(9,3,EDIT.MASK,'',Q,0,20,'','',2,9,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' AND CLIENT.ID THEN QI=CLIENT.ID
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='L'
+            GOSUB DISPLAY.BENCHMARKS
+            GOSUB DISPLAY.SCREEN
+            GOTO GET.CLIENT
+         CASE QI='TEMPLATE' OR QI='ZERO-TEMPLATE'
+            CLIENT.ID=QI
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'CLIENTS','SDX.CLIENTS,NAME','2,3,4',ITEM.LIST)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+               CASE ITEM.LIST#''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+            END CASE
+            GOSUB DISPLAY.SCREEN
+            GOTO GET.CLIENT
+         CASE NUM(QI) AND QI#''
+            QI=QI'R%5'
+            READ CLIENT.REC FROM F.CLIENTS,QI THEN
+               CLIENT.ID=QI
+               CLIENT.NAME=CLIENT.REC<2>
+               CLIENT.CITY=CLIENT.REC<4>
+               CLIENT.STATE=CLIENT.REC<5>
+            END ELSE
+               CALL ELINE('ERROR - Client ':QI:' is not a valid client.')
+               GOTO GET.CLIENT
+            END
+         CASE 1
+            GOTO GET.CLIENT
+      END CASE
+      BEGIN CASE
+         CASE CLIENT.ID='TEMPLATE'
+            CLIENT.TXT=CLIENT.ID:' - Template'
+         CASE CLIENT.ID='ZERO-TEMPLATE'
+            CLIENT.TXT=CLIENT.ID:' - Zero Commission Template'
+         CASE 1
+            CLIENT.TXT=CLIENT.ID'R%5':' ':CLIENT.NAME:' (':CLIENT.CITY:', ':CLIENT.STATE:')'
+      END CASE
+
+      CRT @(9,3):CLIENT.TXT'L#50'        ; * JMK01
+      IF CLIENT.ID='TEMPLATE' THEN
+         MODE='B'
+         UPS.BM.ID='TEMPLATE'
+         GO TEMPLATE.SKIP
+      END
+      IF CLIENT.ID='ZERO-TEMPLATE' THEN
+         MODE='B'
+         UPS.BM.ID='ZERO-TEMPLATE'
+         GO TEMPLATE.SKIP
+      END
+************************************************************
+GET.MODE:***
+************************************************************
+      IF MODE#'' THEN
+         EDIT.MASK=MODE'L#2'
+      END ELSE
+         EDIT.MASK=STR(EDIT.MASK.CHAR,2)
+      END
+      HELP='Enter Mode. [I]nbound, [O]utbound, or [B]oth [EX]it'
+      CALL GEN.IN(77,3,EDIT.MASK,'',Q,0,2,'','',2,77,3,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' AND MODE#'' THEN QI=MODE
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            CRT @(77,3):'  '
+            GOTO GET.CLIENT
+         CASE QI='I'
+            UPS.BM.ID=CLIENT.ID:'-I'     ; * JMK01
+            MODE='I'
+         CASE QI='O'
+            UPS.BM.ID=CLIENT.ID:'-O'     ; * JMK01
+            MODE='O'
+         CASE QI='B'
+            UPS.BM.ID=CLIENT.ID
+            MODE='B'
+         CASE 1
+            CALL ELINE('Invalid Entry')
+            GOTO GET.MODE
+      END CASE
+************************************************************
+GET.SHIPPER:***
+************************************************************
+      IF SHIPPER#'' THEN
+         EDIT.MASK=SHIPPER'L#6'
+      END ELSE
+         EDIT.MASK=STR(EDIT.MASK.CHAR,6)
+      END
+      HELP='Enter UPS Shipper Account #. [EX]it'
+      CALL GEN.IN(9,4,EDIT.MASK,'',Q,0,6,'','',6,9,4,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' AND SHIPPER#'' THEN QI=SHIPPER
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            CRT @(9,4):'  '
+            GOTO GET.MODE
+      END CASE
+      SHIPPER=QI
+      IF SHIPPER#'' THEN                 ; * JMK01
+         UPS.BM.ID:='*':SHIPPER          ; * JMK01
+      END                                ; * JMK01
+
+TEMPLATE.SKIP:***
+      CRT @(77,3):MODE'L#2'
+
+* Load list of service descriptions from FB.TABLES
+* This is the master list built by EBILL.IMPORT as the e-Bill files are read
+      READ SERVICE.DESCRIPTION.REC FROM F.TABLES,'UPS.EBILL.SERVICE.DESCRIPTIONS' ELSE
+         CALL ELINE('Could not load UPS Service Descriptions - Aborting.')
+         GOTO THE.END
+      END
+      NUM.SD=DCOUNT(SERVICE.DESCRIPTION.REC<1>,@VM)
+
+* Load BENCHMARK record
+* Add any new service descriptions that have been inserted into FB.TABLES
+
+      READ BENCHMARK.REC FROM F.UPS.BM,UPS.BM.ID THEN
+         FOR X=1 TO NUM.SD
+            SERVICE.DESCRIPTION=SERVICE.DESCRIPTION.REC<1,X>
+            LOCATE SERVICE.DESCRIPTION IN BENCHMARK.REC<1> BY 'AL' SETTING POS ELSE
+               INS SERVICE.DESCRIPTION BEFORE BENCHMARK.REC<1,POS>
+               INS '' BEFORE BENCHMARK.REC<2,POS>
+               INS '' BEFORE BENCHMARK.REC<3,POS>
+            END
+         NEXT X
+      END ELSE
+         TEMP.UPS.BM.ID='INACTIVE-':UPS.BM.ID
+         READ BENCHMARK.REC FROM F.UPS.BM,TEMP.UPS.BM.ID THEN
+            CALL ELINE('Inactive benchmark. Must be copied to active before making changes')
+            USER.ACCESS=1
+            FOR X=1 TO NUM.SD
+               SERVICE.DESCRIPTION=SERVICE.DESCRIPTION.REC<1,X>
+               LOCATE SERVICE.DESCRIPTION IN BENCHMARK.REC<1> BY 'AL' SETTING POS ELSE
+                  INS SERVICE.DESCRIPTION BEFORE BENCHMARK.REC<1,POS>
+                  INS '' BEFORE BENCHMARK.REC<2,POS>
+                  INS '' BEFORE BENCHMARK.REC<3,POS>
+               END
+            NEXT X
+         END ELSE
+            TEMP.UPS.BM.ID=''
+CREATE.FROM.TEMPLATE:***
+            CRT @(0,22):'Item is not on file. Create it from [T]emplate or [Z]ero-Template':@(-4)
+            HELP='Entry Options: [T]emplate [Z]ero-Template'
+            CALL GEN.IN(66,22,'T','',Q,0,1,'','',2,66,22,0,QI,HELP,0,23)
+            QI=TRIM(OCONV(QI,'MCU'))
+            IF QI='' THEN QI='T'
+            BEGIN CASE
+               CASE QI='T'
+               CASE QI='Z'
+               CASE QI='X'               ; * JMK01
+                  GOTO GET.SHIPPER       ; * JMK01
+               CASE QI='EX'              ; * JMK01
+                  GOTO THE.END           ; * JMK01
+               CASE 1
+                  CALL ELINE('Invalid entry.')
+                  GOTO CREATE.FROM.TEMPLATE
+            END CASE
+            CRT @(0,22):@(-4):
+            CRT @(0,23):@(-4):
+            IF QI='T' THEN
+               READ BENCHMARK.REC FROM F.UPS.BM,'TEMPLATE' ELSE
+                  BENCHMARK.REC=SERVICE.DESCRIPTION.REC
+                  FOR X=1 TO NUM.SD
+                     BENCHMARK.REC<2,X>=''
+                     BENCHMARK.REC<3,X>=''
+                  NEXT X
+               END
+            END
+            IF QI='Z' THEN
+               READ BENCHMARK.REC FROM F.UPS.BM,'ZERO-TEMPLATE' ELSE
+                  BENCHMARK.REC=SERVICE.DESCRIPTION.REC
+                  FOR X=1 TO NUM.SD
+                     BENCHMARK.REC<2,X>=''
+                     BENCHMARK.REC<3,X>=''
+                  NEXT X
+               END
+            END
+         END
+      END
+
+      IF TEMP.UPS.BM.ID='' THEN
+         WRITE BENCHMARK.REC ON F.UPS.BM,UPS.BM.ID           ; * Write the new record with added service descriptions
+      END
+      OLD.BENCHMARK.REC=BENCHMARK.REC
+
+* Calculate number of items and number of pages and set page number
+      NUM.SD=DCOUNT(BENCHMARK.REC<1>,@VM)
+      NUM.PAGES=INT(NUM.SD/PAGE.SIZE)
+      IF REM(NUM.SD,PAGE.SIZE) THEN NUM.PAGES+=1
+      PAGE.NUMBER=1
+      GOSUB DISPLAY.PAGE
+
+MAIN.START:***
+      CRT @(0,22):'Enter number of service description to edit: --':@(-4)
+      EDIT.MASK=STR(EDIT.MASK.CHAR,2)
+      HELP='[B]ck Pg [F]wd Pg [T]op Pg [L]st Pg [U]pdate [D]elete [C]opy Act/Inact'
+      CALL GEN.IN(45,22,EDIT.MASK,'',Q,0,3,'','',3,45,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'                    ; * Exit
+            IF USER.ACCESS=1 THEN GOTO THE.END
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'                     ; * Back to client
+            IF USER.ACCESS=1 THEN
+               GOSUB DISPLAY.SCREEN
+               GOTO GET.CLIENT
+            END
+            IF BENCHMARK.REC#OLD.BENCHMARK.REC THEN
+               YN.MSG='You have unsaved changes. Save before entering new client?'
+               YN.MASK=''
+               GOSUB ASK.Y.OR.N
+               IF YN.ANSWER='Y' THEN
+                  CRT @(0,22):'Saving...':@(-3)
+                  SLEEP 1
+                  GOSUB SAVE.BENCHMARK.REC
+                  GOSUB DISPLAY.PAGE
+               END
+            END
+            GOSUB DISPLAY.SCREEN
+            GOTO GET.CLIENT
+         CASE QI='U'                     ; * Update (and exit)
+            IF USER.ACCESS=1 THEN GOTO THE.END
+            IF BENCHMARK.REC#OLD.BENCHMARK.REC THEN
+               CRT @(0,22):'Saving...':@(-3)
+               SLEEP 1
+               GOSUB SAVE.BENCHMARK.REC
+               GOSUB DISPLAY.PAGE
+            END ELSE
+               CRT @(0,22):'No changes to save.':@(-3)
+               SLEEP 1
+            END
+            GOTO THE.END
+         CASE QI='C'                     ; * Copy (and exit)
+            IF TEMP.UPS.BM.ID='' THEN
+               IF USER.ACCESS=1 THEN GOTO THE.END
+            END
+            CRT @(0,22):'Copying...':@(-3)
+            SLEEP 1
+            IF TEMP.UPS.BM.ID='' THEN
+               DELETE F.UPS.BM,UPS.BM.ID
+               UPS.BM.ID='INACTIVE-':UPS.BM.ID
+            END ELSE
+               DELETE F.UPS.BM,TEMP.UPS.BM.ID
+            END
+            GOSUB SAVE.BENCHMARK.REC
+            GOSUB DISPLAY.PAGE
+            GOTO THE.END
+         CASE QI='D'                     ; * Delete
+            IF USER.ACCESS=1 THEN GOTO THE.END
+            YN.MSG='Are you sure you want to delete this benchmark?'
+            YN.MASK=''
+            GOSUB ASK.Y.OR.N
+            IF YN.ANSWER='Y' THEN
+               CRT @(0,22):'Deleting...':@(-3)
+               SLEEP 1
+               DELETE F.UPS.BM,UPS.BM.ID
+               GOSUB DISPLAY.PAGE
+            END
+            GOSUB DISPLAY.SCREEN
+            GOTO GET.CLIENT
+         CASE QI='L' OR QI='LP'          ; * Last Page
+            IF NUM.PAGES#0 AND PAGE.NUMBER#NUM.PAGES THEN
+               PAGE.NUMBER=NUM.PAGES
+               GOSUB DISPLAY.PAGE
+            END ELSE
+               CALL ELINE('** LAST PAGE **')
+            END
+            GOTO MAIN.START
+         CASE QI='T' OR QI='TP'          ; * Top Page
+            IF NUM.PAGES#0 AND PAGE.NUMBER#1 THEN
+               PAGE.NUMBER=1
+               GOSUB DISPLAY.PAGE
+            END ELSE
+               CALL ELINE('** FIRST PAGE **')
+            END
+            GOTO MAIN.START
+         CASE QI='F' OR QI='FP'          ; * Forward a page
+            IF NUM.PAGES#0 AND PAGE.NUMBER<NUM.PAGES THEN
+               PAGE.NUMBER+=1
+               GOSUB DISPLAY.PAGE
+            END ELSE
+               CALL ELINE('** LAST PAGE **')
+            END
+            GOTO MAIN.START
+         CASE QI='B' OR QI='BP'          ; * Backward a page
+            IF NUM.PAGES#0 AND PAGE.NUMBER>1 THEN
+               PAGE.NUMBER-=1
+               GOSUB DISPLAY.PAGE
+            END ELSE
+               CALL ELINE('** FIRST PAGE **')
+            END
+            GOTO MAIN.START
+         CASE QI=''                      ; * Enter data starting from the top and continuing to the bottom
+            IF USER.ACCESS=1 THEN GOTO MAIN.START
+            BACK.FLAG=FALSE
+            GOSUB ENTER.DATA
+            GOTO MAIN.START
+         CASE NUM(QI) AND QI#''          ; * Edit service description number
+            IF USER.ACCESS=1 THEN GOTO MAIN.START
+            IF QI>=1 AND QI<=NUM.SD THEN
+               EDIT.NUMBER=QI
+               BACK.FLAG=FALSE
+               GOSUB EDIT.BENCHMARK
+            END ELSE
+               CALL ELINE('No service description to EDIT.')
+            END
+            GOTO MAIN.START
+         CASE QI='*' AND USER.NAME='JAMES'         ; * Show contents of BENCHMARK.REC
+            CRT @(-1)
+            CRT @(0,0):BENCHMARK.REC
+            CALL ELINE('Viewing DEBUG Screen.')
+            GOSUB DISPLAY.SCREEN
+            GOSUB DISPLAY.PAGE
+            GOTO MAIN.START
+         CASE 1
+            GOTO MAIN.START
+      END CASE
+
+
+************************************************************
+DISPLAY.SCREEN:***
+************************************************************
+
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79):
+      CRT @(0,3):'CLIENT :'
+      CRT @(71,3):'MODE :'
+      CRT @(0,4):'SHIPPER:'              ; * JMK01
+
+      CRT @(0,5):STR('=',79):            ; * JMK01
+      CRT @(0,21):STR('=',79):
+      IF CLIENT.ID THEN
+         CLIENT.TXT=CLIENT.ID'R%5':' ':CLIENT.NAME:' (':CLIENT.CITY:', ':CLIENT.STATE:')'
+         CRT @(9,3):CLIENT.TXT'L#55'
+      END
+      IF MODE#'' THEN
+         CRT @(77,3):MODE'L#2'
+      END
+      IF SHIPPER#'' THEN                 ; * JMK01
+         CRT @(9,4):SHIPPER'L#6'         ; * JMK01
+      END                                ; * JMK01
+
+      CRT @(0,6):'### Service Description       Old Pck Benchmark %  Old Ltr Benchmark'    ; * NPR01 ; * JMK02
+      CRT @(0,7):'--- ------------------------  -------------------  -----------------'    ; * NPR01 ; * JMK02
+
+      RETURN
+
+********************************************************************************
+DISPLAY.PAGE:***
+********************************************************************************
+
+      STR.OUT='[Page ':PAGE.NUMBER:' of ':NUM.PAGES:']'
+      CRT @(78-LEN(STR.OUT),4):STR.OUT
+      Y=1                                ; * Screen position
+      IF PAGE.NUMBER=0 THEN
+         LINE.NUM=1
+      END ELSE
+         LINE.NUM=(PAGE.NUMBER-1)*PAGE.SIZE+1
+      END
+      LOOP WHILE Y<=PAGE.SIZE
+         BEGIN CASE
+            CASE LINE.NUM>NUM.SD
+* Print nothing - actually clears line
+
+               SCREEN.LINE=LINE.NUM'R%3'           ; * JMK02
+            CASE BENCHMARK.REC<1,LINE.NUM>=''
+
+               SCREEN.LINE=LINE.NUM'R%3'           ; * JMK02
+            CASE 1
+               GOSUB FORMAT.LINE
+               SCREEN.LINE=FORMATTED.LINE
+         END CASE
+         CRT @(0,START.Y+Y):SCREEN.LINE:@(-4)      ; * Draw screen line
+         Y+=1                            ; * Inc screen position
+         LINE.NUM+=1
+      REPEAT
+      RETURN
+
+********************************************************************************
+FORMAT.LINE:***
+********************************************************************************
+
+      FLAT.FEE.FLAG = 0                  ; * NPR01
+      IF INDEX(BENCHMARK.REC<1,LINE.NUM>,"HUNDR",1) THEN FLAT.FEE.FLAG = 1       ; * NPR01
+      IF INDEX(BENCHMARK.REC<1,LINE.NUM>,"HUNDREDWT",1) THEN FLAT.FEE.FLAG = 1   ; * NPR01
+      IF INDEX(BENCHMARK.REC<1,LINE.NUM>,"HUNDREDWEIGHT",1) THEN FLAT.FEE.FLAG = 1         ; * NPR01
+
+      FORMATTED.LINE=LINE.NUM'R%3':SPACE(1)        ; * JMK02
+      FORMATTED.LINE:=BENCHMARK.REC<1,LINE.NUM>'L#24':SPACE(2)
+      IF BENCHMARK.REC<2,LINE.NUM>#'' THEN
+         FORMATTED.LINE:=BENCHMARK.REC<2,LINE.NUM>'R26#6'
+      END ELSE
+         FORMATTED.LINE:=SPACE(6)
+      END
+      IF BENCHMARK.REC<3,LINE.NUM>#'' THEN
+         IF FLAT.FEE.FLAG THEN
+            FORMATTED.LINE:=SPACE(15):"$":BENCHMARK.REC<3,LINE.NUM>'R26#6':" ":REVERSE.ON:" ** Min Chg.**":REVERSE.OFF
+         END ELSE
+            FORMATTED.LINE:=SPACE(16):BENCHMARK.REC<3,LINE.NUM>'R26#6'
+         END
+      END ELSE
+         IF FLAT.FEE.FLAG THEN
+            FORMATTED.LINE:=SPACE(15):"$":BENCHMARK.REC<3,LINE.NUM>'R26#6':" ":REVERSE.ON:" ** Min Chg.**":REVERSE.OFF
+         END
+      END
+
+      IF USER.NAME = "XNPRATT" THEN
+
+         FORMATTED.LINE := " ":FLAT.FEE.FLAG:" (":BENCHMARK.REC<3,LINE.NUM>:") ":LINE.NUM "R#3"      ; * JMK02
+      END
+      RETURN
+
+********************************************************************************
+ENTER.DATA:***
+********************************************************************************
+
+      EDIT.NUMBER=1
+      LOOP WHILE EDIT.NUMBER>=1 AND EDIT.NUMBER<=NUM.SD
+         GOSUB EDIT.BENCHMARK
+         IF BACK.FLAG THEN
+            EDIT.NUMBER-=1
+         END ELSE
+            EDIT.NUMBER+=1
+         END
+      REPEAT
+      RETURN
+
+********************************************************************************
+EDIT.BENCHMARK:***
+********************************************************************************
+
+      PAGE.NUMBER=INT(EDIT.NUMBER/PAGE.SIZE)
+      IF PAGE.NUMBER*PAGE.SIZE<EDIT.NUMBER THEN PAGE.NUMBER+=1
+      GOSUB DISPLAY.PAGE
+
+      EDIT.Y=EDIT.NUMBER-(PAGE.NUMBER*PAGE.SIZE)+PAGE.SIZE
+      Y.POS=START.Y+EDIT.Y
+
+
+      GOSUB PROCESS.DATA
+
+      GOSUB DISPLAY.PAGE
+      RETURN
+
+********************************************************************************
+ASSIGN.FIELDS.OUT:***
+********************************************************************************
+
+      BENCHMARK=BENCHMARK.REC<2,EDIT.NUMBER>
+      RETURN
+
+********************************************************************************
+ASSIGN.FIELDS.IN:***
+********************************************************************************
+      BENCHMARK.REC<2,EDIT.NUMBER>=BENCHMARK
+      RETURN
+
+********************************************************************************
+PROCESS.DATA:***
+********************************************************************************
+      DONE=FALSE
+      FIELD.POS=1
+      LOOP WHILE NOT(DONE)
+         BEGIN CASE
+            CASE FIELD.POS=0
+               DONE=TRUE
+            CASE FIELD.POS=1
+               GOSUB GET.BENCHMARK
+            CASE FIELD.POS=2
+               DONE=TRUE
+         END CASE
+         IF BACK.FLAG THEN
+            FIELD.POS-=1
+         END ELSE
+            FIELD.POS+=1
+         END
+      REPEAT
+      RETURN
+
+********************************************************************************
+GET.BENCHMARK:***
+********************************************************************************
+      IF BACK.FLAG THEN GOTO GG2
+      BACK.FLAG=FALSE
+
+      HELP='[X]=Back'
+GG1:  CRT @(0,22):'Enter old package benchmark % for this service description.':@(-4)
+      X.POS=30
+      IF BENCHMARK.REC<2,EDIT.NUMBER>='' THEN
+         MASK='------'
+      END ELSE
+         MASK=BENCHMARK.REC<2,EDIT.NUMBER>'R26#6'
+      END
+      CALL GEN.IN(X.POS,Y.POS,MASK,'AMT2',Q,0,6,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF BENCHMARK.REC<2,EDIT.NUMBER>#'' THEN
+         IF QI='' THEN Q=BENCHMARK.REC<2,EDIT.NUMBER>
+      END
+      BEGIN CASE
+         CASE QI='X'
+            BACK.FLAG=TRUE
+            RETURN
+         CASE NUM(Q)
+            IF Q#'' THEN
+               BENCHMARK.REC<2,EDIT.NUMBER>=Q
+               CRT @(X.POS,Y.POS):BENCHMARK.REC<2,EDIT.NUMBER>'R26#6'
+            END
+
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO GG1
+      END CASE
+      HELP='[X]=Back'
+GG2:  CRT @(0,22):'Enter old letter benchmark % for this service description.':@(-4)
+      X.POS=52
+      IF BENCHMARK.REC<3,EDIT.NUMBER>='' THEN
+         MASK='------'
+      END ELSE
+         MASK=BENCHMARK.REC<3,EDIT.NUMBER>'R26#6'
+      END
+      CALL GEN.IN(X.POS,Y.POS,MASK,'AMT2',Q,0,6,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF BENCHMARK.REC<3,EDIT.NUMBER>#'' THEN
+         IF QI='' THEN Q=BENCHMARK.REC<3,EDIT.NUMBER>
+      END
+      BEGIN CASE
+         CASE QI='X'
+            IF BENCHMARK.REC<3,EDIT.NUMBER>='' THEN
+               CRT @(X.POS,Y.POS):SPACE(6)
+            END ELSE
+               CRT @(X.POS,Y.POS):BENCHMARK.REC<3,EDIT.NUMBER>'R26#6'
+            END
+
+            GO GG1
+         CASE NUM(Q)
+            IF Q#'' THEN
+               BENCHMARK.REC<3,EDIT.NUMBER>=Q
+               CRT @(X.POS,Y.POS):BENCHMARK.REC<3,EDIT.NUMBER>'R26#6'
+            END
+            BACK.FLAG=FALSE
+            RETURN
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO GG2
+      END CASE
+
+********************************************************************************
+SAVE.BENCHMARK.REC:***
+********************************************************************************
+
+      WRITE BENCHMARK.REC ON F.UPS.BM,UPS.BM.ID
+      GOSUB UPDATE.LOG
+
+      OLD.BENCHMARK.REC=BENCHMARK.REC
+      RETURN
+
+********************************************************************************
+DISPLAY.BENCHMARKS:***
+********************************************************************************
+
+      CRT @(0,0):@(-1)
+      STMT='SORT UPS.BM 1 2'
+      EXECUTE STMT
+      CALL ELINE('')
+      RETURN
+
+********************************************************************************
+ASK.Y.OR.N:***
+********************************************************************************
+* This is a general Yes/No prompt routine
+* Inputs:  YN.MSG, YN.MASK
+* Outputs: YN.ANSWER
+
+      YN.ANSWER=''
+
+Y.OR.N:
+      CRT @(0,22):YN.MSG:@(-4)
+      HELP='Entry Options: [Y]es [N]o'
+      EDIT.MASK=YN.MASK'L#1'
+      CALL GEN.IN(LEN(YN.MSG)+1,22,EDIT.MASK,'',Q,0,1,'','',2,LEN(YN.MSG)+1,22,0,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      IF QI='' THEN QI=TRIM(EDIT.MASK)
+      BEGIN CASE
+         CASE QI='Y'
+         CASE QI='N'
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO Y.OR.N
+      END CASE
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+      YN.ANSWER=QI
+      RETURN
+
+********************************************************************************
+LAST.CHANCE.TO.SAVE:***
+********************************************************************************
+* If you tried to EX out and there are unsaved changes - falls thru to THE.END
+
+      IF BENCHMARK.REC#OLD.BENCHMARK.REC THEN
+         YN.MSG='You have unsaved changes. Save before exiting?'
+         YN.MASK=''
+         GOSUB ASK.Y.OR.N
+         IF YN.ANSWER='Y' THEN
+            CRT @(0,22):'Saving...':@(-3)
+            SLEEP 1
+            GOSUB SAVE.BENCHMARK.REC
+            GOSUB DISPLAY.PAGE
+         END
+      END
+***************************************************
+UPDATE.LOG:
+****************************************************
+      IF OLD.BENCHMARK.REC # BENCHMARK.REC THEN
+         SYS.TME = TIME()
+         PROC.DTE =DATE()
+         VIN=""
+         VOUT=""
+         VIN<1> = PROC.DTE
+         VIN<2> = SYS.TME
+         VIN<6> = USER.NAME
+****VIN<7> = CLIENT.ID:",":DIV.ID
+         VIN<10> = CH.NUM
+         VIN<8> = "UPS.BM.SETUP"
+         VIN<11> = "UPSBM":"*":UPS.BM.ID
+         ATT.CNT = DCOUNT(BENCHMARK.REC,@AM)
+         FOR I = 1 TO ATT.CNT
+            IF BENCHMARK.REC<I> # OLD.BENCHMARK.REC<I> THEN
+               VIN<3> = I
+               IF DCOUNT(OLD.BENCHMARK.REC<I>,@VM) GT 1 THEN
+                  TMP = OLD.BENCHMARK.REC<I>
+                  CONVERT @VM TO @SVM IN TMP
+                  VIN<4> = TMP
+               END ELSE
+                  VIN<4> = OLD.BENCHMARK.REC<I>
+               END
+               IF DCOUNT(BENCHMARK.REC<I>,@VM) GT 1 THEN
+                  TMP = BENCHMARK.REC<I>
+                  CONVERT @VM TO @SVM IN TMP
+                  VIN<5> = TMP
+               END ELSE
+                  VIN<5> = BENCHMARK.REC<I>
+               END
+               CALL UPD.AUD.LOG(VIN,VOUT)
+               
+            END
+         NEXT I
+      END
+      * SOURCE.FILE = VIN<9>
+      RETURN
+
+
+********************************************************************************
+THE.END:***
+********************************************************************************
+      CRT @(0,22):@(-3):
+   END                                   ; * End program

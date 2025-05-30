@@ -1,0 +1,939 @@
+****************************************************
+* Program name : PRE.LTL.RPT
+* Author       : NCG Pratt
+* Date written : September 2009
+* Library      : FBBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* Program to Print  -- Pre Audit Approval Report
+*
+* Last updated by afs (AFSLOGISTICS\gbino) at 08:47:14 on 04/18/2023.
+*
+* Start modification history
+* 122211 - JMK01 - Change Aunna Herbal's email address to Jessica Hill
+* 032714 - JMK02 - SysAid#9171 - Change Pre Audit Approval Report to Distribution list
+* 101323 - NKH01 - ACCU-1971 Added columns Auto and Non Auto Desc
+* 112023 - NKH02 - ACCU-1971 Added column without Airgas and AER
+* 112823 - NKH03 - ACCU-1971 Added columns for Moved to Audit
+* 032724 - NKH04 - INT-371 Removed Chain to the menu / BPTS mods
+* End modification history
+*******************************************************
+
+      CALL GET.USER(USER)
+      CALL CHANNEL(CH.NUM)
+
+      ESC=CHAR(27)
+
+      PROG.NAME = 'PRE.LTL.RPT'
+      PROG.DESC = 'Pre Audit Approval Report'
+      PACK.NAME = 'FBBP'
+      CO.NAME = 'AFS Logistics, LLC'
+***       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'PRE.LTL.RPT' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+***       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                            ;* NPR_UPL 04/23/2010
+
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'PRE.LTL.RPT' ; UPL.VIN<7> = 'S' ; UPL.VOUT = ''     ;* NPR_UPL 05/11/2011
+      CALL UPD.PROGRAM.LOG2(UPL.VIN,UPL.VOUT)                                               ;* NPR_UPL 05/11/2011
+
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         CALL OPEN.ABORT("FB.BILLS.CRX",PROG.NAME)
+      END
+
+      OPEN 'BILLDATA.':USER TO F.BILLDATA ELSE
+         CALL OPEN.ABORT('BILLDATA.':USER,PROG.NAME)
+      END
+
+      OPEN '','EMAILDATA' TO F.EMAILDATA ELSE
+         CALL OPEN.ABORT('EMAILDATA',PROG.NAME)
+      END
+      
+      OPEN '','EDI.AUTO.LOG' TO F.AUTO.LOG ELSE       ; * NKH01
+         CALL OPEN.ABORT('EDI.AUTO.LOG',PROG.NAME)    ; * NKH01
+      END                                             ; * NKH01
+      OPEN 'BPTS.TEMP' TO TEMP.FILE ELSE              ; * NKH04
+         CALL OPEN.ABORT('BPTS.TEMP',PROG.NAME)       ; * NKH04
+      END                                             ; * NKH04
+
+      EMAIL.PATH='E:\ARDENT\PUBLIC\EMAILDATA\'
+
+      PRINT.REPORT = 0          ;* Set to 1 for hardcopy report
+      EXCEL.REPORT = 1          ;* Set to 1 for writing away Excel files
+      EMAIL.REPORT = 1          ;* Set to 1 for emailing Excel files
+
+*     IF USER = "NPRATT" THEN PRINT.REPORT = 0 ; *ZZ
+
+*     PAGE.LENGTH = 59
+      PAGE.LENGTH = 79
+
+      TODAY = DATE()
+      TIME.NOW = TIME()
+      TOT.REC.COUNT = 0    ; * NKH01
+      AUTO.COUNT = 0       ; * NKH01    
+
+      TOT.REC.COUNT.WO.BYPASS =  0  ; * NKH02
+      TOT.BYPASS.COUNT = 0          ; * NKH02
+      TOT.PERC.WO.BYPASS = 0        ; * NKH02 
+      
+      TOT.REC.COUNT.MTA = 0         ; * NKH03
+      TOT.PERC.MTA = 0              ; * NKH03
+        
+
+***************************************************************
+*** EDI.HIST fileds looked at
+**
+** 7    - Raw Data file name
+** 9    - Bol (cust Ref Data)
+** 25   - Ship Zip
+** 34   - Consignee Zip
+** 67   - Total Charges
+** 72   - PM ??
+** 77   - Billdate
+** 106  - Charge
+** 115  - Shipper's Indentifying #
+** 146  - Test or Production
+** 147  - File number
+
+
+      OPEN 'FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001'
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+         END
+      END
+
+*
+* Display screen heading
+*
+30:   CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+* DISPLAY SELECTIONS
+*
+      CRT @(28,6):"SELECTION OPTIONS"
+      CRT @(26,7):"--------------------"
+      CRT @(25,9):"Report Process Dates"
+
+      COL=27 ; ROW=10
+      GOSUB GET.DATES
+      IF QI='<' OR QI = 'EX' THEN GOTO 9999
+
+      PROCESS.DATE = START.DATE
+
+      CLEARFILE F.WORK
+      CURR.CLIENT = ''
+      EXECUTE 'GET.LIST DAV.':PROCESS.DATE
+*EXECUTE 'GET.LIST NKM'
+
+      HED=''
+      TEXT = CO.NAME
+
+      HED.LN1 = PROG.NAME "L#12" : SPACE(30) : CO.NAME "L#50" : SPACE(27) : " Page : "
+
+      FULL.DATE = OCONV(OCONV(TODAY,'DMA'),'MCT')
+      W.TIME    = OCONV(OCONV(TIME.NOW,'MTS'),'MCT')
+      HED.LN2 = USER "L#20"
+      HED.LN2 := SPACE(10):PROG.DESC "L#25" :" From (": START.DATE 'D/':") To (":END.DATE 'D/':")"
+      HED.LN2 := SPACE(20):" ":W.TIME:" ":FULL.DATE
+
+***      HED.LN3 = STR("X",130):"+"
+      HED.LN3 = ""
+
+      HED.LN4  = "Client":SPACE(33)
+      HED.LN4 := "Carrier":SPACE(32)
+      HED.LN4 := "Count":SPACE(4)
+      HED.LN4 := "Det.Total":SPACE(7)
+      HED.LN4 := "Total":SPACE(5)
+      HED.LN4 := "Diff."
+
+*ZZ GOSUB OLDWAY
+
+      EOF = "N"
+      CNT = 0
+      CRT @(-1)
+      CRT @(10,10):"Preparing report data"
+
+      LOOP
+         READNEXT EDI.ID ELSE EOF = "Y"
+      UNTIL EOF = "Y" DO
+         READ BPTS.REC FROM TEMP.FILE, EDI.ID ELSE                ; * NKH04
+            CALL PARSE.EDI.ID(EDI.ID, CLIENT.ID, EDI.HIST.ID)
+            READ CL.REC FROM F.WORK, CLIENT.ID ELSE CL.REC = ''
+            CL.REC<-1> = EDI.HIST.ID
+            WRITE CL.REC ON F.WORK, CLIENT.ID
+         END                                                      ; * NKH04
+      REPEAT
+
+      COL.NO = 1
+      HLINE = ""
+      HLINE<1,COL.NO> = "Client"                   ; COL.NO += 1
+      HLINE<1,COL.NO> = "Client Name"              ; COL.NO += 1
+      HLINE<1,COL.NO> = "Carrier"                  ; COL.NO += 1
+      HLINE<1,COL.NO> = "Carrier Name"             ; COL.NO += 1
+      HLINE<1,COL.NO> = "Pro. Number"              ; COL.NO += 1
+      HLINE<1,COL.NO> = "Bill Date"                ; COL.NO += 1
+      HLINE<1,COL.NO> = "Orig. Zip"                ; COL.NO += 1
+      HLINE<1,COL.NO> = "Dest. Zip"                ; COL.NO += 1
+      HLINE<1,COL.NO> = "PM??"                     ; COL.NO += 1
+      HLINE<1,COL.NO> = "Bol/Ref. No."             ; COL.NO += 1
+      HLINE<1,COL.NO> = "Shipper ID."              ; COL.NO += 1
+      HLINE<1,COL.NO> = "Sum of Det. Chrgs."       ; COL.NO += 1
+      HLINE<1,COL.NO> = "Total Chrgs."             ; COL.NO += 1
+      HLINE<1,COL.NO> = "Chrgs. Diff."             ; COL.NO += 1
+      HLINE<1,COL.NO> = "EDI HIST ID"              ; COL.NO += 1
+      HLINE<1,COL.NO> = "Stack"                    ; COL.NO += 1     ; * NKH01
+      HLINE<1,COL.NO> = "Override Stack"           ; COL.NO += 1     ; * NKH01
+      HLINE<1,COL.NO> = "Handling Unit"            ; COL.NO += 1
+      HLINE<1,COL.NO> = "Test or Prod"             ; COL.NO += 1
+      HLINE<1,COL.NO> = "File Number"              ; COL.NO += 1
+      HLINE<1,COL.NO> = "Raw data file id"         ; COL.NO += 1
+      HERR.LINE       = HLINE
+      HLINE<1,COL.NO> = "Errors"                   ; COL.NO += 1
+      HLINE<1,COL.NO> = "Auto to FP"               ; COL.NO += 1     ; * NKH01
+      HLINE<1,COL.NO> = "Non Auto Desc"            ; COL.NO += 1     ; * NKH01
+            
+      HERR.LINE<1,-1> = "Error Desc."
+
+      COL.NO = 1
+      HSLINE = ""
+      HSLINE<1,COL.NO> = "Client"                   ; COL.NO += 1
+      HSLINE<1,COL.NO> = "Client Name"              ; COL.NO += 1
+      HSLINE<1,COL.NO> = "Carrier"                  ; COL.NO += 1
+      HSLINE<1,COL.NO> = "Carrier Name"             ; COL.NO += 1
+      HSLINE<1,COL.NO> = "Bill Count"               ; COL.NO += 1
+      HSLINE<1,COL.NO> = "Sum of Det. Chrgs."       ; COL.NO += 1
+      HSLINE<1,COL.NO> = "Total Chrgs."             ; COL.NO += 1
+      HSLINE<1,COL.NO> = "Chrgs. Diff."             ; COL.NO += 1
+
+      XLS.REC1        = HLINE
+      XLS.REC2        = HERR.LINE
+      XLS.REC3        = HSLINE
+
+      SUMM.ARRAY     = ''
+      PR.SUMM.ARRAY  = ''
+      SUMM.ERR.ARRAY = ''
+
+      ERR.NO = 1
+      SUMM.ERR.ARRAY<1,ERR.NO> = 'Carrier 00018'          ; ERR.NO += 1
+      SUMM.ERR.ARRAY<1,ERR.NO> = 'Client 00057'           ; ERR.NO += 1
+      SUMM.ERR.ARRAY<1,ERR.NO> = 'Client 10225'           ; ERR.NO += 1
+      SUMM.ERR.ARRAY<1,ERR.NO> = 'Missing Zips'           ; ERR.NO += 1
+      SUMM.ERR.ARRAY<1,ERR.NO> = 'Total Charges < 0.01'   ; ERR.NO += 1
+      SUMM.ERR.ARRAY<1,ERR.NO> = 'Missing Bill Date'      ; ERR.NO += 1
+      SUMM.ERR.ARRAY<1,ERR.NO> = 'Invalid Zips'           ; ERR.NO += 1
+      SUMM.ERR.ARRAY<1,ERR.NO> = 'Charge Mismatch'        ; ERR.NO += 1
+      SUMM.ERR.ARRAY<1,ERR.NO> = 'Record Vanished'        ; ERR.NO+=1
+    SUMM.ERR.ARRAY<1,ERR.NO> = 'FB.BILLS Rejected'        ; ERR.NO+=1
+    SUMM.ERR.ARRAY<1,ERR.NO> = 'FB.BILLS amounts mismatch'   ; ERR.NO+=1
+    SUMM.ERR.ARRAY<1,ERR.NO> = 'FB.BILLS exist amount match'
+*
+      EXECUTE \SSELECT FBWORK\:CH.NUM CAPTURING OUTPUT
+
+      EOF = "N"
+      CNT = 0
+
+      LOOP
+         READNEXT CLIENT.ID ELSE EOF = "Y"
+      UNTIL EOF = "Y" DO
+         READ CL.REC FROM F.WORK, CLIENT.ID THEN
+            OPEN 'EDI.BILLS.HIST,':CLIENT.ID TO F.EDI.HIST ELSE
+               CALL ELINE("Fatal error - Could not open file EDI.BILLS.HIST,":CLIENT.ID)
+               GOTO SKIP.CLIENT
+            END
+            CRT @(10,12):"Processing Client  ":CLIENT.ID
+            GOSUB PROCESS.CLIENT
+         END
+SKIP.CLIENT:
+      REPEAT
+
+      IF PRINT.REPORT THEN GOSUB PRINT.SUMMARY.REPORT
+
+      NS = DCOUNT(SUMM.ARRAY<1>,@VM)
+      FOR POS = 1 TO NS
+         SUMM.STRING = SUMM.ARRAY<1,POS>
+         NAME.STRING = SUMM.ARRAY<2,POS>
+         T.DETAIL.CHGS = SUMM.ARRAY<3,POS>
+         T.TOTAL.CHGS = SUMM.ARRAY<4,POS>
+         T.BILL.CNT = SUMM.ARRAY<5,POS>
+         T.CHARGE.DIFF = T.DETAIL.CHGS - T.TOTAL.CHGS
+
+         XSLINE = ''
+         XSLINE<1,1> = FIELD(SUMM.STRING,"_",1)
+         XSLINE<1,2> = FIELD(NAME.STRING,"_",1)
+         XSLINE<1,3> = FIELD(SUMM.STRING,"_",2)
+         XSLINE<1,4> = FIELD(NAME.STRING,"_",2)
+         XSLINE<1,5> = T.BILL.CNT
+         XSLINE<1,6> = OCONV(T.DETAIL.CHGS,"MR2,")
+         XSLINE<1,7> = OCONV(T.TOTAL.CHGS,"MR2,")
+         XSLINE<1,8> = OCONV(T.CHARGE.DIFF,"MR2,")
+         XLS.REC3<-1> = XSLINE
+      NEXT NS
+
+      LAST.LINE = DCOUNT(XLS.REC3,@AM)
+
+      XLS.REC3<LAST.LINE+1,5> = "=SUM(E2:E" : LAST.LINE : ")"
+      XLS.REC3<LAST.LINE+1,6> = "=SUM(F2:F" : LAST.LINE : ")"
+      XLS.REC3<LAST.LINE+1,7> = "=SUM(G2:G" : LAST.LINE : ")"
+      XLS.REC3<LAST.LINE+1,8> = "=SUM(H2:H" : LAST.LINE : ")"
+
+      W.DATE = OCONV(PROCESS.DATE,"D2/")
+      CONVERT "/" TO "" IN W.DATE
+
+      IF EXCEL.REPORT THEN
+         ID.XLS1 = "PRE_LTL_DET_":W.DATE:".XLS"
+         CONVERT @VM TO CHAR(9) IN XLS.REC1
+         WRITE XLS.REC1 ON F.BILLDATA, ID.XLS1
+
+         IF EMAIL.REPORT THEN WRITE XLS.REC1 ON F.EMAILDATA, ID.XLS1
+
+         ID.XLS2 = "PRE_LTL_ERRS_":W.DATE:".XLS"
+         CONVERT @VM TO CHAR(9) IN XLS.REC2
+         WRITE XLS.REC2 ON F.BILLDATA, ID.XLS2
+
+         IF EMAIL.REPORT THEN WRITE XLS.REC2 ON F.EMAILDATA, ID.XLS2
+
+         ID.XLS3 = "PRE_LTL_SUMM_":W.DATE:".XLS"
+         CONVERT @VM TO CHAR(9) IN XLS.REC3
+         WRITE XLS.REC3 ON F.BILLDATA, ID.XLS3
+
+         IF EMAIL.REPORT THEN WRITE XLS.REC3 ON F.EMAILDATA, ID.XLS3
+
+* ZZ       ID.XLS4 = "PRE_LTL_SUMM_ARRAY_":W.DATE:".XLS"   ;* ZZ Remove
+* ZZ       CONVERT @VM TO CHAR(9) IN SUMM.ARRAY            ;* ZZ Remove
+* ZZ       WRITE SUMM.ARRAY ON F.BILLDATA, ID.XLS4         ;* ZZ Remove
+
+***    CALL ELINE("Files  ":ID.XLS1:", ":ID.XLS2:" and ":ID.XLS3:"  Created")
+      END
+
+      IF EXCEL.REPORT AND EMAIL.REPORT THEN
+         ATTACH.ARRAY = ID.XLS1 : @VM : ID.XLS2 : @VM : ID.XLS3
+         GOSUB SEND.EMAIL
+      END
+
+9999: * EXIT PROGRAM
+
+      * Begin NKH01
+      AUTO.PERCENT = (AUTO.COUNT / TOT.REC.COUNT) * 100
+      TOT.REC.COUNT.WO.BYPASS = TOT.REC.COUNT - TOT.BYPASS.COUNT           ; * NKH02
+      TOT.PERC.WO.BYPASS = (AUTO.COUNT / TOT.REC.COUNT.WO.BYPASS) * 100    ; * NKH02
+      TOT.PERC.MTA = (TOT.REC.COUNT.MTA / TOT.REC.COUNT) * 100             ; * NKH03
+
+      LOG.REC=''
+      LOG.REC<1> = TOT.REC.COUNT
+      LOG.REC<2> = AUTO.COUNT
+      LOG.REC<3> = AUTO.PERCENT
+      LOG.REC<4> = TOT.REC.COUNT.WO.BYPASS     ; * NKH02       Total records not including AG and AER
+      LOG.REC<5> = TOT.PERC.WO.BYPASS          ; * NKH02       Percent of total records not including AG and AER
+      LOG.REC<6> = TOT.REC.COUNT.MTA           ; * NKH03
+      LOG.REC<7> = TOT.PERC.MTA                ; * NKH03
+      LOG.ID = DATE()
+      WRITE LOG.REC ON F.AUTO.LOG, LOG.ID
+      * End NKH01
+
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'PRE.LTL.RPT' ; UPL.VIN<7> = 'E' ; UPL.VOUT = ''     ;* NPR_UPL 05/11/2011
+      CALL UPD.PROGRAM.LOG2(UPL.VIN,UPL.VOUT)                                               ;* NPR_UPL 05/11/2011
+
+      EXECUTE 'TERM ,,,,,,79,60'
+      CRT @(0,0):@(-1)
+*      CHAIN "G"      ; * NKH04
+      STOP
+
+PROCESS.CLIENT:
+
+      N.RECS = DCOUNT(CL.REC,@AM)
+      FOR II = 1 TO N.RECS
+
+         ERR.STRING = ''  ; REC.FND = 1
+         DUMMY=''
+
+         EDI.HIST.ID = CL.REC<II>
+         READ EDI.HIST.REC FROM F.EDI.HIST, EDI.HIST.ID ELSE
+            EDI.HIST.REC = ''
+*             CALL ELINE("Could not read record ":EDI.HIST.ID)
+*             CONTINUE    ;* ??????????? DOES THIS SKIP TO NEXT II  ???
+            REC.FND = 0
+*              DEBUG
+         END
+
+         BOL.REFNO   = EDI.HIST.REC<9>
+         SHIP.ZIP    = EDI.HIST.REC<25>
+         DEST.ZIP    = EDI.HIST.REC<34>
+         TOTAL.CHGS  = EDI.HIST.REC<67>
+         PM.DESC     = EDI.HIST.REC<72>
+         BILL.DATE   = EDI.HIST.REC<77>
+
+         BILL.STATUS      = EDI.HIST.REC<98>
+         OVERIDE.STATUS   = EDI.HIST.REC<99>
+
+         DETAIL.CHGS = SUM(EDI.HIST.REC<106>)
+         SHIPPER.ID  = EDI.HIST.REC<115>
+         HANDLING.UNITS = SUM(EDI.HIST.REC<103>)
+         TEST.OR.PROD = EDI.HIST.REC<146>
+         FILE.NUMB = EDI.HIST.REC<147>
+         RAW.ID = EDI.HIST.REC<7>
+         AUTO = EDI.HIST.REC<173>            ; * NKH01
+         NON.AUTO.DESC = EDI.HIST.REC<174>   ; * NKH01
+         DIFF.CHGS   = DETAIL.CHGS - TOTAL.CHGS  ;*****EEE
+
+         CARRIER.ID = FIELD(EDI.HIST.ID,"*",1)
+         READV CARRIER.NAME FROM F.CARRIERS,CARRIER.ID,1 ELSE CARRIER.NAME = "Uknown"
+         READV CLIENT.NAME FROM F.CLIENTS,CLIENT.ID,2 ELSE CLIENT.NAME = "Uknown"
+
+         PRO.NO     = FIELD(EDI.HIST.ID,"*",2)
+
+         IF REC.FND THEN
+            IF CARRIER.ID = "00018" AND EDI.HIST.ID[LEN(EDI.HIST.ID)-2,3] NE "0*0" THEN
+               IF ERR.STRING = '' THEN ERR.STRING = '1' ELSE ERR.STRING := ']1'
+               ERR.NO = 1
+               SUMM.ERR.ARRAY<2,ERR.NO> += 1
+               SUMM.ERR.ARRAY<3,ERR.NO> += TOTAL.CHGS
+            END
+            IF CLIENT.ID = "00057" THEN
+               IF ERR.STRING = '' THEN ERR.STRING = '2' ELSE ERR.STRING := ']2'
+               ERR.NO = 2
+               SUMM.ERR.ARRAY<2,ERR.NO> += 1
+               SUMM.ERR.ARRAY<3,ERR.NO> += TOTAL.CHGS
+            END
+
+            IF CLIENT.ID = "10225" THEN
+               IF ERR.STRING = '' THEN ERR.STRING = '3' ELSE ERR.STRING := ']3'
+               ERR.NO = 3
+               SUMM.ERR.ARRAY<2,ERR.NO> += 1
+               SUMM.ERR.ARRAY<3,ERR.NO> += TOTAL.CHGS
+            END
+
+            IF SHIP.ZIP = '' OR DEST.ZIP = '' THEN
+               IF ERR.STRING = '' THEN ERR.STRING = '4' ELSE ERR.STRING := ']4'
+               ERR.NO = 4
+               SUMM.ERR.ARRAY<2,ERR.NO> += 1
+               SUMM.ERR.ARRAY<3,ERR.NO> += TOTAL.CHGS
+            END
+
+            IF OCONV(TOTAL.CHGS,"MR2") < "0.01" THEN
+               IF ERR.STRING = '' THEN ERR.STRING = '5' ELSE ERR.STRING := ']5'
+               ERR.NO = 5
+               SUMM.ERR.ARRAY<2,ERR.NO> += 1
+               SUMM.ERR.ARRAY<3,ERR.NO> += TOTAL.CHGS
+            END
+
+            IF BILL.DATE = '' THEN
+               IF ERR.STRING = '' THEN ERR.STRING = '6' ELSE ERR.STRING := ']6'
+               ERR.NO = 6
+               SUMM.ERR.ARRAY<2,ERR.NO> += 1
+               SUMM.ERR.ARRAY<3,ERR.NO> += TOTAL.CHGS
+            END
+
+            IF LEN(SHIP.ZIP) < '5' OR LEN(DEST.ZIP) < '5' THEN
+               IF ERR.STRING = '' THEN ERR.STRING = '7' ELSE ERR.STRING := ']7'
+               ERR.NO = 7
+               SUMM.ERR.ARRAY<2,ERR.NO> += 1
+               SUMM.ERR.ARRAY<3,ERR.NO> += TOTAL.CHGS
+            END
+
+            IF (DETAIL.CHGS - TOTAL.CHGS) NE "0" THEN
+               IF ERR.STRING = '' THEN ERR.STRING = '8' ELSE ERR.STRING := ']8'
+               ERR.NO = 8
+               SUMM.ERR.ARRAY<2,ERR.NO> += 1
+               SUMM.ERR.ARRAY<3,ERR.NO> += TOTAL.CHGS
+            END
+            READ DUMMY FROM F.CRX,EDI.HIST.ID THEN
+               IF DUMMY<39>='R' THEN
+                  IF ERR.STRING = '' THEN ERR.STRING = '10' ELSE ERR.STRING := ']10'
+                  ERR.NO = 10
+                  SUMM.ERR.ARRAY<2,ERR.NO> += 1
+               END
+               IF DUMMY<8>#TOTAL.CHGS THEN
+                  IF ERR.STRING = '' THEN ERR.STRING = '11' ELSE ERR.STRING := ']11'
+                  ERR.NO = 11
+                  SUMM.ERR.ARRAY<2,ERR.NO> += 1
+               END ELSE
+                  IF DUMMY<53>[1,8]#'EDI:AUTO' THEN
+                     IF DUMMY<53>[1,3]='EDI' THEN
+                        IF ERR.STRING = '' THEN ERR.STRING = '12' ELSE ERR.STRING := ']12'
+                        ERR.NO = 12
+                        SUMM.ERR.ARRAY<2,ERR.NO> += 1
+                     END
+                  END
+               END
+            END
+         END ELSE
+            ERR.STRING = '9'   ;* Record went missing
+            ERR.NO = 9
+            SUMM.ERR.ARRAY<2,ERR.NO> += 1
+            SUMM.ERR.ARRAY<3,ERR.NO> += TOTAL.CHGS
+         END
+         
+         TOT.REC.COUNT += 1                                                ; * NKH01
+         IF AUTO = "Y" THEN AUTO.COUNT += 1                                ; * NKH01
+         * Begin NKH02
+         BYPASS.CLIENT = 0
+         DESC.COUNT = DCOUNT(NON.AUTO.DESC,@VM)
+         FOR D = 1 TO DESC.COUNT
+            BEGIN CASE
+               CASE NON.AUTO.DESC<1,D>[1,6] = 'Airgas' 
+                  BYPASS.CLIENT = 1
+               CASE NON.AUTO.DESC<1,D>[1,6] = 'Bypass' 
+                  BYPASS.CLIENT = 1
+            END CASE
+         NEXT D
+         IF BYPASS.CLIENT THEN TOT.BYPASS.COUNT += 1                     
+         * End NKH02     
+         * Begin NKH03         
+         IF NON.AUTO.DESC<1,1>[1,19] = 'Bill moved to Audit' THEN
+            TOT.REC.COUNT.MTA += 1
+         END
+         * End NKH03    
+         
+         COL.NO = 1
+         XLINE = ""
+         XLINE<1,COL.NO> = CLIENT.ID : " "                 ; COL.NO += 1
+         XLINE<1,COL.NO> = CLIENT.NAME : " "               ; COL.NO += 1
+         XLINE<1,COL.NO> = CARRIER.ID : " "                ; COL.NO += 1
+         XLINE<1,COL.NO> = CARRIER.NAME : " "              ; COL.NO += 1
+         XLINE<1,COL.NO> = PRO.NO : " "                    ; COL.NO += 1
+         XLINE<1,COL.NO> = OCONV(BILL.DATE,"D2/") : " "    ; COL.NO += 1
+         XLINE<1,COL.NO> = SHIP.ZIP : " "                  ; COL.NO += 1
+         XLINE<1,COL.NO> = DEST.ZIP : " "                  ; COL.NO += 1
+         XLINE<1,COL.NO> = PM.DESC : " "                   ; COL.NO += 1
+         XLINE<1,COL.NO> = BOL.REFNO : " "                 ; COL.NO += 1
+         XLINE<1,COL.NO> = SHIPPER.ID : " "                ; COL.NO += 1
+         XLINE<1,COL.NO> = OCONV(DETAIL.CHGS,"MR2,") : " " ; COL.NO += 1
+         XLINE<1,COL.NO> = OCONV(TOTAL.CHGS,"MR2,") : " "  ; COL.NO += 1
+         XLINE<1,COL.NO> = OCONV(DIFF.CHGS,"MR2,") : " "   ; COL.NO += 1
+         XLINE<1,COL.NO> = EDI.HIST.ID : " "               ; COL.NO += 1
+
+         XLINE<1,COL.NO> = BILL.STATUS : " "               ; COL.NO += 1
+         XLINE<1,COL.NO> = OVERIDE.STATUS : " "            ; COL.NO += 1
+         XLINE<1,COL.NO> = HANDLING.UNITS : " "            ; COL.NO += 1
+         XLINE<1,COL.NO> = TEST.OR.PROD : " "              ; COL.NO += 1
+         XLINE<1,COL.NO> = FILE.NUMB : " "                 ; COL.NO += 1
+         XLINE<1,COL.NO> = RAW.ID : " "                    ; COL.NO += 1
+
+         ERR.LINE        = XLINE                           ; ERR.START = COL.NO
+         XLINE<1,COL.NO> = ERR.STRING                      ; COL.NO += 1
+         XLINE<1,COL.NO> = AUTO                            ; COL.NO += 1   ; * NKH01
+         XLINE<1,COL.NO> = NON.AUTO.DESC                   ; COL.NO += 1   ; * NKH01
+         XLS.REC1<-1> = XLINE
+
+         IF ERR.STRING  NE "" THEN
+            N.ERRS = DCOUNT(ERR.STRING,"]")
+            FOR ER = 1 TO N.ERRS
+               ERR.NO = FIELD(ERR.STRING,"]",ER)
+               ERR.DESC = SUMM.ERR.ARRAY<1,ERR.NO>
+               ERR.LINE<1,ERR.START> = ERR.NO:"  ":ERR.DESC:"  ":DUMMY<1>
+               XLS.REC2<-1>   = ERR.LINE
+            NEXT ER
+         END
+
+         SUMM.STRING = CLIENT.ID:"_":CARRIER.ID
+         NAME.STRING = CLIENT.NAME:"_":CARRIER.NAME
+         LOCATE SUMM.STRING IN SUMM.ARRAY<1> BY "AR" SETTING SPOS THEN
+            SUMM.ARRAY<3,SPOS> += DETAIL.CHGS
+            SUMM.ARRAY<4,SPOS> += TOTAL.CHGS
+            SUMM.ARRAY<5,SPOS> += 1           ;* Bill Counter
+         END ELSE
+            INS SUMM.STRING BEFORE SUMM.ARRAY<1,SPOS>
+            INS NAME.STRING BEFORE SUMM.ARRAY<2,SPOS>
+            INS DETAIL.CHGS BEFORE SUMM.ARRAY<3,SPOS>
+            INS TOTAL.CHGS BEFORE SUMM.ARRAY<4,SPOS>
+            INS "1" BEFORE SUMM.ARRAY<5,SPOS>            ;* Bill Counter
+         END
+
+         SUMM.STRING = CLIENT.ID:"_":CARRIER.ID
+         NAME.STRING = CLIENT.NAME:"_":CARRIER.NAME
+         LOCATE CLIENT.NAME IN PR.SUMM.ARRAY<1> BY "AR" SETTING SPOS THEN
+            CARRIER.STR = PR.SUMM.ARRAY<4,SPOS>
+            CONVERT @SVM TO @VM IN CARRIER.STR
+            LOCATE CARRIER.ID IN CARRIER.STR<1> BY "AR" SETTING CPOS THEN
+               PR.SUMM.ARRAY<5,SPOS,CPOS> += DETAIL.CHGS
+               PR.SUMM.ARRAY<6,SPOS,CPOS> += TOTAL.CHGS
+               PR.SUMM.ARRAY<7,SPOS,CPOS> += 1           ;* Bill Counter
+            END ELSE
+               INS CARRIER.NAME BEFORE PR.SUMM.ARRAY<3,SPOS,CPOS>
+               INS CARRIER.ID BEFORE PR.SUMM.ARRAY<4,SPOS,CPOS>
+               INS DETAIL.CHGS BEFORE PR.SUMM.ARRAY<5,SPOS,CPOS>
+               INS TOTAL.CHGS BEFORE PR.SUMM.ARRAY<6,SPOS,CPOS>
+               INS "1" BEFORE PR.SUMM.ARRAY<7,SPOS,CPOS>            ;* Bill Counter
+            END
+         END ELSE
+            INS CLIENT.NAME BEFORE PR.SUMM.ARRAY<1,SPOS>
+            INS CLIENT.ID BEFORE PR.SUMM.ARRAY<2,SPOS>
+            INS CARRIER.NAME BEFORE PR.SUMM.ARRAY<3,SPOS>
+            INS CARRIER.ID BEFORE PR.SUMM.ARRAY<4,SPOS>
+            INS DETAIL.CHGS BEFORE PR.SUMM.ARRAY<5,SPOS>
+            INS TOTAL.CHGS BEFORE PR.SUMM.ARRAY<6,SPOS>
+            INS "1" BEFORE PR.SUMM.ARRAY<7,SPOS>            ;* Bill Counter
+         END
+
+      NEXT II
+
+      RETURN
+
+
+PRINT.SUMMARY.REPORT: *** Print report per client / carrier
+
+      EXECUTE 'TERM ,,,,,,132,60'
+*     EXECUTE 'SP-ASSIGN F75,1 O' ; * Default to IBM 4039-16L+ Laser
+
+      PRINTER ON
+
+      LASER = ''
+      LASER<1>= 0                        ; * LANDSCAPE
+      LASER<2>= 8                        ; * Lines per inch
+      LASER<3>= 80                       ; * Page length
+      LASER<4>= 16.7                     ; * Characters per inch
+      LASER<5>= 0
+      LASER<6>= 0
+      LASER<7>= 1
+      LASER<8>= 0
+      MARGIN = 0
+      PRINT ESC:"E"
+*      PRINT ESC:"&l":LASER<1>:"O":       ; * Set landscape
+      PRINT ESC:"&l":LASER<2>:"D":       ; * Lines per inch
+      PRINT ESC:"&l":LASER<3>:"F":       ; * Page length
+      PRINT ESC:"(s":LASER<4>:"h":       ; * Set pitch
+      PRINT LASER<5>:"p":                ; * Proportional printing
+      PRINT LASER<6>:"s":                ; * Italics off
+      PRINT "0T":                        ; * Line Printer Font
+      PRINT ESC:"&l":LASER<7>:"H":       ; * Bin selection
+      PRINT ESC:"&a":MARGIN:"L":
+      PRINT ESC:'"g':LASER<8>:'F':       ; * Paper output
+
+      CL.DETAIL.CHGS = 0
+      CL.TOTAL.CHGS  = 0
+      CL.BILL.CNT    = 0
+
+      GT.DETAIL.CHGS = 0
+      GT.TOTAL.CHGS  = 0
+      GT.BILL.CNT    = 0
+
+      PG.CNT = 1
+      LN.CNT = 5
+
+      PRINT HED.LN1 : PG.CNT
+      PRINT HED.LN2
+      PRINT HED.LN3
+      PRINT HED.LN4
+      PRINT STR("*",130):"+"
+
+
+      N.CL = DCOUNT(PR.SUMM.ARRAY<1>,@VM)
+      FOR CL.POS = 1 TO N.CL
+
+*zz IF LN.CNT GT 60 THEN CL.POS = N.CL  ;* ZZ REMOVE TESTING ONLY
+
+
+         PR.CLIENT.ID   = PR.SUMM.ARRAY<2,CL.POS>
+         PR.CLIENT.NAME = PR.SUMM.ARRAY<1,CL.POS>
+
+         N.CARRS = DCOUNT(PR.SUMM.ARRAY<4,CL.POS>,@SVM)
+         FOR CR.POS = 1 TO N.CARRS
+**CRT "CL.POS  ":CL.POS "R#3" :" CR.POS ":CR.POS "R#3"
+            PR.CARRIER.ID   = PR.SUMM.ARRAY<4,CL.POS,CR.POS>
+            PR.CARRIER.NAME = PR.SUMM.ARRAY<3,CL.POS,CR.POS>
+            PR.DETAIL.CHGS  = PR.SUMM.ARRAY<5,CL.POS,CR.POS>
+            PR.TOTAL.CHGS = PR.SUMM.ARRAY<6,CL.POS,CR.POS>
+            PR.BILL.CNT = PR.SUMM.ARRAY<7,CL.POS,CR.POS>
+
+            CL.DETAIL.CHGS += PR.DETAIL.CHGS
+            CL.TOTAL.CHGS  += PR.TOTAL.CHGS
+            CL.BILL.CNT    += PR.BILL.CNT
+
+            GT.DETAIL.CHGS += PR.DETAIL.CHGS
+            GT.TOTAL.CHGS  += PR.TOTAL.CHGS
+            GT.BILL.CNT    += PR.BILL.CNT
+
+            PR.CHARGE.DIFF = PR.DETAIL.CHGS - PR.TOTAL.CHGS
+
+            IF CR.POS = 1 THEN
+               LNS.NEEDED = N.CARRS + 3
+               LNS.LEFT = PAGE.LENGTH - LN.CNT
+               IF LNS.NEEDED GT LNS.LEFT THEN
+                  LN.CNT = 999 ; GOSUB CHECK.HDR  ;* Force to next page if insufficient lines for Client and it's Carriers
+               END
+               DLINE = PR.CLIENT.ID "R#5":"  "
+               DLINE := PR.CLIENT.NAME[1,30] "L#30":"  "
+            END ELSE
+               DLINE = SPACE(39)
+            END
+            DLINE := PR.CARRIER.ID "R#5":"  "
+            DLINE := PR.CARRIER.NAME[1,30] "L#30":"  "
+            DLINE := PR.BILL.CNT "R#5" :"   "
+            DLINE := OCONV(PR.DETAIL.CHGS,"MR2,") "R#10" :"  "
+            DLINE := OCONV(PR.TOTAL.CHGS,"MR2,") "R#10" :"  "
+            DLINE := OCONV(PR.CHARGE.DIFF,"MR2,") "R#8"
+
+            PRINT DLINE ; LN.CNT += 1 ; GOSUB CHECK.HDR
+         NEXT CR.POS
+
+         CL.CHARGE.DIFF = CL.DETAIL.CHGS - CL.TOTAL.CHGS
+
+         ULINE = SPACE(78):STR("=",5):"  ":STR("=",11):" ":STR("=",11):" ":STR("=",9)
+
+         PRINT ULINE  ; LN.CNT += 1 ; GOSUB CHECK.HDR
+
+*       CLINE = "Total for ":PR.CLIENT.ID "R#5":"  " : PR.CLIENT.NAME[1,30] "L#30":"  ":SPACE(29)
+         CLINE = SPACE(78)
+         CLINE := CL.BILL.CNT "R#5" :"  "
+         CLINE := OCONV(CL.DETAIL.CHGS,"MR2,") "R#11" :" "
+         CLINE := OCONV(CL.TOTAL.CHGS,"MR2,") "R#11" :" "
+         CLINE := OCONV(CL.CHARGE.DIFF,"MR2,") "R#9"
+
+         PRINT CLINE ; LN.CNT += 1 ; GOSUB CHECK.HDR
+         PRINT ; LN.CNT += 1 ; GOSUB CHECK.HDR
+
+         CL.DETAIL.CHGS = 0
+         CL.TOTAL.CHGS  = 0
+         CL.BILL.CNT    = 0
+
+      NEXT CL.POS
+
+      GT.CHARGE.DIFF = GT.DETAIL.CHGS - GT.TOTAL.CHGS
+
+      LNS.NEEDED = 3
+      LNS.LEFT = PAGE.LENGTH - LN.CNT
+      IF LNS.NEEDED GT LNS.LEFT THEN
+         LN.CNT = 999 ; GOSUB CHECK.HDR  ;* Force to next page if insufficient lines for Client and it's Carriers
+      END
+
+      ULINE = SPACE(78):STR("=",5):"  ":STR("=",11):" ":STR("=",11):" ":STR("=",9)
+      PRINT ULINE  ; LN.CNT += 1
+
+      TLINE = "Grand Total ":SPACE(66)
+      TLINE := GT.BILL.CNT "R#5" :"  "
+      TLINE := OCONV(GT.DETAIL.CHGS,"MR2,") "R#11" :" "
+      TLINE := OCONV(GT.TOTAL.CHGS,"MR2,") "R#11" :" "
+      TLINE := OCONV(GT.CHARGE.DIFF,"MR2,") "R#9"
+      PRINT TLINE ; LN.CNT += 1
+
+      PRINT ; LN.CNT += 1 ; GOSUB CHECK.HDR
+
+      LNS.NEEDED = 20
+      LNS.LEFT = PAGE.LENGTH - LN.CNT
+      IF LNS.NEEDED GT LNS.LEFT THEN
+         LN.CNT = 999 ; GOSUB CHECK.HDR  ;* Force to next page if insufficient lines are available.
+      END
+
+      PRINT SPACE(5):"Errors and other Notifications"  ; LN.CNT += 1
+      PRINT SPACE(5):"=============================="  ; LN.CNT += 1
+      PRINT ; LN.CNT += 1
+
+      EDLINE  = SPACE(5) : "Description" "L#20"
+      EDLINE := SPACE(5) : "Count" "R#5"
+      EDLINE := SPACE(4) : "Total Charge"
+      PRINT EDLINE ; LN.CNT += 1
+
+      EULINE  = SPACE(5) : STR("-",20)
+      EULINE := SPACE(5) : STR("-",5)
+      EULINE := SPACE(4) : STR("-",12)
+      PRINT EULINE ; LN.CNT += 1
+
+      PRINT ; LN.CNT += 1
+
+      GT.ERR.BILL.CNT    = 0
+      GT.ERR.TOTAL.CHGS  = 0
+
+      FOR ERR.NO = 1 TO 10
+         ERR.DESC       = SUMM.ERR.ARRAY<1,ERR.NO>
+         ERR.BILL.CNT   = SUMM.ERR.ARRAY<2,ERR.NO> + 0
+         ERR.TOTAL.CHGS = SUMM.ERR.ARRAY<3,ERR.NO> + 0
+         GT.ERR.BILL.CNT   += ERR.BILL.CNT
+         GT.ERR.TOTAL.CHGS += ERR.TOTAL.CHGS
+         ERR.LINE  = SPACE(5) : ERR.DESC "L#20"
+         ERR.LINE := SPACE(5) : ERR.BILL.CNT "R#5"
+         ERR.LINE := SPACE(5) : OCONV(ERR.TOTAL.CHGS,"MR2,") "R#11"
+         PRINT ERR.LINE ; LN.CNT += 1
+      NEXT ERR.NO
+
+      EULINE = SPACE(25)
+      EULINE := SPACE(5) : STR("=",5)
+      EULINE := SPACE(5) : STR("=",11)
+
+      ETLINE = SPACE(5) : "'Error' Totals " "L#20"
+      ETLINE := SPACE(5) : GT.ERR.BILL.CNT "R#5"
+      ETLINE := SPACE(5) : OCONV(GT.ERR.TOTAL.CHGS,"MR2,") "R#11"
+      PRINT ETLINE ; LN.CNT += 1
+
+      PRINTER OFF
+      PRINTER CLOSE
+
+      RETURN
+
+GET.DATES:
+
+      HELP = "Enter start date of report. '<'=Exit."
+      START.DATE = DATE()
+      DVAR = OCONV(START.DATE,'D2/')'L#8'
+      CALL GEN.IN(COL,ROW,'From ':DVAR,'DATE',Q,0,8,'','',1,-8,ROW,0,QI,HELP,0,23)
+      BEGIN CASE
+         CASE QI EQ '<' OR QI = 'EX'
+            RETURN
+         CASE QI EQ ''
+            Q=START.DATE
+      END CASE
+      START.DATE=Q
+      CRT @(COL+5,ROW):START.DATE'D2/'
+*
+      HELP = "Enter end date of report. '<'=Back to start date."
+*      END.DATE = DATE()
+
+      END.DATE = START.DATE
+      DVAR = OCONV(END.DATE,'D2/')'L#8'
+      CALL GEN.IN(COL+14,ROW,'To ':DVAR,'DATE',Q,0,8,'','',1,-8,ROW,0,QI,HELP,0,23)
+      BEGIN CASE
+         CASE QI EQ '<' OR QI = 'EX'
+            GOTO GET.DATES
+         CASE QI EQ ''
+            Q=END.DATE
+      END CASE
+      END.DATE=Q
+      CRT @(COL+17,ROW):END.DATE'D2/'
+      RETURN
+
+CHECK.HDR:
+
+      IF LN.CNT > PAGE.LENGTH THEN
+         PAGE
+         PG.CNT += 1
+         LN.CNT = 5
+         PRINT HED.LN1 : PG.CNT
+         PRINT HED.LN2
+         PRINT HED.LN3
+         PRINT HED.LN4
+         PRINT STR("*",130):"+"
+      END
+
+      RETURN
+
+SEND.EMAIL:
+
+
+      EMAIL.PATH='E:\ARDENT\PUBLIC\EMAILDATA\'
+
+
+      SUBJ = PROG.DESC "L#25" :" From (": START.DATE 'D/':") To (":END.DATE 'D/':")"
+
+      TEXT = USER : " Ran the Pre Audit Approval Report for the period From (": START.DATE 'D/':") To (":END.DATE 'D/':")"
+      TEXT<1,-1> = " "
+      TEXT<1,-1>='on ':DATE()'D2/':' ':OCONV(TIME(),'MTHS')
+
+      MVIN=''
+
+      MVIN<1>='EDIAdmin210@afs.net'      ; * JMK02
+      MVIN<1,-1>='editeam@afs.net'  
+      MVIN<1,-1>='mmckay@afs.net'  
+
+      MVIN<4>='AFS_PRE.LTL'
+      MVIN<5>=SUBJ
+      MVIN<6>=TEXT
+      N.ATT = DCOUNT(ATTACH.ARRAY<1>,@VM)
+      FOR I.ATT = 1 TO N.ATT
+         FNAME = ATTACH.ARRAY<1,I.ATT>
+         MVIN<11,-1> = EMAIL.PATH:FNAME
+      NEXT I.ATT
+      CALL SENDMAIL(MVIN,MVOUT)
+
+      FOR I.ATT = 1 TO N.ATT
+         FNAME = ATTACH.ARRAY<1,I.ATT>
+         DELETE F.EMAILDATA, FNAME     ;* Tidy up EMAILDATA file after email sent
+      NEXT I.ATT
+
+      RETURN
+
+      STOP
+
+
+      PRINT.FLAG = 0
+
+*-------------------------------
+* END JCW01
+*-------------------------------
+      EXECUTE 'GET-LIST DAV.':PROCESS.DATE
+      STMT='SUM FBWORK':CH.NUM:' USING DICT EDI.BILLS 106 67'
+      GOSUB EXECUTE.IT
+
+      EXECUTE 'GET-LIST DAV.':PROCESS.DATE
+      STMT='SORT FBWORK':CH.NUM:' USING DICT EDI.BILLS '
+      STMT=STMT:'WITH CARRIER# = "00018" AND WITH @ID # "[0*0"'
+      GOSUB EXECUTE.IT
+
+      EXECUTE 'GET-LIST DAV.':PROCESS.DATE
+      STMT='SORT FBWORK':CH.NUM:' USING DICT EDI.BILLS WITH CLIENT# = "00057" 9 115'
+      GOSUB EXECUTE.IT
+
+      EXECUTE 'GET-LIST DAV.':PROCESS.DATE
+      STMT='SORT FBWORK':CH.NUM:' USING DICT EDI.BILLS WITH CLIENT# = "10225" 72 9'
+      GOSUB EXECUTE.IT
+
+      EXECUTE 'GET-LIST DAV.':PROCESS.DATE
+      STMT='SORT FBWORK':CH.NUM:' USING DICT EDI.BILLS WITH 25 = ""'
+      GOSUB EXECUTE.IT
+
+      EXECUTE 'GET-LIST DAV.':PROCESS.DATE
+      STMT='SORT FBWORK':CH.NUM:' USING DICT EDI.BILLS WITH 34 = ""'
+      GOSUB EXECUTE.IT
+
+      EXECUTE 'GET-LIST DAV.':PROCESS.DATE
+      STMT='SORT FBWORK':CH.NUM:' USING DICT EDI.BILLS WITH 67 < "0.01"'
+      GOSUB EXECUTE.IT
+
+      EXECUTE 'GET-LIST DAV.':PROCESS.DATE
+      STMT='SORT FBWORK':CH.NUM:' USING DICT EDI.BILLS WITH 77 = ""'
+      GOSUB EXECUTE.IT
+
+      EXECUTE 'GET-LIST DAV.':PROCESS.DATE
+      STMT='SORT FBWORK':CH.NUM:' USING DICT EDI.BILLS BY CLIENT.NAME BY CARRIER# '
+      STMT = STMT:'BREAK-ON CLIENT# BREAK-ON CARRIER# CLIENT# CLIENT.NAME CARRIER# CARRIER.NAME (I,D,P'
+      EXECUTE STMT PASSLIST CAPTURING OUTPUT
+
+      CRT ; CRT ; CRT STMT
+      CRT ; CRT ; CRT OUTPUT
+
+      CALL ELINE("")
+
+      STOP
+
+      EXECUTE.IT :
+*
+      IF PRINT.FLAG THEN STMT := ' (P'
+      EXECUTE STMT PASSLIST CAPTURING OUTPUT
+
+      CRT ; CRT ; CRT STMT
+      CRT ; CRT ; CRT OUTPUT
+
+      CALL ELINE("")
+*
+      RETURN
+
+      OLDWAY :
+*
+      DONE = 0
+      LOOP UNTIL DONE DO
+         READNEXT EDI.ID THEN
+            CALL PARSE.EDI.ID(EDI.ID, CLIENT.ID, EDI.HIST.ID)
+            IF CURR.CLIENT # CLIENT.ID THEN
+               CURR.CLIENT = CLIENT.ID
+               OPEN 'EDI.BILLS.HIST,':CLIENT.ID TO F.EDI.HIST ELSE
+                  CALL OPEN.ABORT('EDI.BILLS.HIST,':CLIENT.ID, 'TEST.JCW')
+               END
+            END
+            READ EDI.HIST.REC FROM F.EDI.HIST, EDI.HIST.ID THEN
+               WRITE EDI.HIST.REC TO F.WORK, EDI.ID ELSE
+                  CRT 'COULD NOT WRITE ':EDI.ID:' TO WORK FILE.'
+               END
+            END ELSE
+               CRT 'COULD NOT READ ':EDI.ID:' FROM EDI.BILLS.HIST,':CLIENT.ID
+            END
+         END ELSE
+            DONE = 1
+         END
+      REPEAT
+*
+      RETURN
+

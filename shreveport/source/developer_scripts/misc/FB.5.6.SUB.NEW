@@ -1,0 +1,1232 @@
+*     SUBROUTINE FB.5.6.SUB(F.CHECKS,F.CARRIERS,F.CLIENT,F.CRX,F.BILLDATA,F.TABLES,F.BANK,EMAIL.ADDR,VIN,VOUT) ; * JMK11
+      SUBROUTINE FB.5.6.SUB(F.CHECKS,F.CARRIERS,F.CLIENT,F.CRX,F.BILLDATA,F.TABLES,F.BANK,F.TC.HOLIDAYS,EMAIL.ADDR,VIN,VOUT)       ; * JMK11
+* PROGRAM: FB.5.6.SUB
+* SUBROUTINE TO PROCESS CHECK REGISTER
+*
+* PACKAGE: FREIGHT BILLING
+*
+* AUTHOR: BRIAN M. QUEEN
+* DATE: APRIL 23, 1992
+*
+***********************************************************************
+*
+* Last updated by AFS.SOURCE (valerie) at 14:33:45 on 07/06/1994.
+*   ADDED OPTION TO PRINT ALPHABETICALLY AND NEW INSERT FOR FB.CHECKS
+*   AND FB.BILLS.HIST.
+* Last updated by AFS.SOURCE (valerie) at 10:44:08 on 07/11/1994.
+*   UPDATED REPORT TO PRINT ORIGINAL AMOUNT OF CHECK IF CHECK WAS
+*   VOIDED AFTER THE DATE THE REPORT IS PRINTED FOR.
+* 110104 - JMK01 - ADD BANK CODE TO REGISTER HEADING
+* 110104 - JMK02 - ADD DOWNLOAD OPTION FOR CHECK REGISTER
+* 121704 -  DRF  - MADE FB.5.6 INTO A SUBROUTINE AND ADDED A TEXT FILE FOR
+*                  DOSOCIL
+* 041405 - JMK03 - REMOVE VIADUCT COMMAND
+* 042605 -  DRF  - MODIFIED SO THAT IF MULTIPLE DAY ARE SELECTED THEN THE
+*                  TOTAL FOR DATES WILL REFLECT THE CHECK DATE INSTEAD OF
+*                  THE WIRE, DDS, AND CHECKS. IF A SINGLE DAY IS SELECTED
+*                  THEN THE DATES WILL REFLECT THE WIRE, DDS, AND CHECKS.
+* 061305 - JMK04 - ADD POSITIVE PAY OPTIONS FOR DOWNLOAD TO BANK
+* 101905 - JMK05 - EXPAND EMAIL OPTION FOR DETAIL REPORT
+* 091906 - JCW01 - USE NEW FB.CHECKS FILES
+* 101206 - JMK06 - MAKE ADJUSTMENT TO RECOGNIZE MANUAL CHECKS
+* 111006 - JMK07 - T200611100014 / priority 3 / Check register
+* 052207 - JMK08 - C200612130003 /  ACH Processing Program
+* 062007 - JMK09 - C200706200005   /  Check Register - ACH Count Totals
+* 071007 - JMK10 - C200707090004 / asap /    New Filter for Check Register
+* 112107 - NPR01 - Added Void Amounts.
+* 011808 - JMK11 - T080154 - Task 2 Client Check remittance for ACH Carriers delay adjustment
+* 031308 - JMK12 - T080812 - Freight Payment Check Register problem
+* 052008 - JMK13 - C081366 - Manual Check List
+* 072409 - JMK14 - T090974 - Modification to the Check register
+* 060210 - NPR02 - T100485 Add Carrier mode to summary report and download files.
+* 062410 - JMK15 - ADD UNITRANS IMPORT FORMAT FOR POSITIVE PAY INFORMATION
+* 080310 - JMK16 - T100768 - Check Register report / processing error messages
+* 092310 - JMK17 - ADD CASH RECEIPT DATE TO DETAIL DOWNLOAD
+* 050912 - JAD01 147 - Add Bank indicator to report if All banks.
+* and add Bank indicator to end of line.
+*
+*  VIN<1>=SELECTION (Printer, Screen, or Download)
+*  VIN<2>=BEG.DATE (Begin Date of check register)
+*  VIN<3>=END.DATE (End Date of check register)
+*  VIN<4>=CARRIER.ID
+*  VIN<5>=BANK
+*  VIN<6>=ALPHA.RPT
+*  VIN<7>=CLIENT.ID
+*  VIN<8>=COPIES
+*  VIN<9>=FILE (File to use FB.CHECK OR FB.CHECK,client.id)
+*  VIN<10>=USER
+*  VIN<11>=SUMMARY (Summary report or not)
+*  VIN<12>=FORM.FEED
+*  VIN<13>=ML (Positive pay items for ML positive pay export)
+*  VIN<14>=RPT.TYPE (A=ACH or C=Checks, Null=All)  ; * JMK10
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_FB.BILLS.HIST
+$INCLUDE FILE.DEFS INC_FB.CHECKS
+*NPR01  EQU FCK.AMT            TO CHECK.REC(4)        ;* CHECK AMOUNT
+*NPR01  EQU FCK.ORIG.AMT       TO CHECK.REC(10)       ;* AMOUNT PRIOR TO VOIDING OF CHECK
+
+* Process report
+*
+      SELECTION=VIN<1>
+      BEG.DATE=VIN<2>
+      END.DATE=VIN<3>
+      CARRIER.ID=VIN<4>
+      BANK=VIN<5>
+      ALPHA.RPT=VIN<6>
+      CLIENT.ID=VIN<7>
+      COPIES=VIN<8>
+      FILE=VIN<9>
+      USER=VIN<10>
+      SUMMARY=VIN<11>
+      FORM.FEED=VIN<12>
+      MLFLG=VIN<13>                      ; * JMK04
+      RPT.TYPE=VIN<14>                   ; * JMK10
+*     IF USER='MKERBOW' AND NOT(SUMMARY) THEN
+*        USER="NO-MKERBOW"
+*     END
+      READ ADJ.CODE FROM F.TABLES,'CHECK.ADJUST' ELSE
+         CALL ELINE('Cannot read the table CHECK.ADJUST')
+         RETURN
+      END
+      READ BANK.REC FROM F.BANK,'BANK*':BANK ELSE
+         IF BANK='ALL' THEN
+            BANK.REC='All Banks'
+         END ELSE
+            CALL ELINE('Invalid bank code')
+            RETURN
+         END
+      END
+      PROG.NAME='FB.5.6'
+      OPEN 'FB.CHECKS.DTL' TO F.CHECKS.D ELSE      ; * JCW01
+         CALL OPEN.ABORT('FB.CHECKS.DTL', PROG.NAME)         ; * JCW01
+      END                                ; * JCW01
+
+      OPEN 'FB.TRANSPORT' TO F.TRANSPORT ELSE      ; * NPR02
+         CALL OPEN.ABORT('FB.TRANSPORT', PROG.NAME)          ; * NPR02
+      END                                ; * NPR02
+
+*     PROG.DESC='Check Register'         ; * JMK10
+      PROG.DESC='Payment Register'       ; * JMK10
+      IF RPT.TYPE='A' THEN               ; * JMK10
+         PROG.DESC='ACH Register'        ; * JMK10
+      END                                ; * JMK10
+      IF RPT.TYPE='C' THEN               ; * JMK10
+         PROG.DESC='Check Register'      ; * JMK10
+      END                                ; * JMK10
+      IF RPT.TYPE='M' THEN               ; * JMK13
+         PROG.DESC='Manual Check Register'         ; * JMK13
+      END                                ; * JMK13
+      TEXT.ID=''
+      CALL GET.USER(USER)
+      IF USER = 'SBARBEE' THEN DEBUG
+      CALL CHANNEL(CH.NUM)
+      
+      TEXT="Generating Report - Please Wait."
+      CALL CENTER(TEXT,80)
+      CRT @(0,21):TEXT
+*     IF SELECTION='S' THEN EXECUTE '132'; * JMK03
+      IF SELECTION='E' THEN
+         EXP.REC=''                      ; *JMK02
+         IF BANK='K' THEN                ; * Will need to be changed to real bank code
+            TEXT.LINE=''
+         END
+      END
+*
+      PREC='SSELECT ':FILE:' WITH 2 GE "':BEG.DATE'D2/':'"'
+      PREC := ' AND WITH 2 LE "':END.DATE'D2/':'"'
+      IF CARRIER.ID#'All' THEN PREC:= ' AND WITH CARRIER# "':CARRIER.ID:'"'
+      IF BANK#'ALL' THEN
+         PREC := ' AND WITH BANK.ID = "':BANK:'"'
+      END
+      IF RPT.TYPE#'' AND FILE='FB.CHECKS.HDR' THEN           ; * JMK10
+         IF RPT.TYPE='A' THEN            ; * JMK10
+            PREC := ' AND WITH 26 # ""'  ; * JMK10
+         END                             ; * JMK10
+*        IF RPT.TYPE='C' THEN            ; * JMK10 ; * JMK13
+         IF RPT.TYPE='C' OR RPT.TYPE='M' THEN      ; * JMK10 ; * JMK13
+            PREC := ' AND WITH 26 = ""'  ; * JMK10
+         END                             ; * JMK10
+      END                                ; * JMK10
+      IF ALPHA.RPT THEN PREC := ' BY CARRIER.NAME BY 15'
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+      IF USER = 'SBARBEE' THEN DEBUG
+      EXECUTE 'SAVE-LIST ':CH.NUM PASSLIST CAPTURING OUTPUT
+      IF SELECTION#'P' THEN COPIES = 1
+      IF COPIES < 1 THEN COPIES = 1
+      FOR COPY.COUNT=1 TO COPIES
+         GOSUB PROCESS.COPY
+      NEXT COPY.COUNT
+*
+      RETURN
+*
+PROCESS.COPY:
+*
+      EXECUTE 'GET-LIST ':CH.NUM PASSLIST CAPTURING OUTPUT
+      CHECK.TOTAL=0                      ; * JMK09
+      ACH.TOTAL=0                        ; * JMK09
+      GRAND.TOTAL=0
+      TEXT.GRAND.TOTAL=''
+      TEXT.TOTAL =''
+      TEXT.REC=''
+      MAT HIST.REC = ''
+      MAT CHECK.REC = ''
+      CHECK.ARR = ''
+      X=''
+      TOTAL.VOID.AMT = 0
+*
+* Create report heading
+*
+      ODATE=BEG.DATE'D2/':' to ':END.DATE'D2/'
+      HDG1=''                            ; * JMK01
+      HDG2=''                            ; * JMK01
+      BEGIN CASE                         ; * JMK01
+         CASE BANK='F' OR BANK='V' OR BANK='B' OR BANK='M' OR BANK='ALL'         ; * JMK01 JAD01
+            HDG1='AFS Logistics, LLC'    ; * JMK01
+         CASE 1                          ; * JMK01
+            HDG1=BANK.REC<1>             ; * JMK01
+            HDG2='A Division of AFS Logistics, LLC'          ; * JMK01
+      END CASE                           ; * JMK01
+      IF SELECTION='E' THEN              ; * JMK02
+         EXP.REC<1>=HDG1:' ':HDG2:' ':PROG.DESC:' ':ODATE:' '          ; * JMK02
+      END                                ; * JMK02
+      CALL AFS.PAGE.HEAD(PROG.NAME,HDG1,HDG2,PROG.DESC,ODATE,132,HED)  ; * JMK01
+      BEGIN CASE
+         CASE NUM(CLIENT.ID) AND CLIENT.ID#''
+            READ CLIENT.REC FROM F.CLIENT,CLIENT.ID ELSE CLIENT.REC=''
+            CLIENT.NAME=CLIENT.REC<2>
+            OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.HIST ELSE
+               CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,PROG.NAME)
+            END
+            HED=HED:" 'C'For Client: ":CLIENT.ID:' ':CLIENT.NAME
+            IF SELECTION='E' THEN        ; * JMK02
+               EXP.REC<1>:='For Client: ':CLIENT.ID:' ':CLIENT.NAME    ; * JMK02
+            END                          ; * JMK02
+         CASE 1
+            HED=HED:" 'C'For All Clients"
+            IF SELECTION='E' THEN        ; * JMK02
+               EXP.REC<1>:='For All Clients'       ; * JMK02
+            END                          ; * JMK02
+            CLIENT.REC=''                ; * JMK16
+      END CASE
+      HED=HED:"'LL'"
+*      IF NOT(NUM(CLIENT.ID)) THEN
+      IF CLIENT.ID='All' AND NOT(SUMMARY) THEN
+         HED:="Client Name..........................."'L#36'
+      END
+      HED:="Carrier Name.................. "
+      IF NOT(SUMMARY) THEN               ; *NPR02
+         HED:="Pro Number..... Pro Date Dt Procd Check#   Date         Amt Paid"           ; *NPR02
+      END ELSE                           ; *NPR02
+         HED:="................................. Check#   Date         Amt Paid"           ; *NPR02
+      END                                ; *NPR02
+      IF SELECTION='E' THEN              ; * JMK02
+*        EXP.REC=''                   ; * JMK02 ; * JMK05
+*        EXP.REC<1,1>=HDG1:' ':HDG2:' ':PROG.DESC:' ':ODATE ; * JMK05
+         IF SUMMARY THEN                 ; * JMK05
+            IF USER='MKERBOW' AND CLIENT.REC<92>='00003' THEN          ; * JMK15
+               EXP.REC<3,1>='Check No'   ; * JMK15
+               EXP.REC<3,2>='Carrier No'           ; * JMK15
+               EXP.REC<3,3>='Carrier/Remarks'      ; * JMK15
+               EXP.REC<3,4>='Check Date'           ; * JMK15
+               EXP.REC<3,5>='Amount Paid'          ; * JMK15
+            END ELSE                     ; *JMK15
+               EXP.REC<3,1>='Carrier Name'         ; * JMK02
+               EXP.REC<3,2>='Trans. Mode'
+*NPR02            EXP.REC<3,2>='Pro Number'    ; * JMK02
+*NPR02            EXP.REC<3,3>='Pro Date'      ; * JMK02
+*NPR02            EXP.REC<3,4>='Dt Procd'      ; * JMK02
+               EXP.REC<3,2>='Trans. Mode'          ; * JMK02  *NPR02
+               EXP.REC<3,3>='Carrier No'           ; * JMK02  *NPR02  ; * NPR99
+               EXP.REC<3,4>=' '          ; * JMK02  *NPR02
+               EXP.REC<3,5>='Check#'     ; * JMK02
+               EXP.REC<3,6>='Check Date'           ; * JMK02
+               EXP.REC<3,7>='Amount Paid'          ; * JMK02
+               EXP.REC<3,8>='Remarks'    ; * JMK02
+               EXP.REC<3,9>='Source'     ; * JMK04
+***               EXP.REC<3,10>='Carrier No'                     ; * NPR99
+            END                          ; * JMK15
+         END ELSE                        ; * JMK05
+            EXP.REC<3,1>='Client#'       ; * JMK05
+            EXP.REC<3,2>='Client Name'   ; * JMK05
+            EXP.REC<3,3>='Carrier Name'  ; * JMK02
+            EXP.REC<3,4>='Pro Number'    ; * JMK02
+            EXP.REC<3,5>='Bill Date'     ; * JMK02
+            EXP.REC<3,6>='Process Date'  ; * JMK02
+            EXP.REC<3,7>='Check#'        ; * JMK02
+            EXP.REC<3,8>='Check Date'    ; * JMK02
+            EXP.REC<3,9>='Amount Paid'   ; * JMK02
+            EXP.REC<3,10>='Remarks'      ; * JMK02
+            EXP.REC<3,11>='Source'       ; * JMK04
+            EXP.REC<3,12>='Void Orig Amt'          ; * JMK17
+            EXP.REC<3,13>='Cash Receipt Date'      ; * JMK17
+            EXP.REC<3,14>='Carrier No'   ; * NPR99
+         END                             ; * JMK05
+      END                                ; * JMK02
+**************************************************************
+      IF SELECTION='P' THEN
+         VIN=''
+         VIN<3>='R'
+         CALL LASER.CODE(VIN,VOUT)
+         IF VOUT<3>#'' THEN EXECUTE VOUT<3>
+         PRINTER ON
+         IF VOUT<2>#'' THEN PRINT VOUT<2>:
+      END
+      IF SELECTION='P' OR SELECTION='S' THEN       ; * JMK02
+         HEADING HED
+      END                                ; * JMK02
+*
+ADD.MORE:* RE-ENTRY POINT FOR POSITIVE.PAY DOWNLOADS
+      NUM.CKS=@SELECTED                  ; * JMK13
+      DONE = 0
+      LAST.CHECK='FIRST'
+      STAR=''                            ; * Used to Indicate Skipped Sequence Number
+      CHECK.COUNT=0
+      ACH.COUNT=0                        ; * JMK09
+      GRAND.COUNT=0                      ; * JMK09
+      VOID.COUNT=0                       ; * JMK14
+      LOOP
+         READNEXT ID ELSE DONE = 1
+      UNTIL DONE = 1 DO
+         X=X+1
+         CALL PROG.BAR(22,X,NUM.CKS,CK.PER)        ; * JMK13
+         MATREAD CHECK.REC FROM F.CHECKS, ID THEN
+            BNK.ID = FIELD(ID,'*',2)     ; * JAD01
+            IF BANK # 'ALL' THEN         ; * JAD01
+               BNK.ID = ''               ; * JAD01
+            END                          ; * JAD01
+            IF CLIENT.ID#'All' THEN      ; * JMK07
+               LOCATE CLIENT.ID IN CHECK.REC(41)<1> SETTING CL.POS THEN          ; * JMK07
+                  CLIENT.AMT=CHECK.REC(42)<1,CL.POS>         ; * JMK07
+                  CLIENT.ORIG.AMT=CHECK.REC(42)<1,CL.POS>    ; * JMK07
+               END ELSE                  ; * JMK07
+                  GOTO NEXT.CHECK        ; * JMK07
+               END                       ; * JMK07
+            END                          ; * JMK07
+            IF FILE = 'FB.CHECKS.HDR' THEN         ; * JCW01
+*             NO.PRO.AMTS = (CHECK.REC(25) = 0)    ; * JCW01 ; * JMK06
+*             NO.PROS = (CHECK.REC(25) = 0)        ; * JCW01 ; * JMK06
+               NO.PRO.AMTS = (CHECK.REC(25)+0 = 0)           ; * JCW01 ; * JMK06
+               NO.PROS = (CHECK.REC(25)+0 = 0)     ; * JCW01 ; * JMK06
+               NUM.PROS = CHECK.REC(25)  ; * JCW01
+               IF CHECK.REC(26)#'' THEN  ; * JMK08
+                  ACH.FLG=1
+               END ELSE                  ; * JMK08
+                  ACH.FLG=0
+               END                       ; * JMK08
+            END ELSE                     ; * JCW01
+               NO.PRO.AMTS = (CHECK.REC(12) = '')  ; * JCW01
+               NO.PROS = (CHECK.REC(7) = '')       ; * JCW01
+               NUM.PROS = DCOUNT(FCK.PRO,CHAR(253))          ; * JCW01
+               ACH.FLG=0                 ; * JMK08
+            END                          ; * JCW01
+            IF RPT.TYPE='M' THEN         ; * JMK13
+               IF NO.PROS=0 THEN GO NEXT.CHECK     ; * JMK13
+            END                          ; * JMK13
+            IF ACH.FLG THEN              ; * JMK09
+               ACH.COUNT+=1              ; * JMK09
+            END ELSE                     ; * JMK09
+               CHECK.COUNT+=1
+            END                          ; * JMK09
+            GRAND.COUNT+=1               ; * JMK09
+            IF LAST.CHECK='FIRST' THEN LAST.CHECK=FCK.CK.NUM ELSE
+               IF LAST.CHECK+1#FCK.CK.NUM THEN STAR="*" ELSE STAR=""
+               LAST.CHECK=FCK.CK.NUM
+            END
+*           IF NUM(CLIENT.ID) THEN ; * JCW01
+            IF NUM(CLIENT.ID) AND FILE # "FB.CHECKS.HDR" THEN          ; * JCW01
+               IF CHECK.REC(12)='' THEN CHECK.REC(12)=CHECK.REC(8)
+* Check Rec<8> has pro amounts on Client Items (Old & New)
+* Check Rec<12> has pro amounts on ALL Items (New)
+            END
+*IF USER = "NPRATT" THEN
+*  CRT "FCK.CARRIER " : FCK.CARRIER
+*  DEBUG
+*END
+            IF FCK.CARRIER='0' THEN
+               CARRIER.NAME=CHECK.REC(15)
+               CARRIER.REC = ""          ; * NPR02
+               TRANS.MODE = ""           ; * NPR02
+               TRANS.MODE.DESC = ""      ; * NPR02
+            END ELSE
+               READ CARRIER.REC FROM F.CARRIERS, FCK.CARRIER ELSE CARRIER.REC = ""         ; * NPR02
+               CARRIER.NAME = CARRIER.REC<1>       ; * NPR02
+               TRANS.MODE = CARRIER.REC<44>        ; * NPR02
+               READV TRANS.MODE.DESC FROM F.TRANSPORT,TRANS.MODE,1 ELSE TRANS.MODE.DESC = ''         ; * NPR02
+* NPR02               READV CARRIER.NAME FROM F.CARRIERS, FCK.CARRIER, 1 ELSE
+               IF CARRIER.REC = "" THEN  ; * NPR02
+                  IF MLFLG THEN          ; * JMK04
+                     CARRIER.NAME=''     ; * JMK04
+                  END ELSE               ; * JMK04
+                     CARRIER.NAME='~~~ Unknown ~~~'
+                  END                    ; * JMK04
+               END
+            END
+            IF SELECTION='E' THEN EXP.LINE=''      ; * JMK02
+            IF SUMMARY THEN
+               GOSUB PROCESS.SUMMARY
+            END ELSE
+               GOSUB PROCESS.DETAIL
+            END
+         END
+*
+NEXT.CHECK:* JMK07
+*
+      REPEAT
+*
+      IF SELECTION='E' AND BANK='F' AND FILE#'ALL.CHECKS.1000.1' AND MLFLG THEN  ; * JMK04
+         FILE='ALL.CHECKS.1000.1'        ; * JMK04
+         OPEN '',FILE TO F.CHECKS THEN   ; * JMK04
+            PREC='SSELECT ':FILE:' WITH 2 GE "':BEG.DATE'D2/':'"'      ; * JMK04
+            PREC := ' AND WITH 2 LE "':END.DATE'D2/':'"'     ; * JMK04
+            IF CARRIER.ID#'All' THEN PREC:= ' AND WITH CARRIER# "':CARRIER.ID:'"'          ; * JMK04
+            PREC := ' AND WITH BANK.ID = "B"'      ; * JMK04
+            IF RPT.TYPE#'' AND FILE='FB.CHECKS.HDR' THEN     ; * JMK10
+               IF RPT.TYPE='A' THEN      ; * JMK10
+                  PREC := ' AND WITH 26 # ""'      ; * JMK10
+               END                       ; * JMK10
+*              IF RPT.TYPE='C' THEN      ; * JMK10 ; * JMK13
+               IF RPT.TYPE='C' OR RPT.TYPE='M' THEN          ; * JMK10 ; * JMK13
+                  PREC := ' AND WITH 26 = ""'      ; * JMK10
+               END                       ; * JMK10
+            END                          ; * JMK10
+            IF ALPHA.RPT THEN PREC := ' BY CARRIER.NAME BY 15'         ; * JMK04
+            EXECUTE PREC PASSLIST CAPTURING OUTPUT           ; * JMK04
+            GO ADD.MORE                  ; * JMK04
+         END                             ; * JMK04
+      END                                ; * JMK04
+      IF SELECTION='E' AND BANK='K' THEN
+         DONE=0
+         PREC='SSELECT ':FILE:' WITH 9 GE "':BEG.DATE'D2/':'"'
+         PREC := ' AND WITH 9 LE "':END.DATE'D2/':'"'
+         PREC := ' AND WITH 2 LT "':BEG.DATE'D2/':'"'
+         IF CARRIER.ID#'All' THEN PREC:= ' AND WITH CARRIER# "':CARRIER.ID:'"'
+         IF BANK#'ALL' THEN
+            PREC := ' AND WITH BANK.ID = "':BANK:'"'
+         END
+         IF RPT.TYPE#'' AND FILE='FB.CHECKS.HDR' THEN        ; * JMK10
+            IF RPT.TYPE='A' THEN         ; * JMK10
+               PREC := ' AND WITH 26 # ""'         ; * JMK10
+            END                          ; * JMK10
+*           IF RPT.TYPE='C' THEN         ; * JMK10 ; * JMK13
+            IF RPT.TYPE='C' OR RPT.TYPE='M' THEN   ; * JMK10 ; * JMK13
+               PREC := ' AND WITH 26 = ""'         ; * JMK10
+            END                          ; * JMK10
+         END                             ; * JMK10
+         IF ALPHA.RPT THEN PREC := ' BY CARRIER.NAME BY 15'
+         EXECUTE PREC PASSLIST CAPTURING OUTPUT
+         LOOP
+            READNEXT ID ELSE DONE = 1
+         UNTIL DONE = 1 DO
+            MATREAD CHECK.REC FROM F.CHECKS, ID THEN
+               TEXT.LINE=BANK.REC<4>'R%10'
+               TEXT.LINE=TEXT.LINE:'2  '
+               TEXT.LINE=TEXT.LINE:FCK.CK.NUM'R%10':FCK.AMT'R%12'
+               TEMP.DATE=FCK.DATE'D4/'
+               TEXT.LINE=TEXT.LINE:TEMP.DATE[1,2]:TEMP.DATE[4,2]:TEMP.DATE[7,4]:SPACE(15)
+               TEXT.REC<-1>=TEXT.LINE
+               TEXT.GRAND.TOTAL=TEXT.GRAND.TOTAL+FCK.AMT
+               TEXT.TOTAL=TEXT.TOTAL+1
+            END
+         REPEAT
+      END
+*
+      IF SELECTION='E' THEN              ; * JMK02
+         IF MLFLG ELSE                   ; * JMK04
+            IF SUMMARY THEN              ; * JMK05
+               IF USER='MKERBOW' AND CLIENT.REC<92>='00003' THEN       ; * JMK15
+               END ELSE                  ; * JMK15
+                  EXP.LINE=' '           ; * JMK02
+                  EXP.LINE<1,6>='=========='
+                  EXP.LINE<1,7>='=========='
+                  EXP.LINE<1,8>='=========='
+                  EXP.LINE<1,9>='=========='
+                  EXP.LINE<1,10>='=========='      ; * JMK09
+                  EXP.REC<-1>=EXP.LINE   ; * JMK02
+                  EXP.LINE=''            ; * JMK02
+                  EXP.LINE<1,6>='Date'   ; * JMK02
+*              EXP.LINE<1,7>='Total Pro Amount'           ; * JMK02 ; * JMK08
+*              EXP.LINE<1,8>='Total Non-Pro Amount'       ; * JMK02 ; * JMK08
+*              EXP.LINE<1,9>='Total Check Amount'         ; * JMK02 ; * JMK08
+                  EXP.LINE<1,7>='Total Pro PPR Amount'       ; * JMK02 ; * JMK08
+                  EXP.LINE<1,8>='Total Pro ACH Amount'       ; * JMK02 ; * JMK08
+                  EXP.LINE<1,9>='Total Non-Pro Amount'       ; * JMK02 ; * JMK08
+                  EXP.LINE<1,10>='Total Check Amount'        ; * JMK02 ; * JMK08
+                  EXP.REC<-1>=EXP.LINE   ; * JMK02
+                  TOTAL.AMT=0
+*              TOTAL.PRO.AMT=0        ; * JMK02 ; * JMK08
+                  TOTAL.PRO.PPR.AMT=0    ; * JMK02 ; * JMK08
+                  TOTAL.PRO.ACH.AMT=0    ; * JMK02 ; * JMK08
+                  TOTAL.NPRO.AMT=0       ; * JMK02
+                  NUM.OF.CASH.DATE=DCOUNT(CHECK.ARR<1>,@VM)
+                  FOR X = 1 TO NUM.OF.CASH.DATE
+                     EXP.LINE=''
+                     EXP.LINE<1,6>=CHECK.ARR<1,X>'D2/'
+                     EXP.LINE<1,7>=CHECK.ARR<3,X>'MR26'
+*                 EXP.LINE<1,8>=CHECK.ARR<4,X>'MR26' ; * JMK08
+*                 EXP.LINE<1,9>=CHECK.ARR<2,X>'MR26' ; * JMK08
+                     EXP.LINE<1,8>=CHECK.ARR<5,X>'MR26'      ; * JMK08
+                     EXP.LINE<1,9>=CHECK.ARR<4,X>'MR26'      ; * JMK08
+                     EXP.LINE<1,9>=CHECK.ARR<2,X>'MR26'      ; * JMK08
+                     EXP.REC<-1>=EXP.LINE
+                     TOTAL.AMT=TOTAL.AMT+CHECK.ARR<2,X>
+*                 TOTAL.PRO.AMT=TOTAL.PRO.AMT+CHECK.ARR<3,X>        ; * JMK02 ; * JMK08
+                     TOTAL.PRO.PPR.AMT=TOTAL.PRO.PPR.AMT+CHECK.ARR<3,X>          ; * JMK02 ; * JMK08
+                     TOTAL.PRO.ACH.AMT=TOTAL.PRO.ACH.AMT+CHECK.ARR<5,X>          ; * JMK08
+                     TOTAL.NPRO.AMT=TOTAL.NPRO.AMT+CHECK.ARR<4,X>      ; * JMK02
+                  NEXT X
+                  EXP.LINE=''
+*              EXP.LINE<1,7>=TOTAL.PRO.AMT'MR26'          ; * JMK08
+*              EXP.LINE<1,8>=TOTAL.NPRO.AMT'MR26'         ; * JMK08
+*              EXP.LINE<1,9>=TOTAL.AMT'MR26'    ; * JMK08
+                  EXP.LINE<1,7>=TOTAL.PRO.PPR.AMT'MR26'      ; * JMK08
+                  EXP.LINE<1,8>=TOTAL.PRO.ACH.AMT'MR26'      ; * JMK08
+                  EXP.LINE<1,9>=TOTAL.NPRO.AMT'MR26'         ; * JMK08
+                  EXP.LINE<1,10>=TOTAL.AMT'MR26'   ; * JMK08
+                  EXP.REC<-1>=EXP.LINE
+                  EXP.LINE = ''
+                  EXP.LINE<1,10>=TOTAL.VOID.AMT'MR26'        ; * JMK08
+                  EXP.LINE<1,11>="Void Total"
+                  EXP.REC<-1>=EXP.LINE
+                  EXP.LINE = ''
+                  EXP.LINE<1,10>=TOTAL.AMT - TOTAL.VOID.AMT 'MR26'     ; * JMK08
+                  EXP.LINE<1,11>="Total Excl. Voids"
+                  EXP.REC<-1>=EXP.LINE
+               END                       ; * JMK15
+            END                          ; * JMK05
+         END                             ; * JMK04
+         BEGIN CASE                      ; * JMK10
+            CASE RPT.TYPE='A'            ; * JMK10
+               EXP.ID='CHKREG':BANK:'ACH':OCONV(BEG.DATE,'DYMD[4,2,2]':@VM:'MCN'):'-':OCONV(END.DATE,'DYMD[4,2,2]':@VM:'MCN'):'.XLS'         ; * JMK02
+            CASE RPT.TYPE='C'            ; * JMK10
+               EXP.ID='CHKREG':BANK:'CK':OCONV(BEG.DATE,'DYMD[4,2,2]':@VM:'MCN'):'-':OCONV(END.DATE,'DYMD[4,2,2]':@VM:'MCN'):'.XLS'          ; * JMK02
+            CASE RPT.TYPE='M'            ; * JMK13
+               EXP.ID='CHKREG':BANK:'MCK':OCONV(BEG.DATE,'DYMD[4,2,2]':@VM:'MCN'):'-':OCONV(END.DATE,'DYMD[4,2,2]':@VM:'MCN'):'.XLS'         ; * JMK03
+            CASE 1                       ; * JMK10
+               EXP.ID='CHKREG':BANK:OCONV(BEG.DATE,'DYMD[4,2,2]':@VM:'MCN'):'-':OCONV(END.DATE,'DYMD[4,2,2]':@VM:'MCN'):'.XLS'     ; * JMK02
+         END CASE                        ; * JMK10
+         EXP.REC=CHANGE(EXP.REC,@VM,CHAR(9))       ; * JMK02
+         WRITE EXP.REC ON F.BILLDATA,EXP.ID        ; * JMK02
+         IF USER#'MKERBOW' THEN
+            CALL ELINE('This report is on "U:\':USER:'\':EXP.ID:'"')   ; * JMK02
+         END
+         IF BANK='K' THEN
+            TEXT.ID='CHKFILE':BANK:OCONV(BEG.DATE,'DYMD[4,2,2]':@VM:'MCN'):'-':OCONV(END.DATE,'DYMD[4,2,2]':@VM:'MCN'):'.TXT'
+            TEXT.LINE=BANK.REC<4>'R%10' :"T  ":TEXT.TOTAL'R%10':TEXT.GRAND.TOTAL'R%12':'000000000000000000000'
+            TEXT.REC<-1>=TEXT.LINE
+            WRITE TEXT.REC ON F.BILLDATA,TEXT.ID
+            CALL ELINE('This report is on "U:\':USER:'\':TEXT.ID:'"')
+         END
+         IF EMAIL.ADDR<1,1>#'' THEN
+            EMAIL.OUT=''
+            EMAIL.OUT<1>=EMAIL.ADDR<1>
+            EMAIL.OUT<2>=EMAIL.ADDR<2>
+            IF MLFLG THEN                ; * JMK04
+               EMAIL.OUT<3,-1>='KGilbert@afs.net'  ; * JMK04
+               EMAIL.OUT<3,-1>='OHolman@afs.net'   ; * JMK04
+               EMAIL.OUT<3,-1>='MKerbow@afs.net'   ; * JMK04
+            END                          ; * JMK04
+            EMAIL.OUT<5,1>='Check Register / Positive Pay File'
+            EMAIL.PATH='e:\Ardent\public\billdata\':USER:'\'
+            EMAIL.OUT<11>=EMAIL.PATH:EXP.ID
+            IF TEXT.ID#'' THEN
+               EMAIL.OUT<5,1>='Check Register / Positive Pay File'
+               EMAIL.OUT<11,-1>=EMAIL.PATH:TEXT.ID
+            END
+            VIN=EMAIL.OUT
+            VOUT=''
+            IF USER # "XNPRATT" THEN
+               CALL SENDMAIL(VIN,VOUT)
+            END
+         END
+      END ELSE                           ; * JMK02
+*        IF CLIENT.ID="All" THEN PRINT SPACE(36): ; * JMK11
+         PRINT SPACE(80):STR('-',15)
+         PRINT ' ACH total   ':ACH.COUNT'R#4':' ACH Trans''L#63':      ; * JMK09
+         PRINT ACH.TOTAL'R26,#15'        ; * JMK09
+         PRINT ' Check total ':CHECK.COUNT'R#4':' Checks''L#63':       ; * JMK09
+         PRINT CHECK.TOTAL'R26,#15'      ; * JMK09
+         IF TOTAL.VOID.AMT+0#0 THEN      ; * JMK14
+            PRINT ' Voids total ':VOID.COUNT'R#4':' Trans''L#63':      ; * JMK14
+            PRINT -TOTAL.VOID.AMT'R26,#15'         ; * JMK14
+            PRINT SPACE(80):STR('-',15)
+         END                             ; * JMK14
+*        PRINT ' Grand total ''L#80':
+*        PRINT ' Grand total ':CHECK.COUNT'R#4':' Checks''L#63':    ; * JMK09
+         PRINT ' Grand total ':GRAND.COUNT'R#4':'       ''L#63':       ; * JMK09
+*        IF CLIENT.ID="All" THEN PRINT SPACE(36):         ; * JMK09
+         PRINT GRAND.TOTAL-TOTAL.VOID.AMT'R26,#15'
+*        IF CLIENT.ID="All" THEN PRINT SPACE(36):         ; * JMK09
+         PRINT SPACE(80):STR('=',15)
+         PRINT
+*        PRINT "Date"'L#8':"     ":"Pro Amt"'L#12':" ":"Non-Pro Amt"'L#12':" ":"Check Amt"'L#12'  ; * JMK02 ; * JMK08
+*        PRINT "Date"'L#8':"     ":"Pro PPR Amt"'L#12':" ":"Pro ACH Amt"'L#12':" ":"Non-Pro Amt"'L#12':" ":"Check Amt"'L#12'       ; * JMK02 ; * JMK08 ; * JMK11
+         PRINT "Date"'L#8':" ":"|------------ Pro PPR Amt ------------|"'L#39':" ":"|------------ Pro ACH Amt -----------|"'L#39':" ":"Non-Pro Amt"'L#12':" ":"Check Amt"'L#12'      ; * JMK02 ; * JMK08 ; * JMK11
+         PRINT SPACE(10):"Source CK"'L#12':" ":"Source DDS"'L#12':" ":"Source Wire"'L#12':" ":"Source CK"'L#12':" ":"Source DDS"'L#12':" ":"Source Wire"'L#12'   ; * JMK11
+         TOTAL.AMT=0
+*        TOTAL.PRO.AMT=0              ; * JMK02 ; * JMK08
+         TOTAL.PRO.PPR.AMT=0             ; * JMK02 ; * JMK08
+         TOTAL.PRO.ACH.AMT=0             ; * JMK02 ; * JMK08
+         TOTAL.NPRO.AMT=0                ; * JMK02
+         TTL.PPR.C.AMT=0                 ; * JMK11
+         TTL.PPR.D.AMT=0                 ; * JMK11
+         TTL.PPR.W.AMT=0                 ; * JMK11
+         TTL.ACH.C.AMT=0                 ; * JMK11
+         TTL.ACH.D.AMT=0                 ; * JMK11
+         TTL.ACH.W.AMT=0                 ; * JMK11
+         NUM.OF.CASH.DATE=DCOUNT(CHECK.ARR<1>,@VM)
+         FOR X = 1 TO NUM.OF.CASH.DATE
+*           PRINT CHECK.ARR<1,X>'D2/':"     ":CHECK.ARR<2,X>'MR26#10'  ; * JMK02
+*           PRINT CHECK.ARR<1,X>'D2/':"     ":CHECK.ARR<3,X>'MR26,#12':" ":CHECK.ARR<4,X>'MR26,#12':" ":CHECK.ARR<2,X>'MR26,#12'          ; * JMK02 ; * JMK08
+*           PRINT CHECK.ARR<1,X>'D2/':"     ":CHECK.ARR<3,X>'MR26,#12':" ":CHECK.ARR<5,X>'MR26,#12':" ":CHECK.ARR<4,X>'MR26,#12':" ":CHECK.ARR<2,X>'MR26,#12'    ; * JMK02 ; * JMK08 ; JMK11
+            PRINT CHECK.ARR<1,X>'D2/':" ":CHECK.ARR<6,X>'MR26,#12':" ":CHECK.ARR<7,X>'MR26,#12':" ":CHECK.ARR<8,X>'MR26,#12':" ":CHECK.ARR<9,X>'MR26,#12':" ":CHECK.ARR<10,X>'MR26,#12':" ":CHECK.ARR<11,X>'MR26,#12':" ":CHECK.ARR<4,X>'MR26,#12':" ":CHECK.ARR<2,X>'MR26,#12'          ; * JMK02 ; * JMK08 ; * JMK11
+            TOTAL.AMT=TOTAL.AMT+CHECK.ARR<2,X>
+*           TOTAL.PRO.AMT=TOTAL.PRO.AMT+CHECK.ARR<3,X>    ; * JMK02 ; * JMK08
+            TOTAL.PRO.PPR.AMT=TOTAL.PRO.PPR.AMT+CHECK.ARR<3,X>         ; * JMK02 ; * JMK08
+            TOTAL.PRO.ACH.AMT=TOTAL.PRO.ACH.AMT+CHECK.ARR<5,X>         ; * JMK02 ; * JMK08
+            TOTAL.NPRO.AMT=TOTAL.NPRO.AMT+CHECK.ARR<4,X>     ; * JMK02
+            TTL.PPR.C.AMT+=CHECK.ARR<6,X>          ; * JMK11
+            TTL.PPR.D.AMT+=CHECK.ARR<7,X>          ; * JMK11
+            TTL.PPR.W.AMT+=CHECK.ARR<8,X>          ; * JMK11
+            TTL.ACH.C.AMT+=CHECK.ARR<9,X>          ; * JMK11
+            TTL.ACH.D.AMT+=CHECK.ARR<10,X>         ; * JMK11
+            TTL.ACH.W.AMT+=CHECK.ARR<11,X>         ; * JMK11
+         NEXT X
+         PRINT
+*        PRINT SPACE(13):TOTAL.AMT'MR26#10' ; * JMK02
+*        PRINT SPACE(13):TOTAL.PRO.AMT'MR26,#12':" ":TOTAL.NPRO.AMT'MR26,#12':" ":TOTAL.AMT'MR26,#12'       ; * JMK02 ; * JMK08
+*        PRINT SPACE(13):TOTAL.PRO.PPR.AMT'MR26,#12':" ":TOTAL.PRO.ACH.AMT'MR26,#12':" ":TOTAL.NPRO.AMT'MR26,#12':" ":TOTAL.AMT'MR26,#12'    ; * JMK02 ; * JMK08 ; * JMK11
+         PRINT SPACE(9):TTL.PPR.C.AMT'MR26,#12':" ":TTL.PPR.D.AMT'MR26,#12':" ":TTL.PPR.W.AMT'MR26,#12':" ":TTL.ACH.C.AMT'MR26,#12':" ":TTL.ACH.D.AMT'MR26,#12':" ":TTL.ACH.W.AMT'MR26,#12':" ":TOTAL.NPRO.AMT'MR26,#12':" ":TOTAL.AMT'MR26,#12'           ; * JMK02 ; * JMK08 ; * JMK11
+      END                                ; * JMK02
+*
+      PRINTER OFF
+      PRINTER CLOSE
+      IF SELECTION='S' THEN CALL ELINE('')
+*
+      RETURN
+*
+*
+PROCESS.SUMMARY:
+*
+
+      TRANS.MODE.STR = ""                ; *NPR02
+*      IF ACH.FLG THEN                                                                          ;*NPR02
+      IF TRANS.MODE NE "" THEN TRANS.MODE.STR = TRANS.MODE.DESC : " (" : TRANS.MODE : ")"  ; *NPR02
+*      END                                                                                      ;*NPR02
+
+      IF SELECTION='E' THEN              ; * JMK02
+         IF USER='MKERBOW' AND CLIENT.REC<92>='00003' THEN   ; * JMK15
+            EXP.LINE<1,1>=FCK.CK.NUM     ; * JMK15
+            EXP.LINE<1,2>=FCK.CARRIER    ; * JMK15
+            EXP.LINE<1,3>=CARRIER.NAME   ; * JMK15
+            EXP.LINE<1,4>=FCK.DATE'D2/'  ; * JMK15
+            EXP.LINE<1,5>=CLIENT.AMT'R26'          ; * JMK15
+         END ELSE                        ; * JMK15
+            EXP.LINE<1,1>=CARRIER.NAME
+            IF TRANS.MODE.STR NE "" THEN EXP.LINE<1,2>= TRANS.MODE.STR           ; *NPR02
+            EXP.LINE<1,5>=STAR'L#1':FCK.CK.NUM'R%6'          ; * JMK02
+            IF BANK='K' THEN
+               TEXT.LINE=BANK.REC<4>'R%10'
+            END
+         END                             ; * JMK15
+      END ELSE                           ; * JMK02
+         IF TRANS.MODE.STR NE "" THEN    ; * NPR02
+            PRINT CARRIER.NAME[1,30] 'L#30' : SPACE(2) : TRANS.MODE.STR[1,30] 'L#30' : SPACE(2) : STAR'L#1':FCK.CK.NUM'R%6':       ; * NPR02
+         END ELSE                        ; * NPR02
+            PRINT CARRIER.NAME[1,30] 'L#30' : SPACE(34) : STAR'L#1' : FCK.CK.NUM'R%6':     ; * NPR02
+         END                             ; * NPR02
+      END                                ; * JMK02
+*
+*NPR01IF FCK.PRO<1,1> = 'Void' AND FCK.VOID.DATE > END.DATE THEN ;*NPR01 Do we really want to ignore the date?
+      IF FCK.PRO<1,1> = 'Void' THEN      ; *NPR01 Do we really want to ignore the date?
+         GOSUB PROCESS.VOID
+      END ELSE
+         GOSUB PROCESS.NON.VOID
+      END
+*
+      IF FCK.PRO<1,1>='Void' THEN
+
+      END ELSE
+
+      END
+      IF SELECTION='E' THEN              ; * JMK02
+         EXP.REC<-1>=EXP.LINE            ; * JMK02
+         IF BANK='K' THEN
+            TEXT.REC<-1>=TEXT.LINE
+         END
+      END                                ; * JMK02
+*
+      RETURN
+*
+PROCESS.DETAIL:
+*
+      BEGIN CASE
+         CASE FCK.PRO<1,1>='Void'
+            IF SELECTION='E' THEN        ; * JMK05
+               EXP.LINE=''               ; * JMK05
+               EXP.LINE<1,3>=CARRIER.NAME          ; * JMK05
+               EXP.LINE<1,4>='-----Void-----'      ; * JMK05
+               EXP.LINE<1,7>=FCK.CK.NUM  ; * JMK05
+               VOID.LINE=EXP.LINE        ; * JMK05
+               IF FCK.VOID.DATE > END.DATE THEN    ; * JMK05
+                  EXP.LINE<1,8>=FCK.DATE'D2/'      ; * JMK05
+                  IF CLIENT.ID='All' THEN          ; * JMK07
+                     EXP.LINE<1,9>=FCK.ORIG.AMT'R26,'        ; * JMK05
+                  END ELSE               ; * JMK07
+                     EXP.LINE<1,9>=CLIENT.ORIG.AMT'R26,'     ; * JMK05
+                  END                    ; * JMK07
+               END ELSE                  ; * JMK05
+                  EXP.LINE<1,8>=FCK.DATE'D2/'      ; * JMK05
+                  IF CLIENT.ID='All' THEN          ; * JMK07
+                     EXP.LINE<1,9>=FCK.AMT'R26,'   ; * JMK05
+                  END ELSE               ; * JMK07
+                     EXP.LINE<1,9>=CLIENT.AMT'R26,'          ; * JMK05
+                  END                    ; * JMK07
+               END                       ; * JMK05
+               EXP.REC<-1>=EXP.LINE      ; * JMK05
+               Y=DCOUNT(FCK.VOID.DESC,CHAR(253))   ; * JMK05
+               FOR J=1 TO Y              ; * JMK05
+                  EXP.LINE=VOID.LINE     ; * JMK05
+                  EXP.LINE<1,9>=FCK.VOID.DESC<1,J>           ; * JMK05
+                  EXP.REC<-1>=EXP.LINE   ; * JMK05
+               NEXT J                    ; * JMK05
+            END ELSE                     ; * JMK05
+               PRINT SPACE(36):
+               PRINT CARRIER.NAME'L(#30 )':'-----Void-----''L(#33 )':FCK.CK.NUM'R%6':
+               IF FCK.VOID.DATE > END.DATE THEN
+                  IF CLIENT.ID='All' THEN          ; * JMK07
+                     PRINT ' ':FCK.DATE'D2/':FCK.ORIG.AMT'R26,#15':
+                  END ELSE               ; * JMK07
+                     PRINT ' ':FCK.DATE'D2/':CLIENT.ORIG.AMT'R26,#15':           ; * JMK07
+                  END                    ; * JMK07
+               END ELSE
+                  IF CLIENT.ID='All' THEN          ; * JMK07
+                     PRINT ' ':FCK.DATE'D2/':FCK.AMT'R26,#15':
+                  END ELSE               ; * JMK07
+                     PRINT ' ':FCK.DATE'D2/':CLIENT.AMT'R26,#15':      ; * JMK07
+                  END                    ; * JMK07
+               END
+               Y=DCOUNT(FCK.VOID.DESC,CHAR(253))
+               FOR J=1 TO Y
+                  PRINT SPACE(36):SPACE(31):FCK.VOID.DESC<1,J>'L#30'
+               NEXT J
+            END                          ; * JMK05
+         CASE NO.PROS                    ; * JCW01
+            TEXT='Manual Check --> '
+            TEXT=TEXT:CARRIER.NAME:' - ':CHECK.REC(16)
+            TEXT=TRIM(TEXT)
+            IF SELECTION='E' THEN        ; * JMK05
+               EXP.LINE=''               ; * JMK05
+               EXP.LINE<1,1>='-- Manual Check --'  ; * JMK05
+               EXP.LINE<1,3>=CARRIER.NAME          ; * JMK05
+               EXP.LINE<1,4>=CHECK.REC(16)         ; * JMK05
+               EXP.LINE<1,7>=FCK.CK.NUM  ; * JMK05
+               EXP.LINE<1,8>=FCK.DATE'D2/'         ; * JMK05
+               IF CLIENT.ID='All' THEN   ; * JMK07
+                  EXP.LINE<1,9>=FCK.AMT'R26,'      ; * JMK05
+               END ELSE                  ; * JMK07
+                  EXP.LINE<1,9>=CLIENT.AMT'R26,'   ; * JMK05 ; * JMK07
+               END                       ; * JMK07
+               EXP.LINE<1,10>=FCK.CARRIER          ; *NPR99
+               EXP.REC<-1>=EXP.LINE      ; * JMK05
+            END ELSE                     ; * JMK05
+               IF CLIENT.ID='All' THEN   ; * JMK07
+                  PRINT TEXT'L#101':FCK.CK.NUM'R%6':' ':(FCK.DATE'D2/')'L#8':FCK.AMT'R26,#15'
+               END ELSE                  ; * JMK07
+                  PRINT TEXT'L#101':FCK.CK.NUM'R%6':' ':(FCK.DATE'D2/')'L#8':CLIENT.AMT'R26,#15'     ; * JMK07
+               END                       ; * JMK07
+            END                          ; * JMK05
+         CASE 1
+            FOR I = 1 TO NUM.PROS        ; * JCW01
+               IF FILE = "FB.CHECKS.HDR" THEN      ; * JCW01
+                  DTL.ID = ID:'*':I      ; * JCW01
+                  READ DTL.REC FROM F.CHECKS.D, DTL.ID THEN  ; * JCW01
+                     PRO.ID = DTL.REC<1>           ; * JCW01
+                     PRO.AMT = DTL.REC<2>          ; * JCW01
+                     DTL.CLIENT = DTL.REC<3>       ; * JCW01
+                     IF CLIENT.ID # 'All' THEN     ; * JCW01
+                        IF CLIENT.ID # DTL.CLIENT THEN CONTINUE        ; * JCW01
+                     END                 ; * JCW01
+                  END ELSE               ; * JCW01
+                     MSG = 'FB.CHECKS.DTL record ':DTL.ID:' not found; program will stop.'           ; * JCW01
+                     MSG := CHAR(10):CHAR(13):'Notify Help Desk in Information Systems.':CHAR(10):CHAR(13)     ; * JCW01
+                     CALL ELINE(MSG)     ; * JCW01
+                  END                    ; * JCW01
+               END ELSE                  ; * JCW01
+                  PRO.ID=FCK.PRO<1,I>
+                  PRO.AMT=FCK.PRO.AMT<1,I>
+               END                       ; * JCW01
+               PRO.NUM=FIELD(PRO.ID,'*',2)
+               VERSION=FIELD(PRO.ID,'*',3)
+               IF VERSION # 0 THEN CONTINUE
+               IF CLIENT.ID="All" THEN
+                  READV CLIENT FROM F.CRX,PRO.ID,1 THEN
+                     IF CLIENT='' THEN
+                        BBSEND.TEXT='MISSING CLIENT FOR PRO ':PRO.ID
+                        EXECUTE "BBSEND MIKE ":BBSEND.TEXT
+                     END ELSE
+                        OPEN '','FB.BILLS.HIST,':CLIENT TO F.HIST ELSE
+                           CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT,PROG.NAME)
+                        END
+                     END
+                  END
+IF USER='DAVID' AND CLIENT='' THEN CALL ELINE('PRESS BREAK')
+                  READV CLIENT.NAME FROM F.CLIENT,CLIENT,2 ELSE CLIENT.NAME=''
+                  CLIENT.TXT=(CLIENT:' ':CLIENT.NAME)'L#36'
+               END ELSE CLIENT.TXT=''
+               MATREAD HIST.REC FROM F.HIST, PRO.ID THEN
+                  IF FBH.BILL.DATE NE '' THEN
+                     BILL.DATE=FBH.BILL.DATE'D2/'
+                  END ELSE
+                     BILL.DATE=SPACE(8)
+                  END
+                  IF FBH.PRO.DATE NE '' THEN
+                     PROC.DATE=FBH.PRO.DATE'D2/'
+                  END ELSE
+                     PROC.DATE=SPACE(8)
+                  END
+                  IF HIST.REC(133) NE '' THEN      ; * JMK17
+                     CR.DATE=HIST.REC(133)'D2/'    ; * JMK17
+                  END ELSE               ; * JMK17
+                     CR.DATE=SPACE(8)    ; * JMK17
+                  END                    ; * JMK17
+                  BEGIN CASE             ; * JMK17
+                     CASE HIST.REC(216)='W'        ; * JMK17
+                        CR.SRC='Wire'    ; * JMK17
+                     CASE HIST.REC(216)='D'        ; * JMK17
+                        CR.SRC='ACH'     ; * JMK17
+                     CASE 1              ; * JMK17
+                        CR.SRC='Check'   ; * JMK17
+                  END CASE               ; * JMK17
+                  IF SELECTION='E' THEN  ; * JMK05
+                     EXP.LINE=''         ; * JMK05
+                     IF CLIENT.ID="All" THEN       ; *NPR02
+                        EXP.LINE<1,1>=CLIENT       ; * JMK05  ;*NPR02
+                     END ELSE            ; *NPR02
+                        EXP.LINE<1,1>=CLIENT.ID    ; * JMK05
+                     END                 ; *NPR02
+                     EXP.LINE<1,2>=CLIENT.NAME     ; * JMK05
+                     EXP.LINE<1,3>=CARRIER.NAME    ; * JMK05
+                     EXP.LINE<1,4>=PRO.NUM         ; * JMK05
+                     EXP.LINE<1,5>=BILL.DATE       ; * JMK05
+                     EXP.LINE<1,6>=PROC.DATE       ; * JMK05
+                     EXP.LINE<1,7>=FCK.CK.NUM      ; * JMK05
+                     EXP.LINE<1,8>=FCK.DATE'D2/'   ; * JMK05
+                     IF PRO.AMT#'' THEN TEMP=PRO.AMT ELSE TEMP=FBH.ACT.CHG       ; * JMK05
+                     EXP.LINE<1,9>=TEMP'R26,'      ; * JMK05
+                     EXP.LINE<1,11>=CR.SRC         ; * JMK17
+                     EXP.LINE<1,13>=CR.DATE        ; * JMK17
+                     EXP.LINE<1,14>=FCK.CARRIER    ; *NPR99
+                     EXP.REC<-1>=EXP.LINE          ; * JMK05
+                  END ELSE               ; * JMK05
+                     PRINT CLIENT.TXT:
+                     PRINT CARRIER.NAME'L#30':' ':PRO.NUM'L#15':
+                     PRINT ' ':BILL.DATE'L#8':' ':PROC.DATE'L#8':' ':FCK.CK.NUM'R%6':' ':
+                     IF PRO.AMT#'' THEN TEMP=PRO.AMT ELSE TEMP=FBH.ACT.CHG
+                     PRINT (FCK.DATE'D2/')'L#8':TEMP'R26,#15'
+                  END                    ; * JMK05
+               END
+            NEXT I
+            IF CHECK.REC(14)#'' THEN
+               TEXT='Adjustment --> '
+               LOCATE CHECK.REC(13) IN ADJ.CODE<1> SETTING POS THEN
+                  TEXT=TEXT:ADJ.CODE<2,POS>
+               END
+               IF SELECTION='E' THEN     ; * JMK05
+                  EXP.LINE=''            ; * JMK05
+                  EXP.LINE<1,1>=TEXT     ; * JMK05
+                  EXP.LINE<1,3>=CARRIER.NAME       ; * JMK05
+                  EXP.LINE<1,4>=TEXT     ; * JMK05
+                  EXP.LINE<1,7>=FCK.CK.NUM         ; * JMK05
+                  EXP.LINE<1,8>=FCK.DATE'D2/'      ; * JMK05
+                  EXP.LINE<1,9>=CHECK.REC(14)'R26,'          ; * JMK05
+                  EXP.LINE<1,10>=FCK.CARRIER       ; *NPR99
+                  EXP.REC<-1>=EXP.LINE   ; * JMK05
+               END ELSE                  ; * JMK05
+                  PRINT TEXT'L#101':FCK.CK.NUM'R%6':' ':(FCK.DATE'D2/')'L#8':CHECK.REC(14)'R26,#15'
+               END                       ; * JMK05
+            END
+      END CASE
+*
+      IF SELECTION='E' THEN              ; * JMK05
+      END ELSE                           ; * JMK05
+         IF SYSTEM(4) LT 4 THEN PAGE
+         IF CLIENT.ID="All" THEN PRINT SPACE(36):
+         PRINT SPACE(80):STR('-',15)
+         TEXT=' Total for check number ':FCK.CK.NUM
+         IF FCK.PRO<1,1> = 'Void' AND FCK.VOID.DATE > END.DATE THEN
+            IF NOT(NUM(CLIENT.ID)) THEN PRINT SPACE(36):
+            PRINT TEXT'L#80':
+            PRINT FCK.ORIG.AMT'R26,#15'
+            IF CLIENT.ID='All' THEN      ; * JMK07
+               GRAND.TOTAL += FCK.ORIG.AMT
+               IF ACH.FLG THEN           ; * JMK09
+                  ACH.TOTAL+=FCK.ORIG.AMT          ; * JMK09
+               END ELSE                  ; * JMK09
+                  CHECK.TOTAL+=FCK.ORIG.AMT        ; * JMK09
+               END                       ; * JMK09
+            END ELSE                     ; * JMK07
+               GRAND.TOTAL += CLIENT.ORIG.AMT      ; * JMK07
+               IF ACH.FLG THEN           ; * JMK09
+                  ACH.TOTAL+=CLIENT.ORIG.AMT       ; * JMK09
+               END ELSE                  ; * JMK09
+                  CHECK.TOTAL+=CLIENT.ORIG.AMT     ; * JMK09
+               END                       ; * JMK09
+            END                          ; * JMK07
+         END ELSE
+            IF NOT(NUM(CLIENT.ID)) THEN PRINT SPACE(36):
+            PRINT TEXT'L#80':
+            PRINT FCK.AMT'R26,#15'
+            IF CLIENT.ID='All' THEN      ; * JMK07
+               GRAND.TOTAL += FCK.AMT
+               IF ACH.FLG THEN           ; * JMK09
+                  ACH.TOTAL+=FCK.AMT     ; * JMK09
+               END ELSE                  ; * JMK09
+                  CHECK.TOTAL+=FCK.AMT   ; * JMK09
+               END                       ; * JMK09
+            END ELSE                     ; * JMK07
+               GRAND.TOTAL += CLIENT.AMT           ; * JMK07
+               IF ACH.FLG THEN           ; * JMK09
+                  ACH.TOTAL+=CLIENT.AMT  ; * JMK09
+               END ELSE                  ; * JMK09
+                  CHECK.TOTAL+=CLIENT.AMT          ; * JMK09
+               END                       ; * JMK09
+            END                          ; * JMK07
+         END
+         PRINT
+         IF FORM.FEED THEN PAGE
+      END                                ; * JMK05
+*
+      RETURN
+*
+PROCESS.VOID:
+*
+      VOID.COUNT+=1                      ; * JMK14
+      IF SELECTION='E' THEN              ; * JMK02
+         IF USER='MKERBOW' AND CLIENT.REC<92>='00003' THEN   ; * JMK15
+         END ELSE                        ; * JMK15
+            EXP.LINE<1,6>=FCK.DATE'D2/'
+            IF CLIENT.ID='All' THEN      ; * JMK07
+               EXP.LINE<1,7>=FCK.ORIG.AMT'R26,'
+               EXP.LINE<1,12>=FCK.ORIG.AMT'R26,'
+            END ELSE                     ; * JMK07
+               EXP.LINE<1,7>=CLIENT.ORIG.AMT'R26,'           ; * JMK07
+            END                          ; * JMK07
+            IF BANK='K' THEN
+               TEXT.LINE=TEXT.LINE:'   '
+               IF CLIENT.ID='All' THEN   ; * JMK07
+                  TEXT.LINE=TEXT.LINE:FCK.CK.NUM'R%10':FCK.ORIG.AMT'R%12'
+               END ELSE                  ; * JMK07
+                  TEXT.LINE=TEXT.LINE:FCK.CK.NUM'R%10':CLIENT.ORIG.AMT'R%12'     ; * JMK07
+               END
+               TEMP.DATE=FCK.DATE'D4/'
+               TEXT.LINE=TEXT.LINE:TEMP.DATE[1,2]:TEMP.DATE[4,2]:TEMP.DATE[7,4]:SPACE(15)
+               TEXT.TOTAL=TEXT.TOTAL+1
+               IF CLIENT.ID='All' THEN   ; * JMK07
+                  TEXT.GRAND.TOTAL=TEXT.GRAND.TOTAL+FCK.ORIG.AMT
+               END ELSE                  ; * JMK07
+                  TEXT.GRAND.TOTAL=TEXT.GRAND.TOTAL+CLIENT.ORIG.AMT    ; * JMK07
+               END                       ; * JMK07
+            END
+         END                             ; * JMK15
+      END ELSE                           ; * JMK02
+         IF CLIENT.ID='All' THEN         ; * JMK07
+            PRINT ' ':(FCK.DATE'D2/')'L#8':FCK.ORIG.AMT'R26,#15':' ':BNK.ID:     ; * JAD01
+         END ELSE                        ; * JMK07
+            PRINT ' ':(FCK.DATE'D2/')'L#8':CLIENT.ORIG.AMT'R26,#15':' ':BNK.ID:  ; * JMK07 JAD01
+         END                             ; * JMK07
+      END                                ; * JMK02
+      IF CLIENT.ID='All' THEN            ; * JMK07
+         TOTAL.VOID.AMT += FCK.ORIG.AMT  ; * JMK14
+         GRAND.TOTAL += FCK.ORIG.AMT
+         IF ACH.FLG THEN                 ; * JMK09
+            ACH.TOTAL+=FCK.ORIG.AMT      ; * JMK09
+         END ELSE                        ; * JMK09
+            CHECK.TOTAL+=FCK.ORIG.AMT    ; * JMK09
+         END                             ; * JMK09
+      END ELSE                           ; * JMK07
+         TOTAL.VOID.AMT += CLIENT.ORIG.AMT         ; * JMK14
+         GRAND.TOTAL += CLIENT.ORIG.AMT  ; * JMK07
+         IF ACH.FLG THEN                 ; * JMK09
+            ACH.TOTAL+=CLIENT.ORIG.AMT   ; * JMK09
+         END ELSE                        ; * JMK09
+            CHECK.TOTAL+=CLIENT.ORIG.AMT           ; * JMK09
+         END                             ; * JMK09
+      END                                ; * JMK07
+*
+      WORK.FCK.AMT = FCK.ORIG.AMT
+      WORK.CLIENT.AMT = CLIENT.ORIG.AMT
+*
+*     GOSUB BUILD.CHECK.ARR              ; * JMK14
+*
+      IF SELECTION='E' THEN              ; * JMK02
+         IF USER='MKERBOW' AND CLIENT.REC<92>='00003' THEN   ; * JMK15
+         END ELSE                        ; * JMK15
+            EXP.LINE<1,8>=" --> Void on ":(CHECK.REC(9)'D2/')'L#8':" ":CHECK.REC(8)'L#16':' '        ; * JMK02
+            EXP.LINE<1,3>=FCK.CARRIER    ; * NPR99
+         END                             ; * JMK15
+      END ELSE                           ; * JMK02
+         PRINT " --> Voided ":(CHECK.REC(9)'D2/')'L#8':" ":CHECK.REC(8)'L#15'    ; * JAD01
+      END                                ; * JMK02
+*
+      RETURN
+*
+PROCESS.NON.VOID:
+*
+      IF SELECTION='E' THEN              ; * JMK02
+         IF USER='MKERBOW' AND CLIENT.REC<92>='00003' THEN   ; * JMK15
+         END ELSE                        ; * JMK15
+            EXP.LINE<1,6>=FCK.DATE'D2/'
+            IF CLIENT.ID='All' THEN      ; * JMK07
+               EXP.LINE<1,7>=FCK.AMT'R26,'
+            END ELSE                     ; * JMK07
+               EXP.LINE<1,7>=CLIENT.AMT'R26,'      ; * JMK07
+            END                          ; * JMK07
+            IF BANK='K' THEN
+               TEXT.LINE=TEXT.LINE:'   '
+               IF CLIENT.ID='All' THEN   ; * JMK07
+                  TEXT.LINE=TEXT.LINE:FCK.CK.NUM'R%10':FCK.AMT'R%12'
+               END ELSE                  ; * JMK07
+                  TEXT.LINE=TEXT.LINE:FCK.CK.NUM'R%10':CLIENT.AMT'R%12'          ; * JMK07
+               END                       ; * JMK07
+               TEMP.DATE=FCK.DATE'D4/'
+               TEXT.LINE=TEXT.LINE:TEMP.DATE[1,2]:TEMP.DATE[4,2]:TEMP.DATE[7,4]:SPACE(15)
+               TEXT.TOTAL=TEXT.TOTAL+1
+               IF CLIENT.ID='All' THEN   ; * JMK07
+                  TEXT.GRAND.TOTAL=TEXT.GRAND.TOTAL+FCK.AMT
+               END ELSE                  ; * JMK07
+                  TEXT.GRAND.TOTAL=TEXT.GRAND.TOTAL+CLIENT.AMT         ; * JMK07
+               END                       ; * JMK07
+            END
+         END                             ; * JMK15
+      END ELSE                           ; * JMK02
+         IF CLIENT.ID='All' THEN         ; * JMK07
+            PRINT ' ':FCK.DATE'D2/':FCK.AMT'R26,#15':' ':BNK.ID:       ; * JAD01
+         END ELSE                        ; * JMK07
+            PRINT ' ':FCK.DATE'D2/':CLIENT.AMT'R26,#15':' ':BNK.ID:    ; * JAD01
+         END                             ; * JMK07
+      END                                ; * JMK02
+      IF CLIENT.ID='All' THEN            ; * JMK07
+         GRAND.TOTAL += FCK.AMT
+         IF ACH.FLG THEN                 ; * JMK09
+            ACH.TOTAL+=FCK.AMT           ; * JMK09
+         END ELSE                        ; * JMK09
+            CHECK.TOTAL+=FCK.AMT         ; * JMK09
+         END                             ; * JMK09
+      END ELSE                           ; * JMK07
+         GRAND.TOTAL += CLIENT.AMT       ; * JMK07
+         IF ACH.FLG THEN                 ; * JMK09
+            ACH.TOTAL+=CLIENT.AMT        ; * JMK09
+         END ELSE                        ; * JMK09
+            CHECK.TOTAL+=CLIENT.AMT      ; * JMK09
+         END                             ; * JMK09
+      END                                ; * JMK07
+*
+      WORK.FCK.AMT = FCK.AMT
+      WORK.CLIENT.AMT = CLIENT.AMT
+*
+      GOSUB BUILD.CHECK.ARR
+*
+      IF CHECK.REC(14) # '' THEN
+         IF SELECTION='E' THEN           ; * JMK02
+            IF USER='MKERBOW' AND CLIENT.REC<92>='00003' THEN          ; * JMK15
+            END ELSE                     ; * JMK15
+               EXP.LINE<1,8>=" --> Adjust ":CHECK.REC(14)'R26#7':" "
+            END                          ; * JMK15
+         END ELSE                        ; * JMK02
+            PRINT " --> Adjust ":CHECK.REC(14)'R26#7':" ":
+         END                             ; * JMK02
+         LOCATE CHECK.REC(13) IN ADJ.CODE<1> SETTING POS THEN
+            IF SELECTION='E' THEN        ; * JMK02
+               EXP.LINE<1,8>:=ADJ.CODE<2,POS>'L#18'          ; * JMK02
+            END ELSE                     ; * JMK02
+               PRINT ADJ.CODE<2,POS>'L#18':
+            END                          ; * JMK02
+         END
+      END ELSE
+         IF NO.PROS THEN                 ; * JCW01
+            IF SELECTION='E' THEN        ; * JMK02
+               IF USER='MKERBOW' AND CLIENT.REC<92>='00003' THEN       ; * JMK15
+               END ELSE                  ; * JMK15
+                  EXP.LINE<1,8>=" --> Manual Check ":CHECK.REC(16)     ; * JMK02
+               END                       ; * JMK15
+            END ELSE                     ; * JMK02
+               PRINT " --> Manual Check ":CHECK.REC(16)'L#20':
+            END                          ; * JMK02
+         END
+      END
+*
+      IF SELECTION='E' THEN              ; * JMK04
+         IF USER='MKERBOW' AND CLIENT.REC<92>='00003' THEN   ; * JMK15
+         END ELSE                        ; * JMK15
+            EXP.LINE<1,9>=FIELD(ID,'*',2)          ; * JMK04
+            EXP.LINE<1,3>=FCK.CARRIER    ; * NPR99
+         END                             ; * JMK15
+      END ELSE                           ; * JMK02 ; * JMK04
+         PRINT ''
+      END                                ; * JMK02
+*
+      RETURN
+*
+BUILD.CHECK.ARR:
+*
+*IF USER = "NPRATT" THEN
+*   FLD44 = CHECK.REC(44)
+*   FLD45 = CHECK.REC(45)
+*
+*   CONVERT @SVM TO @VM IN FLD44
+*   CONVERT @SVM TO @VM IN FLD45
+*
+*   CHECK.REC(44) = FLD44
+*   CHECK.REC(45) = FLD45
+*END
+*
+      IF CHECK.REC(22)#'' AND BEG.DATE=END.DATE THEN
+         NUM.OF.SPLITS = DCOUNT(CHECK.REC(22),@VM)
+         FOR XX = 1 TO NUM.OF.SPLITS
+            CASH.DATE=CHECK.REC(22)<1,XX>
+*           IF CHECK.REC(44)<1,XX>='' THEN         ; * JMK11 ; * JMK12
+            IF CHECK.REC(44)<1,XX>='' OR CHECK.REC(23)<1,XX>#SUM(CHECK.REC(45)<1,XX>) THEN           ; * JMK11 ; * JMK12
+               DVIN=''                   ; * JMK11
+               DVOUT=''                  ; * JMK11
+               DVIN<1>=CASH.DATE         ; * JMK11
+               DVIN<2>=1                 ; * JMK11
+               CALL CALC.DATE(DVIN,DVOUT,F.TC.HOLIDAYS)      ; * JMK11
+               W.CK.DATE=DVOUT<1>        ; * JMK11
+               DVIN<2>=2                 ; * JMK11
+               CALL CALC.DATE(DVIN,DVOUT,F.TC.HOLIDAYS)      ; * JMK11
+               D.CK.DATE=DVOUT<1>        ; * JMK11
+               TYPE.OF.PAYMENT=''        ; * JMK11
+               BEGIN CASE                ; * JMK11
+                  CASE FCK.DATE=W.CK.DATE          ; * JMK11
+                     TYPE.OF.PAYMENT='W'           ; * JMK11
+                  CASE FCK.DATE=D.CK.DATE          ; * JMK11
+                     TYPE.OF.PAYMENT='D'           ; * JMK11
+                  CASE 1                 ; * JMK11
+                     TYPE.OF.PAYMENT='C'           ; * JMK11
+               END CASE                  ; * JMK11
+               CHECK.REC(44)<1,XX>=TYPE.OF.PAYMENT           ; * JMK11
+               CHECK.REC(45)<1,XX>=CHECK.REC(23)<1,XX>       ; * JMK11
+            END                          ; * JMK11
+            LOCATE CASH.DATE IN CHECK.ARR<1> BY 'AR' SETTING CASH.POS THEN
+               CHECK.ARR<2,CASH.POS>=CHECK.ARR<2,CASH.POS>+CHECK.REC(23)<1,XX>
+               IF NOT(NO.PRO.AMTS) THEN  ; * JCW01
+                  IF ACH.FLG THEN        ; * JMK08
+                     CHECK.ARR<5,CASH.POS>+=CHECK.REC(23)<1,XX>        ; * JMK08
+                  END ELSE               ; * JMK08
+                     CHECK.ARR<3,CASH.POS>+=CHECK.REC(23)<1,XX>        ; * JMK02
+                  END
+               END ELSE                  ; * JMK02
+                  CHECK.ARR<4,CASH.POS>+=CHECK.REC(23)<1,XX>           ; * JMK02
+               END                       ; * JMK02
+            END ELSE
+               INS CHECK.REC(22)<1,XX> BEFORE CHECK.ARR<1,CASH.POS>
+               INS CHECK.REC(23)<1,XX> BEFORE CHECK.ARR<2,CASH.POS>
+               IF NOT(NO.PRO.AMTS) THEN  ; * JCW01
+                  IF ACH.FLG THEN        ; * JMK08
+                     INS '' BEFORE CHECK.ARR<3,CASH.POS>     ; * JMK08
+                     INS CHECK.REC(23)<1,XX> BEFORE CHECK.ARR<5,CASH.POS>        ; * JMK08
+                  END ELSE               ; * JMK08
+                     INS CHECK.REC(23)<1,XX> BEFORE CHECK.ARR<3,CASH.POS>        ; * JMK02
+                     INS '' BEFORE CHECK.ARR<5,CASH.POS>     ; * JMK08
+                  END                    ; * JMK08
+               END ELSE                  ; * JMK02
+                  INS CHECK.REC(23)<1,XX> BEFORE CHECK.ARR<4,CASH.POS>           ; * JMK02
+               END                       ; * JMK02
+               INS 0 BEFORE CHECK.ARR<6,CASH.POS>  ; * JMK11
+               INS 0 BEFORE CHECK.ARR<7,CASH.POS>  ; * JMK11
+               INS 0 BEFORE CHECK.ARR<8,CASH.POS>  ; * JMK11
+               INS 0 BEFORE CHECK.ARR<9,CASH.POS>  ; * JMK11
+               INS 0 BEFORE CHECK.ARR<10,CASH.POS>           ; * JMK11
+               INS 0 BEFORE CHECK.ARR<11,CASH.POS>           ; * JMK11
+            END
+            NUM.OF.SSPLITS=DCOUNT(CHECK.REC(44)<1,XX>,@SVM)  ; * JMK11
+            FOR XXX=1 TO NUM.OF.SSPLITS  ; * JMK11
+               TYPE.OF.PYMT=CHECK.REC(44)<1,XX,XXX>          ; * JMK11
+               BEGIN CASE                ; * JMK11
+                  CASE TYPE.OF.PYMT='C'  ; * JMK11
+                     IF ACH.FLG THEN     ; * JMK11
+                        CHECK.ARR<9,CASH.POS>+=CHECK.REC(45)<1,XX,XXX>           ; * JMK11
+                     END ELSE            ; * JMK11
+                        CHECK.ARR<6,CASH.POS>+=CHECK.REC(45)<1,XX,XXX>           ; * JMK11
+                     END                 ; * JMK11
+                  CASE TYPE.OF.PYMT='D'  ; * JMK11
+                     IF ACH.FLG THEN     ; * JMK11
+                        CHECK.ARR<10,CASH.POS>+=CHECK.REC(45)<1,XX,XXX>          ; * JMK11
+                     END ELSE            ; * JMK11
+                        CHECK.ARR<7,CASH.POS>+=CHECK.REC(45)<1,XX,XXX>           ; * JMK11
+                     END                 ; * JMK11
+                  CASE TYPE.OF.PYMT='W'  ; * JMK11
+                     IF ACH.FLG THEN     ; * JMK11
+                        CHECK.ARR<11,CASH.POS>+=CHECK.REC(45)<1,XX,XXX>          ; * JMK11
+                     END ELSE            ; * JMK11
+                        CHECK.ARR<8,CASH.POS>+=CHECK.REC(45)<1,XX,XXX>           ; * JMK11
+                     END                 ; * JMK11
+               END CASE                  ; * JMK11
+            NEXT XXX                     ; * JMK11
+         NEXT XX
+      END ELSE                           ; * JMK02
+         LOCATE FCK.DATE IN CHECK.ARR<1> BY 'AR' SETTING FCK.POS THEN  ; * JMK02
+            IF CLIENT.ID='All' THEN      ; * JMK07
+               CHECK.ARR<2,FCK.POS>=CHECK.ARR<2,FCK.POS>+WORK.FCK.AMT
+            END ELSE                     ; * JMK07
+               CHECK.ARR<2,FCK.POS>=CHECK.ARR<2,FCK.POS>+WORK.CLIENT.AMT         ; * JMK02 ; * JMK07
+            END                          ; * JMK07
+            IF NOT(NO.PRO.AMTS) THEN     ; * JCW01
+               IF CLIENT.ID='All' THEN   ; * JMK07
+                  IF ACH.FLG THEN        ; * JMK08
+                     CHECK.ARR<5,FCK.POS>+=WORK.FCK.AMT
+                  END ELSE               ; * JMK08
+                     CHECK.ARR<3,FCK.POS>+=WORK.FCK.AMT
+                  END                    ; * JMK08
+               END ELSE                  ; * JMK07
+                  IF ACH.FLG THEN        ; * JMK08
+                     CHECK.ARR<5,FCK.POS>+=WORK.CLIENT.AMT   ; * JMK02
+                  END ELSE               ; * JMK08
+                     CHECK.ARR<3,FCK.POS>+=WORK.CLIENT.AMT   ; * JMK02
+                  END                    ; * JMK08
+               END                       ; * JMK07
+            END ELSE                     ; * JMK02
+               IF CLIENT.ID='All' THEN   ; * JMK07
+                  CHECK.ARR<4,FCK.POS>+=WORK.FCK.AMT
+               END ELSE                  ; * JMK07
+                  CHECK.ARR<4,FCK.POS>+=WORK.CLIENT.AMT      ; * JMK02
+               END                       ; * JMK07
+            END                          ; * JMK02
+         END ELSE                        ; * JMK02
+            INS FCK.DATE BEFORE CHECK.ARR<1,FCK.POS>         ; * JMK02
+            IF CLIENT.ID='All' THEN      ; * JMK07
+               INS WORK.FCK.AMT BEFORE CHECK.ARR<2,FCK.POS>
+            END ELSE                     ; * JMK07
+               INS WORK.CLIENT.AMT BEFORE CHECK.ARR<2,FCK.POS>         ; * JMK02
+            END                          ; * JMK07
+            IF NOT(NO.PRO.AMTS) THEN     ; * JCW01
+               IF CLIENT.ID='All' THEN   ; * JMK07
+                  IF ACH.FLG THEN        ; * JMK08
+                     INS '' BEFORE CHECK.ARR<3,FCK.POS>      ; * JMK08
+                     INS WORK.FCK.AMT BEFORE CHECK.ARR<5,FCK.POS>
+                  END ELSE               ; * JMK08
+                     INS '' BEFORE CHECK.ARR<5,FCK.POS>      ; * JMK08
+                     INS WORK.FCK.AMT BEFORE CHECK.ARR<3,FCK.POS>
+                  END                    ; * JMK08
+               END ELSE                  ; * JMK07
+                  IF ACH.FLG THEN        ; * JMK08
+                     INS '' BEFORE CHECK.ARR<3,FCK.POS>      ; * JMK08
+                     INS WORK.CLIENT.AMT BEFORE CHECK.ARR<5,FCK.POS>   ; * JMK02 ; * JMK07
+                  END ELSE               ; * JMK08
+                     INS WORK.CLIENT.AMT BEFORE CHECK.ARR<3,FCK.POS>   ; * JMK02 ; * JMK07
+                     INS '' BEFORE CHECK.ARR<5,FCK.POS>      ; * JMK08
+                  END                    ; * JMK08
+               END                       ; * JMK07
+            END ELSE                     ; * JMK02
+               IF CLIENT.ID='All' THEN   ; * JMK07
+                  INS WORK.FCK.AMT BEFORE CHECK.ARR<4,FCK.POS>
+               END ELSE                  ; * JMK07
+                  INS WORK.CLIENT.AMT BEFORE CHECK.ARR<4,FCK.POS>      ; * JMK02 ; * JMK07
+               END                       ; * JMK07
+            END                          ; * JMK02
+         END                             ; * JMK02
+      END
+*
+      RETURN
+*
+   END

@@ -1,0 +1,255 @@
+* PROGRAM FB.3.8
+* PROGRAM TO PROCESS "SHIPPER/BILL OF LADING" REPORT
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: BRIAN M. QUEEN
+* DATE: JUNE 24, 1991
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE EXPRESS
+* WRITTEN CONSENT OF SAME.
+*
+********************************************************************
+*
+* Last updated by AFS.SOURCE (valerie) at 16:25:38 on 08/24/1994.
+*   REARRANGED REPORT TO ALLOW FOR 25 CHARACTER BILL OF LADING
+*   NUMBERS.
+* Last updated by AFS.SOURCE (valerie) at 09:24:54 on 06/20/1994.
+*   UPDATED FOR UNIVERSE AND ADDED TOTAL AMOUNT.
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Initialize variables
+*
+      INPUT PROCESS.TYPE
+      PROMPT''
+      CALL CHANNEL(CH.NUM)
+      CALL GET.USER(USER.NAME)
+      PROG.NAME='FB.3.8'
+      PROG.DESC='Shipper Bill of Lading Report'
+      PACK.NAME='FREIGHT BILLING'
+      ERRMSG=''
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.3.8' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,
+        PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+* Open files
+*
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+        CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+        CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+*
+* Display heading
+*
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,
+        TIME.DATE,1)
+*
+* Get client number to process
+*
+50    HELP="Enter the client number you want to process. 'X'=Exit."
+      CALL GEN.IN(0,3,'Enter Client Number #####','',Q,0,20,'','',
+        2,-5,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU') 
+      BEGIN CASE
+        CASE QI='EX' ! QI='X'
+          STOP
+        CASE QI=''
+          STOP
+        CASE NOT(QI MATCHES "0N")
+          CALL SOUNDEX.DISPLAY(QI,'CLIENTS','SDX.CLIENTS,NAME',2,
+            ITEM.LIST)
+          CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,
+            TIME.DATE,1)
+          BEGIN CASE
+            CASE ITEM.LIST=''
+              GOTO 50
+            CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+              GOTO 50
+            CASE ITEM.LIST NE ''
+              IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+              GOTO 50
+          END CASE
+        CASE NUM(QI)
+          Q=QI'R%5'
+        CASE 1
+          GOTO 100
+      END CASE
+      CLIENT.ID=Q
+*
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+        IF PROCESS.TYPE='STD' THEN
+          CALL ELINE("ERROR - Client ":CLIENT.ID:" not on file.")
+        END
+        GOTO 50
+      END
+      CLIENT.NAME=CLIENT.REC<2>
+      EXPENSE.FLAG = CLIENT.REC<13>
+*
+* Get current period beginning and ending dates
+*
+100   HELP='Enter the current period beginning date.'
+      CALL GEN.IN(0,5,'Current period beginning date.  ':DATE()'D2/',
+        'DATE',BEG.DATE,1,8,'','',1,-8,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN GOTO 50
+      IF QI='EX' THEN STOP
+      CRT @(32,5):BEG.DATE'D2/'
+*
+* Get current period ending date
+*
+200   HELP='Enter the current period ending date.'
+      CALL GEN.IN(0,7,'Current period ending date.     ':DATE()'D2/',
+        'DATE',END.DATE,1,8,'','',1,-8,7,0,QI,HELP,0,23)
+      IF QI='X' THEN GOTO 100
+      IF QI='EX' THEN STOP
+      IF END.DATE LT BEG.DATE THEN
+        IF PROCESS.TYPE='STD' THEN CALL ELINE('Invalid ending date.')
+        GOTO 200
+      END
+      CRT @(32,7):END.DATE'D2/'
+*
+* Ask if data correct
+*
+      HELP="Enter Y if information correct or N if incorrect."
+      CALL GEN.IN(0,22,'Is the information correct? Y','',Q,0,1,'','',
+        2,-1,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='Y' ! QI='' ELSE GOTO 50
+*
+* Open customer files
+*
+      IF EXPENSE.FLAG = 'Y' THEN
+        OPEN '','EXPENSE.CODES,':CLIENT.ID TO F.EXP ELSE
+          CALL OPEN.ABORT('EXPENSE.CODES,':CLIENT.ID,PROG.NAME)
+        END
+      END
+      CRT @(0,2):@(-3)
+      LINE='Processing Client ':CLIENT.ID:' ':CLIENT.NAME
+      CALL CENTER(LINE,80)
+      CRT @(0,10):LINE
+*
+* Select data for current customer
+*
+      FILE.ID='FB.BILLS.HIST,':CLIENT.ID
+      OPEN '',FILE.ID TO F.HIST ELSE CALL OPEN.ABORT(FILE.ID,PROG.NAME)
+      PREC='SELECT ':FILE.ID:' WITH 37 GE "':OCONV(BEG.DATE,'D2/'):'"'
+      PREC=PREC:' AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+      NUM.ITEMS = @SELECTED
+      IF NOT(NUM.ITEMS) THEN STOP
+      EXECUTE 'SAVE-LIST ':CH.NUM PASSLIST CAPTURING OUTPUT
+*
+* Create work file
+*
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+        EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' CAPTURING OUTPUT
+        OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+          CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+        END
+      END
+      EXECUTE 'CLEAR.FILE DICT FBWORK':CH.NUM CAPTURING OUTPUT
+*
+* Copy dictionary to work dictionary
+*
+      DATA '(DICT FBWORK':CH.NUM
+      EXECUTE 'COPY DICT FB.BILLS.HIST CARRIER.NUM BILL.DATE CARRIER.DESC PRO.NUMBER 13 16 37' PASSLIST CAPTURING OUTPUT
+*
+* Clear work file
+*
+      CLEARFILE F.WORK
+*
+* Get next record
+*
+      EXECUTE 'GET-LIST ':CH.NUM PASSLIST CAPTURING OUTPUT
+      COUNTER=0
+1000  READNEXT HIST.ID ELSE GOTO 2000
+      COUNTER=COUNTER+1
+      CALL PROG.BAR(23,COUNTER,NUM.ITEMS,PER)
+      IF FIELD(HIST.ID,'*',3) > 0 THEN GOTO 1000
+      READ HIST.REC FROM F.HIST,HIST.ID ELSE GOTO 1000
+      BALDUE=0
+*
+* Break pro into work items
+*
+      X = COUNT(HIST.REC<16>,CHAR(253)) + 1
+      FOR I=1 TO X
+        ID=HIST.ID:'*':I
+        REC=HIST.REC
+        REC<16>=HIST.REC<16,I>
+        WRITE REC ON F.WORK,ID
+      NEXT I
+      GOTO 1000
+*
+* Print report
+*
+2000  L.TAB=66-(LEN(PROG.DESC)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):PROG.DESC
+      R.TAB=132-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE())
+      HEAD1=PROG.NAME:SPACE(L.TAB):PROG.DESC:SPACE(R.TAB):TIMEDATE():"'L'"
+*
+      TITLE='For Client: ':CLIENT.ID:' ':CLIENT.NAME
+      L.TAB=66-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+*     R.TAB=(132-LEN(TEMP))-9
+*     HEAD2=TEMP:SPACE(R.TAB):"PAGE 'PL'"
+      R.TAB=(132-LEN(TEMP))-20
+      HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )':"PAGE 'PL'"
+      HEAD3='Processed from ':BEG.DATE'D2/':' to ':END.DATE'D2/'
+      CALL CENTER(HEAD3,132)
+      HEAD3=HEAD3:"'LL'"
+      HEAD4="Line#   B of L Num                 Date   Carrier Name       Pro Number           Amount Paid    Exp Code  Expense Description"
+*
+      HED=HEAD1:HEAD2:HEAD3:HEAD4
+      VIN=''
+      VIN<3>='L'
+      CALL LASER.CODE(VIN,VOUT)
+      IF VOUT<1>#'' THEN
+        CALL ELINE(VOUT<1>)
+        STOP
+      END
+      IF VOUT<3>#'' THEN EXECUTE VOUT<3>
+      PRINTER ON
+      IF VOUT<2>#'' THEN PRINT VOUT<2>:
+      HEADING HED
+      LIN.NUM=0
+      TOTAL.AMT = 0
+*
+      EXECUTE 'SSELECT FBWORK':CH.NUM:' WITH 16 BY 16 BY 37' PASSLIST CAPTURING OUTPUT
+3000  READNEXT ID ELSE
+        PRINT SPACE(80) : STR('-',13)
+        PRINT SPACE(80) : TOTAL.AMT 'R26,#13'
+        PRINTER OFF
+        PRINTER CLOSE
+        STOP
+      END
+      LIN.NUM=LIN.NUM+1
+      READ REC FROM F.WORK,ID ELSE GOTO 3000
+      CARRIER=FIELD(ID,'*',1)
+      PRO.NUM=FIELD(ID,'*',2)
+      EXP.CODE=REC<31,1>
+      IF EXPENSE.FLAG = 'Y' THEN
+        READV EXP.DESC FROM F.EXP,EXP.CODE,1 ELSE EXP.DESC='Unknown'
+      END ELSE
+        EXP.DESC = 'UNKNOWN'
+      END
+      READV CARRIER.NAME FROM F.CARRIERS,CARRIER,1 ELSE
+        CARRIER.NAME='Unknown'
+      END
+      TOTAL.AMT += REC<8>
+      PRINT LIN.NUM'R#5':'  ':REC<16>'L#25':' ':REC<37>'D2/':' ':
+      PRINT CARRIER.NAME'L#18':' ':
+      PRINT PRO.NUM'L#18':' ':REC<8>'R26,#13':' ':EXP.CODE'R#11':'  ':
+      PRINT EXP.DESC'L#30'
+      GOTO 3000
+*
+*********************************************************************
+*
+   END

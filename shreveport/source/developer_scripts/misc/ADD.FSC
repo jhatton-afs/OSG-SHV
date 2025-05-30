@@ -1,0 +1,239 @@
+* PROGRAM: FB.7.2
+* PROGRAM TO PROCESS BILLS THROUGH BLITE
+*
+*  THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS.
+*
+* FREIGHT BILLING PACKAGE
+*
+*  AUTHOR       : Owen
+*  DATE CREATED : 03/15/95
+*  DESCRIPTION  : This program select the bills entered between the dates
+*                 specified and builds a MWB formatted text file.
+*                 MWB is then executed (base rate data is added).
+*                 The program then extracts the base rate data and
+*                 updates the FB.BILL.HIST file with the base rate data.
+*
+* FORMATTING MODS:
+* Cody Henderson - Oct. 15, 1996
+*
+***********************************************************************
+*
+*
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Initialize variables.
+*
+*
+      ESC=CHAR(27)
+      PROMPT''
+      ERRMSG=''
+      ERRORS=''
+      TOT.AFS.FSC=0
+      TOT.CAR.FSC=0
+      PROG.NAME='ADD.FSC'
+      PROG.DESC="ADD AFS FSC to Traffic Survey Bills"
+      PACK.NAME="Traffic Survey"
+*      USER=OCONV(SYSTEM(19),'MCU')
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'ADD.FSC' ; UPL.VOUT = ''                    ;* NPR_UPL 04/22/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/22/2010
+      CALL GET.USER(USER)
+      CLASSES=50:@VM:55:@VM:60:@VM:65:@VM:70:@VM:77.5:@VM:85:@VM:92.5:@VM:100:@VM:110:@VM:125:@VM:150:@VM:175:@VM:200:@VM:250:@VM:300:@VM:400:@VM:500
+      MAX.DISC.WEIGHT=20000
+*
+* Open general files
+*
+      CALL CHANNEL(CH.NUM)
+
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+        CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      OPEN '','FB.NFSC' TO F.NFSC ELSE
+        CALL OPEN.ABORT('FB.NFSC',PROG.NAME)
+      END
+      READ DFSC FROM F.NFSC,'11159' ELSE
+        CALL ELINE('Unable to Read AFS FSC Table from Carrier 11159 in FSC File')
+      END
+
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+
+
+      READ LI.CODES FROM F.TABLES,'LI.CODES' ELSE
+          CALL ELINE("Unable to Read Line Item Code Table.")
+          LI.CODES=''
+      END
+*
+* Enter client number.
+*
+100:  CALL AFS.SCR.HEAD(CO.ID, FILE.ID, '', PROG.NAME, PROG.DESC,PACK.NAME, CO.NAME, TIME.DATE, 1)
+      HELP="Enter client number. Word of name for search. X=Exit. EX=Exit."
+      CALL GEN.IN(0,3,'Enter client number #####','',Q,0,20,'','',2,-5,3,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='' ! QI='EX' ! QI='X'
+            STOP
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 100
+            CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+              GOTO 100
+            CASE ITEM.LIST NE ''
+              IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO 100
+            END CASE
+         CASE NUM(QI)
+            Q=QI'R%5'
+         CASE 1
+            GOTO 100
+      END CASE
+*
+      CLIENT.ID=Q
+      IF CLIENT.ID[1,2]#99 THEN
+        CALL ELINE('Invalid entry. Client Number must begin with 99.')
+        GOTO 100
+      END
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         CALL ELINE('ERROR - Client ':CLIENT.ID:' not on file.')
+         GOTO 100
+      END
+*
+      CLIENT.NAME=CLIENT.REC<2>
+      FAK.POS=INDEX(CLIENT.NAME,'FAK',1)
+      IF FAK.POS#0 AND FAK.POS<LEN(CLIENT.NAME)-9 THEN
+        CALL ELINE('FAK Description Error!!! Call Programming')
+        ABORT
+      END
+      IF FAK.POS THEN
+        FAK=TRIM(CLIENT.NAME[FAK.POS+4,999])
+      END ELSE
+        FAK=''
+      END
+      CRT @(0,3):'Enter Client Number ':CLIENT.ID'R%5':
+      CRT ' ':CLIENT.NAME:@(-4):
+*
+* Open client's files.
+*
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.HIST ELSE
+         CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,PROG.NAME)
+      END
+      OPEN '','FB.BILLS,':CLIENT.ID TO F.BILLS ELSE
+         CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,PROG.NAME)
+      END
+
+*
+*
+300:  HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            STOP
+         CASE QI='EX'
+            STOP
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO 300
+      END CASE
+*
+* Start processing
+*
+400:***
+      TEXT="Selecting Bills to Process - Please Wait."
+      CALL CENTER(TEXT,80)
+      CRT @(0,15):@(-4):TEXT
+*
+* Select bills to process.
+*
+    BID=''
+*    BID='02653*171-395302*0'
+    IF BID#'' THEN
+      CALL ELINE('NOW GOING TO SELECT ':BID)
+      EXECUTE "SELECT FB.BILLS.HIST,":CLIENT.ID:" '":BID:"'" PASSLIST
+    END
+
+      STMT='SSELECT FB.BILLS.HIST,':CLIENT.ID
+      STMT=STMT:' BY 20 BY PRO ' ; ** By Carrier Number by Pro Number
+      EXECUTE STMT PASSLIST CAPTURING OUTPUT
+      IF SYSTEM(11) ELSE
+         CALL ELINE('No transactions on file.')
+         GOTO 100
+      END
+      EXECUTE 'SAVE-LIST ':CH.NUM PASSLIST CAPTURING OUTPUT
+      EXECUTE 'GET-LIST ':CH.NUM PASSLIST CAPTURING OUTPUT
+      NUM.ITEMS = @SELECTED
+      TEXT="Building Record to add AFS FSC to."
+      CALL CENTER(TEXT,80)
+      DIN=''
+      CRT @(0,15):@(-4):TEXT
+      BILL.COUNT=0
+500   READNEXT BILL.ID ELSE
+        CRT
+        CRT "Total Carrier FSC: ":TOT.CAR.FSC'R26,'
+        CRT "Total AFS     FSC: ":TOT.AFS.FSC'R26,'
+        STOP
+      END
+      BILL.COUNT+=1
+      CALL PROG.BAR(21,BILL.COUNT,NUM.ITEMS,PER)
+      READ DBILL FROM F.HIST,BILL.ID ELSE ABORT
+**********************************************************************
+            VIN=''
+            VIN<2>=CLIENT.REC<79>
+            CALL FB.TRAF.SURV(VIN,VOUT,LI,LI.CODES,DBILL)
+            NUM.SHP=VOUT<2>  ; * Number of Shipments
+            CAR.FRT=VOUT<3>  ; * Carrier Charges (Freight)
+            CAR.NOT=VOUT<4>  ; * Carrier Charges (Negot.)
+            MIN.FLG=VOUT<5>  ; * Number of (Abs Min) Shptms
+            MIN.FRT=VOUT<6>  ; * (Abs MIN) Amount
+            NON.FRT=VOUT<7>  ; * (Miscellaneous) Amount
+            AFS.FRT=VOUT<8>  ; * AFS Charges on (Freight)
+            CAR.DIS=VOUT<9>  ; * Carrier Discount Amount
+            TOT.PIC=VOUT<10> ; * Total Pieces
+            TOT.WGT=VOUT<11> ; * Total Weight
+            HAZ.FLG=VOUT<14> ; * Numb of Shmpts W/Haz Mat
+            HAZ.PIC=VOUT<15> ; * Number of Haz Mat Pieces
+            CLS.WGT=VOUT<16> ; * Class*Wgt (For Wght Avg.)
+            CAR.FSC=VOUT<28> ; * Carrier Fuel Sur Charge
+            AFS.FSC=VOUT<29> ; * AFS Fuel Sur Charge
+*********************************************************************
+
+*******************************************************************************************************
+      LOCATE 'FSC' IN DBILL<70> SETTING FSC.POS THEN
+***********************************************************************
+* Calculate the AFS FSC Charge and post it to the bill
+***********************************************************************
+        CAR.AMT = CAR.FRT+MIN.FRT-CAR.DIS
+        IF CAR.FSC+0=0 THEN  GO 500; * Skip update if Carrier FSC is Zero
+        FSC.VIN=''
+        FSC.VIN<1>=DBILL<1>
+*       FSC.VIN<2>=BILLED.WEIGHT ; * <-------------------------- This needs to be fixed
+        FSC.VIN<2>=1000 ; ** Force it to calculate LTL
+        FSC.VIN<3>='' ; * Don't Have Miles
+        FSC.VIN<6>=CAR.AMT
+        FSC.VIN<7>=DBILL<25> ; *ORIG.STATE ; * Special for Xpedx
+        FSC.VIN<8>=DBILL<26> ; *DEST.STATE ; * Special for AFS
+        CALL CALC.FSC(FSC.VIN,FSC.VOUT,DFSC,F.TABLES)
+        IF FSC.VOUT<4> # '' THEN ; * Error Condition
+            CALL ELINE("Error on: ":BILL.ID:" ":FSC.VOUT<4>)
+        END
+        AFS.FSC=FSC.VOUT<1>
+        DBILL<79,FSC.POS>=AFS.FSC
+        READV NUL FROM F.BILLS,BILL.ID,1 THEN
+          WRITE DBILL ON F.BILLS,BILL.ID
+        END
+        WRITE DBILL ON F.HIST,BILL.ID
+        IF CAR.FSC < AFS.FSC THEN
+*         CALL ELINE('On Pro: ':BILL.ID:' Carrier FSC is less than AFS FSC by ':(AFS.FSC-CAR.FSC)'R26')
+        END
+        TOT.CAR.FSC+=CAR.FSC
+        TOT.AFS.FSC+=AFS.FSC
+      END
+      GO 500
+
+

@@ -1,0 +1,663 @@
+      PROGRAM FB.TIMELINE.SUMMARY.DF
+************************************************************************
+* PROGRAM: FB.UPD.TIMELINE.DF - Program to update the FB.TIMELINE.SUMMARY
+*                               file which was created to allow quick
+*                               reporting for the amount of time it takes
+*                               for a Freight Bill to get from the Mail
+*                               Room to Processed.
+*
+* PROGRAMMER: Steve Barbee
+*
+************************************************************************
+*
+*This program generates 3 reports based on Entered Dates for a week
+*starting Monday and ending Friday. The report can be run for
+*previous weeks.
+*The first report is a summary and will have 1 ROW of data in the
+*resulting spreadsheet. It will include statistics for the week
+*and the YTD up to and including that week.
+*The 2nd report is the 'detail' by Client by Carrier showing
+*a breakout of how many BUSINESS days it took from the Recieved Date to
+*the Entered Date.
+*The 3rd report is the 'detail' by Client by Carrier showing
+*a breakout of how many BUSINESS days it took from the Recieved Date to
+*the Processed Date.
+*
+* PARAMETERS:
+*
+* None
+*
+*
+************************************************************************
+*
+* EDIT HISTORY:
+*
+*    NAME  :  DATE:    : DESCRIPTION
+*    SWB   : 04/12/12  : Started new program
+*    SWB01 : 06/19/12  : Bug fixes to correct Summary report
+*
+************************************************************************
+
+      PROMPT ''
+      GOSUB DISPLAY.SCREEN
+      GOSUB OPEN.FILES
+      GOSUB INIT
+      GOSUB PROMPT.FRIDAY.ENDING.DATE
+      GOSUB SELECT.AND.SETUP.ARRAYS
+      GOSUB MAIN.PROCESS
+      GOSUB GENERATE.WEEKLY.SUMMARY
+      GOSUB GENERATE.WEEKLY.ENTERED.DET
+      GOSUB GENERATE.WEEKLY.PROCESSED.DET
+      STOP
+
+************************
+SELECT.AND.SETUP.ARRAYS:
+************************
+
+*Need to make this select 'LAST WEEK'
+      FOR.LOGIN.ID = 'ALL'
+      SELECT.STMT = 'SSELECT FB.TIMELINE.SUMMARY WITH USER = "ALL" '
+      SELECT.STMT := 'AND WITH CLIENT # "ALL" AND WITH CARRIER # "ALL"  '
+*      SELECT.STMT := 'AND WITH ENT.DATE.SELECT >= ':PREV.MONDAY:' '   ; * SWB01
+      SELECT.STMT := 'AND WITH ENT.DATE.SELECT >= ':ICONV.RUN.B.O.Y:' '          ; * SWB01
+      SELECT.STMT := 'AND WITH ENT.DATE.SELECT <= ':FRIDAY.TO.RUN.FOR:' '   ; * SWB02
+*      SELECT.STMT := ' AND WITH PROC.DATE <= ':MONDAY.AFTER.FRIDAY.RUN.DATE      ; * SWB01   ; * SWB02
+      SELECT.STMT := ' AND WITH PROC.DATE <= ':FRIDAY.TO.RUN.FOR      ; * SWB02
+      EXECUTE SELECT.STMT CAPTURING JUNK
+      IF @SELECTED = 0 THEN
+         CALL ELINE('No records selected for Week ending ':OCONV.FRIDAY.TO.RUN.FOR:'. Stopping.')
+         STOP
+      END
+
+      RETURN
+
+*************
+MAIN.PROCESS:
+*************
+
+      GOSUB INIT.RPT.VARS
+      EOR = FALSE
+      LOOP
+         READNEXT SUMMARY.ID ELSE EOR = TRUE
+      UNTIL EOR DO
+         READ DSUMMARY FROM F.SUMMARY, SUMMARY.ID THEN
+            GOSUB SET.UNIVERSAL.VARS
+*Now put the data in it's proper place on this report
+
+*Every record selected will update at least 1 counter in the Weekly
+*Summary.
+            GOSUB UPDATE.WEEKLY.SUMMARY
+            IF ENTERED.DATE >= PREV.MONDAY AND ENTERED.DATE <= FRIDAY.TO.RUN.FOR THEN
+*The Entered 'Detail' report only gets updated with records that
+*were entered during the week being reported.
+               GOSUB UPDATE.WEEKLY.ENTERED.DET
+            END       ; * SWB02
+*               IF PROCESSED.DATE # '' AND PROCESSED.DATE <= MONDAY.AFTER.FRIDAY.RUN.DATE THEN   ; * SWB02
+            IF PROCESSED.DATE # '' AND PROCESSED.DATE <= FRIDAY.TO.RUN.FOR THEN    ; * SWB02
+*The Processed 'Detail' report only gets updated with records that
+*were entered during the week being reported AND that were processed
+*during the week being reported PLUS THE FOLLOWING MONDAY.
+*Extend to Tuesday if Monday was a Holiday.
+               GOSUB UPDATE.WEEKLY.PROCESSED.DET
+            END
+
+         END
+
+      REPEAT
+
+      IF DET.1.ROW.DATA<1, 5> + 0 # 0 THEN
+         WEEKLY.ENTERED.DET(DET.RPT.ROW) = DET.1.ROW.DATA
+      END
+      IF DET.2.ROW.DATA<1, 5> + 0 # 0 THEN
+         WEEKLY.PROCESSED.DET(DET.RPT.ROW) = DET.2.ROW.DATA
+      END
+
+      RETURN
+
+
+**********************
+UPDATE.WEEKLY.SUMMARY:
+**********************
+
+* Total Freight Bills for the week
+      IF ENTERED.DATE >= PREV.MONDAY AND ENTERED.DATE <= FRIDAY.TO.RUN.FOR THEN    
+         SUMMARY.DATA(1) += FB.CNT
+
+* Freight Bills Entered and Keyed same day for the week
+         IF MR.TO.ENT.DAYS = 0 THEN
+            SUMMARY.DATA(2) += FB.CNT
+         END
+      END     ; * SWB02
+* Freight Bills Entered and Processed within 6 business days for the week
+*         IF MR.TO.PROCESSED.DAYS <= 6 THEN   ; * SWB01
+*         IF PROCESSED.DATE # '' AND MR.TO.PROCESSED.DAYS <= 6 AND PROCESSED.DATE <= MONDAY.AFTER.FRIDAY.RUN.DATE THEN     ; * SWB01    ; * SWB02
+      IF PROCESSED.DATE >= PREV.MONDAY AND PROCESSED.DATE <= FRIDAY.TO.RUN.FOR THEN     ; * SWB02
+         SUMMARY.DATA(3) += FB.CNT    ; * SWB02      
+         IF MR.TO.PROCESSED.DAYS <= 6 THEN     ; * SWB02
+*      SUMMARY.DATA(3) += FB.CNT       ; * SWB02
+            SUMMARY.DATA(4) += FB.CNT     ; * SWB02
+         END
+      END
+
+* Total Freight Bills YTD
+*      SUMMARY.DATA(4) += FB.CNT    ; * SWB02
+      SUMMARY.DATA(5) += FB.CNT     ; * SWB02
+* Freight Bills Entered and Keyed same day YTD
+*      IF MR.TO.ENT.DAYS = 0 THEN    ; * SWB01
+      IF MR.TO.ENT.DAYS = 0 THEN     ; * SWB01
+*         SUMMARY.DATA(5) += FB.CNT     ; * SWB02
+         SUMMARY.DATA(6) += FB.CNT      ; * SWB02
+      END
+* Freight Bills Entered and within 6 business days for the week
+*      IF MR.TO.PROCESSED.DAYS <= 6 THEN   ; * SWB01
+*      IF PROCESSED.DATE # '' AND PROCESSED.DATE <= MONDAY.AFTER.FRIDAY.RUN.DATE THEN        ; * SWB01    ; * SWB02
+      IF PROCESSED.DATE # '' AND PROCESSED.DATE <= FRIDAY.TO.RUN.FOR THEN     ; * SWB02
+         SUMMARY.DATA(7) += FB.CNT      ; * SWB02
+         IF MR.TO.PROCESSED.DAYS <= 6 THEN    ; * SWB02
+*      SUMMARY.DATA(6) += FB.CNT     ; * SWB02
+            SUMMARY.DATA(8) += FB.CNT      ; * SWB02
+         END     ; * SWB02
+      END
+
+
+      RETURN
+
+**************************
+UPDATE.WEEKLY.ENTERED.DET:
+**************************
+
+      DET.1.ROW.DATA<1, 5> += FB.CNT
+*A formula could have been used to determine the columns below but for
+*the sake of flexibility and maintainability, I specifically assigned
+*the column positions.
+      BEGIN CASE
+         CASE MR.TO.ENT.DAYS = 0
+            DET.1.ROW.DATA<1, 6> += FB.CNT
+         CASE MR.TO.ENT.DAYS = 1
+            DET.1.ROW.DATA<1, 8> += FB.CNT
+         CASE MR.TO.ENT.DAYS = 2
+            DET.1.ROW.DATA<1, 10> += FB.CNT
+         CASE MR.TO.ENT.DAYS = 3
+            DET.1.ROW.DATA<1, 12> += FB.CNT
+         CASE MR.TO.ENT.DAYS = 4
+            DET.1.ROW.DATA<1, 14> += FB.CNT
+         CASE MR.TO.ENT.DAYS = 5
+            DET.1.ROW.DATA<1, 16> += FB.CNT
+         CASE MR.TO.ENT.DAYS = 6
+            DET.1.ROW.DATA<1, 18> += FB.CNT
+         CASE MR.TO.ENT.DAYS > 6
+            DET.1.ROW.DATA<1, 20> += FB.CNT
+         CASE 1
+
+      END CASE
+
+      RETURN
+
+****************************
+UPDATE.WEEKLY.PROCESSED.DET:
+****************************
+
+      DET.2.ROW.DATA<1, 5> += FB.CNT
+*A formula could have been used to determine the columns below but for
+*the sake of flexibility and maintainability, I specifically assigned
+*the column positions.
+      BEGIN CASE
+         CASE MR.TO.PROCESSED.DAYS = 0
+            DET.2.ROW.DATA<1, 6> += FB.CNT
+         CASE MR.TO.PROCESSED.DAYS = 1
+            DET.2.ROW.DATA<1, 8> += FB.CNT
+         CASE MR.TO.PROCESSED.DAYS = 2
+            DET.2.ROW.DATA<1, 10> += FB.CNT
+         CASE MR.TO.PROCESSED.DAYS = 3
+            DET.2.ROW.DATA<1, 12> += FB.CNT
+         CASE MR.TO.PROCESSED.DAYS = 4
+            DET.2.ROW.DATA<1, 14> += FB.CNT
+         CASE MR.TO.PROCESSED.DAYS = 5
+            DET.2.ROW.DATA<1, 16> += FB.CNT
+         CASE MR.TO.PROCESSED.DAYS = 6
+            DET.2.ROW.DATA<1, 18> += FB.CNT
+         CASE MR.TO.PROCESSED.DAYS > 6
+            DET.2.ROW.DATA<1, 20> += FB.CNT
+         CASE 1
+
+      END CASE
+
+      RETURN
+
+*****
+INIT:
+*****
+
+      DIM SUMMARY.DATA(10)
+      MAT SUMMARY.DATA = ''
+      DIM WEEKLY.ENTERED.DET(31950)
+      MAT WEEKLY.ENTERED.DET = ''
+      DIM WEEKLY.PROCESSED.DET(31950)
+      MAT WEEKLY.PROCESSED.DET = ''
+      PROG.NAME = 'FB.UPD.TIMELINE.DF'
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = PROG.NAME ; UPL.VOUT = ''
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+      CALL GET.USER(USER)
+      INT.TODAY = DATE()
+      OCONV.INT.TODAY = OCONV(INT.TODAY, 'D4/')
+      CUR.YEAR = OCONV.INT.TODAY[7, 4]
+      CUR.B.O.Y = '01/01/':CUR.YEAR
+      ICONV.CUR.B.O.Y = ICONV(CUR.B.O.Y, 'D2/')
+      CUR.B.O.Y.DOW = OCONV(ICONV.CUR.B.O.Y, 'DW')           ; * SWB01
+*Since this is a weekly report, the beginning of the year is going to be
+*on a Monday. If January 1 falls on a weekday, adjust the date back to
+*the previous Monday, otherwise, adjust it forward to the next Monday.
+      IF CUR.B.O.Y.DOW < 6 THEN          ; * SWB01
+         B.O.Y.DOW.OFFSET = (5 - (5 - CUR.B.O.Y.DOW) - 1) * -1         ; * SWB01
+      END ELSE                           ; * SWB01
+         B.O.Y.DOW.OFFSET = (8 - CUR.B.O.Y.DOW)    ; * SWB01
+      END                                ; * SWB01
+      ICONV.RUN.B.O.Y = ICONV(CUR.B.O.Y.DOW + B.O.Y.DOW.OFFSET, 'D2/')           ; * SWB01
+      TODAY.DOW = OCONV(INT.TODAY, 'DW')
+      SEQ.A = SEQ('A')
+      SEQ.A.M.1 = SEQ.A - 1
+      IF TODAY.DOW > 5 THEN
+         LAST.FRIDAY = INT.TODAY - (TODAY.DOW - 5)
+      END ELSE
+         LAST.FRIDAY = INT.TODAY - 7 + (5 - TODAY.DOW)
+      END
+      OCONV.LAST.FRIDAY = OCONV(LAST.FRIDAY, 'D4/')
+      TRUE = 1
+      FALSE = 0
+      TAB.CHAR = CHAR(9)
+      REPORT.TYPE = 'WEEKLY.ENTERED.DET'
+
+      WEEKLY.SUMMARY.COL.HEADING = "FB's Entered during Week":TAB.CHAR:"Weekly FB's Recvd and Keyed Same Day":TAB.CHAR:"% Weekly Recvd and Keyed Same Day":TAB.CHAR
+*      WEEKLY.SUMMARY.COL.HEADING := "Weekly FB's Received and Processed within 6 Biz Days Cnt":TAB.CHAR:"% Weekly FB's Received and Processed within 6 Days":TAB.CHAR   ; * SWB02
+WEEKLY.SUMMARY.COL.HEADING := "Bills processed during week Cnt":TAB.CHAR:"Bills processed that were received within 6 Biz days Cnt":TAB.CHAR:"% Bills processed that were received within 6 Biz days":TAB.CHAR      ; * SWB02
+      WEEKLY.SUMMARY.COL.HEADING := "FB's Entered YTD":TAB.CHAR:"YTD FB's Recvd and Keyed Same Day":TAB.CHAR:"% YTD Recvd and Keyed Same Day":TAB.CHAR
+*      WEEKLY.SUMMARY.COL.HEADING := "YTD FB's Received and Processed within 6 Biz Days Cnt":TAB.CHAR:"% YTD FB's Received and Processed within 6 Days"   ; * SWB02  
+      WEEKLY.SUMMARY.COL.HEADING := "FB'S processed YTD Cnt":TAB.CHAR:"YTD FB's Received and Processed within 6 Biz Days Cnt":TAB.CHAR:"% YTD FB's Received and Processed within 6 Days"    ; * SWB02
+      WEEKLY.ENTERED.DET.COL.HEADING = 'Carrier #':TAB.CHAR:'Carrier Name':TAB.CHAR:'Client #':TAB.CHAR:'Client Name':TAB.CHAR:'Total FB Count':TAB.CHAR
+      WEEKLY.ENTERED.DET.COL.HEADING := 'MR to Ent 0 Days Cnt':TAB.CHAR:'MR to Ent 0 Days Pct.':TAB.CHAR
+      WEEKLY.ENTERED.DET.COL.HEADING := 'MR to Ent 1 Days Cnt':TAB.CHAR:'MR to Ent 1 Days Pct.':TAB.CHAR
+      WEEKLY.ENTERED.DET.COL.HEADING := 'MR to Ent 2 Days Cnt':TAB.CHAR:'MR to Ent 2 Days Pct.':TAB.CHAR
+      WEEKLY.ENTERED.DET.COL.HEADING := 'MR to Ent 3 Days Cnt':TAB.CHAR:'MR to Ent 3 Days Pct.':TAB.CHAR
+      WEEKLY.ENTERED.DET.COL.HEADING := 'MR to Ent 4 Days Cnt':TAB.CHAR:'MR to Ent 4 Days Pct.':TAB.CHAR
+      WEEKLY.ENTERED.DET.COL.HEADING := 'MR to Ent 5 Days Cnt':TAB.CHAR:'MR to Ent 5 Days Pct.':TAB.CHAR
+      WEEKLY.ENTERED.DET.COL.HEADING := 'MR to Ent 6 Days Cnt':TAB.CHAR:'MR to Ent 6 Days Pct.':TAB.CHAR
+      WEEKLY.ENTERED.DET.COL.HEADING := 'MR to Ent Pending After 6 Days Cnt':TAB.CHAR:'MR to Ent Pending After 6 Days Pct.'
+
+      WEEKLY.PROCESSED.DET.COL.HEADING = 'Carrier #':TAB.CHAR:'Carrier Name':TAB.CHAR:'Client #':TAB.CHAR:'Client Name':TAB.CHAR:'Total FB Count':TAB.CHAR
+      WEEKLY.PROCESSED.DET.COL.HEADING := 'MR to Proc 0 Days Cnt':TAB.CHAR:'MR to Proc 0 Days Pct.':TAB.CHAR
+      WEEKLY.PROCESSED.DET.COL.HEADING := 'MR to Proc 1 Days Cnt':TAB.CHAR:'MR to Proc 1 Days Pct.':TAB.CHAR
+      WEEKLY.PROCESSED.DET.COL.HEADING := 'MR to Proc 2 Days Cnt':TAB.CHAR:'MR to Proc 2 Days Pct.':TAB.CHAR
+      WEEKLY.PROCESSED.DET.COL.HEADING := 'MR to Proc 3 Days Cnt':TAB.CHAR:'MR to Proc 3 Days Pct.':TAB.CHAR
+      WEEKLY.PROCESSED.DET.COL.HEADING := 'MR to Proc 4 Days Cnt':TAB.CHAR:'MR to Proc 4 Days Pct.':TAB.CHAR
+      WEEKLY.PROCESSED.DET.COL.HEADING := 'MR to Proc 5 Days Cnt':TAB.CHAR:'MR to Proc 5 Days Pct.':TAB.CHAR
+      WEEKLY.PROCESSED.DET.COL.HEADING := 'MR to Proc 6 Days Cnt':TAB.CHAR:'MR to Proc 6 Days Pct.':TAB.CHAR
+      WEEKLY.PROCESSED.DET.COL.HEADING := 'MR to Proc Pending After 6 Days Cnt':TAB.CHAR:'MR to Proc Pending After 6 Days Pct.'
+
+      RETURN
+
+**************
+INIT.RPT.VARS:
+**************
+
+      OLD.CLIENT.ID = '#@$%'
+      OLD.CARRIER.ID = '%&*@'
+      FIRST.REC = TRUE
+      DET.RPT.ROW = 0
+      DET.COL.CNT = 21
+      DET.1.ROW.DATA = ''
+      DET.2.ROW.DATA = ''
+
+      RETURN
+
+***********
+OPEN.FILES:
+***********
+
+      OPEN '','FB.TIMELINE.SUMMARY' TO F.SUMMARY ELSE CALL OPEN.ABORT("FB.TIMELINE.SUMMARY",PROG.NAME)
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      OPEN '','TC.HOLIDAYS' TO F.TC.HOLIDAYS ELSE CALL OPEN.ABORT("TC.HOLIDAYS",PROG.NAME)
+
+      RETURN
+
+**************
+OPEN.SEQ.FILE:
+**************
+
+      OPENSEQ 'BILLDATA.':USER, BILLDATA.ID TO F.BILLDATA LOCKED
+         VIN=STATUS()
+         VOUT=''
+         CALL WHOS.LOCKING(VIN, VOUT)
+         CALL ELINE('BILLDATA.':USER:'  ':BILLDATA.ID:' is locked by ':VOUT<2>:'... Stopping.')
+         STOP
+      END THEN
+         CLOSESEQ F.BILLDATA
+         OPEN '','BILLDATA.':USER TO F.BILLDATA THEN
+            DELETE F.BILLDATA, BILLDATA.ID
+            GOTO OPEN.SEQ.FILE
+         END
+      END ELSE
+         ERR.STATUS = STATUS()
+         IF ERR.STATUS # 0 THEN
+            CALL ELINE('Notify the Helpdesk that ':PROG.NAME:' returned a Status of ':ERR.STATUS:' and could not proceed.')
+            STOP
+         END
+      END
+
+      RETURN
+
+*******************
+SET.UNIVERSAL.VARS:
+*******************
+
+      KEYER = FIELD(SUMMARY.ID, '*', 1)
+*This is 'breaking' on Carrier because it is the first column
+*in the report.
+      CLIENT.ID = FIELD(SUMMARY.ID, '*', 2)
+      CARRIER.ID = FIELD(SUMMARY.ID, '*', 3)
+      IF FIRST.REC THEN
+         FIRST.REC = FALSE
+         READV CARRIER.NAME FROM F.CARRIERS, CARRIER.ID, 1 ELSE CARRIER.NAME = 'NOF'
+         READV CLIENT.NAME FROM F.CLIENTS, CLIENT.ID, 2 ELSE CLIENT.NAME = 'NOF'
+         OLD.CLIENT.ID = CLIENT.ID
+         OLD.CARRIER.ID = CARRIER.ID
+         DET.1.ROW.DATA = ''
+         DET.1.ROW.DATA<1, 1> = CARRIER.ID
+         DET.1.ROW.DATA<1, 2> = CARRIER.NAME
+         DET.1.ROW.DATA<1, 3> = CLIENT.ID
+         DET.1.ROW.DATA<1, 4> = CLIENT.NAME
+         DET.2.ROW.DATA = ''
+         DET.2.ROW.DATA<1, 1> = CARRIER.ID
+         DET.2.ROW.DATA<1, 2> = CARRIER.NAME
+         DET.2.ROW.DATA<1, 3> = CLIENT.ID
+         DET.2.ROW.DATA<1, 4> = CLIENT.NAME
+         DET.RPT.ROW += 1
+      END
+
+      IF CARRIER.ID # OLD.CARRIER.ID OR CLIENT.ID # OLD.CLIENT.ID THEN
+         WEEKLY.ENTERED.DET(DET.RPT.ROW) = DET.1.ROW.DATA
+         WEEKLY.PROCESSED.DET(DET.RPT.ROW) = DET.2.ROW.DATA
+
+         IF CARRIER.ID # OLD.CARRIER.ID THEN
+            READV CARRIER.NAME FROM F.CARRIERS, CARRIER.ID, 1 ELSE CARRIER.NAME = 'NOF'
+            OLD.CARRIER.ID = CARRIER.ID
+         END
+         IF CLIENT.ID # OLD.CLIENT.ID THEN
+            READV CLIENT.NAME FROM F.CLIENTS, CLIENT.ID, 2 ELSE CLIENT.NAME = 'NOF'
+            OLD.CLIENT.ID = CLIENT.ID
+         END
+         DET.1.ROW.DATA = ''
+         DET.1.ROW.DATA<1, 1> = CARRIER.ID
+         DET.1.ROW.DATA<1, 2> = CARRIER.NAME
+         DET.1.ROW.DATA<1, 3> = CLIENT.ID
+         DET.1.ROW.DATA<1, 4> = CLIENT.NAME
+         DET.2.ROW.DATA = ''
+         DET.2.ROW.DATA<1, 1> = CARRIER.ID
+         DET.2.ROW.DATA<1, 2> = CARRIER.NAME
+         DET.2.ROW.DATA<1, 3> = CLIENT.ID
+         DET.2.ROW.DATA<1, 4> = CLIENT.NAME
+         DET.RPT.ROW += 1
+      END
+      MR.DATE = FIELD(SUMMARY.ID, '*', 4)
+      ENTERED.DATE = FIELD(SUMMARY.ID, '*', 5)
+      PROCESSED.DATE = FIELD(SUMMARY.ID, '*', 6)
+      PROCESSED = FALSE
+      IF PROCESSED.DATE = '' THEN PROCESSED = TRUE
+      FB.CNT = DSUMMARY<1>
+      MR.TO.ENT.DAYS = DSUMMARY<2>
+      MR.TO.PROCESSED.DAYS = DSUMMARY<3>     ; * SWB02
+
+      RETURN
+
+************************
+GENERATE.WEEKLY.SUMMARY:
+************************
+*This report is 1 row of Column Headings and 1 row of Data
+
+*The ONLY row of data on this report is on Row 3
+      BILLDATA.ID = SUMMARY.BILLDATA.ID
+      GOSUB OPEN.SEQ.FILE
+      CRT 'Summary data: '
+      LINE = WEEKLY.SUMMARY.HEADING
+      LINE.TYPE = 'HEADING'
+      GOSUB WRITE.THE.LINE
+      LINE = WEEKLY.SUMMARY.COL.HEADING
+      LINE.TYPE = 'HEADING'
+      GOSUB WRITE.THE.LINE
+      RPT.LINE = SUMMARY.DATA(1):@VM
+*      RPT.LINE.NEW = SUMMARY.DATA(1)
+      COL.OFFSET = 0
+      LINE.DIVISOR = 'A3'
+*      FOR RC = 2 TO 6        ; * SWB02
+      FOR RC = 2 TO 8         ; * SWB02
+* RC stands for 'report column) but is actually represents the number of data accumulators from left to right
+BEGIN CASE
+CASE RC = 2
+RPT.LINE := SUMMARY.DATA(RC):@VM
+LINE.DIVIDEND = 'B3'
+LINE.DIVISOR = 'A3'
+RPT.LINE := '=IF(':LINE.DIVIDEND:'=0,"0",':LINE.DIVIDEND:' / ':LINE.DIVISOR:' * 100)':@VM
+
+CASE RC = 4
+RPT.LINE := SUMMARY.DATA(RC):@VM
+LINE.DIVIDEND = 'E3'
+LINE.DIVISOR = 'D3'
+RPT.LINE := '=IF(':LINE.DIVIDEND:'=0,"0",':LINE.DIVIDEND:' / ':LINE.DIVISOR:' * 100)':@VM
+
+CASE RC = 6
+RPT.LINE := SUMMARY.DATA(RC):@VM
+LINE.DIVIDEND = 'H3'
+LINE.DIVISOR = 'G3'
+RPT.LINE := '=IF(':LINE.DIVIDEND:'=0,"0",':LINE.DIVIDEND:' / ':LINE.DIVISOR:' * 100)':@VM
+
+CASE RC = 8
+RPT.LINE := SUMMARY.DATA(RC):@VM
+LINE.DIVIDEND = 'K3'
+LINE.DIVISOR = 'J3'
+RPT.LINE := '=IF(':LINE.DIVIDEND:'=0,"0",':LINE.DIVIDEND:' / ':LINE.DIVISOR:' * 100)'
+
+CASE 1
+RPT.LINE := SUMMARY.DATA(RC):@VM
+
+END CASE
+
+      NEXT RR
+
+      LINE = CHANGE(RPT.LINE, @VM, TAB.CHAR)
+      LINE.TYPE = 'SUMMARY'
+      GOSUB WRITE.THE.LINE
+
+      CLOSESEQ F.BILLDATA
+
+      RETURN
+
+
+****************************
+GENERATE.WEEKLY.ENTERED.DET:
+****************************
+
+      BILLDATA.ID = DET.1.BILLDATA.ID
+      GOSUB OPEN.SEQ.FILE
+      LINE = WEEKLY.ENTERED.DET.HEADING
+      LINE.TYPE = 'HEADING'
+      GOSUB WRITE.THE.LINE
+      LINE = WEEKLY.ENTERED.DET.COL.HEADING
+      LINE.TYPE = 'HEADING'
+      GOSUB WRITE.THE.LINE
+
+      ROW.OFFSET = 2
+      FOR RR = 1 TO DET.RPT.ROW
+         RPT.LINE = WEEKLY.ENTERED.DET(RR)
+         RPT.LINE.NEW = RPT.LINE
+         RPT.LINE.5 = RPT.LINE<1, 5> + 0
+         LINE.DIVISOR = CHAR(SEQ.A.M.1 + 5):RR + ROW.OFFSET
+         FOR RC = 6 TO DET.COL.CNT STEP 2
+            LINE.DIVIDEND = CHAR(SEQ.A.M.1 + RC):RR + ROW.OFFSET
+            RPT.LINE<1, RC + 1> = '=IF(':LINE.DIVIDEND:'=0,"",':LINE.DIVIDEND:' / ':LINE.DIVISOR:' * 100)'
+         NEXT RC
+         LINE = CHANGE(RPT.LINE, @VM, TAB.CHAR)
+         LINE.TYPE = 'ENTERED.DET'
+         GOSUB WRITE.THE.LINE
+
+      NEXT RR
+
+      CLOSESEQ F.BILLDATA
+
+      RETURN
+
+******************************
+GENERATE.WEEKLY.PROCESSED.DET:
+******************************
+
+      BILLDATA.ID = DET.2.BILLDATA.ID
+      GOSUB OPEN.SEQ.FILE
+      LINE = WEEKLY.PROCESSED.DET.HEADING
+      LINE.TYPE = 'HEADING'
+      GOSUB WRITE.THE.LINE
+      LINE = WEEKLY.PROCESSED.DET.COL.HEADING
+      LINE.TYPE = 'HEADING'
+      GOSUB WRITE.THE.LINE
+
+      RPT.ROW.OFFSET = 2
+      FOR RR = 1 TO DET.RPT.ROW
+         RPT.LINE = WEEKLY.PROCESSED.DET(RR)
+*         RPT.LINE.NEW = RPT.LINE
+         RPT.LINE.5 = RPT.LINE<1, 5> + 0
+         IF RPT.LINE.5 > 0 THEN
+            RPT.ROW.OFFSET += 1
+            LINE.DIVISOR = CHAR(SEQ.A.M.1 + 5):RPT.ROW.OFFSET
+            RPT.LINE = WEEKLY.PROCESSED.DET(RR)
+            FOR RC = 6 TO DET.COL.CNT STEP 2
+               LINE.DIVIDEND = CHAR(SEQ.A.M.1 + RC):RPT.ROW.OFFSET
+               RPT.LINE<1, RC + 1> = '=IF(':LINE.DIVIDEND:'=0,"",':LINE.DIVIDEND:' / ':LINE.DIVISOR:' * 100)'
+            NEXT RC
+*         IF RPT.LINE<1, 5> > 0 THEN
+            RPT.LINE = CHANGE(RPT.LINE, @VM, TAB.CHAR)
+            LINE = RPT.LINE
+            LINE.TYPE = 'PROCESSED.DET'
+            GOSUB WRITE.THE.LINE
+         END
+
+      NEXT RR
+
+      CLOSESEQ F.BILLDATA
+
+      RETURN
+
+***************
+WRITE.THE.LINE:* Write the line and handle errors
+***************
+
+      WRITESEQ LINE ON F.BILLDATA ELSE
+         CALL ELINE('Notify the Helpdesk that ':PROG.NAME:' stopped while trying to update a ':LINE.TYPE:' in file ':BILLDATA.ID)
+         STOP
+      END
+
+      RETURN
+
+**************************
+PROMPT.FRIDAY.ENDING.DATE:
+**************************
+
+*When originally conceived, the weekly part of the summary report and
+*the detail reports were for bills ENTERED during the week being
+*reported and included Processing Dates thru the next Monday. As of
+*06/26/12, the report selects Bills that were PROCESSED for a given
+*Monday - Friday.
+      CRT @(0, 2):'Friday Ending Date: '
+      IF OCONV.LAST.FRIDAY # '' THEN
+         MASK = OCONV.LAST.FRIDAY
+         REQ = FALSE
+      END ELSE
+         MASK = 'MM/DD/YY'
+         REQ = TRUE
+      END
+      HELP = 'Enter the Friday Ending Date for report. [EX]=Stop '
+      CALL GEN.IN(21,2,MASK,'DATE',Q,REQ,10,'','',2,-10,2,0,QI,HELP,0,23)
+      IF QI='' THEN
+         QI=OCONV.LAST.FRIDAY
+         Q=LAST.FRIDAY
+      END
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            STOP
+         CASE QI='EX'
+            STOP
+         CASE NOT(NUM(Q))
+            CALL ELINE('Please enter a valid date.')
+            GOTO PROMPT.FRIDAY.ENDING.DATE
+         CASE Q > INT.TODAY
+            CALL ELINE('Please enter a valid date that is for a Friday in the past.')
+            GOTO PROMPT.FRIDAY.ENDING.DATE
+         CASE Q < ICONV('04/06/12', 'D2/')
+*The project was implemented on 4/6/12 and that is 'the beginning of time' for this report
+            CALL ELINE('Please enter a valid date that is for a Friday after 04/06/12.')
+            GOTO PROMPT.FRIDAY.ENDING.DATE
+         CASE OCONV(Q, 'DW') # 5
+            CALL ELINE('Please enter a valid date that is a Friday.')
+         CASE 1
+            FRIDAY.TO.RUN.FOR = Q
+            OCONV.FRIDAY.TO.RUN.FOR = OCONV(Q, 'D2/')
+*            LAST.FRIDAY = Q    ; * SWB01
+*            OCONV.LAST.FRIDAY = OCONV(LAST.FRIDAY, 'D2/')       ; * SWB01
+            YEAR.TO.RUN.FOR = OCONV.FRIDAY.TO.RUN.FOR[7, 4]
+            RUN.B.O.Y = '01/01/':YEAR.TO.RUN.FOR
+            ICONV.RUN.B.O.Y = ICONV(RUN.B.O.Y, 'D2/')        ; * SWB01
+            RUN.B.O.Y.DOW = OCONV(ICONV.RUN.B.O.Y, 'DW')     ; * SWB01
+*Since this is a weekly report, the beginning of the year is going to be
+*on a Monday. If January 1 falls on a weekday, adjust the date back to
+*the previous Monday, otherwise, adjust it forward to the next Monday.
+            IF RUN.B.O.Y.DOW < 6 THEN    ; * SWB01
+               B.O.Y.DOW.OFFSET = (5 - (5 - CUR.B.O.Y.DOW) - 1) * -1   ; * SWB01
+            END ELSE                     ; * SWB01
+               B.O.Y.DOW.OFFSET = (8 - CUR.B.O.Y.DOW)        ; * SWB01
+            END                          ; * SWB01
+            ICONV.RUN.B.O.Y = ICONV.RUN.B.O.Y + B.O.Y.DOW.OFFSET       ; * SWB01
+            FRIDAY.FILE.NAME = OCONV.FRIDAY.TO.RUN.FOR[7, 4]:OCONV.FRIDAY.TO.RUN.FOR[1, 2]:OCONV.FRIDAY.TO.RUN.FOR[4, 2]
+            MONDAY.AFTER.FRIDAY.RUN.DATE = LAST.FRIDAY + 3
+*Determine if the Day Of Week entered was a business day
+            CD.VIN = MONDAY.AFTER.FRIDAY.RUN.DATE
+            CD.VIN<2> = 0
+            CALL CALC.DATE(CD.VIN, CD.VOUT, F.TC.HOLIDAYS)
+
+            MONDAY.AFTER.FRIDAY.RUN.DATE = CD.VOUT<1>
+            PREV.MONDAY = FRIDAY.TO.RUN.FOR - 4
+            GOSUB SETUP.BILLDATA.IDS.AND.HEADINGS
+
+      END CASE
+
+      IF FRIDAY.TO.RUN.FOR < ICONV.RUN.B.O.Y + 4 THEN
+*If the user chose the first Friday of the Calendar Year and that
+*Friday happens to be January 4th or before, extend the search for
+*data back to the Previous Monday, even though it is in the
+*Previous Year.
+         PREV.MONDAY = FRIDAY.TO.RUN.FOR - 4
+
+      END
+
+      RETURN
+
+***************
+DISPLAY.SCREEN:
+***************
+
+      CRT @(-1)
+      CRT @(20, 0):'Weekly Freight Bill Entry and Processing Performance Reports'
+      RETURN
+
+********************************
+SETUP.BILLDATA.IDS.AND.HEADINGS:
+********************************
+
+      SUMMARY.BILLDATA.ID = 'Weekly Summary report for Week Ending Friday ':FRIDAY.FILE.NAME:'.XLS'
+      DET.1.BILLDATA.ID = 'Weekly Mail Room to Entry peformance report for Week Ending Friday ':FRIDAY.FILE.NAME:'.XLS'
+      DET.2.BILLDATA.ID = 'Weekly Mail Room to Processing peformance report for Week Ending Friday ':FRIDAY.FILE.NAME:'.XLS'
+
+      WEEKLY.SUMMARY.HEADING = 'Weekly Freight Bill Entry and Processing Performance Report for Week Ending ':OCONV.FRIDAY.TO.RUN.FOR
+      WEEKLY.ENTERED.DET.HEADING = 'Weekly Mail Room to Entry Detail Report for Week Ending ':OCONV.FRIDAY.TO.RUN.FOR
+      WEEKLY.PROCESSED.DET.HEADING = 'Weekly Mail Room to Processing Detail Report for Week Ending ':OCONV.FRIDAY.TO.RUN.FOR
+
+      RETURN
+
+   END

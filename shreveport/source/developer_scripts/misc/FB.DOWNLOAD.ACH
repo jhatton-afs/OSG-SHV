@@ -1,0 +1,497 @@
+********************************************************************************
+* PROGRAM: FB.DOWNLOAD.ACH
+* PROGRAM TO DOWNLOAD ACH FILE USING NACHA STRUCTURE
+*
+* FRIEGHT BILLING PACKAGE
+*
+* AUTHOR: JOHN DUNCAN
+* DATE: January 2012
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AFS, LLC
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE
+* EXPRESS WRITTEN CONSENT OF SAME.
+************************************************************************
+*
+************************************************************************
+*
+* Project 165 - Create NACHA format records instead of .csv files.
+*  Create NACHA records instead of .csv for BOA.
+*
+* 102312 - JAD01 - SYSAID4309 - Put CC.NBR LAST 6 Digits in Check NBR field per BOA.
+* 050213 - SWB01 - SysAid 5706 - Allow Mastercard
+* 040714 - DRF01 - SysAid 9293 - Allow KSHELTON access as she is Dina's
+*                  back up.
+* 081314 - JMK01 - SysAid#11359 - Mary Ann Rose access 
+************************************************************************
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_FB.BILLS.HIST
+* Initialize variables
+*
+      PROMPT''
+      DUMMY = ''
+      CALL CHANNEL(CH.NUM)
+      CALL GET.USER(USER.NAME)
+      PROG.NAME='FB.DOWNLOAD.ACH'
+      PROG.DESC='DOWNLOAD ACH FILE'
+      PACK.NAME='FREIGHT PAYMENT'
+      LOCK.ID = 'ACH.LOAD.LOCK'
+      EQU TRUE TO 1
+      EQU FALSE TO ''
+      NATCHA.LEN = SPACE(94)             ; * LENGTH OF RECORD
+      DEST.PAY.ORG = "Bank of America DAL    "
+      OUR.NAME = "AFS Logistics, LLC"
+      OUR.BANK.ID = "1721130766"
+      CLASS.CODE = "CCD"
+      CO.DESC = 'ECHECKPAY'
+      BATCH.HEAD.CNT = 0
+      TOT.AMT = 0
+      TOT.CR = 0
+      TOT.B.AMT = 0
+      TOT.ROUTE.NBR = 0
+      TOT.CREDIT.AMT = 0
+      TOT.DEBIT.AMT = 0
+      DETAIL.CNT = 0
+      BLOCK.CNT = 1
+      BATCH.NBR = 0
+      ADDENDA.INC = '0'
+      OLD.PAY.DTE = ''
+      G.TOT.AMT = 0
+      T.FC.CNT = 0
+      G.ENTRY.HASH.NBR = 0
+      G.DETAIL.CNT = 0
+      ENTRY.HASH.NBR = 0
+      ADDEN.CNT = 0
+      DET.CNT = 0
+      ID = ''
+      TSTR = 1
+*
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.DOWNLOAD.ACH' ; UPL.VOUT = ''          ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      ESC=CHAR(27)
+*
+* Display heading information
+*
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+!     CRT @(0,2):STR('=',79)
+*
+* Open files
+*
+      WORK.NAME = 'FBWORK':CH.NUM
+      CRT WORK.NAME
+      OPEN '',WORK.NAME TO F.WORK THEN
+         EXECUTE 'CLEAR-FILE DATA ':WORK.NAME CAPTURING DUMMY
+      END ELSE
+         EXECUTE 'CREATE-FILE ':WORK.NAME:' 1 1001' PASSLIST CAPTURING OUTPUT
+         OPEN '',WORK.NAME TO F.WORK ELSE
+            CALL OPEN.ABORT(WORK.NAME, PROG.NAME)
+         END
+      END
+*
+      OPEN '','FB.ACH.FILE' TO F.ACH.FILE ELSE
+         CALL OPEN.ABORT("FB.ACH.FILE",PROG.NAME)
+      END
+      OPEN '','FB.PEND.ACH.FILE' TO F.PEND.ACH.FILE ELSE
+         CALL OPEN.ABORT('FB.PEND.ACH.FILE',PROG.NAME)
+      END
+      OPEN 'BCTRL' TO F.BCTRL ELSE
+         CALL OPEN.ABORT('BCTRL',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIER ELSE
+         CALL OPEN.ABORT('FB.CARRIERS',PROG.NAME)
+      END
+*
+      OPEN '','VOC' TO F.VOC ELSE
+         CALL OPEN.ABORT('VOC',PROG.NAME)
+      END
+*
+      OPEN 'FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+*
+      READ BILLDATA.REC FROM F.VOC,'BILLDATA' ELSE
+         CALL ELINE('Unable to open VOC BILLDATA - Call IS Department.')
+         GO ENDIT
+      END
+*
+      BILLDATA.REC<2>:='\':USER.NAME
+      WRITE BILLDATA.REC ON F.VOC,'BILLDATA.':USER.NAME
+*
+      READV USER.EMAIL FROM F.BCTRL,USER.NAME,20 ELSE
+         USER.EMAIL = 'helpdesk@afs.net'
+      END
+      OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+         CALL ELINE('Unable to open BILLDATA.':USER.NAME:'.')
+         GO ENDIT
+      END
+*
+      READ DTEMP FROM F.TABLES,LOCK.ID ELSE
+         DTEMP = ''
+      END
+      IF DTEMP='' THEN
+         DTEMP = USER.NAME
+         DTEMP<2> = DATE()
+         DTEMP<3> = TIME()
+         WRITE DTEMP ON F.TABLES,LOCK.ID
+      END ELSE
+*
+         EMAIL.OUT = USER.EMAIL
+         EMAIL.OUT<2> = 'helpdesk@afs.net'
+         EMAIL.OUT<5>='Problem in ACH Download process.'
+         EMAIL.OUT<6>=DTEMP<4>
+         EMAIL.OUT<6,-1>='The ':LOCK.ID:' item in FB.TABLES will need to be cleared to run again.'
+         EMAIL.OUT<7> = "1"
+         VIN=EMAIL.OUT
+         CALL SENDMAIL(VIN,VOUT)
+         E.MSG = 'Error in previous run, Email sent with error(s)'
+         CALL ELINE(E.MSG)
+         GO ENDIT
+      END
+*
+      DAY.BATCH.CNT=0
+      BATCH.ID='ACH':OCONV(DATE(),'D2-')
+      CONVERT '-' TO '' IN BATCH.ID
+      LOOP
+         NID=BATCH.ID:(DAY.BATCH.CNT 'R%2'):'.TXT'
+         READV TEST FROM F.BILLDATA,NID,1 ELSE TEST=''
+      UNTIL TEST=''
+         DAY.BATCH.CNT+=1
+      REPEAT
+      OUT.BATCH.ID=NID
+*
+      OPENSEQ 'BILLDATA.':USER.NAME, OUT.BATCH.ID TO OUT.FILE ELSE
+*         CRT ' NO Existing Output File, it WILL be created'
+      END
+*
+      BEGIN CASE
+         CASE USER.NAME='BFRANKLIN'
+         CASE USER.NAME='BRIAN'
+         CASE USER.NAME='BRIANP'
+         CASE USER.NAME='BROSE'
+****         CASE USER.NAME='RHOLLIFIELD'
+
+         CASE USER.NAME='DAVID'
+         CASE USER.NAME='JDUNCAN'
+         CASE USER.NAME='MKERBOW'
+         CASE USER.NAME='SBARBEE'        ; * SWB01
+
+         CASE USER.NAME='RWHITT'
+         CASE USER.NAME='DGARRETT'
+         CASE USER.NAME='KSHELTON'       ; * DRF01
+         CASE USER.NAME='MROSE'          ; * JMK01
+         CASE 1
+            CALL FB.PRINT.CENT(1,80,12,'! Restricted Access Application !')
+            CALL FB.PRINT.CENT(1,80,14,'Access Denied')
+            CALL ELINE('')
+            GO ENDIT
+      END CASE
+*
+* Include Penny Test
+*
+100:***
+      HELP=''
+      CRT @(0,4):"This process will take the current pending ACH transactions and"
+      CRT @(0,5):"create the NACHA file necessary to transmit to the bank."
+200:***
+      CALL GEN.IN(0,9,'Process this request (Y/N)...','',Q,0,2,'','',0,29,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' OR QI='EX' THEN GO THE.END
+      IF QI='Y' OR QI='N' THEN NULL ELSE GO 200
+      IF QI='N' THEN GO THE.END
+      EXECUTE 'SSELECT FB.ACH.FILE BY 11 BY 4 WITH 11 # "[PENNY"' CAPTURING XXX
+      IF @SELECTED<1 THEN
+         CALL ELINE('No transactions to download in FB.ACH.FILE file.')
+         GO ENDIT
+      END
+*
+* OK TO PROCESS
+*  Here we go...   
+*
+* NOW LETS GO THROUGH THE DATA RECORDS AND CREATE THE DETAIL
+      STAT = TRUE
+      LOOP
+         READNEXT ID ELSE STAT = FALSE
+      WHILE STAT= TRUE
+         READ ITEM FROM F.ACH.FILE,ID ELSE ITEM = ''
+*    LOAD DATA
+         PAY.NAME = TRIM(ITEM<1>)
+         GOSUB UNIQ.NAME
+         ROUTE.NBR = ITEM<2>[1,8]
+         CK.DGT = ITEM<2>[9,1]
+         ACCT.NBR = ITEM<3>
+         CK.NBR = ITEM<4>
+         PAY.AMT = ITEM<5>
+         PAY.AMT = PAY.AMT
+         CS = ITEM<6>
+         PAY.DTE = ITEM<7>
+         PRENOTE.D = ITEM<8>
+         LAST = ITEM<9>
+         PRENOTE = ITEM<10>
+         ITEM.BATCH = ITEM<11>
+         CC.NBR = TRIM(ITEM<12>,'D')
+         CC.TYPE = ITEM<13>              ; * SWB01
+*        IF LEN(CC.NBR) THEN             ; * JAD01
+*           ADDENDA.INC = TRUE           ; * JAD01
+*        END ELSE                        ; * JAD01
+*           ADDENDA.INC = '0'            ; * JAD01
+*        END                             ; * JAD01
+
+*
+*  The following code will put the AMX account # in the
+*    check number field.  This is only for American Express because
+*    they are the only account that doesn't use the 705 REF Addenda
+*    segment so we replace Check # with our CC number.
+*    Don't use 705 for AMX it's an extra charge.
+*
+*         IF LEN(CC.NBR) THEN            ; * JAD01 ; * SWB01
+*            CK.NBR = CC.NBR             ; * JAD01 ; * SWB01
+*         END                            ; * JAD01 ; * SWB01
+
+         ADDENDA.INC = "0"               ; * SWB01
+         CC.CUST.ID = ''                 ; * SWB01
+         BEGIN CASE                      ; * SWB01
+            CASE CC.NBR # '' AND CC.TYPE='A'       ; * SWB01
+*American Express.
+               CK.NBR = CC.NBR           ; * SWB01
+
+            CASE CC.NBR # '' AND CC.TYPE='M'       ; * SWB01
+*Mastercard will use an ADDENDA record
+               ADDENDA.INC = TRUE        ; * SWB01
+               CC.CUST.ID='5567087900066680'       ; * SWB01
+
+            CASE 1                       ; * SWB01
+*Carriers using ACH fall here.
+
+         END CASE                        ; * SWB01
+
+         IF OLD.PAY.DTE = '' THEN
+            OLD.PAY.DTE = PAY.DTE
+            GOSUB CREATE.FILE.HEADER
+            GOSUB CREATE.BATCH.HEADER
+         END
+         IF PAY.DTE NE OLD.PAY.DTE THEN
+            OLD.PAY.DTE = PAY.DTE
+            GOSUB CREATE.BATCH.CONTROL.REC
+            GOSUB CREATE.BATCH.HEADER
+            GOSUB CREATE.DETAIL.REC
+         END ELSE
+            GOSUB CREATE.DETAIL.REC
+         END
+*
+* CREATE DETAIL RECORDS
+*
+         WRITE ITEM ON F.PEND.ACH.FILE,ID
+*
+         DELETE F.ACH.FILE,ID
+      REPEAT
+      GOSUB CREATE.BATCH.CONTROL.REC
+      GOSUB CREATE.FILE.CONTROL
+      CALL ELINE('File ':OUT.BATCH.ID:' written to U:\':USER.NAME)
+      GO THE.END                         ; *    PROGRAM END
+************************************************************************
+************************************************************************
+*
+UNIQ.NAME:*
+*
+* We need to make the pay names unique so they don't get deleted at upload time.
+      UNQ = FALSE
+      TP.ID = PAY.NAME
+      L.TP.ID = LEN(TP.ID)
+      NDX = 1
+      IF L.TP.ID GT 19 THEN
+         L.TP.ID = 19
+         TP.ID = TP.ID[1,19]
+      END
+      MXLEN = 22
+      TST.TP.ID = TP.ID:NDX'R%3'
+      LOOP
+         READ DUMMY FROM F.WORK, TST.TP.ID THEN
+            NDX +=1
+            TST.TP.ID = TP.ID:NDX'R%3'
+         END ELSE
+            WRITE DUMMY ON F.WORK, TST.TP.ID
+            IF NDX+0 GT 1 THEN
+               PAY.NAME = TST.TP.ID
+            END
+            UNQ = TRUE
+         END
+      UNTIL UNQ
+      REPEAT
+      RETURN
+*
+CREATE.FILE.HEADER:*
+*
+      NACHA.LEN = SPACE(94)
+      BANK.NBR = '071000505 '            ; * OUR CO NUMBER
+      PAY.BANK.NBR = '1721130766'        ; * AFS FREIGHT PAYMENT
+      CO.NAME = 'AFS Logistics, LLC.'
+      PROCESS.H.DEST = " 111000025"
+*
+*CREATING File header Record.
+      H.REC = NACHA.LEN                  ; * HEADER REC
+      H.REC[1,1] = 1
+      H.REC[2,2] = '01'
+      H.REC[4,10] = PROCESS.H.DEST       ; * PROCESSING DEST
+      H.REC[14,10] = BANK.NBR            ; * OUR BANK NBR
+      H.DT = OCONV(DATE(),'D2/')
+      CONVERT '/' TO '' IN H.DT
+      H.DT = H.DT[5,2]:H.DT[1,4]
+      H.REC[24,6] = H.DT                 ; * PROCESS.DATE
+      H.REC[34,1] = DAY.BATCH.CNT 'R#1'  ; * FILE NUMBER FOR TODAY - 9
+      H.REC[35,3] = '094'
+      H.REC[38,2] = '10'
+      H.REC[40,1] = '1'
+      H.REC[41,23] = DEST.PAY.ORG        ; * BANK DESTINATION
+      H.REC[64,23] = CO.NAME             ; * OUR NAME
+*
+      WRITESEQ H.REC ON OUT.FILE ELSE
+         E.MSG = "NO WRITE OF HEADER."
+         GO ERROR.OUT
+      END
+      RETURN
+*
+CREATE.BATCH.HEADER:*
+*
+      SVC.CODE = '220'                   ; *  DEBITS ONLY
+      BATCH.POST.DATE = PAY.DTE          ; * REQ POST.DATE
+      SETTLE.DESC = CO.DESC              ; * CO.DESC
+      SEND.TO.LOC = '11100002'
+*
+      BATCH.HEAD.CNT +=1
+      BATCH.NBR +=1
+      BH.REC = NACHA.LEN                 ; * SET NEW BATCH HEADER REC
+      BH.REC[1,1] = '5'                  ; * THIS IS A BATCH RECORD
+      BH.REC[2,3] = SVC.CODE             ; * SERVICE CLASS CODE
+      BH.REC[5,16] = CO.NAME             ; * OUR NAME
+      BH.REC[41,10] = PAY.BANK.NBR       ; * OUR PAYMENT BANK NUMBER
+      BH.REC[51,3] = CLASS.CODE          ; * NATCHA ACH CODE
+      BH.REC[54,10] = SETTLE.DESC        ; * OUR DESC FOR ENTRY
+      H.DT = OCONV(BATCH.POST.DATE,'D2/')
+      CONVERT '/' TO '' IN H.DT
+      H.DT = H.DT[5,2]:H.DT[1,4]
+      BH.REC[70,6] = H.DT                ; * REQUEST POST DATE
+      BH.REC[76,3] = '   '               ; * WILL BE ENTERED BY BANK
+      BH.REC[79,1] = '1'                 ; * WE ARE NON FEDERAL
+      BH.REC[80,8] = SEND.TO.LOC         ; * WHERE WE SEND FILES
+      BH.REC[88,7] = BATCH.NBR 'R%7'     ; * THIS BATCH NUMBER
+*
+      WRITESEQ BH.REC ON OUT.FILE ELSE
+         E.MSG = "NO WRITE OF BATCH HEADER."
+         GO ERROR.OUT
+      END
+      RETURN
+*
+CREATE.DETAIL.REC:*
+*
+      DETAIL.CNT +=1
+      B.DET.REC = NACHA.LEN              ; * DETAIL REC
+      B.DET.REC[1,1] = '6'               ; * RECORD TYPE CODE - DETAIL
+      B.DET.REC[2,2] = '22'              ; * AUTO PMT
+      ENTRY.HASH.NBR += ROUTE.NBR
+      B.DET.REC[4,8] = ROUTE.NBR         ; * ROUTING NUMBER
+      B.DET.REC[12,1] = CK.DGT           ; * CHECK DIGIT CHARACTER
+      B.DET.REC[13,17] = ACCT.NBR        ; * ACCOUNT NBR
+      TOT.AMT += PAY.AMT                 ; * FILE TOTALS
+      TOT.B.AMT += PAY.AMT               ; * BATCH TOTALS
+      B.DET.REC[30,10] = PAY.AMT 'R%10'  ; * AMT
+* JAD01  Note - for AMX, CK.NBR is now CC.NBR
+      B.DET.REC[40,15] = CK.NBR 'R#15'
+      B.DET.REC[55,22] = PAY.NAME        ; * NAME OF RECEIVER
+*      B.DET.REC[77,2] =
+      B.DET.REC[79,1] = ADDENDA.INC      ; *  ADDENDA INCLUDED
+      B.DET.REC[80,8] = SEND.TO.LOC
+      B.DET.REC[88,7] = DETAIL.CNT 'R%7'           ; * TRACE NUMBER
+      WRITESEQ B.DET.REC ON OUT.FILE ELSE
+         E.MSG = "NO WRITE OF DETAIL."
+         GO ERROR.OUT
+      END
+      IF ADDENDA.INC THEN
+         GOSUB CREATE.ADDEN.REC
+      END
+      RETURN
+*
+CREATE.ADDEN.REC:*
+      ANSI = "REF*":CC.CUST.ID:"\"       ; * SWB01
+      ADDEN.CNT +=1
+      ADDEN.REC = NACHA.LEN              ; * DETAIL REC
+      ADDEN.REC[1,1] = '7'               ; * RECORD TYPE CODE - DETAIL
+      ADDEN.REC[2,2] = '05'              ; * ADDENDA TYPE
+      ADDEN.REC[4,80] = ANSI             ; * ANSI ASC X12 DATA
+      ADDEN.REC[84,4] = ADDEN.CNT 'R%4'  ; * ADDENDA COUNTER
+      ADDEN.REC[88,7] = DETAIL.CNT 'R%7'           ; * RELATED DETAIL
+*
+      WRITESEQ ADDEN.REC ON OUT.FILE ELSE
+         E.MSG = "NO WRITE OF ADDENDA."
+         GO ERROR.OUT
+      END
+      RETURN
+*
+CREATE.BATCH.CONTROL.REC:*
+*
+      BC.REC = NACHA.LEN
+      BC.REC[1,1] = "8"
+      BC.REC[2,3] = SVC.CODE
+      T.FC.CNT = DETAIL.CNT+ ADDEN.CNT
+      BC.REC[5,6] = T.FC.CNT 'R%6'
+      HASH.TOTAL = ENTRY.HASH.NBR
+      BC.REC[11,10] = HASH.TOTAL'R%10'   ; *ENTRY HASH TOTAL
+      BC.REC[21,12] = TOT.AMT 'R%12'     ; * TOTAL DBT
+      BC.REC[33,12] = TOT.CR 'R%12'      ; * TOTAL CR
+      BC.REC[45,10] = OUR.BANK.ID        ; * OUR COMPANY #
+      BC.REC[80,8] = SEND.TO.LOC         ; * DFI ID
+      BC.REC[88,7] = BATCH.NBR 'R%7'
+      WRITESEQ BC.REC ON OUT.FILE ELSE
+         E.MSG = "NO WRITE OF BATCH CONTROL."
+         GO ERROR.OUT
+      END
+      ENTRY.HASH.TOTAL = 0               ; * RESET
+      G.DETAIL.CNT += (DETAIL.CNT + ADDEN.CNT)
+      ADDEN.CNT = 0
+      DETAIL.CNT = 0
+      G.TOT.AMT += TOT.AMT
+      TOT.AMT = 0
+      G.ENTRY.HASH.NBR += ENTRY.HASH.NBR
+      ENTRY.HASH.NBR = 0
+      RETURN
+*
+CREATE.FILE.CONTROL:*
+*
+      FC.REC = NACHA.LEN
+      FC.REC[1,1] = "9"
+      FC.REC[2,6] = BATCH.HEAD.CNT 'R%6'
+      FC.REC[8,6] = '000001'             ; * # OF BLOCKS
+      FC.REC[14,8] = G.DETAIL.CNT 'R%8'
+      FC.REC[22,10] = G.ENTRY.HASH.NBR 'R%10'
+      FC.REC[32,12] = G.TOT.AMT 'R%12'   ; * FILE TOTAL
+      FC.REC[44,12] = TOT.CREDIT.AMT 'R%12'        ; * CREDIT TOTALS
+      WRITESEQ FC.REC ON OUT.FILE ELSE
+         E.MSG = "NO WRITE OF FILE CONTROL."
+         GO ERROR.OUT
+      END
+      RETURN
+*
+ERROR.OUT:*
+      DTEMP<4,-1> = "ACH Batch '":OUT.BATCH.ID:"' ":E.MSG
+      WRITE DTEMP ON F.TABLES,LOCK.ID
+*
+      EMAIL.OUT = USER.EMAIL
+      EMAIL.OUT<2> = 'helpdesk@afs.net'
+      EMAIL.OUT<2> = USER.NAME
+      EMAIL.OUT<5>='Problem in ACH Download process'
+*      EMAIL.OUT<6>=DTEMP<4>   ; * SWB01
+      EMAIL.OUT<6>=E.MSG                 ; * SWB01
+      EMAIL.OUT<6,-1>='The ':LOCK.ID:' item in FB.TABLES will need to be cleared to run again.'
+      EMAIL.OUT<6,-1> = '* * There is a problem with ACH and/or Billdata files that will need to be corrected...'
+      EMAIL.OUT<6,-1> = ' before the process can be run again'
+      EMAIL.OUT<7> = "1"
+      VIN=EMAIL.OUT
+      CALL SENDMAIL(VIN,VOUT)
+      E.MSG = 'Error in ACH process, Email sent with error(s)'
+      CALL ELINE(E.MSG)
+*
+THE.END:***
+      DELETE F.TABLES,LOCK.ID
+ENDIT:*
+      EXECUTE 'CLEAR-FILE DATA ':WORK.NAME CAPTURING DUMMY
+      STOP
+   END

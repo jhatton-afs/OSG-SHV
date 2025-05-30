@@ -1,0 +1,179 @@
+* Program BUILD.CARRIER.PROFILE
+* Program to Download a Carrier Profile
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: Tami Seago
+* DATE: January 11, 2001
+*
+* 042606 - JCW01 - Add FB.PROC.DATA.XREF for performance
+* 031108 - JMK01 - T080799 - Remove duplicates in FB History Reporting
+*
+***************************************************************
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Initialize variables
+*
+*CH   COPIES=1
+*
+      PROMPT''
+      CALL CHANNEL(CH.NUM)
+      CALL GET.USER(USER.NAME)
+      STATUS=''
+      CALL CHANNEL(CH.NUM)
+
+      TAB=CHAR(9)
+      WIDTH=132
+      PROMPT''
+      ERRMSG=''
+      PROG.NAME = 'BUILD.CARRIER.PROFILE'
+      PROG.DESC="Build a Carrier Profile File"
+      PACK.NAME="Freight Billing"
+      BACK.FLAG = 0
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'BUILD.CARRIER.PROFILE' ; UPL.VOUT = ''                    ;* NPR_UPL 04/22/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/22/2010
+      CLIENT = ""
+      BEG.DATE = ""
+      END.DATE = ""
+      NUM.OF.ITEM=''
+
+      ESC=CHAR(27)
+
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+         CALL OPEN.ABORT("FB.TRANSPORT",PROG.NAME)
+      END
+      OPEN '','FTP.TRENDSET' TO F.FTP.TRENDSET ELSE
+         CALL OPEN.ABORT("FB.FTP.TRENDSET",PROG.NAME)
+      END
+
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      BILLDATA.REC = ''
+
+      OPEN '','VOC' TO F.VOC ELSE
+         CALL ELINE('UNABLE TO OPEN VOC FILE')
+         STOP
+      END
+
+      READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE
+         CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')
+         STOP
+      END
+
+*DF      USER.NAME='QLIKVIEW\EDI_FILE'
+      BILLDATA.REC<2>:='\':USER.NAME
+      WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER.NAME ELSE
+         CALL ELINE("YOUR USER NAME '":USER.NAME:"' IS NOT IN THE BILLDATA FOLDER - PLEASE SEE OWEN/TAMI/DAVID")
+         STOP
+      END
+      OPEN '','BILLDATA.':USER.NAME TO BILLDATA ELSE
+         CALL ELINE('UNABLE TO OPEN "BILLDATA.":USER')
+         STOP
+      END
+
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+         END
+      END
+      OPEN 'DICT','FBWORK':CH.NUM TO F.DICT.WORK ELSE
+         CALL OPEN.ABORT('DICT FBWORK':CH.NUM,PROG.NAME)
+      END
+
+
+
+
+***********************************************************************
+* Clear work file
+*
+      CLEARFILE F.WORK
+*
+
+* Verify selection criteria is correct.
+*
+VERIFY.SELECTION:***
+      HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+*DF            BACK.FLAG = 1
+*DF            GOTO ENTER.END.DATE
+            STOP
+         CASE QI='EX'
+            STOP
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO VERIFY.SELECTION
+      END CASE
+      GOSUB SETUP.COLUMN.HEADER
+
+
+      GOSUB DOWNLOAD.PROFILE
+      BILLDATA.ID='TRENDSET_EDI_210.XLS'
+      PROFILE.REC = CHANGE(PROFILE.REC,@VM,TAB)
+      WRITE PROFILE.REC ON BILLDATA,BILLDATA.ID
+      STOP
+
+DOWNLOAD.PROFILE:***
+
+      STMT='SSELECT FTP.TRENDSET'
+
+      EXECUTE STMT PASSLIST RTNLIST BILLS.LIST CAPTURING OUTPUT
+      BILLS.ITEMS = @SELECTED
+*DFCALL ELINE('PRESS BREAK')
+
+      PER = 0
+      IF BILLS.ITEMS=0 THEN RETURN
+      PROFILE.REC=HEADER.LINE
+      COUNTER = 0
+      TOTAL.REC = ''
+      LOOP
+         READNEXT BILL.ID FROM BILLS.LIST ELSE BILL.ID='DONE'
+      UNTIL BILL.ID='DONE' DO
+         COUNTER=COUNTER+1
+         READ BILL.REC FROM F.FTP.TRENDSET,BILL.ID ELSE GO SKIP.BILL
+         CALL PROG.BAR(22,COUNTER,BILLS.ITEMS,PER)
+         GS.CONTROL.NUM = FIELD(BILL.REC<2>,'*',7)
+         NUM.OF.LINES=DCOUNT(BILL.REC,@AM)
+         FOR XX = 1 TO NUM.OF.LINES
+            LINE.NUM= XX
+            INFO=BILL.REC<XX>
+            IF INFO#'' THEN
+               GOSUB BUILD.PROFILE
+            END
+         NEXT X
+SKIP.BILL:***
+      REPEAT
+
+      RETURN
+
+SETUP.COLUMN.HEADER:***
+      HEADER.LINE=''
+      HEADER.LINE<1,1>="ST CNTL NUM"
+      HEADER.LINE<1,2>="Line Number"
+      HEADER.LINE<1,3>="Data"
+      RETURN
+
+
+BUILD.PROFILE:***
+         LINE = ''
+         LINE<1,1> = GS.CONTROL.NUM
+         LINE<1,2> = LINE.NUM
+         LINE<1,3> = INFO
+         PROFILE.REC<-1> = LINE
+
+
+      RETURN

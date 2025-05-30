@@ -1,0 +1,1387 @@
+****************************************
+* Program name : FB.5.4
+* Author       : BRIAN M. QUEEN
+* Date written : April 17, 1992
+* Library      : FBBP
+* COPYRIGHT (C) 2019 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+*
+* This program generates voucher printing and email sent vouchers
+*
+* Last updated by afs (AFSLOGISTICS\gbino) at 08:49:12 on 07/10/2020.
+*
+* Start modification history
+* Mod nn  mm/dd/yy, init, req #, description
+*   ADDED DEFAULT PRINTER STUFF
+*   MADE VOUCHERS BREAK ON ALL CLIENT BREAKS.
+* 122002 - JMK01 - CREATE COGNOS.UPDATE RECORDS
+* 081205 - JMK02 - REVAMP COGNOS UPDATE PROCESS
+* 082605 - JMK03 - UPDATE FB.CHECK.DATE.XREF FILE
+* 050806 - JCW01 - CHANGES TO '@SELECTED', 'CLEARSELECT', AND 'STMT<X>'
+* 091506 - JCW02 - USE NEW FB.CHECKS FILES
+* 121307 - NPR01 - PRINT NAME & ADDRESS IN UPPERCASE
+* 121907 - JMK04 - C070443 - Create process to update SQL data tables from Universe
+* 043010 - NPR02 - ADDED UPDATING FOR NEW UPS.SCHED AND UPS.SCHED.HIST FILES
+* 031811 - NPR03 - ADDED the ability to produce an HTML file.
+* 101612 - JMK05 - Project#205 - QlikView FBStatus update file
+* 100813 - JMK06 - SysAid#7331 - FBBP FB.5.4 has an error in lines 758 and 786
+* 021920 - GRB01 - ACCU-480 Automated processing
+* 071020 - GRB02 - ACCU-926 Turn off print version of voucher
+* End modification history
+*
+****************************************
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_FB.BILLS.HIST
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+      COMMON PROG.PARAMS(24)
+      EQU PROG.FROM TO PROG.PARAMS(1)
+      EQU AUTO.PROCESS TO PROG.PARAMS(2)
+      EQU CLIENT TO PROG.PARAMS(3)
+      PROG.FROM = 'COGNOS'
+      IF @TTY = 'phantom' THEN AUTO.PROCESS = TRUE
+*
+* Initialize variables
+*
+      PROMPT ''
+      TESTING=0
+
+      ESC=CHAR(27)
+      CALL GET.USER.NEW(USER,CH.NUM)
+
+      BILL.LIST=''                       ; * Used for Storing Bill ID's in Pre Processing
+      PREV.CARRIER=''
+      PREV.CLIENT=''
+      PREV.SEP.CHECK.FLG=''
+      PREV.EDI.SENDER.ID=''
+      PREV.EDI.ACCOUNT=''
+      CHECK.REC=''
+      CLIENT.CHECK.REC=''
+      CHECK.AMT=0
+      CLIENT.CHECK.AMT=0
+      CLIENT.ID=''
+      ERRMSG=''
+      FIRST.CHECK=1                      ; * Special Flag for Problem with Fujitsu
+
+      LINES.PER.PG = 44
+      MAX.LINES = LINES.PER.PG + 6       ; * 6 Additional lines not used for 'check' when remittance goes over a page.
+
+      PROG.NAME='FB.5.4'
+      IF TESTING=1 THEN
+         PROG.DESC='CHECK PRINTING -- TEST MODE NO UPDATES!!! --':CHAR(7)
+      END ELSE
+         PROG.DESC='CHECK PRINTING'
+      END
+      PACK.NAME='FREIGHT PAYMENT'
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.5.4' ; UPL.VOUT = ''         ; * NPR_UPL 04/23/2010
+      UPL.VIN<3> = USER
+      UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+*
+* Open files
+*
+
+      OPEN '','FB.BANKS' TO F.BANK ELSE
+         CALL OPEN.ABORT("FB.BANKS",PROG.NAME)
+      END
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         CALL OPEN.ABORT("FB.BILLS.CRX",PROG.NAME)
+      END
+
+      OPEN '','FB.CHECKS.HDR' TO F.CHECKS ELSE     ; * JCW02
+         CALL OPEN.ABORT("FB.CHECKS.HDR",PROG.NAME)          ; * JCW02
+      END                                ; * JCW02
+      OPEN '','FB.CHECKS.DTL' TO F.CHECKS.D ELSE   ; * JCW02
+         CALL OPEN.ABORT("FB.CHECKS.DTL",PROG.NAME)          ; * JCW02
+      END                                ; * JCW02
+      OPEN '','EDI.REMITTANCE' TO F.REMIT ELSE
+         CALL OPEN.ABORT("EDI.REMITTANCE",PROG.NAME)
+      END
+
+      OPEN '','FB.PAY' TO F.PAY ELSE CALL OPEN.ABORT("FB.PAY",PROG.NAME)
+      OPEN '','FB.PAY.LAST' TO F.PAY.LAST ELSE CALL OPEN.ABORT("FB.PAY.LAST",PROG.NAME)
+
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            CALL OPEN.ABORT("FBWORK":CH.NUM,PROG.NAME)
+         END
+      END
+      CLEARFILE F.WORK
+
+      OPEN '','EMAILDATA' TO F.EMAILDATA ELSE      ; * NPR03
+         CALL OPEN.ABORT("EMAILDATA",PROG.NAME)    ; * NPR03
+      END                                ; * NPR03
+
+      OPEN '','BILLDATA.' : USER TO F.BILLDATA ELSE          ; * NPR03
+         CALL OPEN.ABORT('BILLDATA.' : USER,PROG.NAME)       ; * NPR03
+      END                                ; * NPR03
+
+      OPEN '','CARRIERS' TO F.CARRIER ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+
+      OPEN '','FB.CHECK.DATE.XREF' TO F.CHECK.DATE.XREF ELSE           ; * JMK03
+         CALL OPEN.ABORT("FB.CHECK.DATE.XREF",PROG.NAME)     ; * JMK03
+      END                                ; * JMK03
+
+      OPEN '','UPS.SCHED' TO F.UPS.SCHED ELSE
+         CALL OPEN.ABORT('UPS.SCHED',PROG.NAME)
+      END
+
+      OPEN '','UPS.SCHED.HIST' TO F.UPS.SCHED.HIST ELSE
+         CALL OPEN.ABORT('UPS.SCHED.HIST',PROG.NAME)
+      END
+
+      OPEN '','FB.STATUS.UPDATE' TO F.STATUS.UPDATE ELSE     ; * JMK05
+         CALL OPEN.ABORT('FB.STATUS.UPDATE',PROG.NAME)       ; * JMK05
+      END                                ; * JMK05
+
+*
+* Select bank account
+*
+      IF @TTY # "phantom" THEN           ; * GRB01
+100:     HELP="Enter bank account ID. ''=End."
+         CALL GEN.IN(0,3,'Enter bank ID...........-------','',Q,0,7,'','',0,-7,3,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         IF QI='' THEN STOP
+         IF QI='F' THEN
+            CALL ELINE('Cannot use for Freight Payment Checks... Use Laser')
+            GO 100
+         END
+         IF QI='M' THEN
+            CALL ELINE('Cannot use for Freight Payment Checks... Use Laser')
+            GO 100
+         END
+      END ELSE
+         INPUT QI
+      END
+      CLIENT.ID=FIELD(QI,'-',2)
+      QI=FIELD(QI,'-',1)
+      READU BANK.REC FROM F.BANK,'BANK*':QI ELSE
+         RELEASE F.BANK,'BANK*':QI
+         CALL ELINE('Invalid bank ID ':QI)
+         GOTO 100
+      END
+      IF TESTING THEN RELEASE F.BANK,'BANK*':QI
+      BANK.ID=QI
+      BANK.DESC=BANK.REC<1>
+      CHECK.NUM=BANK.REC<2>
+105:  ID=CHECK.NUM'R%6':'*':BANK.ID
+      READ TEMP FROM F.CHECKS,ID THEN
+         CHECK.NUM=CHECK.NUM+1
+         GO 105
+      END
+      IF @TTY # "phantom" THEN           ; * GRB01
+         CRT @(30,3):BANK.ID:' ':BANK.DESC
+      END
+*
+* If Voucher Select Paper Type
+*
+      IF BANK.ID#'V' THEN
+         FORM='C'
+         PRT.NUM=1
+         GO 200
+      END
+      IF @TTY # "phantom" THEN           ; * GRB01
+150:     HELP="Enter type of form. <V>ouchers, <P>aper, <N>one"
+         CALL GEN.IN(0,5,'Enter form type...............':'','',Q,0,5,'','',0,30,5,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='X'
+               CRT @(0,5):@(-4)
+               GOTO 100
+            CASE QI='EX'
+               STOP
+            CASE QI='V'
+               FORM='V'
+               PRT.NUM=1
+            CASE QI='P'
+               FORM='P'
+               PRT.NUM=4
+            CASE QI='N'
+               FORM='N'
+               PRT.NUM=0
+            CASE 1
+               CALL ELINE('Must be <X>-Back, <EX>it, <V>ouchers, <P>aper, or <N>one.')
+               GO 150
+         END CASE
+      END ELSE
+         INPUT QI
+         FORM='P'
+         PRT.NUM=4
+      END
+*
+* Get starting check number
+*
+      IF @TTY # "phantom" THEN           ; * GRB01
+200:     HELP="Enter starting check number. ''=Accept. 'X'=Bank to ID. 'EX'=EXIT."
+         CALL GEN.IN(0,7,'Enter starting check number...':CHECK.NUM'R#6','',Q,0,6,'','',0,-6,7,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='X'
+               CRT @(0,7):@(-4)
+               GOTO 100
+            CASE QI='EX'
+               STOP
+            CASE QI=''
+               Q=CHECK.NUM
+            CASE NUM(QI)
+               Q=QI
+            CASE 1
+               CALL ELINE('Invalid check number.')
+               GOTO 200
+         END CASE
+      END ELSE
+         INPUT QI
+         Q=CHECK.NUM
+      END
+*
+      TEMP.NUM=Q
+      IF TEMP.NUM-CHECK.NUM GT 1 THEN
+         CRT @(0,21):CHAR(7):"WARNING - missing checks ":CHECK.NUM:" thru ":Q-1
+         HELP="Enter either Y for Yes or N for No."
+210:     CALL GEN.IN(0,22,"Do you want to void missing checks? Y",'',Q,1,1,'','',0,-1,22,1,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='X'
+               GOTO 200
+            CASE QI='EX'
+               STOP
+            CASE QI='N'
+*           GOTO 200
+               NULL
+            CASE QI='Y'
+               NULL
+            CASE 1
+               GOTO 210
+         END CASE
+      END
+*
+      IF QI='Y' THEN
+         IF CHECK.NUM NE TEMP.NUM THEN
+            STOP.NUM=TEMP.NUM-1
+            FOR I=CHECK.NUM TO STOP.NUM
+               ID=I'R%6':'*':BANK.ID
+               READ CHECK.REC FROM F.CHECKS,ID ELSE
+                  CHECK.REC=''
+                  CHECK.REC<1>=I'R%6'
+                  CHECK.REC<2>=DATE()
+                  CHECK.REC<4>=0
+                  CHECK.REC<7>='Void'
+                  CHECK.REC<25>=0        ; * JCW02
+               END
+               IF NOT(TESTING) THEN WRITE CHECK.REC ON F.CHECKS,ID
+               IF NOT(TESTING) THEN      ; * JMK03
+                  READU XREF.REC FROM F.CHECK.DATE.XREF,DATE() ELSE XREF.REC=''  ; * JMK03
+                  LOCATE(ID,XREF.REC;SSPOS) ELSE   ; * JMK03
+                     XREF.REC<-1>=ID     ; * JMK03
+                     WRITE XREF.REC ON F.CHECK.DATE.XREF,DATE()        ; * JMK03
+                  END                    ; * JMK03
+               END                       ; * JMK03
+               CHECK.REC=''
+            NEXT I
+         END
+      END
+      CHECK.NUM=TEMP.NUM
+      IF @TTY # "phantom" THEN           ; * GRB01
+         CRT @(30,7):CHECK.NUM'R%6'
+      END
+*
+* Check for check already on file
+*
+      CHECK.ID=CHECK.NUM'R%6':'*':BANK.ID
+      READ TEMP FROM F.CHECKS,CHECK.ID THEN
+         CALL ELINE('Check number ':CHECK.NUM:' already on file.')
+         CRT @(0,3):@(-3)
+         GOTO 100
+      END
+*
+* Get check date
+*
+      IF @TTY # "phantom" THEN           ; * GRB01
+300:     HELP="Enter check date. ''=Accept. 'X'=Back to check number. 'EX'=Exit."
+         CALL GEN.IN(0,9,'Enter check date..............':DATE()'D2/','DATE',Q,0,8,'','',0,-8,9,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='X'
+               CRT @(0,9):@(-4)
+               GOTO 200
+            CASE QI='EX'
+               STOP
+         END CASE
+         CHECK.DATE=Q
+      END ELSE
+         CHECK.DATE = DATE()
+         INPUT QI
+      END
+      IF @TTY # "phantom" THEN           ; * GRB01
+         CRT @(30,9):CHECK.DATE'D2/'
+      END
+*
+* Verify entries
+*
+      IF @TTY # "phantom" THEN           ; * GRB01
+400:     HELP="Enter Y if correct or N if incorrect. 'X'=Back to Date. 'EX'=Exit."
+         CALL GEN.IN(0,22,'Correct? Y','',Q,0,1,'','',0,-1,22,1,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         **      DISPLAY "HERE WE GO ":QI
+         BEGIN CASE
+            CASE QI='N'
+               CRT @(0,3):@(-3)
+               GOTO 100
+            CASE QI='Y' ! QI=''
+               NULL
+            CASE 1
+               GOTO 400
+         END CASE
+      END ELSE
+         INPUT QI
+         QI="Y"
+         ****  	NULL
+      END
+
+      IF NOT(TESTING) THEN
+         IF BANK.ID='F' THEN CLEARFILE F.PAY.LAST
+         IF BANK.ID='M' THEN CLEARFILE F.PAY.LAST
+      END
+      DO.HTML = 1                        ; * NPR03 Add flag to Client file for "P"rint or produce HTML file or "B"oth
+
+      FIRST.PG = 1
+
+      HTML.SPC = "&nbsp;"
+      HTML.BLANK.LN = \<p>\ : HTML.SPC : \</p>\
+
+      HTML=''                            ; * Build HTML format Voucher HTML
+      HTML<1>='<HTML>'
+
+      HTML<-1>='<!--'
+      HTML<-1>='BODY'
+      HTML<-1>='{'
+      HTML<-1>='FONT-FAMILY: Courier New,Tahoma,Arial,Helvetica,Verdana;'
+      HTML<-1>='FONT-SIZE: 8PT;'
+      HTML<-1>='}'
+      HTML<-1>='TD'
+      HTML<-1>='{'
+      HTML<-1>='FONT-FAMILY: Courier New,Tahoma,Arial,Helvetica,Verdana;'
+      HTML<-1>='FONT-SIZE: 8PT;'
+      HTML<-1>='}'
+      HTML<-1>='-->'
+
+      HTML<-1>=\<style type="text/css" >\
+
+      HTML<-1>=\body { \
+      HTML<-1>=\        margin: 30px; \
+      HTML<-1>=\        color: black; \
+      HTML<-1>=\        font-size: 10pt; \
+
+      HTML<-1>=\        background: #EAF3DA;  \
+      HTML<-1>=\        font-family: courier new; \
+
+      HTML<-1>=\        font-weight: normal; \
+      HTML<-1>=\        line-height: 50%; \        ; * try and trick PRINT docs to have no spaces between paragraphs/lines
+      HTML<-1>=\} \
+
+      HTML<-1>=\h2 {\
+      HTML<-1>=\        page-break-before: always;\
+      HTML<-1>=\} \
+
+      HTML<-1>=\</style>\
+      HTML<-1>='<HEAD>'
+      HTML<-1>='</HEAD>'
+      HTML<-1>='<BODY>'
+
+* Sort and select pay records
+*
+      IF BANK.ID = 'V' THEN
+
+         EX.REC='SSELECT FB.PAY WITH BANK = "V" BY CLIENT# BY CARRIER BY CARRIER#'         ; * NPR99
+         IF CLIENT.ID#'' THEN
+            CLIENT.ID=CLIENT.ID'R%5'
+            EX.REC='SSELECT FB.PAY WITH BANK = "V" AND WITH CLIENT# = "':CLIENT.ID:'" BY CLIENT# BY CARRIER BY CARRIER#'
+         END
+
+      END ELSE
+         EX.REC='SSELECT FB.PAY'
+         EX.REC:=' BY CARRIER BY CARRIER#'
+         EX.REC:=' BY EDI.SENDER.ID BY EDI.ACCOUNT'
+         EX.REC:=' BY CLIENT.SEP.FLAG BY CLIENT.NAME BY CLIENT#'
+         IF NOT(TESTING) THEN EX.REC := ' WITH 40 = "' : BANK.ID : '"'
+      END
+      EXECUTE EX.REC PASSLIST CAPTURING OUTPUT
+      NUM.ITMS = @SELECTED
+      IF @SELECTED < 1 THEN              ; * JCW01
+         CALL ELINE('No transactions in FB.PAY file.')
+         STOP
+      END
+*
+* Write Items to F.WORK att<1> = 0 if < 2500.00   = 1 if GE 2500.00
+*                       ATT<2> = 1 IF Separate Check Flag 0 if not
+*
+      IF FORM='C' THEN
+         COUNTER=0
+         LOOP
+            READNEXT PAY.ID ELSE PAY.ID=''
+            COUNTER=COUNTER+1
+         UNTIL PAY.ID='' DO
+            IF @TTY # "phantom" THEN     ; * GRB01
+               CALL PROG.BAR(20,COUNTER,NUM.ITMS,PER)
+            END
+            CARRIER=FIELD(PAY.ID,'*',2)
+            CLIENT=FIELD(PAY.ID,'*',1)
+            READ DREMIT FROM F.REMIT,PAY.ID ELSE DREMIT=''
+            EDI.SENDER.ID=DREMIT<3>
+            EDI.ACCOUNT=DREMIT<14>
+            IF CARRIER#PREV.CARRIER THEN GO WRITE.BILLS
+            IF CLIENT#PREV.CLIENT THEN
+               READV SEP.CHECK.FLG FROM F.CLIENTS,CLIENT,96 ELSE
+                  SEP.CHECK.FLG=''
+               END
+               IF PREV.SEP.CHECK.FLG='Y' THEN GO WRITE.BILLS
+               IF SEP.CHECK.FLG ='Y' THEN GO WRITE.BILLS
+               PREV.CLIENT=CLIENT
+            END
+
+            GO SKIP.WRITE
+WRITE.BILLS:***
+            IF CHECK.AMT < 250000 THEN DA=0 ELSE DA=1
+            IF PREV.SEP.CHECK.FLG='Y' THEN DA<2>=1 ELSE DA<2>=0
+            DA<3>=CHECK.AMT
+            TIMES=DCOUNT(BILL.LIST,@AM)
+            FOR X = 1 TO TIMES
+               BILL.ID=BILL.LIST<X>
+               WRITE DA ON F.WORK,BILL.ID
+            NEXT X
+            BILL.LIST=''
+            CHECK.AMT=0
+            READV PREV.SEP.CHECK.FLG FROM F.CLIENTS,CLIENT,96 ELSE PREV.SEP.CHECK.FLG=''
+            PREV.EDI.SENDER.ID=EDI.SENDER.ID
+            PREV.EDI.ACCOUNT =EDI.ACCOUNT
+            PREV.CARRIER=CARRIER
+            PREV.CLIENT=CLIENT
+SKIP.WRITE: ***
+            READV PRO.AMT FROM F.PAY,PAY.ID,8 ELSE PRO.AMT=0
+            BILL.LIST<-1>=PAY.ID
+            CHECK.AMT=CHECK.AMT+PRO.AMT
+         REPEAT
+         IF CHECK.AMT < 250000 THEN DA=0 ELSE DA=1
+         IF PREV.SEP.CHECK.FLG='Y' THEN DA<2>=1 ELSE DA<2>=0
+         DA<3>=CHECK.AMT
+         TIMES=DCOUNT(BILL.LIST,@AM)
+         FOR X = 1 TO TIMES
+            BILL.ID=BILL.LIST<X>
+            WRITE DA ON F.WORK,BILL.ID
+         NEXT X
+         OPEN 'DICT','FB.PAY' TO D.F.PAY ELSE
+            CALL OPEN.ABORT("DICT FB.PAY",PROG.NAME)
+         END
+         DA=''
+         DA<1>='S'
+         DA<2>=0
+         DA<3>='25FLAG'
+         DA<8>='TFBWORK':CH.NUM:';X;;1'
+         DA<9>='R'
+         DA<10>='1'
+         WRITE DA ON D.F.PAY,'25FLAG.':CH.NUM
+         DA=''
+         DA<1>='S'
+         DA<2>=0
+         DA<3>='SPECIAL'
+         DA<8>='TFBWORK':CH.NUM:';X;;2'
+         DA<9>='R'
+         DA<10>='1'
+         WRITE DA ON D.F.PAY,'SPECIAL.':CH.NUM
+         EX.REC='SSELECT FB.PAY'
+         EX.REC:=' BY SPECIAL.':CH.NUM
+         EX.REC:=' BY 25FLAG.':CH.NUM
+         EX.REC:=' BY CARRIER BY CARRIER#'
+         EX.REC:=' BY CLIENT.SEP.FLAG BY CLIENT.NAME BY CLIENT#'
+         EX.REC:=' BY EDI.SENDER.ID BY EDI.ACCOUNT'
+         EX.REC:=' BY CLIENT.SEP.FLAG BY CLIENT.NAME BY CLIENT#'
+         EX.REC:=' BY BILL.DATE BY PRO'
+         IF NOT(TESTING) THEN EX.REC := ' WITH 40 = "' : BANK.ID : '"'
+         IF NOT(TESTING) THEN
+            IF CLIENT.ID#'' THEN
+               EX.REC := ' AND WITH CLIENT# = "':CLIENT.ID: '"'
+            END
+         END
+         EXECUTE EX.REC PASSLIST CAPTURING OUTPUT
+         DELETE D.F.PAY,'25FLAG.':CH.NUM
+         DELETE D.F.PAY,'SPECIAL.':CH.NUM
+      END
+      PREV.CARRIER=''
+      PREV.CLIENT=''
+      PREV.SEP.CHECK.FLG=''
+      PREV.EDI.SENDER.ID=''
+      PREV.EDI.ACCOUNT=''
+      CHECK.AMT=0
+      CLEARFILE F.WORK
+      IF BANK.ID = 'V' THEN
+         BEGIN CASE
+            CASE FORM = 'P' ; EXECUTE 'SP-ASSIGN F15'
+            CASE FORM = 'N' ; EXECUTE 'SP-ASSIGN S'
+            CASE 1 ; EXECUTE 'SP-ASSIGN F0'
+         END CASE
+      END ELSE
+         EXECUTE 'SP-ASSIGN F5'
+      END
+
+      ***PRINTER ON
+      GOSUB 9000
+      COUNTER=0
+*
+* Build stub array
+*
+
+      STUB=''
+      ATTR=1
+      ***PRINT ESC:"(s":LASER<4>:"h"    ;* GRB02
+      LOOP
+         READNEXT PAY.ID ELSE PAY.ID=''
+         COUNTER=COUNTER+1
+      UNTIL PAY.ID='' DO
+
+         CLIENT=FIELD(PAY.ID,'*',1)
+         CARRIER=FIELD(PAY.ID,'*',2)
+         READ DREMIT FROM F.REMIT,PAY.ID ELSE DREMIT=''
+         EDI.SENDER.ID=DREMIT<3>
+         EDI.ACCOUNT=DREMIT<14>
+         CLIENT.BREAK = 0
+         IF CARRIER NE PREV.CARRIER THEN GO PRINT.CHECK
+
+         IF CLIENT NE PREV.CLIENT THEN
+            READ DCLIENTS FROM F.CLIENTS,CLIENT ELSE
+               DCLIENTS=''
+               DCLIENTS<2>=CLIENT:' Not On File!'
+            END
+            SEP.CHECK.FLG=DCLIENTS<96>
+            IF PREV.SEP.CHECK.FLG='Y' THEN GO PRINT.CHECK
+            IF SEP.CHECK.FLG='Y' THEN GO PRINT.CHECK
+            IF BANK.ID='V' THEN GO PRINT.CHECK
+            GOSUB 8200                   ; * PRINT client payment break line
+            GOSUB 8100                   ; * Update client checks
+            CLIENT.NAME=DCLIENTS<2>
+            PREV.CLIENT=CLIENT
+         END
+
+         GO SKIP.PRINT.CHECK
+
+PRINT.CHECK:***
+         IF PREV.CARRIER # '' THEN
+            GOSUB 8200                   ; * PRINT client payment break line
+            GOSUB 8100                   ; * Update client checks
+            STUB<-1>=' Total for check ':CHECK.NUM:' = ':CHECK.AMT'L26,#15'
+            ATTR=ATTR+1
+            GOSUB 8000                   ; * PRINT Check
+         END
+         PREV.CARRIER=CARRIER
+         PREV.CLIENT=CLIENT
+         READ DCLIENTS FROM F.CLIENTS,CLIENT ELSE
+            DCLIENTS=''
+            DCLIENTS<2>=CLIENT:' Not On File!'
+         END
+         CLIENT.NAME=DCLIENTS<2>
+         PREV.SEP.CHECK.FLG=DCLIENTS<96>
+         PREV.EDI.SENDER.ID=EDI.SENDER.ID
+         PREV.EDI.ACCOUNT=EDI.ACCOUNT
+*
+*START PROCESSING
+SKIP.PRINT.CHECK:***
+
+         READ PAY.REC FROM F.PAY,PAY.ID THEN
+            PRO.NUM=FIELD(PAY.ID,'*',3)
+            VERSION=FIELD(PAY.ID,'*',4)
+            PRO.DATE=PAY.REC<1>
+            PRO.AMT=PAY.REC<8>
+
+            BILL.AMT=PAY.REC<8>-PAY.REC<11>-PAY.REC<10>
+            IF BILL.AMT=PRO.AMT THEN BILL.AMT=''   ; * Don't Show if Same
+            CHECK.AMT=CHECK.AMT+PRO.AMT
+            CLIENT.CHECK.AMT=CLIENT.CHECK.AMT+PRO.AMT
+
+            IF CHECK.REC<25> = '' THEN CHECK.REC<25> = 0     ; * JCW02
+            CHECK.REC<25> += 1           ; * JCW02
+            DTL.REC = ''                 ; * JCW02
+            DTL.REC<1>=CARRIER:'*':PRO.NUM:'*':VERSION       ; * JCW02
+            DTL.REC<2>=PRO.AMT           ; * JCW02
+            DTL.REC<3>=CLIENT            ; * JCW02
+            DTL.ID = CHECK.ID:'*':CHECK.REC<25>    ; * JCW02
+            WRITE DTL.REC ON F.CHECKS.D, DTL.ID    ; * JCW02
+            CLIENT.CHECK.REC<7,-1>=CARRIER:'*':PRO.NUM:'*':VERSION
+            CLIENT.CHECK.REC<8,-1>=PRO.AMT
+            CLIENT.CHECK.REC<12,-1>=PRO.AMT        ; * Save Pro Amount
+            CUT.DESC=''
+            CUT.COUNT=0
+            FOR I=1 TO 2
+               IF TRIM(PAY.REC<41,I>) NE '' THEN
+                  IF CUT.DESC='' THEN
+                     CUT.DESC=' <--':PAY.REC<41,I>
+                  END ELSE
+                     CUT.DESC=CUT.DESC:',':PAY.REC<41,I>
+                  END
+               END
+            NEXT I
+*
+* Build stub array
+*
+
+            TEXT=SPACE(1):PRO.DATE'D2/'
+            TEXT:=SPACE(2):PRO.NUM'L#14'
+
+            TEXT:=BILL.AMT'R26Z,#9'
+            TEXT:=PRO.AMT'R26,#9'
+            TEXT:=SPACE(1)
+            BASE.LEN=LEN(STUB<ATTR>)
+            TEXT.LEN=LEN(TEXT)
+            DESC.LEN=LEN(CUT.DESC)
+            TOT.LEN=BASE.LEN+TEXT.LEN+DESC.LEN
+            IF TOT.LEN GT 132 THEN
+               IF BASE.LEN > 0 THEN ATTR=ATTR+1
+               STUB<ATTR>=TEXT
+               IF CUT.DESC NE '' THEN
+                  X=DCOUNT(CUT.DESC,',')
+                  FOR I=1 TO X
+                     C.TEXT=FIELD(CUT.DESC,',',I)
+                     IF I NE X THEN C.TEXT=C.TEXT:', '
+                     BASE.LEN=LEN(STUB<ATTR>)
+                     DESC.LEN=LEN(C.TEXT)
+                     TOT.LEN=BASE.LEN+DESC.LEN
+                     IF TOT.LEN GE 132 THEN ATTR=ATTR+1
+                     STUB<ATTR>=STUB<ATTR>:C.TEXT
+                  NEXT I
+*
+                  BEGIN CASE
+                     CASE LEN(STUB<ATTR>) LE 44
+                        STUB<ATTR>=STUB<ATTR>'L#44'
+                     CASE LEN(STUB<ATTR>) LE 88
+                        STUB<ATTR>=STUB<ATTR>'L#88'
+                     CASE 1
+                        STUB<ATTR>=STUB<ATTR>'L#132'
+                  END CASE
+               END
+            END ELSE
+               STUB<ATTR>=STUB<ATTR>:TEXT:CUT.DESC
+            END
+            IF NOT(TESTING) THEN DELETE F.PAY,PAY.ID
+            IF NOT(TESTING) THEN
+               IF BANK.ID='F' THEN WRITE PAY.REC ON F.PAY.LAST,PAY.ID
+               IF BANK.ID='M' THEN WRITE PAY.REC ON F.PAY.LAST,PAY.ID
+            END
+
+            CARRIER.ID = FIELD(PAY.ID,"*",2)
+            IF CARRIER.ID = '00041' THEN
+               ACTIVITY.CODE = 8
+               ACT.TRANS.DATE = CHECK.REC<2>
+               GOSUB UPD.UPS.SCHED
+            END
+
+         END
+      REPEAT
+*
+      PREV.CARRIER=CARRIER
+      GOSUB 8200                         ; * PRINT client payment break line
+
+      STUB<-1>=' Total for check ':CHECK.NUM:' = ':CHECK.AMT'L26,#15'
+      GOSUB 8100                         ; * Update client checks
+      GOSUB 8000                         ; * PRINT check
+
+      BANK.REC<2>=CHECK.NUM
+      IF NOT(TESTING) THEN WRITE BANK.REC ON F.BANK,'BANK*':BANK.ID
+   **   PRINTER CLOSE           ;* GRB02
+      IF FORM='N' THEN
+         EXECUTE 'SP-ASSIGN F0'
+         STOP
+      END
+*
+* PRINT overflow check stubs
+*
+      EXECUTE 'SSELECT FBWORK':CH.NUM PASSLIST CAPTURING OUTPUT
+*
+* Get PRINTer number
+*
+      IF @SELECTED > 0 THEN              ; * JCW01
+         CRT @(0,3):@(-3):
+         TEXT='PRINTing overflow stubs.'
+         CALL CENTER(TEXT,80)
+         CRT @(0,10):TEXT
+         SELECT F.WORK TO SAVE.LIST
+500:     PRT.NUM=5
+         HELP="Enter the PRINTer number on which to overflow stubs."
+         CALL GEN.IN(0,20,'Enter PRINTer number ':PRT.NUM'L#3','',Q,0,3,'','',1,-3,20,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         IF QI='' THEN Q=PRT.NUM
+         PRT.NUM=Q
+         CRT @(21,20):PRT.NUM'L#3'
+         HELP="Enter either Y or N."
+510:     CALL GEN.IN(0,22,'Is PRINTer number correct? Y','',Q,0,1,'','',0,-1,22,1,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='Y' ! QI=''
+               NULL
+            CASE QI='N'
+               GOTO 500
+            CASE 1
+               GOTO 510
+         END CASE
+         CALL PRINTER.NUM(PRT.NUM,QUEUE)
+
+         EXECUTE 'SP-ASSIGN HIF':QUEUE
+         GOSUB 9000
+*
+         LOOP
+            READNEXT ID FROM SAVE.LIST ELSE ID=''
+         UNTIL ID='' DO
+            READ STUB FROM F.WORK,ID THEN
+               ATTR=0
+               LN.COUNT=0
+               CHECK=FIELD(ID,'*',1)
+               CARRIER=FIELD(ID,'*',3)
+               DATE=FIELD(ID,'*',4)
+               PAGE=0
+               READV NAME FROM F.CARRIER,CARRIER,1 ELSE
+                  NAME='~~~ Unknown ~~~'
+               END
+450:
+
+               IF LN.COUNT=0 ! LN.COUNT = MAX.LINES THEN     ; * NPR03
+                  LN.COUNT=0
+                  PAGE=PAGE+1
+                  PAGE
+                  ***PRINT ''           ;* GRB02
+                  ***PRINT 'Check Number ':CHECK:'  Check Date ':DATE'D2/':'  To: ':NAME'L#30':SPACE(46):'Page. ':PAGE           ;* GRB02
+                  ***PRINT ''           ;* GRB02
+                  FOR I=1 TO 3
+
+                     ***PRINT ('  ':'Date''L#8':'  ':'Pro Number''L#24':'Amount')'L#44':           ;* GRB02
+                  NEXT I
+                  ***PRINT ''           ;* GRB02
+
+                  HTML<-1> = \<h2></h2>\
+                  HTML<-1> = \<p>\ : HTML.SPC : \</p>\
+
+                  HTMLDLINE = 'Check Number ':CHECK:'  Check Date ':DATE'D2/':'  To: ':NAME'L#30':SPACE(46):'Page. ':PAGE
+
+                  HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+
+                  HTML<-1> = \<p>\ : HTMLDLINE : "." : \</p>\          ; *NPR03 ; * JMK06
+
+                  HTML<-1> = \<p>\ : HTML.SPC : \</p>\
+                  HTMLDLINE = ""
+                  FOR I=1 TO 3
+                     PLINE = 'Date''L#8':'  ':'Pro Number''L#24':'Amount'
+                     SPX = 44 - LEN(PLINE)
+
+                     HTMLDLINE := ('  ':'Date''L#8':'  ':'Pro Number''L#24':'Amount')'L#44'
+
+                  NEXT I
+
+                  HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+                  HTML<-1> = \<p>\ : HTMLDLINE : \</p>\      ; *NPR03
+
+                  HTML<-1> = \<p>\ : HTML.SPC : \</p>\
+
+               END
+               ATTR=ATTR+1
+               LN.COUNT=LN.COUNT+1
+               IF STUB<ATTR> NE '' THEN
+                  ***PRINT STUB<ATTR>           ;* GRB02
+
+                  HTMLDLINE = STUB<ATTR>
+                  HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+
+                  HTML<-1> = \<p>\ : HTMLDLINE : "." : \</p>\          ; *NPR03 ; * JMK06
+
+                  GOTO 450
+               END
+               IF STUB<ATTR+1> NE '' THEN GO 450
+            END
+         REPEAT
+      END
+   **   PRINTER OFF           ;* GRB02
+   **   PRINTER CLOSE           ;* GRB02
+      RELEASE
+
+      HTML<-1>='</BODY>'
+
+      W.DATE = OCONV(DATE(),"D4/")
+      CONVERT "/" TO "" IN W.DATE
+      VOUCH.EMAIL.ADDRS = DCLIENTS<260>
+
+      GOSUB SEND.EMAIL
+
+      STOP
+
+***************************************************************
+8000:*  Subroutine to PRINT check
+**************************************************************
+      IF FORM = 'C' OR FORM='V' THEN
+         ***PRINT ''           ;* GRB02
+         ***PRINT ''           ;* GRB02
+
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\      ; *NPR03
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\      ; *NPR03
+
+         ***PRINT ESC:0:                    ; * 8 LPI           ;* GRB02
+         ***PRINT CHAR(15):                 ; * Condensed PRINT           ;* GRB02
+
+         MAX.STUB.LINES=21
+         IF FIRST.CHECK THEN MAX.STUB.LINES=MAX.STUB.LINES-1
+         IF ATTR LE MAX.STUB.LINES THEN
+            FOR I=1 TO MAX.STUB.LINES
+             **  IF I=5 AND FIRST.CHECK THEN PRINT ''           ;* GRB02
+               ***PRINT STUB<I>           ;* GRB02
+
+               IF I=5 AND FIRST.CHECK THEN HTML<-1> = \<p>\ : HTML.SPC : \</p>\  ; *NPR03
+
+               HTMLDLINE = STUB<I>
+               HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+               HTML<-1> = \<p>\ : HTMLDLINE : \</p>\         ; *NPR03
+
+            NEXT I
+         END ELSE
+            FOR I=1 TO 10
+               ***PRINT ''           ;* GRB02
+            NEXT I
+
+            FOR I=1 TO 10                ; *NPR03
+               HTML<-1> = \<p>\ : HTML.SPC : \</p>\          ; *NPR03
+            NEXT I                       ; *NPR03
+
+            ***PRINT CHAR(18):SPACE(30):'SEE ATTACHED LISTING'           ;* GRB02
+            FOR I=1 TO 10
+               ***PRINT ''           ;* GRB02
+            NEXT I
+
+            HTMLDLINE = SPACE(30) : 'SEE ATTACHED LISTING'
+            HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+            HTML<-1> = \<p>\ : HTMLDLINE : \</p>\  ; *NPR03
+
+            FOR I=1 TO 10                ; *NPR03
+               HTML<-1> = \<p>\ : HTML.SPC : \</p>\          ; *NPR03
+            NEXT I
+
+            WRITE STUB ON F.WORK,CHECK.ID:'*':PREV.CARRIER:'*':CHECK.DATE
+         END
+         FIRST.CHECK=0
+      END ELSE
+         GOSUB 9100                      ; * PRINT Paper Vouchers
+      END
+*
+* Update last purchase date in carrier record
+*
+      READU CARRIER.REC FROM F.CARRIER,PREV.CARRIER ELSE CARRIER.REC=''
+      IF TESTING THEN RELEASE F.CARRIER,PREV.CARRIER
+      CARRIER.REC<25>=CHECK.DATE
+      IF NOT(TESTING) THEN WRITE CARRIER.REC ON F.CARRIER,PREV.CARRIER
+*
+* PRINT carrier name, address, city, state and zip
+*
+      CAR.DESC=''
+      CAR.DESC<-1>=CARRIER.REC<1>
+      IF CARRIER.REC<2,1> NE '' THEN CAR.DESC<-1>=CARRIER.REC<2,1>
+      IF CARRIER.REC<2,2> NE '' THEN CAR.DESC<-1>=CARRIER.REC<2,2>
+      IF CARRIER.REC<3> NE '' THEN
+         CAR.DESC<-1>=CARRIER.REC<3>:', ':CARRIER.REC<4>:'  ':CARRIER.REC<5>
+      END
+
+      IF FORM='P' THEN
+         ALPHA.AMT=108
+      END ELSE
+         ALPHA.AMT=63                    ; * Set Length of Return
+      END
+
+      CALL ALPHA.AMOUNT(CHECK.AMT,ALPHA.AMT)
+
+      IF FORM='P' THEN
+         ***PRINT 'Pay:''L#10':ALPHA.AMT<1>:STR('.',10):CHECK.AMT'R26,$'           ;* GRB02
+         ***PRINT ''           ;* GRB02
+
+         ***PRINT 'To:''L#10':OCONV(CAR.DESC<1>,"MCU")          ; * NPR01           ;* GRB02
+         FOR X = 2 TO 4
+
+            ***PRINT SPACE(10):OCONV(CAR.DESC<X>,"MCU")         ; *NPR01           ;* GRB02
+         NEXT X
+
+         HTMLDLINE = 'Pay:''L#10':ALPHA.AMT<1>:STR('.',10):CHECK.AMT'R26,$'      ; *NPR03
+         HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+         HTML<-1> = \<p>\ : HTMLDLINE : \</p>\     ; *NPR03
+
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\      ; *NPR03
+
+         HTMLDLINE = 'To:''L#10':OCONV(CAR.DESC<1>,"MCU") : \</p>\     ; *NPR03
+         HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+         HTML<-1> = \<p>\ : HTMLDLINE : \</p>\     ; *NPR03
+
+         FOR X = 2 TO 4
+            HTMLDLINE = SPACE(10):OCONV(CAR.DESC<X>,"MCU")   ; *NPR03
+            HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+            HTML<-1> = \<p>\ : HTMLDLINE : \</p>\  ; *NPR03
+         NEXT X
+
+      END ELSE
+         ***PRINT ''           ;* GRB02
+         ***PRINT ''           ;* GRB02
+         ***PRINT ''           ;* GRB02
+         IF FORM='C' OR FORM='V' THEN
+            ***PRINT ESC:2:                 ; * 6 LPI           ;* GRB02
+            ***PRINT CHAR(18):              ; * Condensed PRINT off           ;* GRB02
+         END
+*
+* PRINT "Check" part of Check
+* Begin GRB02
+         ***PRINT ''
+         ***PRINT '' ; ***PRINT ''
+         ***PRINT CHECK.NUM'R%6':SPACE(2):CHECK.DATE'D2/'
+         ***PRINT ''
+         ***PRINT ''
+         ***PRINT ''
+         ***PRINT SPACE(59):'Void after 90 days'
+         ***PRINT ''
+         ***PRINT ''
+         ***PRINT SPACE(61):CHECK.AMT'R26,$*14'
+         ***PRINT ALPHA.AMT<1>
+         ***PRINT ALPHA.AMT<2>
+         ***PRINT ''
+* End GRB02
+* Update last purchase date in carrier record
+*
+         FOR I=1 TO 4
+            ***PRINT SPACE(7):OCONV(CAR.DESC<I>,"MCU")'L#60'    ; *NPR01           ;* GRB02
+         NEXT I
+         FOR X = 1 TO 4
+            ***PRINT ''
+         NEXT X
+         IF FORM='C' OR FORM='V' THEN
+            ***PRINT CHAR(15):              ; * Condensed PRINT (Return to "Small" PRINT)
+         END
+
+         HTMLDLINE = 'Pay:''L#10':ALPHA.AMT<1>:STR('.',10):CHECK.AMT'R26,$'      ; *NPR03
+         HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+         HTML<-1> = \<p>\ : HTMLDLINE : \</p>\     ; *NPR03
+
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\      ; *NPR03
+
+         HTMLDLINE = 'To:''L#10':OCONV(CAR.DESC<1>,"MCU")    ; *NPR03
+         HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+         HTML<-1> = \<p>\ : HTMLDLINE : \</p>\     ; *NPR03
+
+         FOR X = 2 TO 4
+            HTMLDLINE = SPACE(10):OCONV(CAR.DESC<X>,"MCU")   ; *NPR03
+            HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+            HTML<-1> = \<p>\ : HTMLDLINE : \</p>\  ; *NPR03
+         NEXT X
+
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\      ; *NPR03
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\      ; *NPR03
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\      ; *NPR03
+*
+* Set up "Check" part of Check
+*
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\      ; *NPR03
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\      ; *NPR03
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\      ; *NPR03
+
+         HTMLDLINE = CHECK.NUM'R%6':SPACE(2):CHECK.DATE'D2/'           ; *NPR03
+         HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+         HTML<-1> = \<p>\ : HTMLDLINE : \</p>\     ; *NPR03
+
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\      ; *NPR03
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\      ; *NPR03
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\      ; *NPR03
+
+         HTMLDLINE = SPACE(59):'Void after 90 days'          ; *NPR03
+         HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+         HTML<-1> = \<p>\ : HTMLDLINE : \</p>\     ; *NPR03
+
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\      ; *NPR03
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\      ; *NPR03
+
+         HTMLDLINE = SPACE(61):CHECK.AMT'R26,$*14'           ; *NPR03
+         HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+         HTML<-1> = \<p>\ : HTMLDLINE : \</p>\     ; *NPR03
+
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\      ; *NPR03
+
+         HTMLDLINE = ALPHA.AMT<2>        ; *NPR03
+         HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+         HTML<-1> = \<p>\ : HTMLDLINE : \</p>\     ; *NPR03
+
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\      ; *NPR03
+
+         FOR I=1 TO 4
+            HTMLDLINE = SPACE(7):OCONV(CAR.DESC<I>,"MCU")'L#60'        ; *NPR01
+            HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+            HTML<-1> = \<p>\ : HTMLDLINE : \</p>\  ; *NPR03
+         NEXT I
+         FOR X = 1 TO 4
+            HTML<-1> = \<p>\ : HTML.SPC : \</p>\   ; *NPR03
+         NEXT X
+
+      END
+*
+* Update check file
+*
+      CHECK.REC<1>=CHECK.NUM
+      CHECK.REC<2>=CHECK.DATE
+      CHECK.REC<3>=PREV.CARRIER
+      CHECK.REC<4>=CHECK.AMT
+      IF CHECK.REC<25> = '' THEN CHECK.REC<25> = 0           ; * JCW02
+      IF NOT(TESTING) THEN WRITE CHECK.REC ON F.CHECKS,CHECK.ID
+      IF NOT(TESTING) THEN               ; * JMK03
+         READU XREF.REC FROM F.CHECK.DATE.XREF,CHECK.DATE ELSE XREF.REC=''       ; * JMK03
+         LOCATE(CHECK.ID,XREF.REC;SSPOS) ELSE      ; * JMK03
+            XREF.REC<-1>=CHECK.ID        ; * JMK03
+            WRITE XREF.REC ON F.CHECK.DATE.XREF,CHECK.DATE   ; * JMK03
+         END                             ; * JMK03
+      END                                ; * JMK03
+
+* Check for duplicate check and append version character (A THRU ~)
+*
+      APPEND=64
+      CHECK.NUM=CHECK.NUM+1
+      CHECK.ID=CHECK.NUM'R%6':'*':BANK.ID
+      LOOP
+         READ TEMP FROM F.CHECKS,CHECK.ID ELSE TEMP=''
+      UNTIL TEMP='' DO
+         APPEND=APPEND+1
+         TEMP2=CHECK.NUM:CHAR(APPEND)
+         CHECK.ID=TEMP2'R%6':'*':BANK.ID
+      REPEAT
+      CHECK.REC=''
+      CHECK.AMT=0
+      STUB=''
+      ATTR=1
+      RETURN
+*
+**************************************************************
+8100:* Update client history file
+*************************************************************
+
+      OPEN '','FB.BILLS.HIST,':PREV.CLIENT TO F.HIST ELSE
+         CALL OPEN.ABORT("FB.BILLS.HIST,":PREV.CLIENT,PROG.NAME)
+      END
+      X=DCOUNT(CLIENT.CHECK.REC<7>,CHAR(253))
+      FOR I=1 TO X
+         HIST.ID=CLIENT.CHECK.REC<7,I>
+         MATREADU HIST.REC FROM F.HIST, HIST.ID THEN
+            IF TESTING THEN RELEASE F.HIST, HIST.ID
+            FBH.CK.AMT = CLIENT.CHECK.AMT
+            FBH.CK.NO = CHECK.ID
+            FBH.CK.DATE = CHECK.DATE
+            IF NOT(TESTING) THEN MATWRITE HIST.REC ON F.HIST, HIST.ID
+            IF NOT(TESTING) THEN CALL UPD.FB.STATUS.UPDATE(PREV.CLIENT,HIST.ID,F.STATUS.UPDATE)      ; * JMK05
+
+            READ PRO.REC FROM F.HIST,HIST.ID THEN  ; * JMK04
+               READ CLIENT.ITM FROM F.CLIENTS,PREV.CLIENT ELSE CLIENT.ITM=''     ; * JMK04
+               OPEN '','EDI.BILLS.HIST,':PREV.CLIENT TO F.EDI.BILLS.HIST THEN    ; * JMK04
+                  READ EDI.HIST.REC FROM F.EDI.BILLS.HIST,HIST.ID ELSE           ; * JMK04
+                     EDI.HIST.REC=''     ; * JMK04
+                  END                    ; * JMK04
+               END ELSE                  ; * JMK04
+                  EDI.HIST.REC=''        ; * JMK04
+               END                       ; * JMK04
+               IF CLIENT.ITM<12>='Y' THEN          ; * JMK04
+                  OPEN '','DIVISION.CODES,':PREV.CLIENT TO F.DIV THEN  ; * JMK04
+                     READ DIV.ITM FROM F.DIV,PRO.REC<9> ELSE           ; * JMK04
+                        DIV.ITM=''       ; * JMK04
+                     END                 ; * JMK04
+                  END ELSE               ; * JMK04
+                     DIV.ITM=''          ; * JMK04
+                  END                    ; * JMK04
+               END ELSE                  ; * JMK04
+                  DIV.ITM=''             ; * JMK04
+               END                       ; * JMK04
+               OPEN '','VEND.CUST,':PREV.CLIENT TO F.VC THEN           ; * JMK04
+                  READ VC.ITM FROM F.VC,PRO.REC<17> ELSE     ; * JMK04
+                     VC.ITM=''           ; * JMK04
+                  END                    ; * JMK04
+               END ELSE                  ; * JMK04
+                  VC.ITM=''              ; * JMK04
+               END                       ; * JMK04
+               SQLVIN=''                 ; * JMK04
+               SQLVIN<1>=USER            ; * JMK04
+               SQLVIN<2>=PREV.CLIENT     ; * JMK04
+               SQLVIN<3>=HIST.ID         ; * JMK04
+               SQLVOUT=''                ; * JMK04
+*              CALL UPD.SQL.FBHIST.SUB(SQLVIN,SQLVOUT,CLIENT.ITM,DIV.ITM,VC.ITM,PRO.REC,EDI.HIST.REC)          ; * JMK04
+            END                          ; * JMK04
+*
+* Update pro cross reference file
+*
+            READU CRX.REC FROM F.CRX,HIST.ID ELSE CRX.REC=''
+            IF TESTING THEN RELEASE F.CRX,HIST.ID
+            CRX.REC<7> = FBH.CAR.CHG
+            CRX.REC<8> = FBH.ACT.CHG
+            CRX.REC<13> = FBH.CK.AMT
+            CRX.REC<14> = FBH.CK.NO
+            CRX.REC<15> = FBH.CK.DATE
+            CRX.REC<30> = FBH.ENT.DATE
+            CRX.REC<37> = FBH.PRO.DATE
+            CRX.REC<43> = FBH.OR.FLAG
+            IF NOT(TESTING) THEN WRITE CRX.REC ON F.CRX,HIST.ID
+
+            IF NOT(TESTING) THEN
+
+            END
+
+            REMIT.ID=PREV.CLIENT:'*':HIST.ID
+            READU DREMIT FROM F.REMIT,REMIT.ID THEN
+               IF TESTING OR FBH.ACT.CHG+0 = 0 THEN RELEASE F.REMIT,REMIT.ID
+               DREMIT<7>=CLIENT.CHECK.REC<8,I>
+               DREMIT<16>=CHECK.DATE
+               DREMIT<17>=CHECK.ID
+               DREMIT<18>=CLIENT.CHECK.AMT
+               IF NOT(TESTING) AND NOT(FBH.ACT.CHG+0 = 0) THEN WRITE DREMIT ON F.REMIT,REMIT.ID
+            END ELSE RELEASE F.REMIT,REMIT.ID
+         END ELSE RELEASE F.HIST, HIST.ID
+      NEXT I
+      CLIENT.CHECK.REC=''
+      CLIENT.CHECK.AMT=0
+*
+      RETURN
+
+*************************************************************
+8200:* Put client break line on check stub
+************************************************************
+      IF STUB<ATTR> NE '' THEN ATTR=ATTR+1
+
+      TEXT=STR('-',130)
+      TEXT1=CLIENT.CHECK.AMT'R26,':' For ':CLIENT.NAME
+      TEXT2=TRIM(PREV.EDI.SENDER.ID:' ':PREV.EDI.ACCOUNT)
+      IF TEXT2#'' THEN TEXT1:=' (':TEXT2:')'
+      LTEXT1=LEN(TEXT1)
+      LSTART=INT((130-LTEXT1)/2)
+      TEXT[LSTART,LTEXT1]=TEXT1
+
+      STUB<ATTR>=' ':TEXT
+*
+      RETURN
+*
+************************************************************
+9000: ** Configure the PRINTer to Small (Condensed) PRINT
+***********************************************************
+ RETURN
+      BEGIN CASE
+         CASE PRT.NUM = 1 OR PRT.NUM = 2
+            ***PRINT CHAR(15):
+         CASE PRT.NUM = 4 OR PRT.NUM = 5 OR PRT.NUM = 6
+            LASER = ''
+            LASER<1 >= 0                 ; * Portrait
+            LASER<2 >= 6                 ; * Lines per inch
+            LASER<3 >= 61                ; * Page length
+            LASER<4 >= 16.7              ; * Characters per inch
+            LASER<5 >= 0
+            LASER<6 >= 0
+            LASER<7 >= 1
+            LASER<8 >= 0
+            MARGIN = 0
+* Begin GRB02
+            ***PRINT ESC:"E"
+            ***PRINT ESC:"&l":LASER<1>:"O":           ; * Set portrait
+            ***PRINT ESC:"&l":LASER<2>:"D":           ; * Lines per inch
+            ***PRINT ESC:"&l":LASER<3>:"F":           ; * Page length
+            ***PRINT ESC:"(s":LASER<4>:"h":           ; * Set pitch
+            ***PRINT LASER<5>:"p":          ; * Proportional ***PRINTing
+            ***PRINT LASER<6>:"s":          ; * Italics off
+            ***PRINT "0b":                  ; * Stroke Weight
+            ***PRINT "0T":                  ; * Line ***PRINTer Font
+            ***PRINT ESC:"&l":LASER<7>:"H":           ; * Bin selection
+            ***PRINT ESC:"&a":MARGIN:"L":   ; *
+            ***PRINT ESC:'"g':LASER<8>:'F'  ; * Paper output
+            * End GRB02
+      END CASE
+      RETURN
+***********************************************************
+UPD.UPS.SCHED:
+***********************************************************
+      UPS.VIN = '' ; UPS.VOUT = ''
+
+      UPS.VIN<1> = PAY.ID
+      UPS.VIN<2> = ACTIVITY.CODE
+      UPS.VIN<3> = ACT.TRANS.DATE
+      UPS.VIN<4> = ""                    ; * No longer used
+      UPS.VIN<5> = USER
+      UPS.VIN<6> = DATE()
+      UPS.VIN<7> = TIME()
+
+      CALL FB.UPD.UPS.SCHED(UPS.VIN,UPS.VOUT,F.UPS.SCHED,F.UPS.SCHED.HIST)
+
+      RETURN
+***********************************************************
+9100: * PRINT Stub on Paper
+***********************************************************
+      ATTR=0
+      LN.COUNT=0
+      PAGE=0
+9150:
+      IF LN.COUNT=0 ! LN.COUNT = MAX.LINES THEN    ; * NPR03
+         LN.COUNT=0
+         PAGE=PAGE+1
+         PAGE
+         ***PRINT 'Control #: ':CHECK.NUM'L#8':           ;* GRB02
+         ***PRINT SPACE(3):'Reference Date: ':CHECK.DATE'D2/':           ;* GRB02
+         ***PRINT SPACE(12):'Remittance Advice':           ;* GRB02
+         ***PRINT SPACE(48):'Page.. ':PAGE           ;* GRB02
+         ***PRINT ''           ;* GRB02
+         FOR X = 1 TO 3
+            ***PRINT 'DATE''R#7':'PRO NUMBER''R#14':'$ BILLED''R#13':           ;* GRB02
+            ***PRINT '$ PAID''R#8':'  ':           ;* GRB02
+         NEXT X
+         ***PRINT                           ; * Drop down           ;* GRB02
+         FOR X = 1 TO 3
+            ***PRINT SPACE(1):STR('-',08):  ; * Date           ;* GRB02
+            ***PRINT SPACE(2):STR('-',14):  ; * Pro           ;* GRB02
+            ***PRINT SPACE(1):STR('-',08):  ; * $ Billed           ;* GRB02
+            ***PRINT SPACE(1):STR('-',08):  ; * $ Paid           ;* GRB02
+            ***PRINT SPACE(1):
+         NEXT X
+         ***PRINT                           ; * Drop Down           ;* GRB02
+
+         IF FIRST.PG THEN
+            FIRST.PG = 0
+         END ELSE
+
+            HTML<-1> = \<h2></h2>\
+         END
+
+         HTMLDLINE = 'Control #: ':CHECK.NUM'L#8'
+         HTMLDLINE := SPACE(3):'Reference Date: ':CHECK.DATE'D2/'
+         HTMLDLINE := SPACE(12):'Remittance Advice..'
+         HTMLDLINE := SPACE(48):'Page.. ':PAGE
+         HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+         HTML<-1> = \<p><br />\ : HTMLDLINE : \<br /></p>\   ; *NPR03
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\      ; *NPR03
+
+         HTMLDLINE = ''
+         FOR X = 1 TO 3
+            HTMLDLINE := 'DATE''R#7':'PRO NUMBER''R#14':'$ BILLED''R#13'
+            HTMLDLINE := '$ PAID''R#8':'  '
+         NEXT X
+
+         HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+         HTML<-1> = \<p><br />\ : HTMLDLINE : \<br /></p>\   ; *NPR03
+
+         HTMLDLINE = ''
+         FOR X = 1 TO 3
+            HTMLDLINE := SPACE(1):STR('-',08)      ; * Date
+            HTMLDLINE := SPACE(2):STR('-',14)      ; * Pro
+            HTMLDLINE := SPACE(1):STR('-',08)      ; * $ Billed
+            HTMLDLINE := SPACE(1):STR('-',08)      ; * $ Paid
+            HTMLDLINE := SPACE(1)
+         NEXT X
+
+         HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+         HTML<-1> = \<p><br />\ : HTMLDLINE : \<br /></p>\   ; *NPR03
+
+      END
+      ATTR=ATTR+1
+      LN.COUNT=LN.COUNT+1
+      IF STUB<ATTR> NE '' THEN
+         ***PRINT STUB<ATTR>
+         HTMLDLINE = STUB<ATTR>
+         HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+         HTML<-1> = \<p>\ : HTMLDLINE : \</p>\     ; *NPR03
+         GOTO 9150
+      END
+
+      IF LN.COUNT> LINES.PER.PG THEN
+         PAGE=PAGE+1
+         PAGE
+         ***PRINT 'Control #: ':CHECK.NUM'L#8':           ;* GRB02
+         ***PRINT SPACE(3):'Reference Date: ':CHECK.DATE'D2/':           ;* GRB02
+         ***PRINT SPACE(12):'Remittance Advice':           ;* GRB02
+         ***PRINT SPACE(47):'Page... ':PAGE           ;* GRB02
+         FOR X = 1 TO 3
+            ***PRINT ''           ;* GRB02
+         NEXT X
+
+         HTMLDLINE = 'Control #: ':CHECK.NUM'L#8'
+         HTMLDLINE := SPACE(3):'Reference Date: ':CHECK.DATE'D2/'
+         HTMLDLINE := SPACE(12):'Remittance Advice'
+         HTMLDLINE := SPACE(47):'Page... ':PAGE
+
+         HTMLDLINE = CHANGE(HTMLDLINE,' ',HTML.SPC)
+         HTML<-1> = \<h2></h2>\          ; *NPR03
+         HTML<-1> = \<p>\ : HTMLDLINE : \</p>\     ; *NPR03
+
+         FOR X = 1 TO 3
+            HTML<-1> = \<p>\ : HTML.SPC : \</p>\   ; *NPR03
+         NEXT X
+
+         LN.COUNT=0
+      END
+      FOR X = LN.COUNT TO LINES.PER.PG
+         ***PRINT ''
+      NEXT X
+
+      FOR X = LN.COUNT TO LINES.PER.PG
+         HTML<-1> = \<p>\ : HTML.SPC : \</p>\
+      NEXT X
+
+* Now positioned for abbrievated Information
+      RETURN
+***********************************************************
+SEND.EMAIL:
+***********************************************************
+*
+      BEG.DATE = CHECK.DATE - 6
+      END.DATE = CHECK.DATE
+
+* Setup beginning dates needed for writing reports to EMAILDATA
+      OUT.BEG.DATE=OCONV(BEG.DATE,'D2/')
+      BEG.MONTH=FIELD(OUT.BEG.DATE,'/',1)
+      BEG.DAY=FIELD(OUT.BEG.DATE,'/',2)
+      BEG.YEAR=FIELD(OUT.BEG.DATE,'/',3)
+
+* Setup ending dates needed for writing reports to EMAILDATA
+      OUT.END.DATE=OCONV(END.DATE,'D2/')
+      END.MONTH=FIELD(OUT.END.DATE,'/',1)
+      END.DAY=FIELD(OUT.END.DATE,'/',2)
+      END.YEAR=FIELD(OUT.END.DATE,'/',3)
+
+      EMAIL.PATH='E:\ARDENT\PUBLIC\EMAILDATA\'
+
+      PRE.EMAIL.FILENAME=CLIENT'R%5':'-'
+
+      PRE.EMAIL.FILENAME := BEG.YEAR:BEG.MONTH:BEG.DAY:'-':END.YEAR:END.MONTH:END.DAY
+
+      EMAIL.FILENAME = PRE.EMAIL.FILENAME:'-VCH.HTML'
+
+      WRITE HTML ON F.EMAILDATA, EMAIL.FILENAME
+
+********** Email attachment **********
+
+      IF HTML # '' THEN
+         VEMAIL.OUT = ''
+
+         VEMAIL.OUT<1> = "WeeklyClientVouchers@afs.net"      ; * CC: Email addresses
+         VEMAIL.OUT<2> = VOUCH.EMAIL.ADDRS         ; * CC: Email addresses
+
+         VEMAIL.OUT<5> = CLIENT : ' - ' : CLIENT.NAME : ', Vouchers for ' : OCONV(BEG.DATE,"D2/") : ' to ' : OCONV(END.DATE,"D2/")
+
+         VEMAIL.OUT<6,-1>=' '
+         VEMAIL.OUT<6,-1>='Attached please find vouchers for the period ' : OCONV(BEG.DATE,"D2/") : ' to ' : OCONV(END.DATE,"D2/")
+         VEMAIL.OUT<6,-1>=' '
+         VEMAIL.OUT<6,-1>='Thank you. '
+         VEMAIL.OUT<11,-1>=EMAIL.PATH:EMAIL.FILENAME
+         VIN = VEMAIL.OUT
+         VOUT = ''
+
+         CALL SENDMAIL(VIN,VOUT)
+         IF VOUT<1>='ERROR' THEN
+
+         END ELSE
+            IF VOUCH.EMAIL.ADDRS NE "" THEN
+
+            END
+         END
+      END
+
+      RETURN
+
+   END

@@ -1,0 +1,382 @@
+***********************************************************************
+* Program name : OCR.NEEDS.REVIEW.BILLS
+* Author       : Greg Bino
+* Date written : 01-10-2019
+* Library      : FBBP
+* COPYRIGHT (C) 2019 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* SEND CLIENT TO OCR WEBSERVICE INTERFACE
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 09:46:17 on 02/16/2021.
+*
+* Start modification history
+* Mod 00 01-10-19, grb, 21092.0000  New program
+* 091220 : NKH01 : ACCU-1013 Adding aging
+* 011821 : NKH02 : ACCU-1097 Updated Scan Date Processing
+* 021621 : NKH03 : ACCU-1133 Added server checking for dev
+* 022823 : NKH04 : ACCU-2083 Added automation
+* End modification history
+*
+************************************************************************
+*
+* Initialize variables
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE UNIVERSE.INCLUDE UDO.H
+
+      STATUS = 0
+      TB=CHAR(9)
+      RESP.CNT=1
+      RESP = ''
+      VOUT=''
+      TIME.LINE=''
+      ST.TIME = TIME()
+      TIME.LINE<1,1,1>=TIME()            ; * start time
+      PROMPT ''
+      TIMEOUT = 3000
+      PROG.NAME='OCR.NEEDS.REVIEW.RPT'
+      PROG.DESC = 'LIST IMAGES THAT NEED REVIEW'
+      CALL GET.USER.NEW(USER.NAME,CH.NUM)
+      USER.SV = 0                                  ; * NKH04
+      IF USER.NAME[1,3]='SV.' THEN USER.SV=1       ; * NKH04 
+      OPEN '','OPERATOR' TO F.OP ELSE CALL OPEN.ABORT("OPERATOR",PROG.NAME)
+      CALL GET.SERVER.INFO(SVR.VIN,SVR.VOUT)       ; * NKH03
+      SERVER.NAME=SVR.VOUT<1>                      ; * NKH03      
+
+      READV OP.FLG FROM F.OP,USER.NAME,70 ELSE
+         OP.FLG = "N"
+      END
+      OP.FLG = "Y"
+      IF OP.FLG = "Y" THEN
+
+      END ELSE
+         SUBJ="Unauthorized Program Access by ":USER.NAME
+         TEXT=''
+         TEXT<1,-1>=USER.NAME:' ':DATE()'D2/':' ':OCONV(TIME(),'MTHS'):' ':PROG.NAME
+         TEXT<1,-1>='User ':USER.NAME:' tried to access ':PROG.DESC
+         TEXT<1,-1>="(This user's name was not included in the program to allow access)"
+         MVIN=''
+*         MVIN<1>='gbino@afs.net'
+         MVIN<1,-1> ='dfriend@afs.net'
+         MVIN<2>=''
+         MVIN<4>='AFS'
+         MVIN<5>=SUBJ
+         MVIN<6>=TEXT
+         CALL SENDMAIL(MVIN,MVOUT)
+         CALL FB.PRINT.CENT(1,80,12,'Restricted Access Application...')
+         CALL FB.PRINT.CENT(1,80,14,'Access Denied! Contact the IS Help Desk for Access')
+         CALL ELINE('')
+         STOP
+      END
+      * Begin NKH04
+      IF USER.SV THEN       
+         B.DATE = DATE() - 7
+         B.DATE = OCONV(B.DATE,'D4-')
+         E.DATE = DATE() - 1
+         E.DATE = OCONV(E.DATE,'D4-')
+      END ELSE     
+      * End NKH04        
+         OK = 0
+         HELP = "Enter the Date.   [E]=Exit"
+         MASK = 'MM/DD/YY'
+         REQ=1           
+         LOOP
+         UNTIL OK DO
+            CRT @(-1)
+            CRT @(5,2):"OCR Needs Review report"
+            CRT @(10,10):"Enter Begin Scan date (MM/DD/YY) or (E)nd ":    ; *INPUT B.DATE
+            CALL GEN.IN(10,29,MASK,'DATE',Q,REQ,8,'','',2,52,10,0,QI,HELP,0,23)  ; * NKH01
+            IF Q[1,1]="E" THEN
+               EOJD = 1
+               STOP
+            END
+            B.DATE = Q
+            **   B.DATE = ICONV(B.DATE,"D")
+            B.DATE = OCONV(B.DATE,"D4-")
+            B.DATE = B.DATE[1,2]:"-":B.DATE[4,2]:"-":B.DATE[7,4]
+            CRT @(52,10):B.DATE  ; * NKH01
+
+            CRT @(10,12):"Enter End Scan date (MM/DD/YY)     ":           ; **INPUT E.DATE
+            CALL GEN.IN(12,29,MASK,'DATE',Q,REQ,8,'','',2,52,12,0,QI,HELP,0,23)  ; * NKH01
+            E.DATE = Q
+            **    E.DATE = ICONV(E.DATE,"D")
+            E.DATE = OCONV(E.DATE,"D4-")
+            E.DATE = E.DATE[1,2]:"-":E.DATE[4,2]:"-":E.DATE[7,4]
+   
+            CRT @(52,12):E.DATE  ; * NKH01
+            CRT @(5,20):"Are the dates correct (Y/N) ": ; INPUT RESPON     ; * NKH01
+            IF RESPON = "Y" OR RESPON = "y" THEN
+               OK = 1
+            END
+         REPEAT
+      END               ; * NKH04
+
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'OCR.NEEDS.REVIEW.BILLS' ; UPL.VOUT = ''
+      UPL.VIN<3> = USER.NAME
+      UPL.VIN<4> = CH.NUM
+
+      ***    CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+      OPEN 'CONTROL' TO FILE.CNTL ELSE
+         CALL ELINE('UNABLE TO OPEN CONTROL FILE')
+         RETURN
+      END
+      OPEN 'GRB' TO F.GRB ELSE
+         CALL ELINE('UNABLE TO OPEN GRB FILE')
+         RETURN
+      END
+      OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE CALL OPEN.ABORT('BILLDATA.':USER.NAME,PROG.NAME)
+      
+      * Begin NKH04
+      OPEN '','NEEDS.REVIEW.OUT' TO DOS.FILE.OUT ELSE
+         CALL ELINE('Unable to open the ':DOS.FILE.OUT:' out file')
+      END                     
+      * End NKH04      
+
+      READ XMLPARAMS FROM FILE.CNTL,"CLIENT.OCR" THEN
+         URL = XMLPARAMS<1>
+         SERVER = XMLPARAMS<2>
+         SOAPACTION = XMLPARAMS<3>
+         LOGGING = XMLPARAMS<4>          ; * Y/N
+         LOGFILE = XMLPARAMS<5>
+         EMAIL.RECIP = XMLPARAMS<6>
+         TEST.FLG = XMLPARAMS<7>
+      END ELSE
+
+****         URL = 'https://imagingws.qa.afs.net/images/list?clientFolder=':CLIENT.ID:'&underReview=null&excludeImported=true&limit=1200'
+***         **       URL = 'https://imagingws.afs.net/images/list?clientFolder=':CLIENT.ID:'&underReview=null&excludeImported=true&limit=1200'
+***         URL = 'https://imagingws.afs.net/images/list?&underReview=true&limit=1200&scanDateFrom=2019-01-01&scanDateTo=2019-06-30'
+***         URL = 'https://imagingws.qa.afs.net/images/list?&underReview=true&limit=1200&scanDateFrom=':B.DATE:'&scanDateTo=':E.DATE:'&orderBy=clientFolder'
+         IF SERVER.NAME = 'AFS' THEN   ; * NKH03                     
+            URL = 'http://imagingws.afs.net/images/list?&underReview=true&limit=12000&scanDateFrom=':B.DATE:'&scanDateTo=':E.DATE:'&orderBy=clientFolder'
+         END ELSE                      ; * NKH03
+            URL = 'http://imagingws.qa.afs.net/images/list?&underReview=true&limit=12000&scanDateFrom=':B.DATE:'&scanDateTo=':E.DATE:'&orderBy=clientFolder'  ; * NKH03
+         END                           ; * NKH03         
+
+         LOGFILE="SEND.CLIENT.GB.LOG"
+
+         LOGGING = "N"
+*         EMAIL.RECIP = 'gbino@afs.net'
+         EMAIL.RECIP = ''
+         TEST.FLG = @FALSE
+      END
+
+      IF LOGGING = "Y" OR LOGGING = 1 THEN
+         LOGGING = @TRUE
+      END ELSE
+         LOGGING = @FALSE
+      END
+      IF LOGGING THEN
+         STAT = PROTOCOLLOGGING(LOGFILE, "ON", 10)
+      END
+
+      EMAIL.OUT=''
+      EMAIL.OUT<1,-1>='HelpDesk@afs.net'
+      EMAIL.OUT<2,-1>= EMAIL.RECIP
+      EMAIL.OUT<4>='FBBP_SEND.CLIENT.REST@afs.net'
+      EMAIL.OUT<5>='Error while trying to access SEND.CLIENT.REST Web-Service .'
+
+      GOSUB SEND.REST.REQUEST
+      GOSUB PARSE.RESULTS
+      GOSUB CREATE.REPORT
+      TIME.LINE<1,1,1>=TIME()            ; * finish time
+
+9999:* THE END
+      IF LOGGING THEN
+         LOG.RET = PROTOCOLLOGGING(LOGFILE,"OFF",10)
+      END
+      WRITE RESP ON F.GRB,"OCR.RESP"
+      RETURN
+***********************************************************************
+SEND.REST.REQUEST:
+***********************************************************************
+      METHOD="GET"
+*
+      STAT = SETHTTPDEFAULT("VERSION", "1.1")
+      **   STAT = CREATESECURITYCONTEXT(CTX, "TLSv1.2")
+      **    STAT = CREATESECUREREQUEST(URL, METHOD, RESTGET,CTX)
+      STAT = CREATEREQUEST(URL, METHOD, RESTGET)
+      STAT = SETREQUESTHEADER(RESTGET, "Content-Type", "application/json;charset=utf-8")
+      STAT = SUBMITREQUEST(RESTGET, 30000, "", HEADER, RESTDATA, HTTPSTATUS)
+
+      RETURN
+
+************************************************************************
+PARSE.RESULTS:
+************************************************************************
+      UDOHANDLE = ""
+      RESP = ''
+      RESP.CNT = 1
+      STATUS =UDORead(RESTDATA, UDOFORMAT_JSON, UDOHANDLE )
+      DISP.REC = ''
+      ST = UDOArrayGetSize(UDOHANDLE, ITEM_SIZE) ; IF ST NE UDO_SUCCESS THEN
+         ITEM_SIZE = 0
+      END
+      FOR I = 1 TO ITEM_SIZE
+
+         ST = UDOArrayGetItem(UDOHANDLE, I, result_udo, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         ST = UDOGetProperty(result_udo, "imageKey", IMAGE.NO, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN IMAGE.NO = ""
+         ST = UDOGetProperty(result_udo, "imagePath", IMAGE.PATH, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN IMAGE.PATH = ""
+         ST = UDOGetProperty(result_udo, "clientKey", CLIENTKEY, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN CLIENTKEY = ""
+         ST = UDOGetProperty(result_udo, "scac", SCAC, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN SCAC = ""
+         ST = UDOGetProperty(result_udo, "field1", FIELD1, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN FIELD1 = ""
+         ST = UDOGetProperty(result_udo, "field2", PRONUM, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+
+         IF UDOTYPE = UDO_NULL THEN PRONUM = ""
+         ST = UDOGetProperty(result_udo, "clientFolder", CLIENT.NO, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+
+         IF UDOTYPE = UDO_NULL THEN CLIENT.NO = ""
+
+         ST = UDOGetProperty(result_udo, "field3",FIELD3, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN FIELD3 = ""
+
+         ST = UDOGetProperty(result_udo, "carrierName",CARRIERNAME, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN CARRIERNAME = ""
+         ST = UDOGetProperty(result_udo, "importedIntoPick", UPDT.DT, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN UPDT.DT = ""
+
+         * Begin NKH01
+         * Begin NKH02
+         ST = UDOGetProperty(result_udo, "scanDate", IMAGE.DT, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN IMAGE.DT =""
+         IF IMAGE.DT = '' THEN
+            FILE.NAME = FIELD(IMAGE.PATH,'\',9)
+            FILE.NAME = FIELD(FILE.NAME,"_",1)
+            FILE.LEN = LEN(FILE.NAME)
+            BEGIN CASE
+               CASE FILE.LEN = 14 
+                  IMAGE.DT = FILE.NAME[7,8]
+               CASE FILE.LEN = 15
+                  IMAGE.DT = FILE.NAME[8,8]
+               CASE 1
+                  IMAGE.DT = ''
+            END CASE
+            IF IMAGE.DT > '' THEN IMAGE.DT = ICONV(IMAGE.DT,"D")            
+         END ELSE                  
+            YY=IMAGE.DT[3,2]
+            MM=IMAGE.DT[6,2]
+            DD=IMAGE.DT[9,2]
+            IMG.DT = MM:'\':DD:'\':YY
+            IMAGE.DT = ICONV(IMG.DT,"D")                
+         END
+         BATCH.AGE = DATE() - IMAGE.DT
+*         BATCH.NO = FIELD(IMAGE.PATH,"\",9)        
+*         BATCH.NO = FIELD(BATCH.NO,"_",1)          
+*         IF LEN(BATCH.NO) LT 15 THEN
+*            IF UDOTYPE = UDO_NULL THEN SCAN.DT =''
+*            IF SCAN.DT # "" THEN
+*               SCAN.DT = SCAN.DT[1,10]
+*               SCAN.DT = SCAN.DT[6,2]:"-":SCAN.DT[9,2]:"-":SCAN.DT[1,4]
+*               SCAN.DT = ICONV(SCAN.DT,"D")
+*            END
+*         END ELSE
+*            BL = LEN(BATCH.NO)
+*            SCAN.DT = BATCH.NO[BL-7,8]
+*            SCAN.DT = SCAN.DT[5,2]:"-":SCAN.DT[7,2]:"-":SCAN.DT[1,4]
+*            SCAN.DT = ICONV(SCAN.DT,"D")
+*         END
+*         BATCH.AGE = DATE() - SCAN.DT
+         * End NKH01
+
+*         SCAN.DTI = ICONV(IMAGE.DT,"D")
+         * End NKH02
+
+         ST = UDOGetProperty(result_udo, "clientFolder", CLIENTFOLDER, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN CLIENTFOLDER = ""
+
+         ST = UDOGetProperty(result_udo,"reviewId", REVIEWID, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN REVIEWID = ""
+
+         ST = UDOGetProperty(result_udo,"needsReview", NEEDSREVIEW, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN NEEDSREVIEW = "0"
+         IF UDOTYPE = UDO_FALSE THEN NEEDSREVIEW = "0"
+         IF UDOTYPE = UDO_TRUE THEN NEEDSREVIEW = "1"
+
+         ST = UDOGetProperty(result_udo, "failedVerification", FAIL.VERIFY, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN FAIL.VERIFY = "0"
+         IF UDOTYPE = UDO_FALSE THEN FAIL.VERIFY = "0"
+         IF UDOTYPE = UDO_TRUE THEN FAIL.VERIFY = "1"
+         ST = UDOGetProperty(result_udo, "comments", COMMENTS, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN COMMENTS = ""
+         CONVERT CHAR(10) TO "" IN COMMENTS
+         CONVERT CHAR(13) TO "" IN COMMENTS
+         CONVERT CHAR(12) TO "" IN COMMENTS
+         IMAGE.DT = OCONV(IMAGE.DT,'D2-')      ; * NKH01 NKH02
+         CARRIERNAME = TRIM(CARRIERNAME)
+
+         DISP.REC = INSERT(DISP.REC,1,I,0,CLIENT.NO[5,5])
+         DISP.REC = INSERT(DISP.REC,2,I,0,IMAGE.NO)
+         DISP.REC = INSERT(DISP.REC,3,I,0,PRONUM)
+         DISP.REC = INSERT(DISP.REC,4,I,0,IMAGE.DT)   ; * NKH02
+         DISP.REC = INSERT(DISP.REC,5,I,0,CARRIERNAME)
+         DISP.REC = INSERT(DISP.REC,6,I,0,COMMENTS)
+         DISP.REC = INSERT(DISP.REC,7,I,0,BATCH.AGE)                     
+
+      NEXT I
+
+      IF RESP # "" THEN
+         VOUT = RESP
+      END
+      RETURN
+****************************************************
+ERR.HANDLER:
+*****************************************************
+
+      ERRCODE = "" ; ERRMSG = ""
+      S = UDOGetLastError(ERRCODE, ERRMSG)
+      ERROR = "UDO ERROR: (":ERRCODE:") ":ERRMSG
+      VOUT<1> =ERROR
+
+      RETURN
+
+*****************************************************
+CREATE.REPORT:
+*****************************************************
+      EXP.REC=''
+
+      CALL FILE.HEAD(PROG.NAME,'AFS, LLC',PROG.DESC,'','',132,EXP.REC)
+      EXP.REC<-1>=' '
+      EXP.LINE=''
+      EXP.LINE<1,1>='Client#'
+      EXP.LINE<1,2>='Image #'
+      EXP.LINE<1,3>='PRO'
+      EXP.LINE<1,4>='Scan DT'
+      EXP.LINE<1,5>='Carrier'
+      EXP.LINE<1,6>='Comments'
+      EXP.LINE<1,7>='Days Old'         ; * NKH01
+      EXP.REC<-1>=EXP.LINE
+      NVAL=DCOUNT(DISP.REC<1>,@VM)
+      FOR VAL=1 TO NVAL
+         CLIENT=DISP.REC<1,VAL>
+         IMAGE.NO=DISP.REC<2,VAL>
+         PRO=DISP.REC<3,VAL>
+         KEYED.DT=DISP.REC<4,VAL>
+         CARRIER=DISP.REC<5,VAL>
+         COMMENTS = DISP.REC<6,VAL>
+         BATCH.AGE = DISP.REC<7,VAL>   ; * NKH01
+         EXP.LINE=''
+         EXP.LINE<1,1>=CLIENT
+         EXP.LINE<1,2>=IMAGE.NO
+         EXP.LINE<1,3>=PRO
+         EXP.LINE<1,4>=KEYED.DT
+         EXP.LINE<1,5>=TRIM(CARRIER)
+         EXP.LINE<1,6>=TRIM(COMMENTS)
+         EXP.LINE<1,7>=BATCH.AGE       ; * NKH01
+         EXP.REC<-1>=EXP.LINE
+      NEXT VAL
+      EXP.REC=CHANGE(EXP.REC,@VM,TB)
+
+      IF USER.SV THEN                                                         ; * NKH04
+         NEW.FILENAME = 'NEEDS.REVIEW.':B.DATE:' ':E.DATE:'.XLS'              ; * NKH04
+         WRITE EXP.REC ON DOS.FILE.OUT, NEW.FILENAME                          ; * NKH04  
+      END ELSE                                                                ; * NKH04
+         WRITE EXP.REC ON F.BILLDATA,'NEEDS.REVIEW.XLS'
+         CRT @(0,22):@(-3):'Your Needs Review file is located at "U:\':USER.NAME:'\':'NEEDS.REVIEW.XLS':'".': ; INPUT XX         
+      END                                                                     ; * NKH04
+                 
+      RETURN
+   END

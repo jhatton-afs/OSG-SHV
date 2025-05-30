@@ -1,0 +1,2 @@
+DATA 'TCost'
+EXECUTE "RATER.MM"

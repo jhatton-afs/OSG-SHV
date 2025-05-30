@@ -1,0 +1,229 @@
+$OPTIONS HEADER.EJECT
+ERRMSG=''
+*
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+*
+* PROGRAM: FB.4.11
+* PROGRAM TO BUILD FREIGHT BILL ARCHIVE TAPE
+*
+* AUTHOR: BRIAN M. QUEEN
+* DATE: OCTOBER 30, 1992
+*
+* Initialize variables
+*
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='FB.4.11'
+      PROG.DESC='BUILD FREIGHT BILL ARCHIVE TAPE'
+      PACK.NAME='FREIGHT BILLING'
+      CO.NAME='AFS Logistics, LLC'
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.4.11' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+*
+* Open files
+*
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      OPEN '','CLIENTS' TO F.CUST ELSE CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE CALL OPEN.ABORT("FB.BILLS.CRX",PROG.NAME)
+      OPEN '','FB.CONTROL' TO F.CONTROL ELSE CALL OPEN.ABORT("FB.CONTROL",PROG.NAME)
+      CALL SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+* Get archive date
+*
+100   CRT @(0,3):@(-3):
+      HELP="Enter resolution date. WARNING - All pro's prior will be archived."
+      LN='Enter archival date ':DATE()'D2/'
+      CALL GEN.IN(0,3,LN,'DATE',Q,0,8,'','',1,-8,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' ! QI='EX' THEN STOP
+      ARCHIVE.DATE=Q
+      CRT @(20,3):ARCHIVE.DATE'D2/'
+*
+* Check for date greater than 13 months
+*
+      CHECK.DATE=DATE()-395
+      CHECK.DATE=OCONV(CHECK.DATE,'D4/')
+      MM=FIELD(CHECK.DATE,'/',1)
+      YY=FIELD(CHECK.DATE,'/',3)
+      CHECK.DATE=MM:'/01/':YY
+      CHECK.DATE=ICONV(CHECK.DATE,'D4/')
+      IF ARCHIVE.DATE GE CHECK.DATE THEN
+        CALL ELINE('ERROR - System must retain at least 13 months of data.')
+        GOTO 100
+      END
+*
+200   HELP="Enter resolution type. 1=Client Pro's. 2=Cross-reference Pro's. 3=Both."
+      LN='Enter archival type #'
+      CALL GEN.IN(0,5,LN,'',Q,0,8,'','',1,-1,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI='X'
+          GOTO 100
+        CASE QI=1
+          DESC="Client Pro's Only."
+        CASE QI=2
+          DESC="Cross Reference Pro's Only."
+        CASE QI=3
+          DESC="Client Pro's and Cross Reference Pro's"
+      END CASE
+      ARCHIVE.TYPE=Q
+      CRT @(20,5):ARCHIVE.TYPE:' ':DESC
+*
+      HELP="Enter Y if information correct or N if incorrect."
+      QI=OCONV(QI,'MCU')
+      CALL GEN.IN(0,22,'Is archive data correct? N','',Q,0,1,'','',1,-1,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI='Y'
+          NULL
+        CASE 1
+          GOTO 100
+      END CASE
+*
+* Dump bills
+*
+      IF ARCHIVE.TYPE=1 ! ARCHIVE.TYPE=3 THEN
+        CRT @(0,3):@(-3):
+        TEXT="Mount tape in tape drive."
+        CALL CENTER(TEXT,80)
+        CRT @(0,10):TEXT
+        CALL ELINE('')
+        EXECUTE 'T-REW'
+      END
+*
+* Select data
+*
+      READV PREV.ARCHIVE.DATE FROM F.CONTROL,"ARCHIVE.DATE",1 ELSE PREV.ARCHIVE.DATE=0
+      PREV.ARCHIVE.DATE=PREV.ARCHIVE.DATE+1
+      TEXT='Selecting freight bills for period ':PREV.ARCHIVE.DATE'D2/':' to ':ARCHIVE.DATE'D2/':' - please wait.'
+      CALL CENTER(TEXT,80)
+      CRT @(0,10):TEXT
+*
+      EXECUTE 'COUNT FB.BILLS.CRX WITH 30 LE "':ARCHIVE.DATE'D2/':'"' PASSLIST CAPTURING OUTPUT
+      NUM.ITMS=FIELD(OUTPUT,' ',1)
+*
+* Create work file
+*
+      MOD=(NUM.ITMS*125)/2000
+      MOD=MOD'R0'
+      EXECUTE 'POVF'
+      FOR I=1 TO 4
+        CRT
+      NEXT I
+500   HELP="Enter Y if enough room or new modulo.":CHAR(10):CHAR(13):"(NOTE. Modulo must be smaller than largest contiguous block.)"
+      LN='I need a file with a modulo of ':MOD:'. Do I have enough room? Y'
+      CALL GEN.IN(0,21,LN,'',Q,1,5,'','',0,-1,21,1,QI,HELP,0,22)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI='' ! QI='Y'
+          NULL
+        CASE QI='N'
+          STOP
+        CASE NUM(QI)
+          MOD=QI
+        CASE 1
+          GOTO 500
+      END CASE
+      CALL PRIME.SUB(MOD,'L')
+      EXECUTE 'CREATE-FILE TAPE.':CH.NUM:' 1 ':MOD
+      OPEN '','TAPE.':CH.NUM TO F.WORK ELSE CALL OPEN.ABORT("TAPE.":CH.NUM,PROG.NAME)
+*
+      DATA '(DICT TAPE.':CH.NUM
+      EXECUTE 'COPY DICT FB.BILLS.CRX CARRIER PRO' PASSLIST CAPTURING OUTPUT
+*
+* Move bills to work file
+*
+      EXECUTE 'SSELECT FB.BILLS.CRX WITH 30 LE "':ARCHIVE.DATE'D2/':'" BY 1' PASSLIST CAPTURING OUTPUT
+      IF SYSTEM(11) ELSE
+        CALL ELINE('No bills on file before ':ARCHIVE.DATE'D2/')
+        STOP
+      END
+      CALL SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      TEXT='Building tape dump file - please wait.'
+      CALL CENTER(TEXT,80)
+      CRT @(0,10):TEXT
+      COUNTER=0
+      PREV.CLIENT=''
+*
+1000  READNEXT ID ELSE GOTO 2000
+      COUNTER=COUNTER+1
+      CALL PROG.BAR(22,COUNTER,NUM.ITMS,PER)
+      READ REC FROM F.CRX,ID THEN
+        CLIENT=REC<1>
+        IF CLIENT NE PREV.CLIENT THEN
+          OPEN '','FB.BILLS.HIST,':CLIENT TO F.HIST ELSE GOTO 1000
+          PREV.CLIENT=CLIENT
+        END
+        BEGIN CASE
+          CASE ARCHIVE.TYPE=1
+            READ REC FROM F.HIST,ID THEN
+              REC<18>=CLIENT
+              WRITE REC ON F.WORK,ID
+              DELETE F.HIST,ID
+            END
+          CASE ARCHIVE.TYPE=2
+            READ REC FROM F.HIST,ID ELSE DELETE F.CRX,ID
+          CASE ARCHIVE.TYPE=3
+            READ REC FROM F.HIST,ID THEN
+              REC<18>=CLIENT
+              WRITE REC ON F.WORK,ID
+              DELETE F.HIST,ID
+              DELETE F.CRX,ID
+            END
+        END CASE
+      END
+      GOTO 1000
+*
+* Print dump report
+*
+2000  IF ARCHIVE.TYPE=1 ! ARCHIVE.TYPE=3 THEN
+        CRT @(0,3):@(-3):
+        TEXT='Printing dump report - please wait.'
+        CALL CENTER(TEXT,80)
+        CRT @(0,10):TEXT
+*
+        EXECUTE 'SSELECT TAPE.':CH.NUM:' BY CARRIER BY PRO' PASSLIST CAPTURING OUTPUT
+        IF SYSTEM(11) ELSE
+          CALL ELINE('No transactions to be dumped.')
+          STOP
+        END
+*
+        ODATE=PREV.ARCHIVE.DATE'D2/':' thru ':ARCHIVE.DATE'D2/'
+        CALL PAGE.HEAD(PROG.NAME,'AFS Logistics, LLC','','Archived Freight Bills',ODATE,132,HED)
+        HED=HED:" 'L'Carrier Name                        Pro Number Client Name                Amount Pd   Date   Check#  Check Amt      Variance"
+        PRINTER ON
+        HEADING HED
+*
+          NUM.ITMS = @SELECTED
+        COUNTER=0
+        LOOP
+          READNEXT ID ELSE ID='**'
+        UNTIL ID='**' DO
+          COUNTER=COUNTER+1
+          CALL PROG.BAR(22,COUNTER,NUM.ITMS,PER)
+          READ REC FROM F.WORK,ID THEN
+            CARRIER.ID=FIELD(ID,'*',1)
+            PRO=FIELD(ID,'*',2)
+            VARIANCE=REC<7>-REC<8>
+            CHECK=FIELD(REC<14>,'*',1)
+            DATE=REC<15>'D2/'
+            READV CARRIER.NAME FROM F.CARRIERS,CARRIER.ID,1 ELSE CARRIER.NAME=''
+            READV CUST.NAME FROM F.CUST,REC<18>,2 ELSE CUST.NAME=''
+            PRINT CARRIER.NAME'L#25':' ':PRO'R#20':' ':CUST.NAME'L#25':' ':
+            PRINT REC<8>'R26,#10':' ':DATE'R#8':' ':CHECK'R%6':' ':
+            PRINT REC<13>'R26,#10':' ':VARIANCE'R26,#13'
+            CUT.FLAG=0
+            X=DCOUNT(REC<41>,CHAR(253))
+            FOR I=1 TO X
+              IF REC<41,I> NE '' THEN PRINT SPACE(48):REC<41,I>
+            NEXT I
+          END
+        REPEAT
+        EXECUTE 'T-DUMP TAPE.':CH.NUM
+        EXECUTE 'T-REW'
+      END
+      EXECUTE 'DELETE-FILE TAPE.':CH.NUM
+      WRITEV ARCHIVE.DATE ON F.CONTROL,"ARCHIVE.DATE",1
+      PRINTER OFF
+      PRINTER CLOSE
+      STOP

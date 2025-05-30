@@ -1,0 +1,397 @@
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+*
+*
+SUBROUTINE FB.LTL.MULTIPLE.COPY(VIN,VOUT,MODE)
+
+$OPTIONS HEADER.EJECT
+ERRMSG=''
+* SUBROUTINE TO ENTER DISCOUNTS
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR : NCG Pratt
+* DATE   : October 2009
+*
+* Initialize variables
+*
+**  MODE must equal 'EDIT' or 'INPUT'
+MODE = 'INPUT'   ;* Set to EDIT - Overides input to subroutine
+
+   ERRMSG=''
+   PROG.NAME='FB.LTL.MULTIPLE.COPY'
+   PROG.DESC='Multiple Table Copy'
+   PACK.NAME='FP OLA'
+   PROMPT''
+    UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.LTL.MULTIPLE.COPY' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+    CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+
+   ORGIN.CLIENT.ID     = VIN<1>
+   ORGIN.CLIENT.NAME   = VIN<2>
+
+   DEST.CLIENT.ID      = VIN<3>
+   DEST.CLIENT.NAME    = VIN<4>
+
+   ORGIN.CARRIER.ID    = VIN<5>
+   ORGIN.CARRIER.NAME  = VIN<6>
+
+   DEST.CARRIER.ID     = VIN<7>
+   DEST.CARRIER.NAME   = VIN<8>
+
+   ORGIN.TABLE.NUM     = VIN<9>
+   ORGIN.TABLE.DESC    = VIN<10>
+
+   DEST.TABLE.NUM      = VIN<11>
+   DEST.TABLE.DESC     = VIN<12>
+
+   IF ORGIN.CARRIER.ID = 'ALL' THEN
+      ORGIN.CARRIER.NAME = "All Available"
+   END
+
+   *
+   * Open files
+   *
+
+   OPEN '','FB.AUDIT,':ORGIN.CLIENT.ID TO F.ORGIN.AUDIT ELSE
+      VOUT<1> = 'Error - Cannot Open FB.AUDIT,':ORGIN.CLIENT.ID:' file'
+      RETURN
+   END
+
+   OPEN '','FB.AUDIT.TABLES,':ORGIN.CLIENT.ID TO F.ORGIN.AUDIT.TABLES ELSE
+      VOUT<1> = 'Error - Cannot Open FB.AUDIT.TABLES,':ORGIN.CLIENT.ID:' file'
+      RETURN
+   END
+
+   OPEN '','FB.AUDIT,':DEST.CLIENT.ID TO F.DEST.AUDIT ELSE
+      VOUT<1> = 'Error - Cannot Open FB.AUDIT,':DEST.CLIENT.ID:' file'
+      RETURN
+   END
+
+   OPEN '','FB.AUDIT.TABLES,':DEST.CLIENT.ID TO F.DEST.AUDIT.TABLES ELSE
+      VOUT<1> = 'Error - Cannot Open FB.AUDIT.TABLES,':DEST.CLIENT.ID:' file'
+      RETURN
+   END
+
+   GOSUB SETUP.HEADINGS
+
+   STMT = \SSELECT FB.AUDIT.TABLES,\:ORGIN.CLIENT.ID : \ BY CARRIER# BY TABLE#\
+
+   IF ORGIN.CARRIER.ID # 'ALL' THEN
+      STMT := \ WITH CARRIER# = "\:ORGIN.CARRIER.ID:\"\
+   END
+
+   IF ORGIN.TABLE.NUM # 'ALL' THEN
+      IF ORGIN.CARRIER.ID # 'ALL' THEN STMT := \ AND\
+      STMT := \ WITH TABLE# = "\:ORGIN.TABLE.NUM:\"\
+   END
+
+   EXECUTE STMT CAPTURING OUTPUT
+
+*ZZ EXECUTE \SAVE-LIST TESTX\ ; STOP
+
+   IF @SELECTED LE 0 THEN
+      VOUT<1> = "No items found to copy"
+      RETURN
+   END
+
+EOF = "N"
+CNT = 0
+FROM.ARRAY = ""
+TABLE.ARRAY = ''
+NET = ''
+      PAGE=1
+
+      GOSUB GET.DETAILS
+
+      IF MODE='EDIT' THEN
+        INQUIRE=1
+      END ELSE
+        INQUIRE=0
+      END
+
+      EDIT.FLAG=0
+      TYPE='Regular'
+      LN=0
+      X=DCOUNT(TABLE.ARRAY,CHAR(254))
+      IF X GT 0 THEN MODE='EDIT'
+
+*
+* Start input
+*
+      PAGE=1
+
+      GOSUB 9000; * Display screen
+*
+* Enter line number.
+*
+100   IF MODE='INPUT' THEN
+        LN=LN+1
+        QI=LN
+        IF LN GT STOP THEN
+          PAGE=PAGE+1
+          GOSUB 9000; * Display screen
+        END
+      END ELSE
+        HELP="Enter Line Num. ''=End. 'B'=Back. 'F'=Forward. 'X'=Back. 'EX'=Exit."
+        CALL GEN.IN(0,22,'Enter line number. ###','',Q,0,3,'','',0,-3,22,0,QI,HELP,0,23)
+      END
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI='B'
+          PAGE=PAGE-1
+          IF PAGE=0 THEN PAGE=1
+          GOSUB 9000; * Display screen
+        CASE QI='F'
+          PAGE=PAGE+1
+          GOSUB 9000; * Display screen
+        CASE QI=''
+          VOUT = TABLE.ARRAY
+          RETURN
+        CASE QI='X'
+          RETURN
+        CASE QI='EX'
+          STOP
+        CASE QI=0
+          CALL ELINE('Invalid entry.')
+          RETURN
+        CASE NUM(QI)
+          IF INQUIRE THEN
+            CALL ELINE('Can not access detail in inquiry mode!')
+          END ELSE
+            SEL = ((PAGE-1)*12) + QI
+
+1000        IF SEL LT START ! SEL GT STOP THEN
+              CALL ELINE('Invalid entry.')
+              RETURN
+            END
+            GOSUB 9100; * Calculate line position
+*
+* Enter Destination Table#
+*
+1010 *
+
+            HELP="Destination Table#, ''=Accept, 'X'=Back, 'EX'=Exit."
+            MASK=TABLE.ARRAY<SEL,5>'R#4'
+            CALL GEN.IN(61,LINE,MASK,'',Q,0,4,'','',2,-4,LINE,0,QI,HELP,0,23)
+            QI=OCONV(QI,'MCU')
+            BEGIN CASE
+              CASE QI='EX'
+                STOP
+              CASE QI='X'
+                IF TABLE.ARRAY<SEL,5> NE '' THEN
+                   CRT @(61,LINE):TABLE.ARRAY<SEL,5>'R#4'
+                END ELSE
+                   CRT @(61,LINE):SPACE(4)
+                END
+                LN=LN-2
+                GOTO 100
+              CASE QI=''
+                Q=TABLE.ARRAY<SEL,5>
+              CASE NUM(Q)
+                IF MODE='EDIT' THEN EDIT.FLAG=1
+              CASE Q MATCHES 'A' OR Q MATCHES '2A'
+                IF MODE='EDIT' THEN EDIT.FLAG=1                 
+              CASE 1
+                CALL ELINE('Invalid entry')
+                GOTO 1010
+            END CASE
+            TABLE.ARRAY<SEL,5>=Q
+            CRT @(61,LINE):TABLE.ARRAY<SEL,5> 'R#4'
+
+            TEST.TAB.ID = TABLE.ARRAY<SEL,1>:"*":TABLE.ARRAY<SEL,5>
+
+            EXIST.FLAG = "N"
+            READ TEST.TABLE.REC FROM F.DEST.AUDIT.TABLES, TEST.TAB.ID THEN
+               NEXT.TAB.ID = ''
+               NEXT.TAB.NO = ''
+*ZZ               GOSUB GET.NEXT.TAB.ID
+*ZZ               TABLE.ARRAY<SEL,5> = NEXT.TAB.NO
+               TABLE.ARRAY<SEL,6> = "O"                 ;* Orig table on destination file - Set Overwrite flag
+               TABLE.ARRAY<SEL,7>="N"                   ;* Default to 'N'o do not overwrite
+*               CRT @(70,LINE):TABLE.ARRAY<SEL,6> 'R#2'
+               COPY.OVERW.STR = "OverWrite"
+               CRT @(65,LINE):' ':COPY.OVERW.STR "R#10"
+            END ELSE
+               TABLE.ARRAY<SEL,6> = "C"                 ;* Orig table on destination file - Set Overwrite flag
+               TABLE.ARRAY<SEL,7> = "Y"                   ;* Default to 'N'o do not overwrite
+               COPY.OVERW.STR = "Copy"
+               CRT @(65,LINE):' ':COPY.OVERW.STR "R#10"
+               CRT @(77,LINE):TABLE.ARRAY<SEL,7> 'R#2'
+            END
+
+*
+1025 * OK to copy/Overwrite table ?
+
+*            HELP="OK to copy table ? (Y/N) X=Back, 'EX'=Exit"
+             HELP="Perform Copy/Overwrite of table ? (Y/N) X=Back, 'EX'=Exit"
+            MASK=TABLE.ARRAY<SEL,7>'R#2'
+            YN.FLAG.HOLD = TABLE.ARRAY<SEL,7>
+            CALL GEN.IN(77,LINE,MASK,'',Q,0,2,'','',2,-2,LINE,0,QI,HELP,0,23)
+            QI=OCONV(QI,'MCU')
+
+            BEGIN CASE
+              CASE QI='Y' OR QI = "N"
+                 NULL
+              CASE QI='X'
+                CRT @(77,LINE):TABLE.ARRAY<SEL,7> 'R#2'
+                GOTO 1010
+              CASE QI='EX'
+                STOP
+              CASE QI=''
+                Q = YN.FLAG.HOLD
+              CASE 1
+                CALL ELINE('Invalid entry. Enter Y or N')
+                GOTO 1025
+            END CASE
+            TABLE.ARRAY<SEL,7>=Q
+
+            CRT @(77,LINE):TABLE.ARRAY<SEL,7> 'R#2'
+
+          END
+      END CASE
+      GOTO 100
+*
+* Print page
+
+*
+9000 * Display pages
+
+      START=(PAGE*12)-11
+      STOP=START+11
+      FOR SEL=START TO STOP
+        GOSUB 9100; * Calculate line position
+        IF TABLE.ARRAY<SEL,1> # '' THEN
+           CRT @(4,LINE):TABLE.ARRAY<SEL,1> 'R%5' : " " : TABLE.ARRAY<SEL,2> "R#4"
+           CRT @(15,LINE):' ':TABLE.ARRAY<SEL,3>[1,40] "L#40"
+           CRT @(55,LINE):TABLE.ARRAY<SEL,4> 'R#5' : " " : TABLE.ARRAY<SEL,5> "R#4"
+           COPY.OVERW.FLAG = TABLE.ARRAY<SEL,6>
+           IF COPY.OVERW.FLAG = "O" THEN COPY.OVERW.STR = "OverWrite" ELSE COPY.OVERW.STR = "Copy"
+*           CRT @(66,LINE):' ':TABLE.ARRAY<SEL,6> "L#2"
+           CRT @(65,LINE):' ':COPY.OVERW.STR "R#10"
+           CRT @(77,LINE):' ':TABLE.ARRAY<SEL,7> "L#2"
+        END ELSE
+           CRT @(4,LINE):@(-4)
+        END
+      NEXT SEL
+
+*
+* Calculate line position
+*
+9100  X=REM(SEL,12)
+      IF X=0 THEN X=12
+      LINE=8+X
+      RETURN
+
+SETUP.HEADINGS :
+
+CRT @(-1)
+CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+
+CRT STR("-",79)
+CRT @(0 ,03):"From Client : "
+CRT @(0 ,04):"To   Client : "
+CRT @(0 ,05):""
+CRT @(0 ,06):"    From  From                                         To    To"
+CRT @(0 ,07):"Ln# Carr# Tab#                                         Carr# Tab#           Y/N"
+CRT @(0 ,08):STR("*",79)
+FOR II = 1 TO 12
+   CRT @(0 ,8+II):II "R#2" : ")" : @(-4)
+NEXT II
+
+
+CRT @(14,03):ORGIN.CLIENT.ID "R%5":" ":ORGIN.CLIENT.NAME[1,45] : " "
+CRT @(14,04):DEST.CLIENT.ID "R%5":" ":DEST.CLIENT.NAME[1,45] : " "
+
+*IF ORGIN.CARRIER.ID = 'ALL' THEN
+*   CRT @(10,06):ORGIN.CARRIER.ID "L#5":" ":"All Available Carriers" "L#25" : " "
+*   CRT @(45,06):DEST.CARRIER.ID "L#5":" ":"All Available Carriers" "L#25" : " "
+*END ELSE
+*   CRT @(10,06):ORGIN.CARRIER.ID "R%5":" ":ORGIN.CARRIER.NAME[1,25] : " "
+*   CRT @(45,06):DEST.CARRIER.ID "R%5":" ":DEST.CARRIER.NAME[1,25] : " "
+*END
+
+RETURN
+
+GET.DETAILS :
+*
+
+LOOP
+   READNEXT ORIG.TAB.ID ELSE EOF = "Y"
+   CNT += 1
+UNTIL EOF = "Y" DO
+   TABLE.ARRAY<CNT,6> = "C"                     ;* Default to Copy
+   READ ORIG.TABLE.REC FROM F.ORGIN.AUDIT.TABLES, ORIG.TAB.ID THEN
+      FROM.ARRAY<-1> = ORIG.TAB.ID  
+      TABLE.ARRAY<CNT,1> = FIELD(ORIG.TAB.ID,"*",1)
+      TABLE.ARRAY<CNT,2> = FIELD(ORIG.TAB.ID,"*",2)
+      TABLE.ARRAY<CNT,3> = ORIG.TABLE.REC<31>
+      TABLE.ARRAY<CNT,4> = FIELD(ORIG.TAB.ID,"*",1)
+      TABLE.ARRAY<CNT,5> = FIELD(ORIG.TAB.ID,"*",2)
+*      TABLE.ARRAY<CNT,6> = ""                    ;* Orig table not on destination file
+      TABLE.ARRAY<CNT,7> = "Y"                    ;* Continue Copy or Overwrite
+
+      READ DEST.TABLE.REC FROM F.DEST.AUDIT.TABLES, ORIG.TAB.ID THEN
+         NEXT.TAB.ID = ''
+         NEXT.TAB.NO = ''
+*ZZ         GOSUB GET.NEXT.TAB.ID
+*ZZ         TABLE.ARRAY<CNT,5> = NEXT.TAB.NO
+         TABLE.ARRAY<CNT,6> = "O"                 ;* Orig table on destination file - Overwrite flag
+         TABLE.ARRAY<CNT,7> = "N"                 ;* Default to 'N'o do not overwrite
+      END
+   END
+REPEAT
+
+RETURN
+
+GET.NEXT.TAB.ID:* Search for next Available Table #
+*
+** Check from number 1 thru 99 
+
+   FOR TB = 1 TO 99
+      TEST.TAB.ID = FIELD(ORIG.TAB.ID,"*",1):"*":TB
+      READ DEST.TABLE.REC FROM F.DEST.AUDIT.TABLES, TEST.TAB.ID ELSE
+         NEXT.TAB.ID = TEST.TAB.ID
+         NEXT.TAB.NO = TB
+         EXIT
+      END
+   NEXT TB
+
+   IF NEXT.TAB.NO NE '' THEN RETURN
+
+** Check single Alpha character table 'numbers'
+
+   LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+   FOR TB = 1 TO 26
+      SUFFIX = LETTERS[TB,1]
+      TEST.TAB.ID = FIELD(ORIG.TAB.ID,"*",1):"*":SUFFIX
+      READ DEST.TABLE.REC FROM F.DEST.AUDIT.TABLES, TEST.TAB.ID ELSE
+         NEXT.TAB.ID = TEST.TAB.ID
+         NEXT.TAB.NO = SUFFIX
+         EXIT
+      END
+   NEXT TB
+
+   IF NEXT.TAB.NO NE '' THEN RETURN
+
+** Check double Alpha character table 'numbers'
+
+   FOR TB = 1 TO 26
+      SUFFIX = LETTERS[TB,1]:LETTERS[TB,1]
+      TEST.TAB.ID = FIELD(ORIG.TAB.ID,"*",1):"*":SUFFIX
+      READ DEST.TABLE.REC FROM F.DEST.AUDIT.TABLES, TEST.TAB.ID ELSE
+         NEXT.TAB.ID = TEST.TAB.ID
+         NEXT.TAB.NO = SUFFIX
+         EXIT
+      END
+   NEXT TB
+
+  IF NEXT.TAB.NO = '' THEN
+      TEST.TAB.ID = FIELD(ORIG.TAB.ID,"*",1):"*9999"
+      READ DEST.TABLE.REC FROM F.DEST.AUDIT.TABLES, TEST.TAB.ID ELSE
+         NEXT.TAB.ID = TEST.TAB.ID
+         NEXT.TAB.NO = 9999
+      END
+  END
+*
+RETURN

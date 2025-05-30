@@ -1,0 +1,351 @@
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: TAMI SEAGO
+* DATE: SEPTEMBER 6, 2000
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE EXPRESS
+* WRITTEN CONSENT OF SAME.
+*
+* 100914 - JMK01 - SysAid#12653 - Freight bill status
+****************************************************************
+* Initialize variables
+****************************************************************
+      $INCLUDE FILE.DEFS INC_CLIENTS
+
+
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         PRINT "%ERROR:CANNOT OPEN FILE CLIENTS"
+         STOP
+      END
+      OPEN '','INET.USER' TO F.INET.USER ELSE
+         PRINT "%ERROR:CANNOT OPEN FILE INET.USER"
+         STOP
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         PRINT "%ERROR:CANNOT OPEN FIELS CARRIERS"
+         STOP
+      END
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         PRINT "%ERROR:CANNOT OPEN FB.BILLS.CRX"
+         STOP
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         PRINT "%ERROR:CANNOT OPEN FB.TABLES"
+         STOP
+      END
+*     OPEN '','INET.PROS' TO F.PROS ELSE ; * JMK01
+*        PRINT "%ERROR:CANNOT OPEN FB.PROS"        ; * JMK01
+*        STOP                            ; * JMK01
+*     END                                ; * JMK01
+
+      READ REJECT.CODES FROM F.TABLES,'REJECT.CODES' ELSE REJECT.CODES=''
+
+
+      INPUT CARRIER
+
+      READ CARRIER.REC FROM F.CARRIERS,CARRIER ELSE
+         PRINT "%ERROR:CARRIER #": CARRIER: " DOES NOT EXIST"
+         STOP
+      END
+
+
+      INPUT PRONUMS
+      INPUT USER.NAME
+      INPUT USER.PWD
+      INET.USER.ID=OCONV(USER.NAME:"*":USER.PWD,'MCU')
+      READ DINET.USER FROM F.INET.USER,INET.USER.ID ELSE
+         PRINT "%ERROR:CANNOT READ USER '":USER.NAME:"' FROM FILE INET.USER"
+         STOP
+      END
+      IF DINET.USER<2>=0 THEN
+         CLIENT.USER=1
+         CLIENT.USER.ID=DINET.USER<3>
+         READV CLIENT.USER.NAME FROM F.CLIENTS,CLIENT.USER.ID,2 ELSE CLIENT.USER.NAME=CLIENT.USER.ID:' Not on File'
+      END ELSE
+         CLIENT.USER=0
+         CLIENT.USER.ID=''
+         CLIENT.USER.NAME=''
+      END
+
+      OPEN '','INET.ACTIVITY' TO F.ACTIVITY ELSE
+         PRINT "%ERROR:COULD NOT OPEN ACTIVITY"
+         STOP
+      END
+
+      ACTIVITY.ID = USER.NAME:'*':USER.PWD:'*':DATE():'*':TIME()
+      ACTIVITY.REC = PRONUMS
+
+      WRITE ACTIVITY.REC ON F.ACTIVITY,ACTIVITY.ID
+
+      METADATA = ""
+      METADATA<1,1> = "VARCHAR" ;   METADATA<1,2> = "Results"  ;      METADATA<1,3> = 0
+      CONVERT @AM TO CHAR(30) IN METADATA
+      PRINT "%METADATA:":METADATA
+      NUM.PROS = DCOUNT(PRONUMS,@VM)
+      RESULTS = ''
+      FOR X = 1 TO NUM.PROS
+         STATUS=''
+         FOUND = 1
+         PRO.ID = TRIM(PRONUMS<1,X>)
+         ADATE = DATE()
+         TEMP.PRO.ID = CARRIER:'*':PRO.ID:"*0"
+*        TEMP2.PRO.ID = CARRIER:'*':PRO.ID:"*0*":ADATE       ; * JMK01
+         TEMP = ""
+*        WRITE TEMP ON F.PROS,TEMP2.PRO.ID         ; * JMK01
+         IF PRO.ID = "" THEN GO SKIP.PRO
+         PRO.DESC = PRO.ID
+         READ DUMMY FROM F.CRX,TEMP.PRO.ID THEN
+            PRO.REC = DUMMY
+            FOUND.PRO=FIELD(TEMP.PRO.ID,"*",2)
+            PRO.REC<1>=DUMMY<2> ; * Correct the Position of the Date
+            PRO.REC<2>='' ; * Correct the I/O Flag (Not on CRX File)
+            CLIENT=DUMMY<1>
+            IF CLIENT.USER THEN
+               IF CLIENT#CLIENT.USER.ID THEN
+*              This bill doesn't belong to this client
+                  STATUS = 'Pro # ':PRO.ID:': Was not on file for ':CLIENT.USER.NAME
+                  FOUND=0
+                  GO PRINT.STATUS
+               END
+            END
+* Assign the Data to PRO.REC then try to read the REAL File
+            OPEN 'FB.BILLS.HIST,':CLIENT TO F.HIST ELSE
+               FOUND = 0
+            END
+            READ PRO.REC FROM F.HIST,TEMP.PRO.ID ELSE FOUND = 0
+
+         END ELSE
+            FOUND = 0
+         END
+         IF FOUND THEN
+            MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT ELSE CLIENT.REC(1) = ''
+            POS = X
+            GOSUB GET.STATUS
+         END ELSE
+            TEMP.PRO.ID = CHANGE(PRO.ID,'-','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,'.','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,'*','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,',','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,'(','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,')','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,'_','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,'+','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,'/','')
+            GOSUB FORCE.CHECK.PROS
+            IF FOUND=0 THEN
+               STATUS = 'Pro # ':PRO.ID:': '
+               STATUS = STATUS:'  Freight Bill not on file, please submit with POD(Proof of Delivery) and BOL(Bill of Lading).'
+            END
+         END
+PRINT.STATUS: ***
+         IF STATUS # '' THEN
+            STATUS = CHANGE(STATUS,'..','.')
+            PRINT STATUS
+         END
+         IF FOUND THEN
+            GOSUB CHECK.AD.BD
+         END
+
+SKIP.PRO:
+      NEXT X
+
+      RETURN
+
+FORCE.CHECK.PROS: ***
+
+      PRO.FORMAT = CARRIER.REC<47>
+      PROS=''
+      IF PRO.FORMAT<1,1>='' ELSE
+         VIN = PRO.FORMAT
+         VIN<2> = CARRIER.REC<51>
+         VIN<3> = TEMP.PRO.ID
+         CALL FORMAT.PROS(VIN,VOUT)
+         PROS = VOUT<3>
+      END
+      NUM.T.PROS = DCOUNT(PROS,@VM)
+      PRONUMSTATUS= ''
+      FORMATPRONUM = ''
+      FOUND = 0
+      FOR Y = 1 TO NUM.T.PROS
+         T.FOUND = 1
+         PRO.DESC = PROS<1,Y>
+         TEMP.PRO.ID = CARRIER:'*':PROS<1,Y>:"*0"
+         READ DUMMY FROM F.CRX,TEMP.PRO.ID THEN
+            PRO.REC = DUMMY
+            PRO.REC<1>=DUMMY<2> ; * Correct the Position of the Date
+            PRO.REC<2>='' ; * Correct the I/O Flag (Not on CRX File)
+            CLIENT=DUMMY<1>
+* Assign the Data to PRO.REC then try to read the REAL File
+            OPEN 'FB.BILLS.HIST,':CLIENT TO F.HIST ELSE
+               T.FOUND = 0
+            END
+            READ PRO.REC FROM F.HIST,TEMP.PRO.ID ELSE FOUND = 0
+         END ELSE
+            T.FOUND = 0
+         END
+         IF T.FOUND THEN
+            MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT ELSE CLIENT.REC(1) = ''
+            FOUND = 1
+            POS = Y
+            GOSUB GET.STATUS
+            FOUND.PRO = PROS<1,Y>
+         END
+      NEXT Y
+      RETURN
+
+CHECK.AD.BD: ****
+
+*    TEMP.PRO = FIELD(FOUND.PRO,"*",2)
+      TEMP.PRO = FOUND.PRO
+      AD.BD.PROS = ''
+      AD.BD.PROS<1,-1> = TEMP.PRO:'AD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'ADAD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'ADADAD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'ADADADAD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'BD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'BDBD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'BDBDBD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'BDBDBDBD'
+      NUM.AD.BD = DCOUNT(AD.BD.PROS,@VM)
+      FOR Z = 1 TO NUM.AD.BD
+         STATUS = ''
+         T.FOUND = 1
+         PRO.DESC = AD.BD.PROS<1,Z>
+         TEMP.PRO.ID = CARRIER:'*':AD.BD.PROS<1,Z>:"*0"
+         READ DUMMY FROM F.CRX,TEMP.PRO.ID THEN
+            PRO.REC = DUMMY
+            PRO.REC<1>=DUMMY<2> ; * Correct the Position of the Date
+            PRO.REC<2>='' ; * Correct the I/O Flag (Not on CRX File)
+            CLIENT=DUMMY<1>
+* Assign the Data to PRO.REC then try to read the REAL File
+            OPEN 'FB.BILLS.HIST,':CLIENT TO F.HIST ELSE
+               T.FOUND = 0
+            END
+            READ PRO.REC FROM F.HIST,TEMP.PRO.ID ELSE FOUND = 0
+         END ELSE
+            T.FOUND = 0
+         END
+         IF T.FOUND THEN
+            MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT ELSE CLIENT.REC(1) = ''
+            FOUND = 1
+            POS = X
+            GOSUB GET.STATUS
+         END
+         IF STATUS # '' THEN
+            STATUS = CHANGE(STATUS,'..','.')
+            PRINT STATUS
+         END
+      NEXT Y
+      RETURN
+
+GET.STATUS:
+      CHECK.DATE = PRO.REC<15>'D2/'
+      CHECK.NUM = PRO.REC<14>
+      CHECK.NUM = CHANGE(CHECK.NUM,'*F','')
+      CHECK.NUM = CHANGE(CHECK.NUM,'*V','')
+      CHECK.AMT = OCONV(PRO.REC<13>,'MR2,')
+      CUT.BACK.AMT = -OCONV(PRO.REC<11>,'MR2')
+      IF CUT.BACK.AMT # "0.00" THEN
+         CUT.BACK.REASON = PRO.REC<41,2>
+      END ELSE
+         CUT.BACK.REASON = ""
+      END
+      BILLED.AMT=PRO.REC<7>
+      ACTUAL.CHG = OCONV(PRO.REC<8>,'MR2')
+      BILL.DATE = PRO.REC<1>
+      PROCESS.DATE = PRO.REC<37>'D2/'
+      PROC.DATE = PRO.REC<37>
+      ENTRY.DATE = PRO.REC<30>'D2/'
+      REJECT = PRO.REC<39>
+      REJECT.USER.DATE = PRO.REC<60>
+      REJECT.REASONS = PRO.REC<59>
+      FREE.FORM.REJECT = PRO.REC<61>
+      REJECT.FREE.USER.DATE = PRO.REC<62>
+      NUM.REJECTS = DCOUNT(REJECT.REASONS,@VM)
+      NUM.FREE.REJECTS = DCOUNT(FREE.FORM.REJECT,@VM)
+*    IF STATUS#'' THEN STATUS:='  '
+      STATUS = 'Pro # ':PRO.DESC:': '
+
+      IF CLIENT='00900' OR CLIENT='00801' OR CLIENT='00862' OR CLIENT='00892' OR CLIENT='00853' OR CLIENT='00961' OR CLIENT='00952' THEN
+         VP.CLIENT='1'
+      END ELSE
+         VP.CLIENT='0'
+      END
+
+      BEGIN CASE
+         CASE CHECK.DATE # '' AND CHECK.NUM # '' AND CHECK.AMT # '' AND CUT.BACK.AMT = "0.00"
+            STATUS := 'was paid on ':CHECK.DATE:', total check amount $':CHECK.AMT:', check #':CHECK.NUM:'.':' Actual charges paid for this pro # were $':ACTUAL.CHG:'.'
+            IF PROCESS.DATE # '' THEN
+               STATUS := ' Bill processed on ':PROCESS.DATE
+            END
+         CASE CHECK.DATE # '' AND CHECK.NUM # '' AND CHECK.AMT # '' AND CUT.BACK.AMT # "0.00"
+            STATUS := 'was paid on ':CHECK.DATE:', total check amount $':CHECK.AMT:', check #':CHECK.NUM:'.':' Actual charges paid for this pro # were $':ACTUAL.CHG:'.':' This amount includes a cutback in the amount of $':CUT.BACK.AMT:' for the following reason : ':CUT.BACK.REASON:'.'
+            IF PROCESS.DATE # '' THEN
+               STATUS := ' Bill processed on ':PROCESS.DATE
+            END
+         CASE PROCESS.DATE # '' & REJECT # 'R' & VP.CLIENT & BILL.DATE LE ICONV('12/28/00','D')
+            STATUS := 'Bill processed on ':PROCESS.DATE:' in the amount of $':ACTUAL.CHG:' Payment subject to Chapter 11 petition'
+         CASE PROCESS.DATE # '' AND REJECT # 'R'
+            STATUS := 'Bill processed on ':PROCESS.DATE
+            IF CUT.BACK.AMT = "0.00" THEN
+               STATUS:=' in the amount of $':ACTUAL.CHG:'.'
+            END ELSE
+               STATUS:=' billed amount of $':BILLED.AMT'R26':' cutback to $':ACTUAL.CHG:' in the amount of $':CUT.BACK.AMT:' for the following reason: ':CUT.BACK.REASON:'.'
+            END
+            STATUS:=' Estimated check date is '
+            IF CL.LAST.CHECKS#'' AND CL.BANK # 'V' AND CL.BANK # 'N'  THEN
+               NUM.OF.CHECK.DATES=DCOUNT(CL.LAST.CHECKS<1>,@VM)
+               IF NUM.OF.CHECK.DATES > 8 THEN NUM.OF.CHECK.DATES = 8
+*            Only get the latest 8 items
+               SUM.OF.DATES=0
+               FOR XX = 1 TO NUM.OF.CHECK.DATES
+                  SUM.OF.DATES = SUM.OF.DATES + CL.LAST.CHECKS<1,XX> - CL.LAST.PROC.DATES<1,XX>
+               NEXT XX
+               AVG.DAYS = SUM.OF.DATES/NUM.OF.CHECK.DATES
+               AVG.DAYS = AVG.DAYS + .99          ;* Round up
+               AVG.DAYS = AVG.DAYS'R0'
+               EST.DATE.OF.CHECK=PROC.DATE+AVG.DAYS
+               IF EST.DATE.OF.CHECK LE DATE()+7 THEN EST.DATE.OF.CHECK = DATE()+7
+               STATUS := EST.DATE.OF.CHECK'D2/':'.'
+            END ELSE
+               STATUS := "unavailable."
+            END
+         CASE ENTRY.DATE # '' AND REJECT # 'R'
+            STATUS := 'Bill received and entered ':ENTRY.DATE:', will be processed within 96 hours.'
+            IF PROCESS.DATE # '' THEN
+               STATUS := 'Bill processed on ':PROCESS.DATE
+            END
+         CASE ENTRY.DATE # '' AND REJECT = 'R'
+            STATUS :=  'Bill returned for the following reason(s) :'
+            IF NUM.REJECTS GT 0 THEN
+               FOR S = 1 TO NUM.REJECTS
+                  REJECT.DATE = REJECT.USER.DATE<1,X,2>'D2/'
+                  IF   REJECT.DATE # '' THEN
+                     STATUS := '(':S:') Rejected on ':REJECT.DATE:' because:  '
+                  END ELSE
+                     STATUS := '(':S:') because:  '
+                  END
+                  CODE = REJECT.REASONS<1,S>
+                  LOCATE CODE IN REJECT.CODES<1> SETTING POS THEN
+                     STATUS := REJECT.CODES<2,POS>:', '
+                  END
+               NEXT S
+            END
+            IF NUM.FREE.REJECTS GT 0 THEN
+               FOR T = 1 TO NUM.FREE.REJECTS
+                  FREE.DATE = REJECT.FREE.USER.DATE<1,T,2>'D2/'
+                  STATUS := '(':T:') Rejected on ':FREE.DATE'D2/'
+                  REM.CHECK = OCONV(FREE.FORM.REJECT<1,T>[1,3],'MCU')
+                  IF 'REM.CHECK' = 'REM' THEN
+                     STATUS :=' because ' : FREE.FORM.REJECT<1,T>:' '
+                  END ELSE
+                     STATUS := ' for more information, please contact AFS '
+                  END
+               NEXT T
+            END
+         CASE 1
+            STATUS := 'Bill received and entered will be processed within 96 hours.'
+      END CASE
+      RETURN

@@ -1,0 +1,544 @@
+* PROGRAM FB.3.4
+* PROGRAM TO PROCESS TRAFFIC REPORTS
+*
+* AUTHOR: BRIAN M. QUEEN
+* DATE: OCTOBER 8, 1991
+*
+* PACKAGE: FREIGHT BILLING
+*
+**********************************************************************
+*
+* Last updated by AFS.SOURCE (valerie) at 15:05:20 on 05/10/1994.
+*   UPDATED WITH NEW DIVISION CODES INSERT.
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_DIVISION.CODES
+*
+* Initialize variables
+*
+      INPUT PROCESS.TYPE
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='FB.3.4'
+      PROG.DESC='Monthly Traffic Report'
+      PACK.NAME='FREIGHT BILLING'
+      HDG=0
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.3.4' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      ERRMSG=''
+      FIRST=1
+*
+* Initialize arrays
+*
+      DIM DIV.TOT(6)
+      DIM O.CITY.TOT(6)
+      DIM O.STATE.TOT(6)
+      DIM D.CITY.TOT(6)
+      DIM D.STATE.TOT(6)
+      DIM GRAND.TOT(6)
+      MAT DIV.TOT=0
+      MAT O.CITY.TOT=0
+      MAT O.STATE.TOT=0
+      MAT D.CITY.TOT=0
+      MAT D.STATE.TOT=0
+      MAT GRAND.TOT=0
+      MAT DIV.REC = ''
+*
+* Open files
+*
+      OPEN 'CLIENTS' TO F.CLIENT ELSE
+        CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN 'CARRIERS' TO F.CARRIERS ELSE
+        CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN 'ZIPS.CODES' TO F.ZIPS ELSE CALL OPEN.ABORT("ZIPS",PROG.NAME)
+*
+* Display screen heading
+*
+30    CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+* Get client number to process
+*
+50    HELP="Enter the client number you want to process. 'X'=Exit."
+      CALL GEN.IN(0,3,'Enter Client Number #####','',Q,0,20,'','',2,-5,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU') 
+      BEGIN CASE
+        CASE QI='EX' ! QI='X'
+          STOP
+        CASE QI=''
+          STOP
+        CASE NOT(QI MATCHES "0N")
+          CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+          CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+          BEGIN CASE
+            CASE ITEM.LIST=''
+              GOTO 50
+            CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+              GOTO 100
+            CASE ITEM.LIST NE ''
+              IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+              GOTO 50
+          END CASE
+        CASE NUM(QI)
+          Q=QI'R%5'
+        CASE 1
+          GOTO 100
+      END CASE
+      CLIENT.ID=Q
+*
+      READ CLIENT.REC FROM F.CLIENT,CLIENT.ID ELSE
+        IF PROCESS.TYPE='STD' THEN CALL ELINE("ERROR - Client ":CLIENT.ID:" not on file.")
+        GOTO 50
+      END
+      CLIENT.NAME=CLIENT.REC<2>
+      FYBD=CLIENT.REC<29>
+*
+* Get current period beginning date
+*
+100   HELP='Enter the current period beginning date.'
+      CALL GEN.IN(0,5,'Current period beginning date.  ':DATE()'D2/','DATE',BEG.DATE,1,8,'','',1,-8,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU') 
+      IF QI='X' THEN GOTO 50
+      IF QI='EX' THEN STOP
+      CRT @(32,5):BEG.DATE'D2/'
+*
+* Get current period ending date
+*
+200   DM=FIELD(BEG.DATE'D2/','/',1)
+      DD=31
+      DY=FIELD(BEG.DATE'D2/','/',3)
+      LOOP
+        VAR=DM:'/':DD:'/':DY
+        END.DATE=ICONV(VAR,'DI')
+      UNTIL END.DATE NE '' DO
+        DD=DD-1
+      REPEAT
+*
+      HELP='Enter the current period ending date.'
+      CALL GEN.IN(0,7,'Current period ending date.     ':END.DATE'D2/','DATE',Q,0,8,'','',1,-8,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU') 
+      BEGIN CASE
+        CASE QI=''
+          Q=END.DATE
+        CASE QI='X'
+          GOTO 100
+        CASE QI='EX'
+          STOP
+      END CASE
+      END.DATE=Q
+      IF END.DATE LT BEG.DATE THEN
+        IF PROCESS.TYPE='STD' THEN CALL ELINE('Invalid ending date.') 
+        GOTO 200
+      END
+      CRT @(32,7):END.DATE'D2/'
+*
+* Enter type
+*
+300   HELP="Enter 1=Inbound, 2=Outbound, 3=Third Party X=Back, EX=Exit"
+      CALL GEN.IN(0,9,'Enter report type - ','',Q,1,2,'','',1,-2,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU') 
+      IF QI='EX' THEN STOP
+      IF QI='X' THEN GOTO 200
+      IF QI=1 ! QI=2 ! QI=3 ELSE GOTO 300
+      TYPE=QI
+*
+* Ask if data correct
+*
+      HELP="Enter Y if information correct or N if incorrect."
+      CALL GEN.IN(0,22,'Is the information correct? Y','',Q,0,1,'','',2,-1,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU') 
+      IF QI='Y' ! QI='' ELSE GOTO 30
+*
+* Create beginning of year and monthly descriptions
+*
+      BEG.MO=OCONV(BEG.DATE,'DM') 
+      BEG.YR=OCONV(BEG.DATE,'DY') 
+      FISCAL.MO=FIELD(FYBD,'.',1)
+      IF BEG.MO LT FISCAL.MO THEN FISCAL.YR=BEG.YR-1 ELSE FISCAL.YR=BEG.YR
+      F.DATE=FISCAL.MO'R%2':'/01/':FISCAL.YR
+      F.DATE=ICONV(F.DATE,'D2/') 
+*
+      CRT @(0,2):@(-3)
+      LINE='Processing Client ':CLIENT.ID:' ':CLIENT.NAME
+      CALL CENTER(LINE,80)
+      CRT @(0,10):LINE
+      CRT
+*
+* Open clients files
+*
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS ELSE
+        CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,PROG.NAME)
+      END
+      DIVS=1
+      OPEN '','DIVISION.CODES,':CLIENT.ID TO F.DIV ELSE
+        DIVS=0
+*       CALL OPEN.ABORT("DIVISION.CODES,":CLIENT.ID,PROG.NAME)
+      END
+*
+* Initialize variables
+*
+1000  PRV.DIV=''
+      PRV.ORIG.CITY=''
+      PRV.DEST.CITY=''
+      PRV.ORIG.STATE=''
+      PRV.DEST.STATE=''
+*
+* Process Report
+*
+      TEXT="Selecting data - Please wait"
+      CALL CENTER(TEXT,80)
+      CRT @(0,12):TEXT
+*
+      STMT='SSELECT FB.BILLS.HIST,':CLIENT.ID
+      STMT := ' WITH 37 GE "':OCONV(F.DATE,'D2/'):'"'
+      STMT := ' AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'
+      STMT := ' AND WITH VERSION = "0" '
+      BEGIN CASE
+        CASE TYPE=1
+          STMT := 'AND WITH 2 = "I" BY 9 BY 26 BY 28 BY 25 BY 27'
+        CASE TYPE=2
+          STMT := 'AND WITH 2 = "O" BY 9 BY 25 BY 27 BY 26 BY 28'
+        CASE TYPE=3
+          STMT := 'AND WITH 2 = "T" BY 9 BY 25 BY 27 BY 26 BY 28'
+      END CASE
+*
+      EXECUTE STMT PASSLIST CAPTURING OUTPUT 
+      IF SYSTEM(11) ELSE
+        IF PROCESS.TYPE='STD' THEN CALL ELINE(OUTPUT)
+        STOP
+      END
+      NUM.ITEMS = @SELECTED
+      COUNTER=0
+*
+* Set up heading
+*
+      BEGIN CASE
+        CASE TYPE=1
+          TITLE="Monthly Inbound Traffic Report"
+        CASE TYPE=2
+          TITLE="Monthly Outbound Traffic Report"
+        CASE TYPE=3
+          TITLE="Monthly Third Party Traffic Report"
+      END CASE
+      L.TAB=66-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):TITLE
+      R.TAB=132-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE())
+      HEAD1=PROG.NAME:SPACE(L.TAB):TITLE:SPACE(R.TAB):TIMEDATE():"'L'"
+*
+      TITLE='For Client: ':CLIENT.ID:' ':CLIENT.NAME
+      L.TAB=66-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+      R.TAB=(132-LEN(TEMP))-9
+      HEAD2=TEMP:SPACE(R.TAB):"Page 'PL'"
+*
+      HEAD3='From ':BEG.DATE'D2/':' to ':END.DATE'D2/'
+      CALL CENTER(HEAD3,132)
+      HEAD3=HEAD3:"'L'"
+*
+      HEAD5=SPACE(6):"-----Origins----- ---Destinations-- "
+      HEAD5=HEAD5:STR('-',15):"Current Period":STR('-',16):' ':STR('-',15):"Year to Date":STR('-',17):"'L'"
+      HEAD6="  Div ST City           ST City           "
+      HEAD6=HEAD6:"Carrier"'L#15':"Amount"'R#15':"Weight"'R#15':"Amount"'R#30':"Weight"'R#15':"'L'"
+      HEAD7=STR('-',132)
+HED=HEAD1:HEAD2:HEAD3:HEAD5:HEAD6:HEAD7
+*
+* Process items and report
+*
+      VIN=''
+      VIN<3>='R'
+      CALL LASER.CODE(VIN,VOUT)
+      IF VOUT<1> # '' THEN 
+         CALL ELINE(VOUT<1>)
+         STOP
+      END
+      IF VOUT<3> # ''  THEN EXECUTE VOUT<3>
+      PRINTER ON
+      IF VOUT<2> # '' THEN PRINT VOUT<2>:
+HEADING HED
+      LOOP
+        READNEXT ID ELSE ID=''
+      UNTIL ID='' DO
+        COUNTER=COUNTER+1
+        CALL PROG.BAR(21,COUNTER,NUM.ITEMS,PER)
+        PRINTER OFF
+        CRT @(0,19):'Processing item ':ID:@(-4):
+        PRINTER ON
+        PRO=FIELD(ID,'*',2)
+        READ PRO.REC FROM F.BILLS,ID THEN
+          ORIG.CITY=PRO.REC<27>
+          IF ORIG.CITY NE PRV.ORIG.CITY THEN
+            GOSUB 8100; * PRINT ORIGIN CITY TOTALS
+          END
+          PRV.ORIG.CITY=ORIG.CITY
+*
+          ORIG.STATE=PRO.REC<25>
+          IF ORIG.STATE NE PRV.ORIG.STATE THEN
+            GOSUB 8300; * PRINT ORIGIN STATE TOTALS
+          END
+          PRV.ORIG.STATE=ORIG.STATE
+*
+          DEST.CITY=PRO.REC<28>
+          IF DEST.CITY NE PRV.DEST.CITY THEN
+            GOSUB 8200; * PRINT DESTINATION CITY TOTALS
+          END
+          PRV.DEST.CITY=DEST.CITY
+*
+          DEST.STATE=PRO.REC<26>
+          IF DEST.STATE NE PRV.DEST.STATE THEN
+            GOSUB 8400; * PRINT DESTINATION STATE TOTALS
+          END
+          PRV.DEST.STATE=DEST.STATE
+*
+          DIV=PRO.REC<9>
+          IF DIV NE PRV.DIV THEN
+            GOSUB 8500; * PRINT DIVISION TOTALS
+            PRV.DIV=PRO.REC<9>
+          END
+*
+* Print pro information
+*
+          IF HDG=2 THEN
+            PRINT
+            HDG=0
+          END
+          IF HDG THEN
+            PRO.LINE=SPACE(41)
+          END ELSE
+            PRO.LINE=DIV'R#5':ORIG.STATE'R#3':' ':ORIG.CITY'L#14':DEST.STATE'R#3':' ':DEST.CITY'L#14'
+          END
+*
+* Update year to date totals
+*
+          DIV.TOT(4)=DIV.TOT(4)+1
+          DIV.TOT(5)=DIV.TOT(5)+PRO.REC<8>
+          DIV.TOT(6)=DIV.TOT(6)+PRO.REC<6>
+          GRAND.TOT(4)=GRAND.TOT(4)+1
+          GRAND.TOT(5)=GRAND.TOT(5)+PRO.REC<8>
+          GRAND.TOT(6)=GRAND.TOT(6)+PRO.REC<6>
+          O.CITY.TOT(4)=O.CITY.TOT(4)+1
+          O.CITY.TOT(5)=O.CITY.TOT(5)+PRO.REC<8>
+          O.CITY.TOT(6)=O.CITY.TOT(6)+PRO.REC<6>
+          D.CITY.TOT(4)=D.CITY.TOT(4)+1
+          D.CITY.TOT(5)=D.CITY.TOT(5)+PRO.REC<8>
+          D.CITY.TOT(6)=D.CITY.TOT(6)+PRO.REC<6>
+          O.STATE.TOT(4)=O.STATE.TOT(4)+1
+          O.STATE.TOT(5)=O.STATE.TOT(5)+PRO.REC<8>
+          O.STATE.TOT(6)=O.STATE.TOT(6)+PRO.REC<6>
+          D.STATE.TOT(4)=D.STATE.TOT(4)+1
+          D.STATE.TOT(5)=D.STATE.TOT(5)+PRO.REC<8>
+          D.STATE.TOT(6)=D.STATE.TOT(6)+PRO.REC<6>
+*
+* Update current totals and print detail line
+*
+          IF PRO.REC<37> GE BEG.DATE THEN
+            DIV.TOT(1)=DIV.TOT(1)+1
+            DIV.TOT(2)=DIV.TOT(2)+PRO.REC<8>
+            DIV.TOT(3)=DIV.TOT(3)+PRO.REC<6>
+            GRAND.TOT(1)=GRAND.TOT(1)+1
+            GRAND.TOT(2)=GRAND.TOT(2)+PRO.REC<8>
+            GRAND.TOT(3)=GRAND.TOT(3)+PRO.REC<6>
+            O.CITY.TOT(1)=O.CITY.TOT(1)+1
+            O.CITY.TOT(2)=O.CITY.TOT(2)+PRO.REC<8>
+            O.CITY.TOT(3)=O.CITY.TOT(3)+PRO.REC<6>
+            D.CITY.TOT(1)=D.CITY.TOT(1)+1
+            D.CITY.TOT(2)=D.CITY.TOT(2)+PRO.REC<8>
+            D.CITY.TOT(3)=D.CITY.TOT(3)+PRO.REC<6>
+            O.STATE.TOT(1)=O.STATE.TOT(1)+1
+            O.STATE.TOT(2)=O.STATE.TOT(2)+PRO.REC<8>
+            O.STATE.TOT(3)=O.STATE.TOT(3)+PRO.REC<6>
+            D.STATE.TOT(1)=D.STATE.TOT(1)+1
+            D.STATE.TOT(2)=D.STATE.TOT(2)+PRO.REC<8>
+            D.STATE.TOT(3)=D.STATE.TOT(3)+PRO.REC<6>
+*
+            CARRIER.NUM=FIELD(ID,'*',1)
+            READV CARRIER.NAME FROM F.CARRIERS,CARRIER.NUM,1 ELSE CARRIER.NAME="Unknown"
+            PRINT PRO.LINE:' ':CARRIER.NAME'L#15':PRO.REC<8>'R26,$#15':PRO.REC<6>'R0,#15':' ':PRO'L#15':' ':PRO.REC<1>'D2/'
+            HDG=1
+          END
+        END
+      REPEAT
+      GOSUB 8100
+      GOSUB 8200
+      GOSUB 8300
+      GOSUB 8400
+      GOSUB 8500
+      GOSUB 8600
+      PRINTER OFF
+      PRINTER CLOSE
+      STOP
+*----------------------------------------------------------------------
+*
+* INTERNAL SUBROUTINES
+*
+*----------------------------------------------------------------------
+*
+* Print origin city totals
+*
+8100  IF PRV.ORIG.CITY NE '' THEN
+        GOSUB 9000
+        HDG=2
+        DESC="Totals for origin city ":PRV.ORIG.CITY
+        LINE='    ':DESC'L#40'
+        BILLS=O.CITY.TOT(1)'R0#7':' Bills'
+        LINE := BILLS'R#13'
+        LINE := O.CITY.TOT(2)'R26,$#15'
+        LINE := O.CITY.TOT(3)'R0,#15'
+        LINE := O.CITY.TOT(4)'R0,#9':' Bills'
+        LINE := O.CITY.TOT(5)'R26,$#15'
+        LINE := O.CITY.TOT(6)'R0,#15'
+        PRINT LINE
+        MAT O.CITY.TOT=0
+      END
+      RETURN
+*
+* Print destination city totals
+*
+8200  IF PRV.DEST.CITY NE '' THEN
+        GOSUB 9000
+        HDG=2
+        DESC="Totals for destination city ":PRV.DEST.CITY
+        LINE='    ':DESC'L#40'
+        BILLS=D.CITY.TOT(1)'R0#7':' Bills'
+        LINE := BILLS'R#13'
+        LINE := D.CITY.TOT(2)'R26,$#15'
+        LINE := D.CITY.TOT(3)'R0,#15'
+        LINE := D.CITY.TOT(4)'R0,#9':' Bills'
+        LINE := D.CITY.TOT(5)'R26,$#15'
+        LINE := D.CITY.TOT(6)'R0,#15'
+        PRINT LINE
+        MAT D.CITY.TOT=0
+        MAT O.STATE.TOT=0
+        MAT O.CITY.TOT=0
+      END
+      RETURN
+*
+* Print origin state totals
+*
+8300  IF PRV.ORIG.STATE NE '' THEN
+        GOSUB 9000
+        HDG=2
+        DESC="Totals for origin state ":PRV.ORIG.STATE
+        LINE='    ':DESC'L#40'
+        BILLS=O.STATE.TOT(1)'R0#7':' Bills'
+        LINE := BILLS'R#13'
+        LINE := O.STATE.TOT(2)'R26,$#15'
+        LINE := O.STATE.TOT(3)'R0,#15'
+        LINE := O.STATE.TOT(4)'R0,#9':' Bills'
+        LINE := O.STATE.TOT(5)'R26,$#15'
+        LINE := O.STATE.TOT(6)'R0,#15'
+        PRINT LINE
+        MAT O.STATE.TOT=0
+        MAT O.CITY.TOT=0
+      END
+      RETURN
+*
+* Print destination state totals
+*
+8400  IF PRV.DEST.STATE NE '' THEN
+        GOSUB 9000
+        HDG=2
+        DESC="Totals for destination state ":PRV.DEST.STATE
+        LINE='    ':DESC'L#40'
+        BILLS=D.STATE.TOT(1)'R0#7':' Bills'
+        LINE := BILLS'R#13'
+        LINE := D.STATE.TOT(2)'R26,$#15'
+        LINE := D.STATE.TOT(3)'R0,#15'
+        LINE := D.STATE.TOT(4)'R0,#9':' Bills'
+        LINE := D.STATE.TOT(5)'R26,$#15'
+        LINE := D.STATE.TOT(6)'R0,#15'
+        PRINT LINE
+        MAT D.STATE.TOT=0
+        MAT D.CITY.TOT=0
+        MAT O.STATE.TOT=0
+        MAT O.CITY.TOT=0
+      END
+      RETURN
+*
+* Print division totals
+*
+8500  IF PRV.DIV NE '' THEN
+        CHR='-'
+        GOSUB 8900
+        DESC="Totals for division ":PRV.DIV
+        LINE='    ':DESC'L#40'
+        BILLS=DIV.TOT(1)'R0#7':' Bills'
+        LINE := BILLS'R#13'
+        LINE := DIV.TOT(2)'R26,$#15'
+        LINE := DIV.TOT(3)'R0,#15'
+        LINE := DIV.TOT(4)'R0,#9':' Bills'
+        LINE := DIV.TOT(5)'R26,$#15'
+        LINE := DIV.TOT(6)'R0,#15'
+        PRINT LINE
+        CHR='='
+        GOSUB 8900
+        MAT DIV.TOT=0
+        MAT D.STATE.TOT=0
+        MAT D.CITY.TOT=0
+        MAT O.STATE.TOT=0
+        MAT O.CITY.TOT=0
+      END
+      IF PRO.REC<9> NE '' THEN
+        HEAD4="For division ":PRO.REC<9>:" - "
+        IF DIVS=0 THEN
+          CALL OPEN.ABORT("DIVISION.CODES,":CLIENT.ID,PROG.NAME)
+        END
+        MATREAD DIV.REC FROM F.DIV, PRO.REC<9> ELSE MAT DIV.REC = ''
+        IF DIV.ZIP NE '' THEN
+          READV CITY FROM F.ZIPS, DIV.ZIP, 1 ELSE CITY=''
+          READV STATE FROM F.ZIPS, DIV.ZIP, 2 ELSE STATE=''
+          HEAD4=HEAD4:CITY:', ':STATE
+          CALL CENTER(HEAD4,132)
+        END
+      END
+      HEAD4=HEAD4:"'LL'"
+      HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6:HEAD7
+      HEADING HED
+      IF FIRST THEN FIRST=0
+      RETURN
+*
+* Print grand totals
+*
+8600  HED=HEAD1:HEAD2:HEAD3:HEAD5:HEAD6:HEAD7
+*      HEADING HED
+*      PAGE
+      PRINT
+      PRINT
+      DESC="Grand totals"
+      LINE=DESC'L#44'
+      BILLS=GRAND.TOT(1)'R0,#7':' Bills'
+      LINE := BILLS'R#13'
+      LINE := GRAND.TOT(2)'R26,$#15'
+      LINE := GRAND.TOT(3)'R0,#15'
+      LINE := GRAND.TOT(4)'R0,#9':' Bills'
+      LINE := GRAND.TOT(5)'R26,$#15'
+      LINE := GRAND.TOT(6)'R0,#15'
+      PRINT LINE
+      CHR='='
+      GOSUB 8900
+      MAT GRAND.TOT=0
+      RETURN
+*
+* Print total line break
+*
+8900  LINE=SPACE(42)
+      FOR I=1 TO 6
+        LINE := ' ':STR(CHR,14)
+      NEXT I
+      PRINT LINE
+      RETURN
+*
+* Print heading
+*
+9000  BEGIN CASE
+        CASE HDG=1
+          CHR='-'
+          GOSUB 8900
+        CASE HDG=0
+          PRINT PRO.LINE
+          CHR='-'
+          GOSUB 8900
+      END CASE
+      RETURN

@@ -1,0 +1,433 @@
+      SUBROUTINE RATE.DARLING.ACCRUAL(RVIN,RVOUT)
+*
+ UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'RATE.DARLING.ACCRUAL' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+ CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: OWEN HOLMAN
+* DATE: JUNE 15, 2001
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE EXPRESS
+* WRITTEN CONSENT OF SAME.
+*
+****************************************************************
+* MODIFICATIONS:
+* 05/12/06 : JCW01 : CHANGES TO @SELECTED, CLEARSELECT, AND STMT<X>
+****************************************************************
+* Initialize variables
+****************************************************************
+
+      CRT 'REVIEWING BLENDED RATES...'
+      CLIENT.ID=RVIN<1>                  ; * 'OLA' Client Number (Rating Files)
+      CARRIER.ID='SAME'                  ; * Rate all (Least Cost) or a specific carrier
+
+      CALL CHANNEL(CH.NUM)
+      CALL GET.USER(USER)
+
+      CLIENT.AUDIT=1
+      ERROR=''
+      PROG.NAME='RATE.DARLING.ACCRUAL'
+      PROG.DESC="(Re) Rate freight on accrual shipments"
+      PACK.NAME="Freight Billing"
+      CONTR.AMT=''
+      BENCH.AMT=''
+      CARRIER.EST.ARRAY=''
+      ERROR.ARRAY=''
+
+*
+* Open general files
+*
+      OPEN 'BILLDATA.':USER TO F.BILLDATA ELSE
+         CALL OPEN.ABORT("BILLDATA.":USER,PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         ERROR = "CANNOT OPEN FILE CLIENTS"
+         GO 9000
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         ERROR = "CANNOT OPEN FILE F.TABLES"
+         GO 9000
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         ERROR = "CANNOT OPEN FILE CARRIERS"
+         GO 9000
+      END
+      OPEN '','FB.BC.FSC' TO F.NFSC ELSE
+         ERROR = "CANNOT OPEN FILE FB.BC.FSC"
+         GO 9000
+      END
+
+*---- Open mileage input and output files
+
+      OPEN '','PCIN' TO F.PCIN ELSE
+         ERROR = "CANNOT OPEN FILE PCIN"
+         GO 9000
+      END
+      OPEN '','PCOUT' TO F.PCOUT ELSE
+         ERROR = "CANNOT OPEN FILE  "
+         GO 9000
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+         ERROR = "CANNOT OPEN ZIPS FILE "
+         GO 9000
+      END
+      READ SHIPMETH.REC FROM F.TABLES,'FB.DARLING.SHIPMETH' ELSE
+         ERROR='CANNOT READ SHIPMETH REC'
+         GO 9000
+      END
+
+*
+* Open client's files.
+*
+      AUDIT.CLIENT.ID = CLIENT.ID
+      OPEN '','FB.AUDIT,':CLIENT.ID TO F.AUDIT THEN
+         READV SUB.CLIENT FROM F.AUDIT,'SUBSTITUTE',1 THEN
+            AUDIT.CLIENT.ID = SUB.CLIENT
+            OPEN '','FB.AUDIT,':AUDIT.CLIENT.ID TO F.AUDIT ELSE CLIENT.AUDIT=0
+         END ELSE
+            AUDIT.CLIENT.ID = CLIENT.ID
+         END
+      END ELSE CLIENT.AUDIT=0
+      IF CLIENT.AUDIT=0 THEN
+         ERROR = "Client ":CLIENT.ID:" is not setup for freight estimates"
+         RETURN
+      END
+      OPEN '','FB.AUDIT.TABLES,':AUDIT.CLIENT.ID TO F.AUDIT.TABLES ELSE
+         ERROR = "Cannot open file FB.AUDIT.TABLES,":AUDIT.CLIENT.ID
+         RETURN
+      END
+      OPEN '','FB.AUDIT.ZIPS,':AUDIT.CLIENT.ID TO F.AUDIT.ZIPS ELSE
+         ERROR = "Cannot open FB.AUDIT.ZIPS,":AUDIT.CLIENT.ID:" No On-Line Audit Allowed!"
+         RETURN
+      END
+      OPEN '','FB.BOL.CRX,':CLIENT.ID TO F.BOL.CRX ELSE
+         ERROR = "Cannot open FB.BOL.CRX,":CLIENT.ID
+         RETURN
+      END
+*
+* Read Source Data
+*
+
+      STMT='SSELECT FB.BOL.CRX,':CLIENT.ID:' WITH F4 = "" AND WITH DAR.PPC = "PPA""PDA"'
+      EXECUTE STMT RTNLIST BOL.LIST CAPTURING RESULTS
+      EOF=0
+      CNT=0
+      LOOP
+         READNEXT BOL.ID FROM BOL.LIST ELSE EOF=1
+      UNTIL EOF DO
+         READ BOL.REC FROM F.BOL.CRX,BOL.ID THEN
+            SHIPMETH=BOL.REC<34>
+            LOCATE SHIPMETH IN SHIPMETH.REC<1> SETTING SPOS THEN
+               CARRIER.ID=SHIPMETH.REC<3,SPOS>
+               IF CARRIER.ID='UNKNOWN' THEN
+                  BOL.REC<35>=SHIPMETH.REC<2,SPOS>
+                  BOL.REC<36>=CARRIER.ID
+                  BOL.REC<38,1>='CANNOT AUTORATE'
+                  BOL.REC<38,2>='SHIPMETH NOT DEFINED'
+                  WRITE BOL.REC ON F.BOL.CRX,BOL.ID
+                  GO SKIP.BOL
+               END
+            END ELSE
+               BOL.REC<35>='UNKNOWN'
+               BOL.REC<36>=''
+               BOL.REC<38,1>='CANNOT AUTORATE'
+               BOL.REC<38,2>='SHIPMETH NOT DEFINED'
+               WRITE BOL.REC ON F.BOL.CRX,BOL.ID
+               GO SKIP.BOL
+            END
+            BOL.REC<35>=SHIPMETH.REC<2,SPOS>
+            BOL.REC<36>=CARRIER.ID
+            PRO=BOL.REC<26>
+            IOT=BOL.REC<23>
+            IF IOT='' THEN IOT='O'
+            OSHIP.DATE=OCONV(BOL.REC<2>,'D2/')
+            ORIG.ZIP=BOL.REC<15>
+            IF INDEX(ORIG.ZIP,'-',1) THEN ORIG.ZIP=FIELD(ORIG.ZIP,'-',1)
+            DEST.ZIP=BOL.REC<21>
+            IF INDEX(DEST.ZIP,'-',1) THEN DEST.ZIP=FIELD(DEST.ZIP,'-',1)
+* Classes, Weights, & Codes
+            CLASSES=BOL.REC<32>
+            WEIGHTS=BOL.REC<33>
+            MISC.CHG.CODES=''
+            MISC.CHG.AMTS=''
+            ERROR=''
+            GOSUB RATE.SHIPMENT
+            IF ERROR#'' THEN
+               BOL.REC<38,1>='CANNOT AUTORATE'
+               BOL.REC<38,2>=CARRIER.ID:'-':PRO:@VM:ERROR
+               WRITE BOL.REC ON F.BOL.CRX,BOL.ID
+               GO SKIP.BOL
+            END ELSE
+               CONTR.AMT = A.VOUT<8>
+               BENCH.AMT = A.VOUT<9>
+               BOL.REC<37,1>=CONTR.AMT
+               BOL.REC<37,2>=BENCH.AMT
+               BOL.REC<38>=''
+            END
+            WRITE BOL.REC ON F.BOL.CRX,BOL.ID
+            ERROR=''
+         END
+SKIP.BOL:***
+      REPEAT
+      RETURN
+      STOP
+RATE.SHIPMENT:***
+      SHIP.DATE=ICONV(OSHIP.DATE,'D')
+      IF SHIP.DATE='' THEN
+         ERROR='Invaid Ship Date of ':OSHIP.DATE
+         RETURN
+      END
+      IF SHIP.DATE > DATE() THEN
+         ERROR='Ship date cannot be in the future. Use today as the date.'
+         RETURN
+      END
+      NUM.WEIGHTS = DCOUNT(WEIGHTS,@VM)
+      TOT.WEIGHT = 0
+      TOT.WEIGHT = SUM(WEIGHTS)
+      IF TOT.WEIGHT GT 15000 THEN
+         ERROR = "TOTAL WEIGHT EXCEEDS PROGRAM LIMITS. PLEASE CONTACT AFS"
+         RETURN
+      END
+*----
+* READ TABLES THAT MAY BE NEEDED
+*----
+      BEGIN CASE
+         CASE IOT = "I"
+            IOT.DESC = "Inboud"
+         CASE IOT = "O"
+            IOT.DESC = "Outbound"
+         CASE IOT = "T"
+            IOT.DESC = "Third Party"
+      END CASE
+      READ DTARIFF.DATE.XREF FROM F.TABLES,'TARIFF.DATE.XREF' ELSE DTARIFF.DATE.XREF=''
+      READ DTARIFFS FROM F.TABLES,'TARIFFS' ELSE DTARIFFS=''
+      READ LI.CODES FROM F.TABLES,'LI.CODES' ELSE LI.CODES=''
+      READ DCLIENTS FROM F.CLIENTS,CLIENT.ID ELSE
+         ERROR = "Client ":CLIENT.ID:" not on file."
+         RETURN
+      END
+      CL.LOG.FSC=DCLIENTS<111>
+      LOGISTICS=DCLIENTS<93>='Y'
+      CARR.ONLY.FSC=DCLIENTS<189>
+
+
+
+*
+* Select Carrier(s) (Even if only one) to Loop thru
+*
+      STMT= 'SELECT FB.AUDIT,':AUDIT.CLIENT.ID
+      STMT:=' WITH 1 = "LTLALL"'
+      IF CARRIER.ID # 'ALL' THEN
+         STMT:=" AND WITH CARRIER# '":CARRIER.ID:"'"
+      END ELSE
+         STMT:=' AND WITH 11 = "ENABLE"'
+         STMT:=' AND WITH 13 = "Y"'      ; * Core Carrier Flag = "Y"
+      END
+      EXECUTE STMT RTNLIST CHECK.LIST CAPTURING OUTPUT
+*     IF NOT(@SELECTED) THEN ; * JCW01
+      IF @SELECTED < 1 THEN              ; * JCW01
+         IF CARRIER.ID # 'ALL' THEN
+            ERROR='Carrier ':CARRIER.ID:' is not set up for freight estimates'
+         END ELSE
+            ERROR='There are no core carriers set up for freight estimates'
+         END
+         RETURN
+      END
+*
+* Setup AUDIT.VIN
+*
+
+      READ T.REC FROM F.ZIPS,ORIG.ZIP THEN
+         ORIG.CITY = T.REC<1>
+         ORIG.ST = T.REC<2>
+      END ELSE
+         ERROR=ORIG.ZIP:' ZIP NOT ON FILE, PLEASE TRY ANOTHER ZIP'
+         RETURN
+      END
+      READ T.REC FROM F.ZIPS,DEST.ZIP THEN
+         DEST.CITY = T.REC<1>
+         DEST.ST = T.REC<2>
+      END ELSE
+         ERROR=DEST.ZIP:' ZIP NOT ON FILE, PLEASE TRY ANOTHER ZIP'
+         RETURN
+      END
+
+      A.VIN=''
+      A.VIN<3>=SHIP.DATE
+      A.VIN<11>=AUDIT.CLIENT.ID
+      A.VIN<12>=IOT
+      A.VIN<13,1>=ORIG.ZIP
+      A.VIN<13,2>=ORIG.CITY
+      A.VIN<13,3>=ORIG.ST
+      A.VIN<14,1>=DEST.ZIP
+      A.VIN<14,2>=DEST.CITY
+      A.VIN<14,3>=DEST.ST
+      A.VIN<16>=USER
+
+      A.VIN<17>=1                        ; *Misroute Flag to Ignore Misc Charge Code Errors
+      A.VIN<18>=CLASSES
+      A.VIN<19>=WEIGHTS
+      A.VIN<21>=MISC.CHG.CODES
+      A.VIN<22>=MISC.CHG.AMTS
+      A.VIN<23>=MISC.CHG.AMTS
+      A.VIN<24>=LOGISTICS
+      A.VIN<25>=''
+      A.VIN<35>=CL.LOG.FSC='N'           ; * Flag to NOT Calculate Log FSC
+*
+**** Begin "Loop" of all Carriers *****
+*
+      CARRIER.EST.ARRAY=''
+      *<1>=Amount (MV Lowest to Highest)
+      *<2>=Carrier #
+      *<3>=Carrier Name
+      *<4>=Carrier Address
+      *<5>=Carrier City
+      *<6>=Carrier State
+      *<7>=Error (If Any)
+      *<8>=Flag
+GET.NEXT.CARRIER:
+      READNEXT CHECK.CARRIER.ID FROM CHECK.LIST ELSE
+         RETURN
+      END
+      ERROR=''
+      GOSUB GET.CARRIER.INFO
+      IF ERROR#'' AND CARRIER.ID # 'ALL' THEN
+         ERROR='Carrier ':CARRIER.ID:' is not set up for freight estimates'
+         RETURN
+      END
+**********************************************************************
+      A.VIN<10>= CHECK.CARRIER.ID        ; * Add "Current" Carrier to AUDIT.VIN
+      VIN=A.VIN
+      CALL FB.AUTO(VIN,A.VOUT,D.AUDIT,CONTR.DFSC,BENCH.DFSC,DTARIFFS,DTARIFF.DATE.XREF,LI.CODES,F.AUDIT.TABLES,F.AUDIT.ZIPS,F.PCIN,F.PCOUT,F.TABLES)
+      WHY=A.VOUT<24>                     ; * Save for Debugging purposes
+      A.VOUT<24>=''                      ; * Kill Why So you can look at A.VOUT with Debugger
+      CONTR.AMT = A.VOUT<8>
+      BENCH.AMT = A.VOUT<9>
+      ERROR=A.VOUT<1>
+      RETURN                             ; * Force a Return Here
+      AUDIT=A.VOUT<2>
+      IF ERROR # "" THEN
+         IF CARRIER.ID # 'ALL' AND CONTR.AMT+0=0 THEN
+            RETURN
+         END
+      END
+      IF AUDIT # "Y" AND CARRIER.ID="ALL" THEN GO GET.NEXT.CARRIER
+      IF AUDIT = "MA" THEN ERROR = "Not an approved carrier for this shipment!"
+      IF CONTR.AMT+0=0 THEN GO GET.NEXT.CARRIER
+      IF LOGISTICS AND BENCH.AMT+0=0 THEN GO GET.NEXT.CARRIER
+*
+*** Add Quote Percentage Logic Here ***
+**********************************************************************
+
+*** Locate and set percentages for quotes and commissions
+
+*    IF LOGISTICS THEN
+*      LOCATE SHIP.DATE IN DCLIENTS<84> BY 'AR' SETTING POS ELSE
+*        POS=POS-1
+*      END
+*      COMM.PERC = DCLIENTS<85,POS>
+*      SAVINGS = BENCH.AMT-CONTR.AMT
+*      LOG.COMM = SAVINGS*COMM.PERC/100
+*      CL.SAVINGS = SAVINGS - LOG.COMM
+*      SAVINGS.QUOTE.AMT = CL.SAVINGS*(1-QUOTE.PERC/10000)
+*      QUOTE.AMT=OCONV(CONTR.AMT + LOG.COMM + SAVINGS.QUOTE.AMT,'MR0')
+*    END ELSE
+*      QUOTE.AMT=CONTR.AMT
+*    END
+      QUOTE.AMT=CONTR.AMT
+*********************************************************************
+* Special deal for BFG Quincy Compressor
+*********************************************************************
+*    IF CLIENT.ID='00981' THEN
+*      BEGIN CASE
+*        CASE CLIENT.ID='00981' AND IOT='O' AND ORIG.ZIP='62305'; * Quincy
+*          QUOTE.AMT=(QUOTE.AMT*1.1)'R0'
+*        CASE CLIENT.ID='00981' AND IOT='O' AND ORIG.ZIP='36507'; * Bay Minette
+*          QUOTE.AMT=(QUOTE.AMT*1.12)'R0'
+*        CASE CLIENT.ID='00761' AND IOT='O'
+*          QUOTE.AMT=(QUOTE.AMT*1.12)'R0'
+*      END CASE
+*    END
+*********************************************************************
+**********************************************************************
+*
+
+      LOCATE QUOTE.AMT IN CARRIER.EST.ARRAY<1> BY 'AR' SETTING POS ELSE NULL
+      INS QUOTE.AMT BEFORE CARRIER.EST.ARRAY<1,POS>
+      INS CHECK.CARRIER.ID BEFORE CARRIER.EST.ARRAY<2,POS>
+      INS CARRIER.NAME BEFORE CARRIER.EST.ARRAY<3,POS>
+*    INS CARRIER.STREET BEFORE CARRIER.EST.ARRAY<4,POS>
+*    INS CARRIER.CITY BEFORE CARRIER.EST.ARRAY<5,POS>
+*    INS CARRIER.STATE BEFORE CARRIER.EST.ARRAY<6,POS>
+      INS ERROR BEFORE CARRIER.EST.ARRAY<4,POS>
+      GO GET.NEXT.CARRIER
+GET.CARRIER.INFO:***
+      READ CARRIER.REC FROM F.CARRIERS,CHECK.CARRIER.ID ELSE
+         ERROR = "Carrier ":CHECK.CARRIER.ID:" not on file."
+         RETURN
+      END
+      CARRIER.NAME = CARRIER.REC<1>
+      CARRIER.STREET = TRIM(CHANGE(CARRIER.REC<2>,@VM,' '))
+      CARRIER.CITY = CARRIER.REC<3>
+      CARRIER.STATE = CARRIER.REC<4>
+      CARRIER.TEXT=TRIM(CHECK.CARRIER.ID:' ':CARRIER.NAME:' ':CARRIER.STREET:' ':CARRIER.CITY)
+      READ D.AUDIT FROM F.AUDIT, CHECK.CARRIER.ID ELSE
+         ERROR = "CARRIER NOT SETUP FOR AUTO AUDIT - CARRIER#":CHECK.CARRIER.ID
+         RETURN
+      END
+      IF D.AUDIT<11>#'ENABLE' THEN
+         ERROR='Not Considered in On-Line Audit - Carrier Disabled'
+         RETURN
+      END
+      READ BENCH.DFSC FROM F.NFSC,'B*':CHECK.CARRIER.ID:'*':AUDIT.CLIENT.ID ELSE 
+         READ BENCH.DFSC FROM F.NFSC,'B*':CHECK.CARRIER.ID ELSE BENCH.DFSC=''
+      END
+      IF BENCH.DFSC<30>='DISABLE' THEN
+         BENCH.DFSC=''                   ; ** No Effect
+         CONTR.DFSC=''
+      END ELSE
+         READ CONTR.DFSC FROM F.NFSC,"C*":CHECK.CARRIER.ID:"*":AUDIT.CLIENT.ID ELSE CONTR.DFSC=BENCH.DFSC
+         IF CONTR.DFSC<30>='DISABLE' THEN CONTR.DFSC=''
+      END
+      IF CARR.ONLY.FSC # "Y" THEN        ; * JMK04
+         BENCH.DFSC=CONTR.DFSC
+      END
+      RETURN
+
+9000:****
+
+      IF ERROR#'' THEN RVOUT<1>=ERROR
+      METADATA = ""
+      METADATA<1,1> = "VARCHAR" ; METADATA<1,2> = "QuoteAmt" ; METADATA<1,3> = 0
+      METADATA<2,1> = "VARCHAR" ; METADATA<2,2> = "CarrierID" ; METADATA<2,3> = 0
+      METADATA<3,1> = "VARCHAR" ; METADATA<3,2> = "CarrierName" ; METADATA<3,3> = 0
+      METADATA<4,1> = "VARCHAR" ; METADATA<4,2> = "Errors" ; METADATA<4,3> = 0
+
+      CONVERT @AM TO CHAR(30) IN METADATA
+      PRINT "%METADATA:":METADATA
+
+
+      NUM.CARRIERS = DCOUNT(CARRIER.EST.ARRAY,@AM)
+      IF NUM.CARRIERS = 0 AND ERROR = "" THEN
+         ERROR = "NO APPROVED CARRIERS AVAILABLE FOR A QUOTE"
+      END
+      IF NUM.CARRIERS = 0 AND ERROR # "" THEN
+         CARRIER.EST.ARRAY<4,1> = ERROR
+         NUM.CARRIERS = 1
+      END
+      FOR X = 1 TO NUM.CARRIERS
+         QUOTE.AMT = CARRIER.EST.ARRAY<1,X>
+         ERRORS = CARRIER.EST.ARRAY<4,X>
+
+         IF QUOTE.AMT # "" OR ERRORS # "" THEN
+            ROW=""
+            ROW<1> = OCONV(CARRIER.EST.ARRAY<1,X>,"MR2")     ; * Quote Amount
+            ROW<2> = CARRIER.EST.ARRAY<2,X>
+            ROW<3> = CARRIER.EST.ARRAY<3,X>        ; * Carrier Name
+            ROW<4> = CARRIER.EST.ARRAY<4,X>
+            CONVERT @AM TO CHAR(30) IN ROW
+            PRINT ROW
+         END
+      NEXT X
+      STOP

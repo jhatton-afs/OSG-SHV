@@ -1,0 +1,1680 @@
+*********************************************************************
+* Program name : RQ.RETRIEVE
+* Author       : Paige Bass
+* Date written : 2/1/2006
+* Library      : FBBP
+* COPYRIGHT (c) : AFS, LLC 2016, All Rights Reserved.
+*
+* modify claims client master
+* Last updated by afs (gbino) at 14:36:11 on 01/03/2018.
+
+* Start modification history
+* 030812 - JMK01 - SysAid#2081 - Rate Estimate History Program ; Username search
+* End modification history
+*********************************************************************** 
+      PROMPT ''
+      PROG.NAME = 'RQ.RETRIEVE'
+      PROG.DESC ='Rate Quote History'
+      PACK.NAME = 'AFS Rate Quotes'
+      CALL GET.USER.NEW(USER,CH.NUM)
+      
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'RQ.RETRIEVE' ; UPL.VOUT = ''    ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      
+START:
+      CLIENT.ID = ''
+      USER.NAME = ''
+      PASSWORD = ''
+      ORIG.ZIP = ''
+      DEST.ZIP = ''
+      ORIG.CITY = ''
+      DEST.CITY = ''
+      ORIG.STATE = ''
+      DEST.STATE = ''
+      BEG.LUDATE = ''
+      END.LUDATE = ''
+      BEG.LUTIME = ''
+      END.LUTIME = ''
+      BEG.SHIPDATE = ''
+      END.SHIPDATE = ''
+      MIN.PRICE = ''
+      MAX.PRICE = ''
+      MIN.WEIGHT = ''
+      MAX.WEIGHT = ''
+      LOOKUP = ''
+      ANDWORD = ''
+      QUOTES = ''
+      PAGE = ''
+      MAX.PAGE = ''
+      CHOICE = ''
+      NUM.QUOTES = ''
+      DSP.HEAD.LU = ''
+      DSP.HEAD.SHIPDT = ''
+      DSP.QDETAIL = ''
+      DT.LN = ''
+      DSP.LN = ''
+      ACCESSORIALS = ''
+EOJ1 = 0
+
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+         CALL OPEN.ABORT("ZIPS.CODES",PROG.NAME)
+      END
+      OPEN '','INET.FBESTIMATOR.ACTIVITY' TO F.IFA ELSE
+         CALL OPEN.ABORT("INET.FBESTIMATOR.ACTIVITY",PROG.NAME)
+      END
+
+      OPEN '','&SAVEDLISTS&' TO F.SL ELSE
+         CALL OPEN.ABORT("&SAVEDLISTS&",PROG.NAME)
+      END
+      OPEN '','FB.IEFA.XREF' TO F.IEFA.XREF ELSE
+         CALL OPEN.ABORT("FB.IEFA.XREF",PROG.NAME)
+      END
+
+      OPEN '','TEMP' TO F.TEMP ELSE CALL ELINE('CANT OPEN TEMP') ; STOP
+
+      OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE STOP 'CANT OPEN BILLDATA'
+
+      GOSUB GET.SCREEN.DSP
+      WRITE '' ON F.SL,USER:'.RQR.'
+
+*********************************************************
+50: * Enter client number
+*********************************************************
+  PRINT SCREEN.DSP:
+      HELP = "Enter the client number. [X] = Exit [EX] = Exit"
+      IF CLIENT.ID = '' THEN MASK = '#####' ELSE MASK = CLIENT.ID
+      CALL GEN.IN(12,2,MASK,'',Q,0,20,'','',0,-5,2,1,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'EX' ! QI = 'X'
+            STOP
+         CASE QI = '' & CLIENT.ID = ''
+            STOP
+         CASE QI = ''
+            Q = CLIENT.ID
+         CASE NOT(QI MATCHES "0N")
+            VIN=0                        ; * Starting Chars In
+            VOUT=''
+            CALL SOUNDEX.DISPLAY.NEW(VIN,VOUT,QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            PRINT SCREEN.DSP:
+
+            BEGIN CASE
+               CASE ITEM.LIST = ''
+                  GOTO 50
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 50
+               CASE 1
+                  DATA ITEM.LIST<1>
+                  GOTO 50
+            END CASE
+
+         CASE NUM(QI)
+            Q = QI'R%5'
+         CASE 1
+            GOTO 50
+      END CASE
+
+* Get client name
+*
+      IF CLIENT.ID # Q THEN CLIENT.ID = Q'R%5'
+      READ DCLIENTS FROM F.CLIENTS,CLIENT.ID ELSE
+         CALL ELINE("ERROR - Client ":CLIENT.ID:" not on file.")
+         CLIENT.ID = ''
+         GOTO 50
+      END
+      CLIENT.NAME = DCLIENTS<2>
+      CLIENT.CITY = DCLIENTS<4>
+      CRT @(12,2):CLIENT.ID:' ':CLIENT.NAME:' ':CLIENT.CITY:@(-4):
+
+      SKIP.BACK = "N"
+      SKIP.FORWARD = "N"
+      GOSUB GET.LU.DATE
+*
+      IF SKIP.BACK = "Y" THEN GOTO 50
+
+*********************************************************
+75:* Get User Name
+*********************************************************
+      HELP = "Enter the user name. or 'S' to skip further prompts"
+      IF USER.NAME = '' THEN MASK = '_____' ELSE MASK = USER.NAME
+      CALL GEN.IN(12,3,MASK,'',Q,0,20,'L','',0,12,3,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI = ' ' THEN
+         QI = ''
+         USER.NAME = ''
+      END
+      IF QI = 'X' AND USER.NAME = '' THEN
+         CRT@(12,3):SPACE(5):@(-4)
+         GOTO 50
+      END
+      IF QI = 'X' AND USER.NAME # '' THEN
+         CRT@(12,3):USER.NAME:@(-4)
+         GOTO 50
+      END
+      IF QI = "S" THEN GOTO 700          ; * NPR01
+      IF QI = 'EX' THEN GOTO 9999
+      IF QI = '' AND USER.NAME # '' THEN
+         CRT@(12,3):USER.NAME
+         GOTO 80
+      END
+      IF QI = '' AND USER.NAME = '' THEN
+         CRT@(12,3):SPACE(5):@(-4)
+         GOTO 80
+      END
+
+      USER.NAME = QI                     ; * JMK01
+      CRT @(12,3):USER.NAME:@(-4)
+
+*********************************************************
+80:* Get PASSWORD
+*********************************************************
+      HELP = 'Enter the password.'
+      IF PASSWORD = '' THEN MASK = '_____' ELSE MASK = PASSWORD
+      CALL GEN.IN(12,4,MASK,'',Q,0,20,'L','',0,12,4,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI = ' ' THEN
+         QI = ''
+         PASSWORD = ''
+      END
+      IF QI = 'X' AND PASSWORD = '' THEN
+         CRT@(12,4):SPACE(5):@(-4)
+         GOTO 75
+      END
+      IF QI = 'X' AND PASSWORD # '' THEN
+         CRT@(12,4):PASSWORD:@(-4)
+         GOTO 75
+      END
+      IF QI = 'EX' THEN GOTO 9999
+      IF QI = '' AND PASSWORD # '' THEN
+         CRT@(12,4):PASSWORD:@(-4)
+         GOTO 100
+      END
+      IF QI = '' AND PASSWORD = '' THEN
+         CRT@(12,4):SPACE(5):@(-4)
+         GOTO 100
+      END
+      PASSWORD = QI                      ; * JMK01
+      CRT @(12,4):PASSWORD:@(-4)
+
+*********************************************************
+100:* Get origin zip code
+*********************************************************
+      HELP = 'Enter the origin zip code.'
+      IF ORIG.ZIP = '' THEN MASK = '______' ELSE MASK = ORIG.ZIP
+      CALL GEN.IN(12,7,MASK,'',Q,0,6,'','',0,12,7,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI = ' ' THEN
+         QI = ''
+         ORIG.ZIP = ''
+         ORIG.CITY = ''
+         ORIG.STATE = ''
+         CRT@(12,7):@(-4)
+      END
+      IF QI = 'X' AND ORIG.ZIP = '' THEN
+         CRT@(12,7):SPACE(6):@(-4)
+         GOTO 80
+      END
+      IF QI = 'X' AND ORIG.ZIP # '' THEN
+         CRT@(12,7):ORIG.ZIP'L#6'
+         GOTO 80
+      END
+      IF QI = 'EX' THEN GOTO 9999
+      IF QI = '' AND ORIG.ZIP # '' THEN
+         CRT@(12,7):ORIG.ZIP'L#6'
+         GOTO 110
+      END
+      IF QI = '' AND ORIG.ZIP = '' THEN
+         CRT@(12,7): SPACE(6):@(-4)
+         GOTO 150
+      END
+      IF LEN(QI) # 5 AND LEN(QI) # 6 AND QI # '' THEN
+         CALL ELINE('Entry must be 5 or 6 digits')
+         GOTO 100
+      END
+      ORIG.ZIP = QI
+      CRT @(12,7):ORIG.ZIP'L#6':@(-4)
+****
+*
+110:
+      READ ZIPS.CODES FROM F.ZIPS,ORIG.ZIP ELSE
+         CALL ELINE("ERROR - City ":ORIG.ZIP:" not on file.")
+         ORIG.ZIP = ''
+         GOTO 100
+      END
+      ORIG.CITY = ZIPS.CODES<1>
+      ORIG.STATE = ZIPS.CODES<2>
+      CRT @(12,7):ORIG.ZIP'L#6':' ':ORIG.CITY:' ':ORIG.STATE:@(-4):
+
+*********************************************************
+150:* Get destination zip code
+*********************************************************
+      HELP = 'Enter the destination zip code.'
+      IF DEST.ZIP = '' THEN MASK = '______' ELSE MASK = DEST.ZIP
+      CALL GEN.IN(12,8,MASK,'',Q,0,6,'','',0,12,8,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI = ' ' THEN
+         QI = ''
+         DEST.ZIP = ''
+         DEST.CITY = ''
+         DEST.STATE = ''
+         CRT@(12,8) : @(-4)
+      END
+      IF QI = 'X' AND DEST.ZIP = '' THEN
+         CRT@(12,8):@(-4)
+         GOTO 100
+      END
+      IF QI ='X' AND DEST.ZIP # '' THEN
+         CRT@(12,8):DEST.ZIP'L#6'
+         GOTO 100
+      END
+      IF QI = 'EX' THEN GOTO 9999
+      IF QI = '' AND DEST.ZIP # '' THEN
+         CRT@(12,8):DEST.ZIP'L#6'
+         GOTO 160
+      END
+      IF QI = '' AND DEST.ZIP = '' THEN
+         CRT@(12,8): @(-4)
+         GOTO 200
+      END
+      IF LEN(QI) # 5 AND LEN(QI) # 6 AND QI # '' THEN
+         CALL ELINE('Entry must be 5 or 6 digits')
+         GOTO 150
+      END
+      DEST.ZIP = QI
+      CRT @(12,8):DEST.ZIP'L#6'
+
+160:
+      READ ZIPS.CODES FROM F.ZIPS,DEST.ZIP ELSE
+         CALL ELINE("ERROR - City ":DEST.ZIP:" not on file.")
+         DEST.ZIP = ''
+         GOTO 150
+      END
+      DEST.CITY = ZIPS.CODES<1>
+      DEST.STATE = ZIPS.CODES<2>
+      CRT @(12,8):DEST.ZIP'L#6':' ':DEST.CITY:' ':DEST.STATE:@(-4):
+
+*********************************************************
+200:* Get beginning ship date
+*********************************************************
+      HELP = 'Enter the beginning ship date. (MM/DD/YY)'
+      IF BEG.SHIPDATE = '' THEN MASK = '________' ELSE MASK = BEG.SHIPDATE'D2/'
+      CALL GEN.IN(11,13,MASK,'DATE',Q,0,8,'','',0,11,13,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI = ' ' THEN
+         QI = ''
+         BEG.SHIPDATE = ''
+      END
+      IF QI = 'X' AND BEG.SHIPDATE = '' THEN
+         CRT@(11,13): SPACE(8)
+         GOTO 150
+      END
+      IF QI = 'X' AND BEG.SHIPDATE # '' THEN
+         CRT@(11,13):BEG.SHIPDATE'D2/'
+         GOTO 150
+      END
+      IF QI = 'EX' THEN GOTO 9999
+      IF QI = '' AND BEG.SHIPDATE # '' THEN
+         CRT@(11,13):BEG.SHIPDATE'D2/'
+         GOTO 250
+      END
+      IF QI = '' AND BEG.SHIPDATE = '' THEN
+         CRT@(11,13):SPACE(8)
+         GOTO 250
+      END
+      BEG.SHIPDATE = Q
+      CRT @(11,13):BEG.SHIPDATE'D2/'
+
+*********************************************************
+250:* Get ending ship date
+*********************************************************
+      HELP = 'Enter the ending ship date.'
+      IF END.SHIPDATE = '' THEN MASK = '________' ELSE MASK = END.SHIPDATE'D2/'
+      CALL GEN.IN(11,14,MASK,'DATE',Q,0,8,'','',0,11,14,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI = ' ' THEN
+         QI = ''
+         END.SHIPDATE = ''
+      END
+      IF QI = 'X' AND END.SHIPDATE = '' THEN
+         CRT@(11,14):SPACE(8)
+         GOTO 200
+      END
+      IF QI = 'X' AND END.SHIPDATE # '' THEN
+         CRT@(11,14):END.SHIPDATE'D2/'
+         GOTO 200
+      END
+      IF QI = 'EX' THEN GOTO 9999
+      IF QI = '' AND END.SHIPDATE # '' THEN GOTO 275
+      IF QI = '' AND END.SHIPDATE = '' THEN
+         CRT@(11,14):SPACE(8)
+         GOTO 300
+      END
+      END.SHIPDATE = Q
+
+275:
+      IF END.SHIPDATE LT BEG.SHIPDATE THEN
+         END.SHIPDATE = ''
+         CALL ELINE('Ending ship date cannot be before beginning ship date.')
+         GOTO 250
+      END
+      CRT @(11,14):END.SHIPDATE'D2/'
+
+*********************************************************
+300:* Get minimum price
+*********************************************************
+      HELP = 'Enter the minimum quote price.'
+      IF MIN.PRICE = '' THEN MASK = '________' ELSE MASK = MIN.PRICE'R26,#8'
+      CALL GEN.IN(34,13,MASK,'AMT2',Q,0,8,'R','',0,34,13,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI = ' ' THEN
+         QI = ''
+         MIN.PRICE = ''
+      END
+      IF QI = 'X' AND MIN.PRICE = '' THEN
+         CRT@(34,13):SPACE(8)
+         GOTO 250
+      END
+      IF QI = 'X' AND MIN.PRICE # '' THEN
+         CRT@(434,13):MIN.PRICE'R26#8'
+         GOTO 250
+      END
+      IF QI = 'EX' THEN GOTO 9999
+      IF QI = '' AND MIN.PRICE # '' THEN
+         CRT@(34,13):MIN.PRICE'R26,#8'
+         GOTO 350
+      END
+      IF QI = '' AND MIN.PRICE = '' THEN
+         CRT@(34,13): SPACE(8)
+         GOTO 350
+      END
+      IF NOT(NUM(QI)) THEN
+         CALL ELINE('Entry must be numerical')
+         GOTO 300
+      END
+      IF QI # '' AND QI LT 0 THEN
+         CALL ELINE('Entry cannot be less than zero.')
+         GOTO 300
+      END
+      MIN.PRICE = Q
+      CRT @(34,13):MIN.PRICE'R26,#8'
+
+*********************************************************
+350:* Get maximum price
+*********************************************************
+      HELP = 'Enter the maximum quote price.'
+      IF MAX.PRICE = '' THEN MASK = '________' ELSE MASK = MAX.PRICE'R26,#8'
+      CALL GEN.IN(34,14,MASK,'AMT2',Q,0,8,'R','',0,34,14,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI = ' ' THEN
+         QI = ''
+         MAX.PRICE = ''
+      END
+      IF QI = 'X' AND MAX.PRICE = '' THEN
+         CRT@(34,14):SPACE(8)
+         GOTO 300
+      END
+      IF QI = 'X' AND MAX.PRICE # '' THEN
+         CRT@(34,14):MAX.PRICE'R26#8'
+         GOTO 300
+      END
+      IF QI = 'EX' THEN GOTO 9999
+      IF QI = '' AND MAX.PRICE # '' THEN GOTO 375
+      IF QI = '' AND MAX.PRICE = '' THEN
+         CRT@(34,14):SPACE(8)
+         GOTO 400
+      END
+      IF NOT(NUM(QI)) THEN
+         CALL ELINE('Entry must be numerical')
+         GOTO 350
+      END
+      IF QI # '' AND QI LT 0 THEN
+         CALL ELINE('Entry cannot be less than zero.')
+         GOTO 350
+      END
+      MAX.PRICE = Q
+
+375:
+      IF MAX.PRICE LT MIN.PRICE THEN
+         CALL ELINE('Maximum price cannot be less than minimum price.')
+         MAX.PRICE = ''
+         GOTO 350
+      END
+      CRT @(34,14):MAX.PRICE'R26,#8'
+
+*********************************************************
+400:* Get Min Weight
+*********************************************************
+      HELP = 'Enter the minimum weight.'
+      IF MIN.WEIGHT = '' THEN MASK = '______' ELSE MASK = MIN.WEIGHT
+      CALL GEN.IN(57,13,MASK,'',Q,0,6,'R','',0,57,13,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI = ' ' THEN
+         QI = ''
+         MIN.WEIGHT = ''
+      END
+      IF QI = 'X' AND MIN.WEIGHT = '' THEN
+         CRT@(57,13):SPACE(6)
+         GOTO 350
+      END
+      IF QI = 'X' AND MIN.WEIGHT # '' THEN
+         CRT@(57,13):MIN.WEIGHT'R,#6'
+         GOTO 350
+      END
+      IF QI = 'EX' THEN GOTO 9999
+      IF QI = '' AND MIN.WEIGHT # '' THEN
+         CRT@(57,13):MIN.WEIGHT'R,#6'
+         GOTO 450
+      END
+      IF QI = '' AND MIN.WEIGHT = '' THEN
+         CRT@(57,13):SPACE(6)
+         GOTO 450
+      END
+      IF NOT(NUM(QI)) THEN
+         CALL ELINE('Entry must be X, EX, or numerical')
+         GOTO 400
+      END
+      IF QI # '' AND QI LT 0 THEN
+         CALL ELINE('Entry cannot be less than zero.')
+         GOTO 400
+      END
+      MIN.WEIGHT=Q
+      CRT @(57,13):MIN.WEIGHT'R,#6'
+
+*********************************************************
+450:* Get maximum weight
+*********************************************************
+      HELP = 'Enter the maximum weight.'
+      IF MAX.WEIGHT = '' THEN MASK = '______' ELSE MASK = MAX.WEIGHT
+      CALL GEN.IN(57,14,MASK,'',Q,0,6,'R','',0,57,14,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI = ' ' THEN
+         QI = ''
+         MAX.WEIGHT = ''
+      END
+      IF QI = 'X' AND MAX.WEIGHT = '' THEN
+         CRT@(57,14):SPACE(6)
+         GOTO 400
+      END
+      IF QI = 'X' AND MAX.WEIGHT # '' THEN
+         CRT@(57,14):MAX.WEIGHT'R,#6'
+         GOTO 400
+      END
+      IF QI = 'EX' THEN GOTO 9999
+      IF QI = '' AND MAX.WEIGHT # '' THEN GOTO 475
+      IF QI = '' AND MAX.WEIGHT = '' THEN
+         CRT@(57,14):SPACE(6)
+         GOTO 600                        ; *NPR00
+      END
+      IF NOT(NUM(QI)) THEN
+         CALL ELINE('Entry must be X, EX, or numerical')
+         GOTO 450
+      END
+      IF QI # '' AND QI LT 0 THEN
+         CALL ELINE('Entry cannot be less than zero.')
+         GOTO 450
+      END
+      MAX.WEIGHT = Q
+*
+475:
+      IF MAX.WEIGHT LT MIN.WEIGHT THEN
+         MAX.WEIGHT = ''
+         CALL ELINE('Maximum weight cannot be less than minimum weight.')
+         CRT @(57,14):@(-4)
+         GOTO 450
+      END
+      CRT @(57,14):MAX.WEIGHT'R,#6'
+
+*
+*********************************************************
+600:* Get begining range for lookup time
+*********************************************************
+      HELP = 'Enter the beginning lookup time.'
+      IF BEG.LUTIME = '' THEN MASK = '________' ELSE MASK = OCONV(BEG.LUTIME,'MTS')
+      CALL GEN.IN(34,19,MASK,'',Q,0,8,'R','',0,34,19,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI = ' ' THEN
+         QI = ''
+         BEG.LUTIME = ''
+      END
+      IF QI = 'X' AND BEG.LUTIME = '' THEN
+         CRT@(34,19): SPACE(8)
+         GOTO 550
+      END
+      IF QI = 'X' AND BEG.LUTIME # '' THEN
+         CRT@(34,19):OCONV(BEG.LUTIME,'MTS')
+         GOTO 550
+      END
+      IF QI = 'EX' THEN GOTO 9999
+      IF QI = '' AND BEG.LUTIME # '' THEN
+         CRT@(34,19):OCONV(BEG.LUTIME,'MTS')
+         GOTO 650
+      END
+      IF QI = '' AND BEG.LUTIME = '' THEN
+         CRT@(34,19):SPACE(8)
+         GOTO 650
+      END
+      Q = ICONV(Q,'MT')
+      IF Q = '' THEN CALL ELINE('Invalid lookup time entered.') ; GOTO 600
+      BEG.LUTIME = Q
+      CRT @(34,19):OCONV(BEG.LUTIME,'MTS')
+
+*********************************************************
+650:* Get ending lookup time for range
+*********************************************************
+      HELP = 'Enter the ending lookup time.'
+      IF END.LUTIME = '' THEN MASK = '________' ELSE MASK = OCONV(END.LUTIME,'MTS')
+      CALL GEN.IN(34,20,MASK,'',Q,0,8,'R','',0,34,20,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI = ' ' THEN
+         QI = ''
+         END.LUTIME = ''
+      END
+      IF QI = 'X' AND END.LUTIME = '' THEN
+         CRT@(34,20):SPACE(8)
+         GOTO 600
+      END
+      IF QI = 'X' AND END.LUTIME # '' THEN
+         CRT@(34,20):OCONV(END.LUTIME,'MTS')
+         GOTO 600
+      END
+      IF QI = 'EX' THEN GOTO 9999
+      IF QI = '' AND END.LUTIME # '' THEN GOTO 695
+      IF QI = '' AND END.LUTIME = '' THEN
+         CRT@(34,20):SPACE(8)
+         GOTO 700
+      END
+      Q = ICONV(Q,'MT')
+      IF Q = '' THEN CALL ELINE('Invalid lookup time entered.') ; GOTO 650
+      END.LUTIME = Q
+
+*
+695:
+      IF END.LUTIME LT BEG.LUTIME THEN
+         END.LUTIME = ''
+         CALL ELINE('Ending lookup time cannot be before beginning lookup time.')
+         GOTO 650
+      END
+      CRT @(34,20):OCONV(END.LUTIME,'MTS')
+
+*********************************************************
+700:*  Verify information entered
+*********************************************************
+      HELP = "X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(55,23,'','',Q,0,2,'','',0,55,23,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'X'
+            GOTO 650
+         CASE QI = 'EX'
+            GOTO 9999
+         CASE QI = ''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO 700
+      END CASE
+*
+      GOSUB PAINT.SCR.DATA
+
+      STMTX = \GET-LIST \:USER:".RQR"
+      PERFORM STMTX
+*
+      IF @SELECTED NE 0 THEN
+         STMTY = \QSELECT FB.IEFA.XREF\
+         PERFORM STMTY
+         CRT @(18, 5):@SELECTED:" Days selected based on Access Date - Now selecting details"
+      END
+
+      STMT = 'SSELECT INET.FBESTIMATOR.ACTIVITY BY DATE BY TIME'
+*
+      IF CLIENT.ID # '' THEN
+         STMT := ' WITH CLIENT = "':CLIENT.ID:'"'
+         ANDWORD = ' AND'
+      END
+      IF USER.NAME # '' THEN
+         STMT := ANDWORD: ' WITH USER = "':USER.NAME:'"'
+         ANDWORD = ' AND'
+      END
+      IF PASSWORD # '' THEN
+         STMT := ANDWORD: ' WITH PASSWORD = "':PASSWORD:'"'
+         ANDWORD = ' AND'
+      END
+      IF ORIG.ZIP # '' THEN
+         STMT := ANDWORD: ' WITH ORIG = "':ORIG.ZIP:'"'
+         ANDWORD = ' AND'
+      END
+      IF DEST.ZIP # '' THEN
+         STMT := ANDWORD: ' WITH DEST = "':DEST.ZIP:'"'
+         ANDWORD = ' AND'
+      END
+      IF BEG.SHIPDATE # '' THEN
+         STMT := ANDWORD: ' WITH SHIPDATE GE "':BEG.SHIPDATE'D2/':'"'
+         ANDWORD = ' AND'
+      END
+      IF END.SHIPDATE # '' THEN
+         STMT := ANDWORD: ' WITH SHIPDATE LE "':END.SHIPDATE'D2/':'"'
+         ANDWORD = ' AND'
+      END
+      IF BEG.LUDATE # '' THEN
+         STMT := ANDWORD: ' WITH DATE GE "':BEG.LUDATE'D2/':'"'
+         ANDWORD = ' AND'
+      END
+      IF END.LUDATE # '' THEN
+         STMT := ANDWORD: ' WITH DATE LE "':END.LUDATE'D2/':'"'
+         ANDWORD = ' AND'
+      END
+      IF BEG.LUTIME # '' THEN
+         STMT := ANDWORD: ' WITH TIME GE "':OCONV(BEG.LUTIME,'MTS'):'"'
+         ANDWORD = ' AND'
+      END
+      IF END.LUTIME # '' THEN
+         STMT := ANDWORD: ' WITH TIME LE "':OCONV(END.LUTIME,'MTS'):'"'
+         ANDWORD = ' AND'
+      END
+      IF MIN.PRICE # '' THEN
+         STMT := ANDWORD: ' WITH QUOTE.AMOUNT GE "':MIN.PRICE'R26':'"'
+         ANDWORD = ' AND'
+      END
+      IF MAX.PRICE # '' THEN
+         STMT := ANDWORD: ' WITH QUOTE.AMOUNT LE "':MAX.PRICE'R26':'"'
+         ANDWORD = ' AND'
+      END
+      IF MIN.WEIGHT # '' THEN
+         STMT := ANDWORD: ' WITH WEIGHT GE "':MIN.WEIGHT:'"'
+         ANDWORD = ' AND'
+      END
+      IF MAX.WEIGHT # '' THEN
+         STMT := ANDWORD: ' WITH WEIGHT LE "':MAX.WEIGHT:'"'
+         ANDWORD = ' AND'
+      END
+
+      CRT @(-1):@(18, 5):'** Please wait - searching for quotes **'
+
+      PERFORM STMT
+*
+      STMTX = \SAVE-LIST \:USER:".RQR2"
+      PERFORM STMTX
+      STMTX = \GET-LIST \:USER:".RQR2"
+
+      EXECUTE STMTX RTNLIST CAPTURING OUTPUT
+
+      IF @SELECTED = 0 THEN
+         CRT @(18, 5):'*** No Quotes Matching Your Criteria. ***'
+         CRT @(25, 6):'Press [ENTER] to continue.':
+         INPUT NUL
+         GOTO 50
+      END ELSE
+         CRT @(18, 5):OUTPUT
+      END
+
+      CNTR=0
+      EOJ01 = 0
+1000:
+*
+      LOOP
+         READNEXT ID ELSE EOJ1 = 1
+      UNTIL EOJ1 DO
+             READ DIFA FROM F.IFA,ID THEN
+            CNTR=CNTR+1
+
+            QUOTES<CNTR,1> = ID
+            QUOTES<CNTR,2> = DIFA<2>     ; * Client#
+            QUOTES<CNTR,3> = FIELD(ID,'*',1)       ; * Username
+            QUOTES<CNTR,4> = FIELD(ID,'*',2)       ; * Password
+            QUOTES<CNTR,5> = FIELD(ID,'*',3)       ; * Lookup Date
+            QUOTES<CNTR,6> = FIELD(ID,'*',4)       ; * Lookup Time
+            QUOTES<CNTR,7> = DIFA<4>     ; * Ship Date
+            QUOTES<CNTR,8> = DIFA<5>     ; * IOT
+            QUOTES<CNTR,9> = DIFA<6>     ; * Orig Zip
+            QUOTES<CNTR,10> = DIFA<18>   ; * Orig City
+            QUOTES<CNTR,11> = DIFA<7>    ; * Dest Zip
+            QUOTES<CNTR,12> = DIFA<20>   ; * Dest City
+            QUOTES<CNTR,13> = SUM(DIFA<9>)         ; * Total Weight
+            IF DIFA<14,2> # '' THEN
+               QUOTES<CNTR,14> = "MULTIPLE"        ; * Multiple quote amounts
+            END
+            IF DIFA<14,2> = '' THEN
+               QUOTES<CNTR,14> = DIFA<14>'R26'     ; * Single Quote Amount
+            END
+*
+            IF CNTR GT 1000 THEN
+               EXECUTE "TIME" CAPTURING OUTPUT
+               CALL ELINE("Maximum of 1000 lines exceeded - RETURN to skip to Excel creation process")
+               EXIT
+      
+            END ELSE
+               CONTINUE
+            
+            END
+         END
+      REPEAT
+*
+*********************************************************
+2000:**
+*********************************************************
+*
+ ***     WRITE QUOTES ON F.TEMP,'PAIGE'
+*
+      L.IN = "RQ.RETRIEVE"               ; *NPR01
+      L.IN<2> = CLIENT.ID                ; *NPR01
+      L.IN<2,2> = OCONV(BEG.LUDATE,"D2/")          ; *NPR01
+      L.IN<2,3> = OCONV(END.LUDATE,"D2/")          ; *NPR01
+      L.OUT = ""                         ; *NPR01
+  ****    CALL UPD.PROCESS.LOG(L.IN,L.OUT)   ; *NPR01
+
+      HELP = "Build XLS Spreadsheets [Y],[N] - RETURN = 'Y'"
+      CALL GEN.IN(55,23,'','',Q,0,2,'','',0,55,23,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = "N"
+            NULL
+         CASE QI = 'EX'
+            GOTO 9999
+         CASE QI = '' OR QI = 'Y'
+            GOSUB CREATE.XLS.ITEMS
+         CASE 1
+            CALL ELINE('Invalid entry. Must be Y,N or EX, or RETURN.')
+            GOTO 2000
+      END CASE
+*
+      NUM.QUOTES = DCOUNT(QUOTES,@AM)
+      MAX.PAGE = INT((NUM.QUOTES/18)+.99)
+*
+      CRT @(-1):@(15, 5):'Number of quotes = ':NUM.QUOTES:', ': 'Number of Pages = ':MAX.PAGE
+      CRT @(25,6):'Press [ENTER] to continue.':
+      INPUT NUL
+
+* display switch
+*
+2500:
+*
+      LOOKUP = 1
+      IF BEG.LUDATE = '' & END.LUDATE = '' & BEG.LUTIME = '' & END.LUTIME = '' THEN
+         LOOKUP = 0
+      END
+      IF LOOKUP THEN GOTO 3000 ELSE GOTO 4000
+
+* Display by lookup date/time
+*
+3000:
+*
+      PAGE = 1
+*
+3100:
+      GO SUB GET.DSP.LU
+      PRINT DSP.HEAD.LU:
+
+      DT.LN = (PAGE-1)*18
+      FOR DSP.LN = 1 TO 18 UNTIL QUOTES<DT.LN+DSP.LN,1>=''
+         QUOTE.NUM = DT.LN+DSP.LN
+         CRT @(0 ,DSP.LN+3):QUOTE.NUM'R%3':' ':    ; * LN#
+         CRT QUOTES<DT.LN,5>'D2/':' ':   ; * LU DATE
+         CRT OCONV(QUOTES<DT.LN,6>,'MTS'):' ':     ; * LU TIME
+         CRT QUOTES<DT.LN+DSP.LN,8>:' ':           ; * IOT
+         CRT QUOTES<DT.LN+DSP.LN,9>'R#6':' ':      ; * ORIGIN ZIP
+         CRT QUOTES<DT.LN+DSP.LN,10>'L#12':' ':    ; * ORIGIN CITY
+         CRT QUOTES<DT.LN+DSP.LN,11>'R#6':' ':     ; * DESTINATION ZIP
+         CRT QUOTES<DT.LN+DSP.LN,12>'L#12':' ':    ; * DESTINATION CITY
+         CRT QUOTES<DT.LN+DSP.LN,13>'R,#6':'  ':   ; * TOTAL WEIGHT
+         CRT QUOTES<DT.LN+DSP.LN,14>'R#8':         ; * AMOUNT/MULTIPLE
+      NEXT DSP.LN
+*
+3200:
+*
+      HELP = '[N]ext, [P]revious, [T]op, [V]iew Ship Dates, [L]ookup Screen, [EX]it'
+      MASK = 'Enter selection # or letter choice.'
+      CALL GEN.IN(0,23,MASK,'',Q,0,4,'','',0,40,23,0,QI,HELP,0,22)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = '' & PAGE LT MAX.PAGE
+            PAGE = PAGE+1
+            GOTO 3100
+         CASE QI = '' & NOT(PAGE LT MAX.PAGE)
+            CALL ELINE('End of List!')
+            GOTO 3200
+         CASE QI = 'EX' ! QI = 'X'
+            GOTO 9999
+         CASE QI = 'N' & PAGE LT MAX.PAGE
+            PAGE = PAGE+1
+            GOTO 3100
+         CASE QI = 'N' & NOT(PAGE LT MAX.PAGE)
+            CALL ELINE('End of List!')
+            GOTO 3200
+         CASE QI = 'P' & PAGE # 1
+            PAGE = PAGE-1
+            GOTO 3100
+         CASE QI = 'P' & PAGE = 1
+            CALL ELINE('Beginning of List!')
+            GOTO 3200
+         CASE QI = 'T'
+            GOTO 3000
+         CASE QI = 'L'
+
+            CALL ELINE("Note you are about to start all over again - RETURN to continue")
+            GOTO START
+         CASE QI = 'V'
+            GOTO 4100
+         CASE NUM(QI)
+            CHOICE = QUOTES<Q,1>
+            IF QUOTES<Q,1> = '' THEN
+               CALL ELINE('Invalid choice, please try again.')
+               GOTO 3200
+            END
+            GOTO 5000
+         CASE 1
+            CALL ELINE('Invalid choice, please try again.')
+            GOTO 3200
+      END CASE
+*
+      STOP
+
+*********************************************************
+4000:* display by shipdate
+*********************************************************
+      PAGE = 1
+*
+4100:
+      GO SUB GET.DSP.SHIPDT
+      PRINT DSP.HEAD.SHIPDT:
+
+      DT.LN = (PAGE-1)*18
+      FOR DSP.LN = 1 TO 18 UNTIL QUOTES<DT.LN+DSP.LN,1>=''
+         QUOTE.NUM = DT.LN + DSP.LN
+         CRT @(0 ,DSP.LN+3):QUOTE.NUM'R%3':'  ':   ; * LN#
+         CRT QUOTES<DT.LN,7>'D2/':'  ':  ; * SHIP DATE
+         CRT QUOTES<DT.LN+DSP.LN,8>:'  ':          ; * IOT
+         CRT QUOTES<DT.LN+DSP.LN,9>'R#6':' ':      ; * ORIGIN ZIP
+         CRT QUOTES<DT.LN+DSP.LN,10>'L#15':' ':    ; * ORIGIN CITY
+         CRT QUOTES<DT.LN+DSP.LN,11>'R#6':' ':     ; * DESTINATION ZIP
+         CRT QUOTES<DT.LN+DSP.LN,12>'L#15':' ':    ; * DESTINATION CITY
+         CRT QUOTES<DT.LN+DSP.LN,13>'R,#6':'  ':   ; * TOTAL WEIGHT
+         CRT QUOTES<DT.LN+DSP.LN,14>'R#8':         ; * AMOUNT/MULTIPLE
+      NEXT DSP.LN
+*
+*********************************************************
+4200:
+*********************************************************
+*
+      HELP = '[N]ext, [P]revious, [T]op, [V]iew Lookup Dates, [L]ookup Screen, [EX]it'
+      MASK = 'Enter selection # or letter choice.'
+      CALL GEN.IN(0,23,MASK,'',Q,0,4,'','',0,40,23,0,QI,HELP,0,22)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = '' & PAGE LT MAX.PAGE
+            PAGE = PAGE+1
+            GOTO 4100
+         CASE QI = '' & NOT(PAGE LT MAX.PAGE)
+            CALL ELINE('End of List!')
+            GOTO 4200
+         CASE QI = 'EX' ! QI = 'X'
+            GOTO 9999
+         CASE QI = 'N' & PAGE LT MAX.PAGE
+            PAGE = PAGE+1
+            GOTO 4100
+         CASE QI = 'N' & NOT(PAGE LT MAX.PAGE)
+            CALL ELINE('End of List!')
+            GOTO 4200
+         CASE QI = 'P' & PAGE # 1
+            PAGE = PAGE-1
+            GOTO 4100
+         CASE QI = 'P' & PAGE = 1
+            CALL ELINE('Beginning of List!')
+            GOTO 4200
+         CASE QI = 'T'
+            GOTO 4000
+         CASE QI = 'L'
+
+            CALL ELINE("Note you are about to start all over again - RETURN to continue")
+            GOTO START
+         CASE QI = 'V'
+            GOTO 3100
+         CASE NUM(QI)
+            CHOICE = QUOTES<Q,1>
+            IF QUOTES<Q,1> = '' THEN
+               CALL ELINE('Invalid choice, please try again.')
+               GOTO 4200
+            END
+            GOTO 5000
+         CASE 1
+            CALL ELINE('Invalid choice, please try again.')
+            GOTO 4200
+      END CASE
+
+*********************************************************
+5000:* display quote details
+*********************************************************
+*
+      GOSUB GET.DSP.QDETAIL
+      PRINT DSP.HEAD.QDETAIL:
+*
+      READ DIFA FROM F.IFA,CHOICE ELSE CALL ELINE('cannot find id')
+      CLIENT.ID = DIFA<2>
+      READ DCLIENTS FROM F.CLIENTS,CLIENT.ID ELSE CALL ELINE('cannot find client')
+      CLIENT.NAME = DCLIENTS<2>
+      CLIENT.CITY = DCLIENTS<4>
+*
+      CRT @(12, 2):CLIENT.ID:' ':CLIENT.NAME:' ':CLIENT.CITY
+      CRT @(70, 2):FIELD(CHOICE,'*',1)'L#8'        ; * User Name
+      CRT @(70, 3):FIELD(CHOICE,'*',3)'D2/'        ; * Lookup Date
+      CRT @(70, 4):OCONV(FIELD(CHOICE,'*',4),'MTS')          ; * Lookup Time
+      CRT @(70, 5):DIFA<4>'D2/'          ; * Ship Date
+      CRT @(12, 4):DIFA<6>'L#6':' ':DIFA<18,1>:' ':DIFA<19,1>          ; * ORIGIN
+      CRT @(12, 5):DIFA<7>'L#6':' ':DIFA<20,1>:' ':DIFA<21,1>          ; * DESTINATION
+      CRT @(12, 6):DIFA<5>               ; * IOT
+      CRT @(70, 6):SUM(DIFA<9>)'L,#6'    ; * Total Weight
+
+* display item class and weight from quote
+*
+5100:
+*
+      NUM.CLWT = DCOUNT(DIFA<8>,@VM)
+      START = 12
+      FOR SUB.CLWT = 1 TO NUM.CLWT UNTIL DIFA<8,SUB.CLWT> = ''
+         CRT @(START, 7):DIFA<8,SUB.CLWT>'R#5':@(START, 9):DIFA<9,SUB.CLWT>'R#5':
+         CRT @(START+5,7):'|':@(START,8):'-----|':@(START+5,9):'|':
+         START = START + 6
+      NEXT SUB.CLWT
+
+*********************************************************
+5200:* display carrier numbers & names, direct service codes, fuel ser chgs, quote prices
+*********************************************************
+*
+      NUM.CARR = DCOUNT(DIFA<15>,@VM)
+      START = 13
+      FOR SUB.CARR = 1 TO NUM.CARR UNTIL DIFA<15,SUB.CARR> = ''
+         CRT @(0,START):SUB.CARR'L#2':DIFA<15,SUB.CARR>'L#5':' ':DIFA<17,SUB.CARR>'L#25':' ':(DIFA<24,SUB.CARR>+0)'L#2':' ':
+         CRT @(38,START):DIFA<25,SUB.CARR>'L#2':'|'
+         CRT @(42,START):DIFA<26,SUB.CARR>'L#2':'|'
+         CRT @(46,START):DIFA<27,SUB.CARR>'L#2'
+         CRT @(49,START):DIFA<12>'R#2':'%'
+         IF SUM(DIFA<56>) # 0 THEN
+            CRT @(55,START):'Y'
+            ACCESSORIALS = 1
+            ACC.TTL = SUM(DIFA<56,SUB.CARR>)
+            FRT.CHG = ((DIFA<14,SUB.CARR> - ACC.TTL) - DIFA<54,SUB.CARR>)
+            CRT @(57,START):FRT.CHG'R26#7'
+         END
+         IF SUM(DIFA<56,SUB.CARR>) = 0 THEN
+            CRT @(55,START):'N'
+            ACCESSORIALS = 0
+            FRT.CHG = DIFA<14,SUB.CARR> - DIFA<54,SUB.CARR>
+            CRT @(57,START):FRT.CHG'R26#7'
+         END
+         CRT @(65,START):DIFA<54,SUB.CARR>'R26#6'  ; * Fuel Ser Chg
+         CRT @(73,START):DIFA<14,SUB.CARR>'R26#7'  ; * quote amount
+*
+         START = START + 1
+      NEXT SUB.CARR
+
+      IF ACCESSORIALS = 1 THEN GOTO 5500
+      IF ACCESSORIALS = 0 THEN GOTO 5300
+*
+*********************************************************
+5300:* no accessorial charges
+*********************************************************
+*
+      HELP = '[B]ack to quote list, [L]ookup Screen, [P]rint, [EX]it'
+      MASK = ''
+      CALL GEN.IN(0,23,MASK,'',Q,0,2,'','',0,75,23,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = ''
+            IF LOOKUP = 1 THEN GOTO 3100
+            IF LOOKUP = 0 THEN GOTO 4100
+         CASE QI = 'EX' ! QI = 'X'
+            GOTO 9999
+         CASE QI = 'B'
+            IF LOOKUP = 1 THEN GOTO 3100
+            IF LOOKUP = 0 THEN GOTO 4100
+         CASE QI = 'L'
+            GOTO 50
+         CASE QI = 'P'
+            CRT @(-4):@(20,20):" ** QUOTE DETAILS PRINTED ** "
+            GOTO 7000
+         CASE 1
+            CALL ELINE('Invalid choice.')
+            GOTO 5300
+      END CASE
+
+*********************************************************
+5500:* option to display individual carrier accessorial charges
+*********************************************************
+*
+      HELP = 'Quote #, [B]ack to quote list, [L]ookup Screen, [EX]it'
+      MASK = 'Select a quote number to view Accessorial Charges'
+      CALL GEN.IN(0,23,MASK,'',Q,0,2,'','',0,50,23,0,QI,HELP,0,22)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = ''
+            IF LOOKUP = 1 THEN GOTO 3100
+            IF LOOKUP = 0 THEN GOTO 4100
+         CASE QI = 'EX' ! QI = 'X'
+            GOTO 9999
+         CASE QI = 'B'
+            IF LOOKUP = 1 THEN GOTO 3100
+            IF LOOKUP = 0 THEN GOTO 4100
+         CASE QI = 'L'
+            GOTO 50
+         CASE NUM(QI)
+            IF DIFA<15,Q> = '' THEN
+               CALL ELINE('Invalid choice')
+               GOTO 5500
+            END
+            VIEW.ACC = Q
+            GOTO 6000
+         CASE 1
+            CALL ELINE('Invalid choice.')
+            GOTO 5500
+      END CASE
+
+* expand view of individual carrier quote
+*
+*********************************************************
+6000:* re-display carrier details at top line
+*********************************************************
+*
+      ACC.TTL = SUM(DIFA<56,VIEW.ACC>)
+      FRT.CHG = ((DIFA<14,VIEW.ACC> - ACC.TTL) - DIFA<54,VIEW.ACC>)
+*
+      CRT @(0 ,13):@(-3)
+      CRT @(0,13):'  ':DIFA<15,VIEW.ACC>'L#5':' ':DIFA<17,VIEW.ACC>'L#25':' ':(DIFA<24,VIEW.ACC>+0)'L#2':' '
+      CRT @(38,13):DIFA<25,VIEW.ACC>'L#2':'|'
+      CRT @(42,13):DIFA<26,VIEW.ACC>'L#2':'|'
+      CRT @(46,13):DIFA<27,VIEW.ACC>'L#2'
+      CRT @(49,13):DIFA<12>'R#2':'%'     ; * markup percent
+      CRT @(57,13):FRT.CHG'R26#7'
+      CRT @(65,13):DIFA<54,VIEW.ACC>'R26#6'        ; * Fuel Ser Chg
+      CRT @(73,13):DIFA<14,VIEW.ACC>'R26#7'        ; * quote amount
+
+* display accessorial charges
+*
+      CRT @(0 ,14):@(-4)
+*
+      ACC.LINE = 15
+      FOR ACCS = 1 TO 4
+         IF DIFA<55,VIEW.ACC,ACCS> # '' THEN
+            CRT @(18,ACC.LINE):DIFA<55,VIEW.ACC,ACCS>'L#4':'  ':DIFA<56,VIEW.ACC,ACCS>'R26#6'
+         END
+         IF DIFA<55,VIEW.ACC,ACCS> = '' THEN
+            ACC.LINE = ACC.LINE - 1
+         END
+         ACC.LINE = ACC.LINE + 1
+      NEXT ACCS
+      CRT @(18,ACC.LINE):'------------'
+      CRT @(7 ,ACC.LINE + 1):'Acc. Sub-Total : ':ACC.TTL'R26#6'
+*
+      CRT @(43,15):'Acc.':@(51,15):ACC.TTL'R26#7'
+      CRT @(43,16):'Freight':@(51,16):FRT.CHG'R26#7'
+      CRT @(43,17):'Fuel':@(51,17):DIFA<54,VIEW.ACC>'R26#7'
+      CRT @(43,18):'---------------'
+      CRT @(37,19):'Grand Total : ':@(52,19):DIFA<14,VIEW.ACC>'R26#6'
+
+*********************************************************
+6100:
+*********************************************************
+*
+      HELP = '[R]eturn to quote, [B]ack to quote list, [L]ookup Screen, [P]rint, [EX]it'
+      MASK = ''
+      CALL GEN.IN(0,23,MASK,'',Q,0,2,'','',0,75,23,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = '' ! QI = 'R'
+            CRT @(0,13):@(-3)
+            GOTO 5200
+         CASE QI = 'EX' ! QI = 'X'
+            GOTO 9999
+         CASE QI = 'B'
+            IF LOOKUP = 1 THEN GOTO 3100
+            IF LOOKUP = 0 THEN GOTO 4100
+         CASE QI = 'L'
+            GOTO 50
+         CASE QI = 'P'
+            CRT @(-4):@(20,21):" ** QUOTE DETAILS PRINTED ** "
+            GOTO 7000
+         CASE 1
+            CALL ELINE('Invalid choice, please try again.')
+            GOTO 6100
+      END CASE
+
+*********************************************************
+7000:* print quote details
+*********************************************************
+
+      PRINTER ON
+      PRINT 'Printed by ':USER:' ':OCONV(DATE(),'D2/'):' at ':OCONV(TIME(),'MTS')
+      PRINT
+      PRINT STR(' ',29):'- Rate Quote Detail -'
+      PRINT
+      PRINT '     Client : ': CLIENT.ID:' ':CLIENT.NAME:' ':CLIENT.CITY
+      PRINT STR(' ',58):'User Name : ':FIELD(CHOICE,'*',1)'L#8'
+      PRINT STR(' ',56):'Lookup Date : ':FIELD(CHOICE,'*',3)'D2/'
+      PRINT STR(' ', 3):'Origin : ':DIFA<6>'L#6':' ':DIFA<18,1>'L#20':' ':DIFA<19,1>:
+      PRINT STR(' ',14):'Lookup Time : ':OCONV(FIELD(CHOICE,'*',4),'MTS')
+      PRINT STR(' ', 5):'Dest : ':DIFA<7>'L#6':' ':DIFA<20,1>'L#20':' ':DIFA<21,1>:
+      PRINT STR(' ',16):'Ship Date : ':DIFA<4>'D2/'
+      PRINT STR(' ', 6):'IOT : ':DIFA<5>:STR(' ',42):'Total Weight : ':SUM(DIFA<9>)'L,#6'
+      PRINT STR(' ', 4):'Class : ':
+      NUM.CL = DCOUNT(DIFA<8>,@VM)
+      FOR SUB.CL = 1 TO NUM.CL UNTIL DIFA<8,SUB.CL> = ''
+         PRINT DIFA<8,SUB.CL>'R#5':'|':
+      NEXT SUB.CL
+      PRINT
+      PRINT STR(' ',12):STR('-----|',NUM.CL)
+      PRINT STR(' ',3):'Weight : ':
+      NUM.WT = DCOUNT(DIFA<9>,@VM)
+      FOR SUB.WT = 1 TO NUM.WT UNTIL DIFA<9,SUB.WT> = ''
+         PRINT DIFA<9,SUB.WT>'R#5':'|':
+      NEXT SUB.WT
+*
+      PRINT
+      PRINT STR(' ',39):'Dir Svc'
+      PRINT '#       Carrier Name':STR(' ',14):'TT  Or|De|Com  MU%  Acc  Frt     Fuel   Quote'
+      PRINT STR('-',80)
+
+      IF ACCESSORIALS = 0 THEN GOTO 7100
+      IF ACCESSORIALS = 1 THEN GOTO 7200
+
+* no accessorial charges, no expanded views.
+*
+*********************************************************
+7100:* print carrier numbers & names, direct service codes, fuel ser chgs, quote prices
+*********************************************************
+
+      NUM.CARR = DCOUNT(DIFA<15>,@VM)
+      FOR SUB.CARR = 1 TO NUM.CARR UNTIL DIFA<15,SUB.CARR> = ''
+         FRT.CHG = DIFA<14,SUB.CARR> - DIFA<54,SUB.CARR>
+         PRINT SUB.CARR'L#2':DIFA<15,SUB.CARR>'L#5':' ':DIFA<17,SUB.CARR>'L#25':' ':(DIFA<24,SUB.CARR>+0)'L#2':'  ':
+         PRINT DIFA<25,SUB.CARR>'L#2':'|':DIFA<26,SUB.CARR>'L#2':'|':DIFA<27,SUB.CARR>'L#2':'   ':
+         PRINT DIFA<12>'R#2':'% ':'  N ':FRT.CHG'R26#7':' ':DIFA<54,SUB.CARR>'R26#7':' ':DIFA<14,SUB.CARR>'R26#7'
+      NEXT SUB.CARR
+*
+      PRINT
+      PRINT
+      PRINT
+      PRINTER CLOSE
+      PRINTER OFF
+      GOTO 5300
+
+*********************************************************
+7200:* with accessorial charges
+*********************************************************
+*
+* re-display selected carrier details at top line
+*
+      ACC.TTL = SUM(DIFA<56,VIEW.ACC>)
+      FRT.CHG = ((DIFA<14,VIEW.ACC> - ACC.TTL) - DIFA<54,VIEW.ACC>)
+*
+      PRINT '  ':DIFA<15,VIEW.ACC>'L#5':' ':DIFA<17,VIEW.ACC>'L#25':' ':(DIFA<24,VIEW.ACC>+0)'L#2':'  ':
+      PRINT DIFA<25,VIEW.ACC>'L#2':'|':DIFA<26,VIEW.ACC>'L#2':'|':DIFA<27,VIEW.ACC>'L#2':DIFA<12>'R#4':' % ':'  Y  ':
+      PRINT FRT.CHG'R26#7':DIFA<54,VIEW.ACC>'R26#7':DIFA<14,VIEW.ACC>'R26#7'
+      PRINT
+      PRINT
+*
+***** accessorial charges
+*
+      PRINT STR(' ',18):DIFA<55,VIEW.ACC,1>'L#4':'  ':DIFA<56,VIEW.ACC,1>'R26Z#6':STR(' ',15):'Acc. ':'   ':ACC.TTL'R26#7'
+      PRINT STR(' ',18):DIFA<55,VIEW.ACC,2>'L#4':'  ':DIFA<56,VIEW.ACC,2>'R26Z#6':STR(' ',15):'Freight':' ':FRT.CHG'R26#7'
+      PRINT STR(' ',18):DIFA<55,VIEW.ACC,3>'L#4':'  ':DIFA<56,VIEW.ACC,3>'R26Z#6':STR(' ',15):'Fuel ':'   ':DIFA<54,VIEW.ACC>'R26#7'
+      PRINT STR(' ',18):DIFA<55,VIEW.ACC,4>'L#4':'  ':DIFA<56,VIEW.ACC,4>'R26Z#6':STR(' ',15):'---------------'
+      PRINT STR(' ',18):'------------':STR(' ',9):'Grand Total : ':' ':DIFA<14,VIEW.ACC>'R26#6'
+      PRINT STR(' ', 7):'Acc. Sub-Total : ':ACC.TTL'R26#6'
+      PRINT
+      PRINT
+      PRINT
+      PRINTER CLOSE
+      PRINTER OFF
+      GOTO 6100
+
+*********************************************************
+GET.SCREEN.DSP:***
+*********************************************************
+*   display screen for quote lookup
+      SCREEN.DSP = @(-1)
+      SCREEN.DSP := @(27, 0):PROG.DESC
+      CL=80-LEN(PACK.NAME[1,25])
+      SCREEN.DSP := @(CL, 0):PACK.NAME[1,25]
+      SCREEN.DSP := @(0 , 2):'Client    : '
+      SCREEN.DSP := @(0 , 3):'User Name : '
+      SCREEN.DSP := @(0 , 4):'Password  : '
+      SCREEN.DSP := @(0 , 5):STR('-',80)
+*
+      SCREEN.DSP := @(0 , 7):'Origin Zip: '
+      SCREEN.DSP := @(2 , 8):'Dest Zip: '
+*
+      SCREEN.DSP := @(2 ,11):'Ship Date Range'
+      SCREEN.DSP := @(0 ,12):'-------------------'
+      SCREEN.DSP := @(0 ,13):'Beg. Date: '
+      SCREEN.DSP := @(0 ,14):'End Date : '
+      SCREEN.DSP := @(27,11):'Price Range'
+      SCREEN.DSP := @(23,12):'-------------------'
+      SCREEN.DSP := @(23,13):'Min Price: '
+      SCREEN.DSP := @(23,14):'Max Price: '
+      SCREEN.DSP := @(48,11):'Weight Range'
+      SCREEN.DSP := @(45,12):'-------------------'
+      SCREEN.DSP := @(45,13):'Min Weight: '
+      SCREEN.DSP := @(45,14):'Max Weight: '
+*
+      SCREEN.DSP := @(1 ,17):'Lookup Date Range'
+      SCREEN.DSP := @(0 ,18):'-------------------'
+      SCREEN.DSP := @(0 ,19):'Beg. Date: '
+      SCREEN.DSP := @(0 ,20):'End Date : '
+      SCREEN.DSP := @(24,17):'Lookup Time Range'
+      SCREEN.DSP := @(23,18):'-------------------'
+      SCREEN.DSP := @(23,19):'Beg. Time: '
+      SCREEN.DSP := @(23,20):'End Time : '
+      RETURN
+*
+*********************************************************
+PAINT.SCR.DATA:***
+*********************************************************
+*   paint lookup screen with info entered
+      CRT @(12, 2):CLIENT.ID:' ':CLIENT.NAME:' ':CLIENT.CITY:@(-4):
+      CRT @(12, 3):USER.NAME:@(-4):
+      CRT @(12, 4):PASSWORD:@(-4):
+*
+      CRT @(12, 7):ORIG.ZIP'L#6':' ':ORIG.CITY:' ':ORIG.STATE:@(-4):
+      CRT @(12, 8):DEST.ZIP'L#6':' ':DEST.CITY:' ':DEST.STATE:@(-4):
+*
+      CRT @(11,13):BEG.SHIPDATE'D2/':
+      CRT @(11,14):END.SHIPDATE'D2/':
+*
+      CRT @(34,13):MIN.PRICE'R26,#8':
+      CRT @(34,14):MAX.PRICE'R26,#8':
+*
+      CRT @(57,13):MIN.WEIGHT'R,#6':
+      CRT @(57,14):MAX.WEIGHT'R,#6':
+*
+      CRT @(11,19):BEG.LUDATE'D2/':
+      CRT @(11,20):END.LUDATE'D2/':
+      CRT @(34,19):OCONV(BEG.LUTIME,'MTS'):
+      CRT @(34,20):OCONV(END.LUTIME,'MTS'):
+      RETURN
+*
+*
+*********************************************************
+GET.DSP.LU:***
+*********************************************************
+*   header for lookup by date/time
+      DSP.HEAD.LU = @(-1)
+      DSP.HEAD.LU := @(21, 0):'- Quotes That Match Your Criteria -'
+      DSP.HEAD.LU := @(0 , 2):'LN#'
+      DSP.HEAD.LU := @(4 , 2):'LU Date'
+      DSP.HEAD.LU := @(13, 2):'LU Time'
+      DSP.HEAD.LU := @(21, 2):'IOT'
+      DSP.HEAD.LU := @(27, 2):'Origin'
+      DSP.HEAD.LU := @(47, 2):'Destination'
+      DSP.HEAD.LU := @(64, 2):'Weight'
+      DSP.HEAD.LU := @(73, 2):'Amount'
+      DSP.HEAD.LU := @(0 , 3):STR('-',80)
+      RETURN
+*
+*********************************************************
+GET.DSP.SHIPDT:***
+*********************************************************
+*   header for lookup by shipdate
+      DSP.HEAD.SHIPDT = @(-1)
+      DSP.HEAD.SHIPDT := @(21, 0):'- Quotes That Match Your Criteria -'
+      DSP.HEAD.SHIPDT := @(0 , 2):'LN#'
+      DSP.HEAD.SHIPDT := @(4 , 2):'Ship Date'
+      DSP.HEAD.SHIPDT := @(14, 2):'IOT'
+      DSP.HEAD.SHIPDT := @(23, 2):'Origin'
+      DSP.HEAD.SHIPDT := @(46, 2):'Destination'
+      DSP.HEAD.SHIPDT := @(64, 2):'Weight'
+      DSP.HEAD.SHIPDT := @(73, 2):'Amount'
+      DSP.HEAD.SHIPDT := @(0 , 3):STR('-',80)
+      RETURN
+*
+*********************************************************
+GET.DSP.QDETAIL:***
+*********************************************************
+*  header for display quote details
+      DSP.HEAD.QDETAIL = @(-1)
+      DSP.HEAD.QDETAIL := @(29, 0):'- Rate Quote Detail -'
+      DSP.HEAD.QDETAIL := @(3 , 2):'Client : '
+*
+      DSP.HEAD.QDETAIL := @(58, 2):'User Name : '
+      DSP.HEAD.QDETAIL := @(56, 3):'Lookup Date : '
+      DSP.HEAD.QDETAIL := @(56, 4):'Lookup Time : '
+      DSP.HEAD.QDETAIL := @(58, 5):'Ship Date : '
+      DSP.HEAD.QDETAIL := @(55, 6):'Total Weight : '
+*
+      DSP.HEAD.QDETAIL := @(3 , 4):'Origin : '
+      DSP.HEAD.QDETAIL := @(5 , 5):'Dest : '
+      DSP.HEAD.QDETAIL := @(6 , 6):'IOT : '
+      DSP.HEAD.QDETAIL := @(4 , 7):'Class : '
+      DSP.HEAD.QDETAIL := @(3 , 9):'Weight : '
+*
+      DSP.HEAD.QDETAIL := @(0, 11):'# '
+      DSP.HEAD.QDETAIL := @(8 ,11):'Carrier Name'
+      DSP.HEAD.QDETAIL := @(34,11):'TT'
+      DSP.HEAD.QDETAIL := @(39,10):'Dir Svc'
+      DSP.HEAD.QDETAIL := @(38,11):'Or|De|Com'
+      DSP.HEAD.QDETAIL := @(49,11):'MU%'
+      DSP.HEAD.QDETAIL := @(54,11):'Acc'
+      DSP.HEAD.QDETAIL := @(59.11):'Frt'
+      DSP.HEAD.QDETAIL := @(67,11):'Fuel'
+      DSP.HEAD.QDETAIL := @(74,11):'Quote'
+      DSP.HEAD.QDETAIL := @(0 ,12):STR('-',80)
+      RETURN
+*
+*
+*********************************************************
+GET.LU.DATE:
+*********************************************************                             
+*
+500:
+*
+      SKIP.BACK = "N"
+      HELP = 'Enter the beginning lookup date. (MM/DD/YY)'
+      IF BEG.LUDATE = '' THEN MASK = '________' ELSE MASK = BEG.LUDATE'D2/'
+      CALL GEN.IN(11,19,MASK,'DATE',Q,0,8,'','',0,11,19,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI = ' ' THEN
+         QI = ''
+         BEG.LUDATE = ''
+      END
+
+      IF QI = "" AND BEG.LUDATE = '' THEN
+         CALL ELINE("Must Enter a date")
+         GOTO 500
+      END
+
+      IF QI = 'X' AND BEG.LUDATE = '' THEN
+         CRT@(11,19): SPACE(8)
+         SKIP.BACK = "Y"
+      END
+      IF QI = 'X' AND BEG.LUDATE # '' THEN
+         CRT@(11,19):BEG.LUDATE'D2/'
+         SKIP.BACK = "Y"
+      END
+      IF QI = 'EX' THEN GOTO 9999
+      IF QI = '' AND BEG.LUDATE # '' THEN
+         CRT@(11,19):BEG.LUDATE'D2/'
+         GOTO 550
+      END
+      IF QI = '' AND BEG.LUDATE = '' THEN
+         CRT@(11,19):SPACE(8)
+         GOTO 550
+      END
+      BEG.LUDATE = Q
+      CRT @(11,19):BEG.LUDATE'D2/'
+
+*********************************************************
+550:* Get ending lookup date
+*********************************************************
+      HELP = 'Enter the ending lookup date.'
+      IF END.LUDATE = '' THEN MASK = '________' ELSE MASK = END.LUDATE'D2/'
+      CALL GEN.IN(11,20,MASK,'DATE',Q,0,8,'','',0,11,20,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI = ' ' THEN
+         QI = ''
+         END.LUDATE = ''
+      END
+
+      IF QI = "" AND END.LUDATE = '' THEN
+         CALL ELINE("Must Enter a date")
+         GOTO 550
+      END
+
+      IF QI = 'X' AND END.LUDATE = '' THEN
+         CRT@(11,20):SPACE(8)
+         GOTO 500
+      END
+      IF QI = 'X' AND END.LUDATE # '' THEN
+         CRT@(11,20):END.LUDATE'D2/'
+         GOTO 500
+      END
+      IF QI = 'EX' THEN GOTO 9999
+      IF QI = '' AND END.LUDATE # '' THEN GOTO 575
+      IF QI = '' AND END.LUDATE = '' THEN
+         CRT@(11,20):SPACE(8)
+         SKIP.FORWARD = "Y" ; RETURN
+      END
+      END.LUDATE = Q
+
+*********************************************************
+575:
+*********************************************************
+      IF END.LUDATE LT BEG.LUDATE THEN
+         END.LUDATE = ''
+         CALL ELINE('Ending ship date cannot be before beginning ship date.')
+         GOTO 550
+      END
+      CRT @(11,20):END.LUDATE'D2/'
+*
+      CRT @(0,22):@(-4):'** Please wait - Building Cross reference  **'
+*
+      SL.REC = ""
+*
+      IF BEG.LUDATE NE "" THEN
+         FOR DD = BEG.LUDATE TO END.LUDATE
+            ID.XREF = CLIENT.ID:"*":DD
+            READ XREF.REC FROM F.IEFA.XREF, ID.XREF THEN
+               SL.REC<-1> = ID.XREF
+            END
+         NEXT DD
+         WRITE SL.REC ON F.SL, USER:".RQR"
+      END
+
+      CRT @(0,22):@(-4)
+*
+      IF SL.REC = "" THEN
+         HELP = "No Cross Reference records found Continue [Y],[N] - RETURN = 'Y'"
+         CALL GEN.IN(55,23,'','',Q,0,2,'','',0,55,23,0,QI,HELP,0,23)
+         QI = OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI = "N"
+               NULL
+            CASE QI = 'EX'
+               GOTO 9999
+            CASE QI = '' OR QI = 'Y'
+               GOTO 500
+            CASE 1
+               CALL ELINE('Invalid entry. Must be Y,N or EX, or RETURN.')
+               GOTO 2000
+         END CASE
+      END
+
+      RETURN
+*
+*********************************************************
+CREATE.XLS.ITEMS:*
+*********************************************************
+      XLS.REC = ""
+      XLS.REC<1,2> = "Client#"
+      XLS.REC<1,3> = "Username"
+      XLS.REC<1,4> = "Password"
+      XLS.REC<1,5> = "Lookup Date"
+      XLS.REC<1,6> = "Lookup Time"
+      XLS.REC<1,7> = "Ship Date"
+      XLS.REC<1,8> = "IOT"
+      XLS.REC<1,9> = "Orig Zip"
+      XLS.REC<1,10> = "Orig City"
+      XLS.REC<1,11> = "Dest Zip"
+      XLS.REC<1,12> = "Dest City"
+      XLS.REC<1,13> = "Total Weight"
+      XLS.REC<1,14> = "Quote Amount"
+
+      GOSUB FULL.XLS.HEADER
+
+      CNT = 2
+      CRT @(-1)
+      CRT @(10,10):"Building Spreadsheets"
+      READ REC FROM F.SL, USER:".RQR2" ELSE REC = ""
+
+      N.RECS = DCOUNT(REC,@AM)
+
+      FOR II = 1 TO N.RECS
+         IF MOD(II,10) = 0 THEN CRT @(10,12):"Processed ":II "R#6":"  of ":N.RECS
+         ID.ACT = REC<II,1>
+         READ ACT.REC FROM F.IFA, ID.ACT ELSE ACT.REC = ""
+
+         N.ATTRS = DCOUNT(ACT.REC,@AM)
+
+         MORE.THAN.ONE.MV = "N"
+         MAX.MV.CNT = 1
+         FOR JJ = 1 TO N.ATTRS
+            NO.MVS = DCOUNT(ACT.REC<JJ>,@VM) * 1
+            IF NO.MVS GT MAX.MV.CNT THEN MAX.MV.CNT = NO.MVS
+            IF NO.MVS GT 1 THEN MORE.THAN.ONE.MV = "Y"
+         NEXT JJ
+
+         CONVERT @SVM TO " " IN ACT.REC
+*
+         USER.ID = FIELD(ID.ACT,"*",1)
+         ACCESS.DATE = FIELD(ID.ACT,"*",3)
+         ACCESS.TIME = FIELD(ID.ACT,"*",4)
+*
+         FOR LL = 1 TO MAX.MV.CNT
+            XLS2.LINE = OCONV(ACCESS.DATE,"D2/")
+            XLS2.LINE<1,2> = OCONV(ACCESS.TIME,"MTS")
+            XLS2.LINE<1,3> = USER.ID
+            FOR JJ = 2 TO N.ATTRS
+               W.DATA = TRIM(ACT.REC<JJ,LL>)
+               IF INDEX(W.DATA,"|",1) THEN
+                  CONVERT "|" TO " " IN W.DATA
+                  W.DATA = TRIM(W.DATA)
+               END
+               N.SVMS = DCOUNT(W.DATA,@SVM)
+               IF JJ = "4" THEN W.DATA = OCONV(W.DATA,"D2/")
+               XLS2.LINE<1,JJ+2> = W.DATA
+            NEXT JJ
+            XLS2.LINE<1,JJ+3> = MORE.THAN.ONE.MV
+            XLS2.REC<-1> = XLS2.LINE
+         NEXT LL
+*
+         XLS.REC<CNT,2> = REC<II,2>      ; * Client#
+         XLS.REC<CNT,3> = REC<II,3>      ; * Username
+         XLS.REC<CNT,4> = "*****"        ; * Password
+         XLS.REC<CNT,5> = OCONV(REC<II,5>,"D2/")   ; * Lookup Date
+         XLS.REC<CNT,6> = OCONV(REC<II,6>,"MTS")   ; * Lookup Time
+         XLS.REC<CNT,7> = REC<II,7>      ; * Ship Date
+         XLS.REC<CNT,8> = REC<II,8>      ; * IOT
+         XLS.REC<CNT,9> = REC<II,9>      ; * Orig Zip
+         XLS.REC<CNT,10> = REC<II,10>    ; * Orig City
+         XLS.REC<CNT,11> = REC<II,11>    ; * Dest Zip
+         XLS.REC<CNT,12> = REC<II,12>    ; * Dest City
+         XLS.REC<CNT,13> = SUM(REC<II,13>)         ; * Total Weight
+         XLS.REC<CNT,14> = REC<II,14>    ; * Multiple quote amounts
+         CNT += 1
+      NEXT II
+*
+      CRT @(10,12):"Processed ":II-1 "R#6":"  of ":N.RECS
+*
+      CONVERT @VM TO CHAR(9) IN XLS.REC
+*
+      W.DATE = OCONV(DATE(),"D2/")
+      W.TIME = OCONV(TIME(),"MTS")
+      CONVERT "/" TO "" IN W.DATE
+      CONVERT ":" TO "" IN W.TIME
+*
+      CONVERT @VM TO CHAR(9) IN XLS2.REC
+
+      ID.XLS = "RATE_HIST_":CLIENT.ID:"_":W.TIME:".XLS"
+      WRITE XLS2.REC TO F.BILLDATA, ID.XLS
+      CALL ELINE("#1 - Excel file ":ID.XLS:" written to your U: drive - RETURN to continue")
+      RETURN
+*
+*********************************************************
+PROCESS:*
+*********************************************************
+*
+      SELECT F.IFA
+*
+      EOF = "N"
+      CNT = 0
+      CRT @(-1)
+      START.TIME = TIME()
+*
+      LOOP
+         READNEXT ID ELSE EOF = "Y"
+      UNTIL EOF = "Y" DO
+         W.DATE = FIELD(ID,"*",3)
+         READ XREF.REC FROM F.TEMP, W.DATE ELSE XREF.REC = ""
+         WRITE XREF.REC ON F.TEMP, W.DATE
+         CNT += 1
+*
+         IF MOD(CNT,100) = 0 THEN
+            W.TIME = TIME() - START.TIME
+            W.TIME = OCONV(W.TIME,"MTS")
+            CRT @(0,0):CNT:" ":W.TIME
+         END
+      REPEAT
+*
+      LOG.REC = CNT
+      LOG.REC = TIME() - START.TIME
+      WRITE LOG.REC ON F.TEMP, "LOG"
+*
+      RETURN
+*
+*********************************************************
+FULL.XLS.HEADER:*
+*********************************************************
+*
+      XLS2.REC = ""
+      XLS2.REC<1,1> = "Access Date"
+      XLS2.REC<1,2> = "Access Time"
+      XLS2.REC<1,3> = "User ID"
+      XLS2.REC<1,4> = "Client#"
+      XLS2.REC<1,5> = "Carrier#"
+      XLS2.REC<1,6> = "ShipDate"
+      XLS2.REC<1,7> = "IOT"
+      XLS2.REC<1,8> = "OrigZip"
+      XLS2.REC<1,9> = "Dest"
+      XLS2.REC<1,10> = "Class"
+      XLS2.REC<1,11> = "Weight"
+      XLS2.REC<1,12> = "MiscChargeCodes"
+      XLS2.REC<1,13> = "QuotePercent"
+      XLS2.REC<1,14> = "MarkUpPercent"
+      XLS2.REC<1,15> = "ERRORCODE"
+      XLS2.REC<1,16> = "QUOTEAMOUNT"
+      XLS2.REC<1,17> = "CARRIERID"
+      XLS2.REC<1,18> = "CARRIER.SCAC"
+      XLS2.REC<1,19> = "CARRIERNAME"
+      XLS2.REC<1,20> = "ORIGCITY"
+      XLS2.REC<1,21> = "ORIGSTATE"
+      XLS2.REC<1,22> = "DestCity"
+      XLS2.REC<1,23> = "DestState"
+      XLS2.REC<1,24> = "MESSAGES"
+      XLS2.REC<1,25> = "ZipMessages"
+      XLS2.REC<1,26> = "TransitTime"
+      XLS2.REC<1,27> = "OrigDirectService"
+      XLS2.REC<1,28> = "DestDirectSvcCode"
+      XLS2.REC<1,29> = "CombinedDirectS"
+      XLS2.REC<1,30> = "OrigTerminalName"
+      XLS2.REC<1,31> = "OrigTerminalCode"
+      XLS2.REC<1,32> = "OrigTerminalAdd"
+      XLS2.REC<1,33> = "OrigTerminalAdd"
+      XLS2.REC<1,34> = "OrigTerminalCity"
+      XLS2.REC<1,35> = "OrigTerminalState"
+      XLS2.REC<1,36> = "ORIGTERMINALZIP"
+      XLS2.REC<1,37> = "ORIGTERMINALPHO"
+      XLS2.REC<1,38> = "ORIGINTERMINALT"
+      XLS2.REC<1,39> = "OrigTerminalFax"
+      XLS2.REC<1,40> = "OrigTerminalEmail"
+      XLS2.REC<1,41> = "OrigTerminalContact"
+      XLS2.REC<1,42> = "DestTerminalName"
+      XLS2.REC<1,43> = "DestTerminalCode"
+      XLS2.REC<1,44> = "DestTerminalAdd"
+      XLS2.REC<1,45> = "DestTerminalAdd"
+      XLS2.REC<1,46> = "DestTerminalCity"
+      XLS2.REC<1,47> = "DestTerminalState"
+      XLS2.REC<1,48> = "DestTerminalZip"
+      XLS2.REC<1,49> = "DestTerminalPhone"
+      XLS2.REC<1,50> = "DestTerminalTol"
+      XLS2.REC<1,51> = "DestTerminalFax"
+      XLS2.REC<1,52> = "DestTerminalEmail"
+      XLS2.REC<1,53> = "DestTerminalContact"
+      XLS2.REC<1,54> = "DestTerminalConContact"
+      XLS2.REC<1,55> = "FuelSvcChgAmt"
+      XLS2.REC<1,56> = "XccessorialSvcChg"
+      XLS2.REC<1,57> = "XccessorialSvcCode"
+      XLS2.REC<1,58> = "RatewareCarrier"
+*
+      RETURN
+*
+9999:
+   END

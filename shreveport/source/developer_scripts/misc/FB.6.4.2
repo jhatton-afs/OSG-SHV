@@ -1,0 +1,408 @@
+********************************************************************************
+*   Freight Bills by Customer/Vendor
+*
+*   AUTHOR: Cody Henderson
+*   DATE  : 14 January 1997
+*
+*   DATE   | USER | COMMENT
+* -------- | ---- | -------
+*  1/14/97 |  CH  | Program written by Cody Henderson
+*  6/19/98 |  JR  | Modified report to be able to print Misroute report
+*  3/26/02 |  JB  | Added I/O/T/ALL input option and cleaned up the code
+********************************************************************************
+
+ $OPTIONS HEADER.EJECT
+ $OPTIONS EXEC.EQ.PERF
+ $OPTIONS INFO.ABORT
+
+* Initialize general variables
+
+      PROMPT''
+      CALL GET.USER(USER)
+      USER=OCONV(USER,'MCU')
+      CALL CHANNEL(CH.NUM)
+      ESC=CHAR(27)
+      MASK.CHAR='-'
+      PROG.NAME='FB.6.4.2'
+      PROG.DESC='Freight Bills by Customer/Vendor by Expense Code'
+      PACK.NAME='FREIGHT PAYMENT'
+
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.6.4.2' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+* Initialize inputs to defaults
+
+      CLIENT.ID=''
+      FILE.TYPE=''
+      BEG.DATE=''
+      END.DATE=''
+      IOT='ALL'
+      MISROUTE.REPORT='N'
+
+* Display screen heading
+
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+      GOSUB DISPLAY.PROMPTS
+
+* Open files
+
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+        CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+
+* Get client number
+
+100:  IF CLIENT.ID='' THEN MASK=STR(MASK.CHAR,5) ELSE MASK=CLIENT.ID
+      HELP='Enter the client number or name to search. [X]=Exit [EX]it'
+      CALL GEN.IN(24,3,MASK,'',Q,0,20,'','',2,24,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=CLIENT.ID
+      BEGIN CASE
+         CASE QI='EX' OR QI='X' OR QI=''
+            GOTO EXIT.PROGRAM
+         CASE NOT(QI MATCHES '0N')
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            GOSUB DISPLAY.PROMPTS
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 100
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 100
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO 100
+            END CASE
+         CASE NUM(QI)
+            QI=QI'R%5'
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO 100
+      END CASE
+      CLIENT.ID=QI
+      CRT @(24,3):CLIENT.ID:@(-4)
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         CALL ELINE('ERROR - Client ':CLIENT.ID:' not on file.')
+         CLIENT.ID=''
+         GOTO 100
+      END
+      CLIENT.NAME=CLIENT.REC<2>
+      CRT @(30,3):CLIENT.NAME
+
+* Enter file type
+
+200:  IF FILE.TYPE='' THEN MASK=STR(MASK.CHAR,2) ELSE MASK=FILE.TYPE:STR(MASK.CHAR,2-LEN(FILE.TYPE))
+      HELP='Enter file type. [C]urrent-1 [H]istory-2 [L]ast Processed-3 [X]=Back [EX]it'
+      CALL GEN.IN(24,5,MASK,'',Q,0,2,'','',2,24,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=FILE.TYPE
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='X'
+            GOTO 100
+         CASE QI='L' OR QI='3'
+            OPEN '','FB.UNPROCESS,':CLIENT.ID TO F.UP ELSE
+               CALL ELINE('Cannot open FB.UNPROCESS,':CLIENT.ID:'. LAST option not available.')
+               GOTO 200
+            END
+            READ DDATES FROM F.UP,'PROCESS.DATES' ELSE
+               CALL ELINE('FB.UNPROCESS,':CLIENT.ID:' PROCESS.DATES not on file. LAST option not available.')
+               GOTO 200
+            END
+            FILE.TYPE='L'
+            FILE='FB.BILLS.HIST,':CLIENT.ID
+            BEG.DATE=DDATES<1>
+            END.DATE=DDATES<2>
+            DAYS=END.DATE-BEG.DATE+1
+            CRT @(24,7):BEG.DATE'D2/'
+            CRT @(24,9):END.DATE'D2/'
+         CASE QI='H' OR QI='2'
+            FILE.TYPE='H'
+            FILE='FB.BILLS.HIST,':CLIENT.ID
+         CASE QI='C' OR QI='1'
+            FILE.TYPE='C'
+            FILE='FB.BILLS,':CLIENT.ID
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO 200
+      END CASE
+      CRT @(24,5):FILE.TYPE:'  ':FILE:@(-4)
+
+      OPEN FILE TO FB.BILLS ELSE
+         CALL OPEN.ABORT(FILE,PROG.NAME)
+      END
+      OPEN 'DICT',FILE TO D.F.BILLS ELSE
+         CALL OPEN.ABORT('Cannot open dictionary file for ':FILE,' in program FB.6.4.2.')
+      END
+
+      IF FILE.TYPE='L' THEN GOTO 500
+
+* Get beginning date
+
+300:  IF BEG.DATE='' THEN MASK='MM/DD/YY' ELSE MASK=BEG.DATE'D2/'
+      HELP='Enter beginning date. [T]oday [X]=Back [EX]it'
+      CALL GEN.IN(24,7,MASK,'DATE',Q,0,8,'','',2,24,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='X'
+            GOTO 200
+         CASE QI='T'
+            Q=DATE()
+         CASE QI=''
+            IF BEG.DATE='' THEN
+               CALL ELINE('Invalid entry. Try again.')
+               GOTO 300
+            END ELSE
+               Q=BEG.DATE
+            END
+         CASE ALPHA(QI)
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO 300
+      END CASE
+      BEG.DATE=Q
+      CRT @(24,7):BEG.DATE'D2/':@(-4)
+
+* Get ending date
+
+400:  IF END.DATE='' THEN MASK='MM/DD/YY' ELSE MASK=END.DATE'D2/'
+      HELP='Enter ending date. [T]oday [X]=Back [EX]it'
+      CALL GEN.IN(24,9,MASK,'DATE',Q,0,8,'','',2,24,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='X'
+            GOTO 300
+         CASE QI='T'
+            Q=DATE()
+         CASE QI=''
+            IF END.DATE='' THEN
+               CALL ELINE('Invalid entry. Try again.')
+               GOTO 400
+            END ELSE
+               Q=END.DATE
+            END
+         CASE ALPHA(QI)
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO 400
+      END CASE
+      END.DATE=Q
+      CRT @(24,9):END.DATE'D2/':@(-4)
+      IF END.DATE LT BEG.DATE THEN
+         CALL ELINE('Ending date is before beginning date. Try again.')
+         GOTO 400
+      END
+
+* Get Inbound, Outbound, Third Party, or ALL
+
+500:  IF IOT='' THEN MASK=STR(MASK.CHAR,3) ELSE MASK=IOT:STR(MASK.CHAR,3-LEN(IOT))
+      HELP='[I]nbound-1 [O]utbound-0 [T]hird Party-3 [ALL]-4 [X]=Back [EX]it'
+      CALL GEN.IN(24,11,MASK,'',Q,0,3,'','',2,24,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=IOT
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='X'
+            IF FILE.TYPE='L' THEN GOTO 200
+            GOTO 400
+         CASE QI='4'
+            QI='ALL'
+         CASE QI='3'
+            QI='T'
+         CASE QI='0'
+            QI='O'
+         CASE QI='1'
+            QI='I'
+         CASE QI='ALL'
+            NULL
+         CASE QI='T'
+            NULL
+         CASE QI='O'
+            NULL
+         CASE QI='I'
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO 500
+      END CASE
+      IOT=QI
+      CRT @(24,11):IOT:@(-4)
+
+* Print Misroute Report? Y/N
+
+600:  IF MISROUTE.REPORT='' THEN MASK=STR(MASK.CHAR,2) ELSE MASK=MISROUTE.REPORT:STR(MASK.CHAR,2-LEN(MISROUTE.REPORT))
+      HELP='Print Misroute Report? [Y]es-1 [N]o-0 [X]=Back [EX]it'
+      CALL GEN.IN(24,13,MASK,'',Q,0,2,'','',2,24,13,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=MISROUTE.REPORT
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='X'
+            GOTO 500
+         CASE QI='0'
+            QI='N'
+         CASE QI='1'
+            QI='Y'
+         CASE QI='N'
+            NULL
+         CASE QI='Y'
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO 600
+      END CASE
+      MISROUTE.REPORT=QI
+      CRT @(24,13):MISROUTE.REPORT:@(-4)
+
+* Verify selection criteria is correct
+
+700:  CRT @(0,22):'Select :'
+      MASK='C':MASK.CHAR
+      HELP='[C]ontinue [X]=Back [EX]it'
+      CALL GEN.IN(9,22,MASK,'',Q,0,2,'','',2,9,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI='C'
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='X'
+            CRT @(0,22):@(-4)
+            GOTO 600
+         CASE QI='C'
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO 700
+      END CASE
+      CRT @(0,22):@(-3)
+
+      CRT @(0,17):'Processing...'
+
+* Setup dictionary
+
+      DICT.TEMP=''
+      DICT.TEMP<1>='A'
+      DICT.TEMP<2>='17'
+      DICT.TEMP<3>='Customer Vendor'
+*     DICT.TEMP<8>='F;17;(TVEND.CUST,':CLIENT.ID:';C;1;1)'
+      DICT.TEMP<8>='TVEND.CUST,':CLIENT.ID:';C;1;1'
+      DICT.TEMP<9>='L'
+      DICT.TEMP<10>='30'
+      WRITE DICT.TEMP ON D.F.BILLS,'BIG.CUST.':CH.NUM
+
+* Setup page headings
+
+      IF MISROUTE.REPORT='Y' THEN
+         TITLE.1='Customer/Vendor Misroute Report'
+      END ELSE
+         TITLE.1='Customer/Vendor Report'
+      END
+      TITLE.2='For Client: ':CLIENT.ID:' ':CLIENT.NAME
+      ODATE='Processed From ':BEG.DATE'D2/':' to ':END.DATE'D2/'
+      BEGIN CASE
+         CASE IOT='I'
+            TEMP='Inbound Bills'
+         CASE IOT='O'
+            TEMP='Outbound Bills'
+         CASE IOT='T'
+            TEMP='Third Party Bills'
+         CASE IOT='ALL'
+            TEMP='All Bills'
+      END CASE
+      ODATE=TEMP:' ':ODATE
+      CALL PAGE.HEAD(PROG.NAME,'AFS Logistics, LLC',TITLE.1,TITLE.2,ODATE,170,HED)
+
+* Select bills to process
+
+      IF FILE.TYPE='L' THEN; * Last processed
+         EXECUTE 'SELECT FB.UNPROCESS,':CLIENT.ID:' WITH FILE.NAME = "FB.BILLS,':CLIENT.ID:'" ITEM.NAME' CAPTURING OUTPUT
+      END
+
+      STMT=''
+
+      IF FILE.TYPE='C' THEN
+         STMT='SORT FB.BILLS,':CLIENT.ID
+         STMT:=' WITH 30 GE "':BEG.DATE'D2/':'"'
+         STMT:=' AND WITH 30 LE "':END.DATE'D2/':'"'
+      END ELSE
+         STMT='SORT FB.BILLS.HIST,':CLIENT.ID
+         STMT:=' WITH 37 GE "':BEG.DATE'D2/':'"'
+         STMT:=' AND WITH 37 LE "':END.DATE'D2/':'"'
+      END
+
+      STMT:=' AND WITH VERSION = "0"'
+
+      BEGIN CASE
+         CASE IOT='I'
+            STMT:=' AND WITH I.O="I"'
+         CASE IOT='O'
+            STMT:=' AND WITH I.O="O"'
+         CASE IOT='T'
+            STMT:=' AND WITH I.O="T"'
+      END CASE
+
+      IF MISROUTE.REPORT='Y' THEN
+         STMT:=' AND WITH 63 GT 0'
+         STMT:=' BY BIG.CUST.':CH.NUM:' BY CARRIER.NAME BY PRO'
+         STMT:=\ BREAK.ON BIG.CUST.\:CH.NUM:\ "'DV'"\
+         STMT:=' CARRIER.NAME PRO 2 9 5 16 6 TOTAL 8R TOTAL 63R TOTAL MISR.DIFF'
+         STMT:=' HEADING "':HED:'"'
+         STMT:=\ ID.SUP LPTR\
+      END ELSE
+*        STMT:=' BY 5'
+         STMT:=' BY BIG.CUST.':CH.NUM:' BY CARRIER.NAME BY PRO'
+*        STMT:=\ BREAK.ON 5 "'DV'"\
+         STMT:=\ BREAK.ON BIG.CUST.\:CH.NUM:\ "'DV'"\
+         STMT:=' CARRIER.NAME PRO 2 9 5 16 6 TOTAL 8R'
+         STMT:=' HEADING "':HED:'"'
+         STMT:=\ ID.SUP LPTR\
+      END
+
+* Print report
+
+      EXECUTE 'TERM ,,,,,,198,60'
+      LASER.STR=''
+      LASER.STR:=ESC:'E'         ; * RESET THE PRINTER
+      LASER.STR:=ESC:'&l1O'      ; * SET TO LANDSCAPE
+      LASER.STR:=ESC:'&l8D'      ; * SET TO 8 LPI
+      LASER.STR:=ESC:'&l60F'     ; * SET TO 60 LINES
+      LASER.STR:=ESC:'(s16.7h'   ; * SET TO 16 CHARACTERS/INCH
+      LASER.STR:='0p'            ; * PROPORTIONAL PRINTING OFF
+      LASER.STR:='0s'            ; * ITALICS OFF
+      LASER.STR:='0T'            ; * LINE PRINTER FONT
+      LASER.STR:=ESC:'&l1H'      ; * BIN SELECT
+      LASER.STR:=ESC:'&a0L'      ; * SET LEFT MARGIN
+      LASER.STR:=ESC:'&a198M'    ; * SET RIGHT MARGIN TO 198TH COLUMN
+      LASER.STR:=ESC:'&s0C'      ; * ENABLE LINE WRAP
+      LASER.STR:=ESC:'&l2E'      ; * SET TOP MARGIN TO 2 LINES
+      LASER.STR:=ESC:'"g0F'      ; * PAPER OUTPUT
+      PRINTER ON
+      PRINT LASER.STR:
+      EXECUTE STMT PASSLIST CAPTURING OUTPUT
+      PRINTER OFF
+      DELETE D.F.BILLS,'BIG.CUST.':CH.NUM
+      GOTO EXIT.PROGRAM
+
+********************************************************************************
+
+DISPLAY.PROMPTS:***
+      CRT @(0, 3):'Enter Client Number   :'
+      CRT @(0, 5):'Enter File Type       :'
+      CRT @(0, 7):'Enter Beginning Date  :'
+      CRT @(0, 9):'Enter Ending Date     :'
+      CRT @(0,11):'Enter IOT             :'
+      CRT @(0,13):'Print Misroute Report :'
+      RETURN
+
+********************************************************************************
+
+EXIT.PROGRAM:***
+      CRT @(0,17):@(-3)
+      CRT @(0,22):
+      STOP

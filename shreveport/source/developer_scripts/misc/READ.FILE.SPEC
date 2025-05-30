@@ -1,0 +1,150 @@
+      PROMPT""
+      DICT = ""
+      FILE2 = 'FB.BILLS.HIST,10356'
+      OPEN DICT,FILE2 TO DFILE THEN
+         STATUS DATA.INFO FROM DFILE ELSE DATA.INFO = ""
+         FILE.TYPE = DATA.INFO<21>
+         FILE.MOD = DATA.INFO<22>
+         FILE.SEP = DATA.INFO<23>
+      END
+      STOP
+      FILE.TYP = "EDI"
+      FILE = "EDI.BILLS.HIST"
+      CNT = 0
+      COD = "01-01-15"
+      DICT = ""
+      CRT @(-1)
+      CRT @(5,2):"FILE ARCHIVE"
+      FILE = ""
+      IF FILE = "FBH" OR FILE = "" THEN
+         FILE = "FB.BILLS.HIST"
+         FILE.TYP = "FBH"
+      END
+      *
+      IF FILE.TYP = "EDI" THEN
+         FILE = "EDI.BILLS.HIST"
+      END
+      *
+
+      IF FILE = "UPSDTL" THEN
+         FILE.TYP = "UPSDTL"
+      END
+***      CMD = "GET-LIST ARC.HIST1"
+      CMD = "GET-LIST GB2"
+      EXECUTE CMD RTNLIST CORP.LIST1
+      EOJ = 0
+      LOOP
+         READNEXT ID FROM CORP.LIST1 ELSE EOJ = 1
+      UNTIL EOJ DO
+         CNT = CNT + 1
+         CRT @(10,10):CNT
+         FILE2 = FILE:",":ID
+         OPEN DICT,FILE2 TO DFILE THEN
+            STATUS DATA.INFO FROM DFILE ELSE DATA.INFO = ""
+            FILE.TYPE = DATA.INFO<21>
+            FILE.MOD = DATA.INFO<22>
+            FILE.SEP = DATA.INFO<23>
+         END
+
+         CRT @(0,20):"SELECTING RECS PLEASE WAIT................."
+         CMD = 'SELECT ' : FILE : ',' : ID : ' WITH DATE LT ' : COD
+         IF FILE.TYP = "FBH" THEN
+            CMD = CMD: ' AND WITH 37 # "" AND WITH 39 # "R" AND WITH 37 LT ':COD
+         END
+         EXECUTE CMD RTNLIST CORP.LIST CAPTURING OUTPUT
+         SEL.CNT = @SELECTED
+         IF SEL.CNT LT 1 THEN CONTINUE
+         CL.LST = "GB"
+         EXECUTE "SAVE-LIST ":CL.LST PASSLIST CORP.LIST CAPTURING OUTPUT
+         OPN.FLG = 1
+         BEGIN CASE
+            CASE FILE.TYP = "FBH"
+               OPEN 'FB.BILLS.ARCH,':ID TO F.DEST ELSE
+                  OPN.FLG = 0
+                  *NO FILE SO CREATE IT
+               END
+               FILE2 = "FB.BILLS.ARCH,":ID
+               FILE3 = "FB.BILLS.HIST,":ID
+*
+            CASE FILE.TYP = "EDI"
+               OPEN 'EDI.BILLS.ARCH,':ID TO F.DEST ELSE
+                  OPN.FLG = 0
+                  *NO FILE SO CREATE IT
+               END
+               FILE2 = "EDI.BILLS.ARCH,":ID
+               FILE3 = "EDI.BILLS.HIST,":ID
+               *
+            CASE FILE.TYP = "UPSDTL"
+               OPEN 'UPSDTL.ARCH,':ID TO F.DEST ELSE
+                  OPN.FLG = 0
+                  *NO FILE SO CREATE IT
+               END
+               FILE2 = "UPSDTL.ARCH,":ID
+               FILE3 = "UPSDTL,":ID
+
+         END CASE
+
+         EXECUTE "PRIME ":SEL.CNT CAPTURING STUFF RETURNING JUNK
+         NEW.SIZE = FIELD(STUFF,":",2)
+         NEW.SIZE =TRIM(FIELD(NEW.SIZE,".",1))+0
+
+         OPEN FILE3 TO F.SOURCE ELSE
+            CRT @(0,22):"NO FILE ":FILE3
+            CONTINUE
+         END
+
+         IF OPN.FLG = 0 THEN
+            IF FILE.TYP = "FBH" THEN
+               STMT = 'CREATE-FILE DATA FB.BILLS.ARCH,':ID:' ':NEW.SIZE:',':FILE.SEP
+               EXECUTE STMT CAPTURING STUFF RETURNING JUNK
+               OPEN 'FB.BILLS.ARCH,':ID TO F.DEST ELSE
+                  OPN.FLG = 0
+                  *NO FILE SO CREATE IT
+               END
+            END
+            *
+            IF FILE.TYP = "EDI" THEN
+               STMT = 'CREATE-FILE DATA EDI.BILLS.ARCH,':ID:' ':NEW.SIZE:',':FILE.SEP
+               EXECUTE STMT CAPTURING STUFF RETURNING JUNK
+               OPEN 'EDI.BILLS.ARCH,':ID TO F.DEST ELSE
+                  OPN.FLG = 0
+                  *NO FILE SO CREATE IT
+               END
+            END
+            *
+            IF FILE.TYP = "UPSDTL" THEN
+               STMT = 'CREATE-FILE DATA UPSDTL.ARCH,':ID:' ':"DYNAMIC"
+               EXECUTE STMT CAPTURING STUFF RETURNING JUNK
+               OPEN 'UPSDTL.ARCH,':ID TO F.DEST ELSE
+                  OPN.FLG = 0
+                  *NO FILE SO CREATE IT
+               END
+            END
+         END
+
+*****         GETLIST CL.LST SETTING GB.CNT THEN
+         CMD = 'GET-LIST GB'
+         EXECUTE CMD RTNLIST CORP.LIST2 CAPTURING OUTPUT
+         CNT2 = 0
+         IF @SELECTED THEN
+            EOJ2 = 0
+            LOOP
+               READNEXT ID2 FROM CORP.LIST2 ELSE EOJ2 = 1
+            UNTIL EOJ2 DO
+               READ DAT.REC FROM F.SOURCE,ID2 THEN
+                  CNT2 = CNT2 + 1
+                  IF NOT(REM(CNT2,1000)) THEN
+                     CRT @(10,18):CNT2
+                  END
+                  WRITE DAT.REC ON F.DEST,ID2 ELSE NULL
+                  DELETE F.SOURCE,ID2
+               END
+            REPEAT
+*****            END ELSE
+*****               ****   CRT @(0,20):@(-4):"NONE SELECTED .....................": ; INPUT XX
+*****            END
+         END
+         ***  CRT @(0,20):@(-4):"OK NEXT REC .......................": ; INPUT ZZ
+      REPEAT
+      CRT "THAT'S ALL FOLK'S"
+      CRT CNT

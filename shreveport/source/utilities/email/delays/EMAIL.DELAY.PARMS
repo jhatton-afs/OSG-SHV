@@ -1,0 +1,539 @@
+      PROGRAM EMAIL.DELAY.PARMS
+************************************************************************
+* PROGRAM: EMAIL.DELAY.PARMS - Program to allow entry/updating of
+*                              necessary parameters for Delaying Emails
+*
+*
+* PROGRAMMER: Steve Barbee
+*
+************************************************************************
+*
+* PARAMETERS - None
+*
+************************************************************************
+*
+* EDIT HISTORY:
+*
+*    NAME :   DATE:     : DESCRIPTION
+*     SWB : 12/02/11    : Started new program
+*   SWB01 : 01/11/12    : Display bug fixes and validation of Time entry
+*   pkb01 : 01/25/12    : Changed email notification from kgilbert@afs.net to brose@afs.net
+*   DRF01 : 04/07/14    : SysAid 9293 Added KSHELTON to have access as
+*                         Dina's back up.
+*  DRF02 : 10/03/14     : SysAid 11760 - Added KShelton to the emails.
+*   SWB02 : 11/20/14    : SysAid 13415 - Fix problem with delayed emails
+*
+************************************************************************
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE EXPRESS
+* WRITTEN CONSENT OF SAME.
+*
+********************************************************************
+$OPTIONS HEADER.EJECT
+*
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+*
+*
+************************************************************************
+* Initialize variables
+************************************************************************
+      PROMPT ''
+      PROG.NAME="EMAIL.DELAY.PARMS"
+      PROG.DESC="Email Delay Setup"
+      PACK.NAME="Freight Payment"
+      ERRMSG=''
+      DEFAULT.CHANGE.MESSAGE=''
+************************************************************************
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'EMAIL.DELAY.PARMS' ; UPL.VOUT = ''
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+* Open files
+************************************************************************
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      OPEN '','FB.TABLES' TO F.TABLES ELSE CALL OPEN.ABORT("FB.TABLES",PROG.NAME)
+      CALL GET.USER(USER)
+
+*
+* Authorized Users
+*
+      BEGIN CASE
+*Always give these folks access
+         CASE USER='BRIAN' ; NULL
+         CASE USER='BRIANP' ; NULL
+         CASE USER='BROSE' ; NULL
+         CASE USER='KAREN' ; NULL
+         CASE USER='OWEN' ; NULL
+
+*Additional authorized Buisness users
+         CASE USER='DEBBIE' ; NULL
+         CASE USER='DGARRETT' ; NULL
+         CASE USER='KSHELTON' ; NULL     ; * DRF01
+
+*Now some of the I.T. folks
+         CASE USER='MKERBOW' ; NULL
+         CASE USER='PBASS' ; NULL
+         CASE USER='SBARBEE' ; NULL
+
+         CASE 1
+            EMAIL.OUT=''
+            EMAIL.OUT<1,1>='brose@afs.net'
+            EMAIL.OUT<1,2>='DCurtis@afs.net'
+            EMAIL.OUT<1,3>='dgarrett@afs.net'
+            EMAIL.OUT<1,4>='KShelton@afs.net'      ; * DRF02
+            EMAIL.OUT<3>=''              ; * BCC: Email addresses
+            EMAIL.OUT<4>='EMAIL.DELAY.PARMS@afs.net'         ; * From Email address
+            EMAIL.OUT<5>=USER:' attempted access to the Email Delay parameters screen'
+            EMAIL.OUT<6,-1>="The Attempt was detected and the Update was Denied,"
+            EMAIL.OUT<6,-1>="No changes were allowed"
+            CALL SENDMAIL(EMAIL.OUT,VOUT)
+            CALL ELINE('You are not authorized to change the Email Delay Parameters')
+            STOP
+      END CASE
+
+*Check to see if someone else is using this program
+      READU EDP.PROC.REC FROM F.TABLES,'EMAIL.DELAY_PROCESS' LOCKED
+         CALL ELINE('User ':EDP.PROC.REC<3>:' has the Email Delay Process locked. Please try again later.')
+         GOTO CLEANUP.AND.STOP
+      END THEN
+         CALL ELINE(EDP.PROC.REC<3>:' is using this program. Try again later.')
+         GOTO CLEANUP.AND.STOP
+      END ELSE
+         EDP.PROC.REC=''
+         EDP.PROC.REC<1>=DATE()
+         EDP.PROC.REC<2>=TIME()
+         EDP.PROC.REC<3>=USER
+      END
+*Now check to see if someone is running the Freight Payment Carrier
+*Remittance process aka FB.5.4.LASER.
+*If no-one is running either, then write out the lock record for this
+*program and let the user proceed.
+      READ FPCR.PROC.REC FROM F.TABLES,'CHECK.LOCK' THEN
+         CALL ELINE('Check Printing in use by ':FPCR.PROC.REC<4>:' since ':OCONV(FPCR.PROC.REC<3>,'MTH'):' on ':OCONV(FPCR.PROC.REC,'D2/'):'. Try later.')
+         GOTO CLEANUP.AND.STOP
+      END ELSE
+*This record is not locked by FB.5.4.LASER and no one else is
+*using this program o allow this user to continue.
+         WRITE EDP.PROC.REC ON F.TABLES,'EMAIL.DELAY_PROCESS'
+      END
+
+************************************************************************
+*Initialization
+      CHANGE.MODE=0
+      UPDATE.MODE=1
+      BUSINESS.MODE.DESC='Business Days'
+      CALENDAR.MODE=''
+      CALENDAR.MODE.DESC='Calendar Days'
+
+************************************************************************
+*Sub-system name comes from a menu input.
+      INPUT PROGRAM.MODE
+      IF PROGRAM.MODE # '' THEN
+         CTRL.REC.ID=PROGRAM.MODE:'*ALL'
+         READ CTRL.REC FROM F.TABLES, CTRL.REC.ID THEN
+            ORIG.CALENDAR.MODE=CTRL.REC<1>
+            PREV.CALENDAR.MODE=ORIG.CALENDAR.MODE
+            ORIG.DELAY.BASIS=CTRL.REC<2>
+            PREV.DELAY.BASIS=ORIG.DELAY.BASIS
+            ORIG.DELAY.DAYS=CTRL.REC<3>
+            PREV.DELAY.DAYS=ORIG.DELAY.DAYS
+            ORIG.DELAY.TO.TIME=CTRL.REC<4>
+            OCONV.ORIG.DELAY.TO.TIME=OCONV(ORIG.DELAY.TO.TIME,'MTH')
+            PREV.DELAY.TO.TIME=ORIG.DELAY.TO.TIME
+            OCONV.PREV.DELAY.TO.TIME=OCONV.ORIG.DELAY.TO.TIME
+         END ELSE
+            CALL ELINE('Control record missing for ':PROGRAM.MODE:'....Contact Help Desk')
+            GOTO CLEANUP.AND.STOP
+         END
+      END ELSE
+         CALL ELINE('Program mode ':PROGRAM.MODE:' is not valid...Stopping')
+         GOTO CLEANUP.AND.STOP
+      END
+      PROG.NAME=PROG.NAME:" (":PROGRAM.MODE:") "
+************************************************************************
+*Enter the calendar basis....either (C)alendar or (B)usiness calendar
+*
+100:
+      HELP='Enter [C] for 7 day a week Calendar or [B] for AFS Business day calendar'
+      PROMPT.CALENDAR.MODE='#'
+      BEGIN CASE
+         CASE PREV.CALENDAR.MODE='BUSINESS'
+            PROMPT.CALENDAR.MODE=PREV.CALENDAR.MODE
+            PROMPT.CALENDAR.MODE.DESC=BUSINESS.MODE.DESC
+         CASE PREV.CALENDAR.MODE='CALENDAR'
+            PROMPT.CALENDAR.MODE=PREV.CALENDAR.MODE
+            PROMPT.CALENDAR.MODE.DESC=CALENDAR.MODE.DESC
+         CASE 1
+            PROMPT.CALENDAR.MODE=''
+            PROMPT.CALENDAR.MODE.DESC=''
+      END CASE
+      CALL GEN.IN(0,3,'1) Enter Calendar Mode: ':PROMPT.CALENDAR.MODE:' ':PROMPT.CALENDAR.MODE.DESC:@(-4),'',Q,0,1,'L','',0,24,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=PREV.CALENDAR.MODE
+      BEGIN CASE
+         CASE QI=''
+            GOTO 100
+         CASE QI='EX' ! QI='X'
+            DELETE F.TABLES,'EMAIL.DELAY_PROCESS'
+            GOTO CLEANUP.AND.STOP
+         CASE QI='C' OR QI='CALENDAR'
+            CALENDAR.MODE='CALENDAR'
+            CALENDAR.MODE.DESC=CALENDAR.MODE.DESC
+         CASE QI='B' OR QI='BUSINESS'
+            CALENDAR.MODE='BUSINESS'
+            CALENDAR.MODE.DESC=BUSINESS.MODE.DESC
+         CASE 1
+            CALL ELINE('Calendar Mode must be "C", "CALENDAR", "B", "BUSINESS", EX, X')
+            GOTO 100
+      END CASE
+      PREV.CALENDAR.MODE=CALENDAR.MODE
+      CRT @(24,3):CALENDAR.MODE:' ':CALENDAR.MODE.DESC:@(-4)
+      IF CHANGE.MODE THEN GOTO 400
+
+************************************************************************
+*Enter the Delay Basis for the email
+************************************************************************
+*This includes both the Delay Basis parameter of either (T)oday or
+*(C)heck Date plus the number of days to delay the email.
+200:
+      HELP="Enter [TODAY][+N], [C]heck Date[+N], [TUE] (D.O.W.), `TOMORROW' [X]Back [EX]it."
+      PROMPT.DELAY.BASIS.RULE=''
+      PREV.DELAY.BASIS.RULE = PREV.DELAY.BASIS
+      IF PREV.DELAY.DAYS>0 THEN
+         PREV.DELAY.BASIS.RULE:=' + ':PREV.DELAY.DAYS
+      END
+      IF PREV.DELAY.BASIS.RULE='' THEN
+         PREV.DELAY.BASIS.RULE='##############'
+      END ELSE
+         PROMPT.DELAY.BASIS.RULE=PREV.DELAY.BASIS.RULE
+      END
+      PROMPT.DELAY.BASIS.RULE:=@(-4)     ; * SWB01
+      CALL GEN.IN(0,5,'2) Enter Days to Delay rule: ':PROMPT.DELAY.BASIS.RULE,'',Q,0,14,'','',0,29,5,0,QI,HELP,0,23)
+      IF QI='' THEN QI=PREV.DELAY.BASIS.RULE
+      QI=OCONV(QI,'MCU')
+*     QI=TRIM(QI,' ','A')   ; * SWB02
+      QI=TRIM(QI)                        ; * SWB02
+      QI.PT.1=FIELD(QI,'+',1)
+      QI.PT.2=FIELD(QI,'+',2)
+      BEGIN CASE
+         CASE QI='EX'
+            DELETE F.TABLES,'EMAIL.DELAY_PROCESS'
+            GOTO CLEANUP.AND.STOP
+         CASE QI='X'
+            CRT @(0,5):@(-3):
+            GOTO 100
+         CASE QI='MONDAY' OR QI='MON'
+            QI.PT.1='MONDAY'
+            QI.PT.2=0                    ; * Set DELAY.DAYS to 0
+         CASE QI='TUESDAY' OR QI='TUE'
+            QI.PT.1='TUESDAY'
+            QI.PT.2=0                    ; * Set DELAY.DAYS to 0
+         CASE QI='WEDNESDAY' OR QI='WED'
+            QI.PT.1='WEDNESDAY'
+            QI.PT.2=0                    ; * Set DELAY.DAYS to 0
+         CASE QI='THURSDAY' OR QI='THU'
+            QI.PT.1='THURSDAY'
+            QI.PT.2=0                    ; * Set DELAY.DAYS to 0
+         CASE QI='FRIDAY' OR QI='FRI'
+            QI.PT.1='FRIDAY'
+            QI.PT.2=0                    ; * Set DELAY.DAYS to 0
+         CASE QI='SATURDAY' OR QI='SAT'
+            IF CALENDAR.MODE='BUSINESS' THEN
+               CALL ELINE("Delaying email to a Saturday when using AFS business calendar not allowed.")
+               GOTO 200
+            END
+            QI.PT.1='SATURDAY'
+            QI.PT.2=0                    ; * Set DELAY.DAYS to 0
+         CASE QI='SUNDAY' OR QI='SUN'
+            IF CALENDAR.MODE='BUSINESS' THEN
+               CALL ELINE("Delaying email to a Sunday when using AFS business calendar not allowed.")
+               GOTO 200
+            END
+            QI.PT.1='SUNDAY'
+            QI.PT.2=0                    ; * Set DELAY.DAYS to 0
+
+         CASE QI='TOMORROW'
+*TOMORROW means the date following the Run Date for the checks
+*   is the earliest date that checks can be sent.
+*This is synonomous with 'TODAY + 1' but either form can be used.
+*
+*We have already checked for every valid response starting with a 'T' and a 'C'.
+*  From now on, we only have to worry about validating 'TODAY' and 'CHECKDATE' responses
+*  or their 1 letter abbreviations
+            QI.PT.1='TOMORROW'
+            QI.PT.2=0                    ; * Set DELAY.DAYS to 0
+
+         CASE QI='TODAY'
+            QI.PT.2=0
+            Q=QI
+
+*         CASE QI.PT.1='TODAY' AND (QI[6,1]#'' AND QI[6,1] # '+')
+         CASE QI[1,6]='TODAY+'
+            BEGIN CASE
+               CASE QI.PT.2=''
+                  CALL ELINE("TODAY option must be entered as 'TODAY' or in form of 'TODAY + 1'")
+                  GOTO 200
+               CASE NOT(NUM(QI.PT.2))
+                  CALL ELINE("TODAY option must be entered as 'TODAY' or in form of 'TODAY + 1'")
+                  GOTO 200
+               CASE QI.PT.2#INT(QI.PT.2)
+                  CALL ELINE("The number after the 'TODAY +' option must be a whole number")
+                  GOTO 200
+               CASE QI.PT.2<1
+                  CALL ELINE("The number after the 'TODAY +' option must be a whole number > 0")
+                  GOTO 200
+               CASE QI.PT.2>7
+                  CALL ELINE("The number after the 'TODAY +' option must be a whole number smaller than 8")
+                  GOTO 200
+               CASE 1
+*Good Entry
+            END CASE
+
+*        CASE QI='CHECKDATE' OR QI='C'   ; * SWB02
+         CASE QI='CHECK DATE' OR QI='C'  ; * SWB02
+*CHECKDATE means the 'CHECK DATE' prompted for and entered in FB.5.4.LASER
+*   and stored in the variable 'CHECK.DATE' is to be used as the earliest date
+*   delayed emails can be sent.
+*           QI.PT.1='CHECKDATE'   ; * SWB02
+            QI.PT.1='CHECK DATE'         ; * SWB02
+            QI.PT.2=0
+            Q=QI
+
+         CASE QI[1,2]='C+'
+            BEGIN CASE
+               CASE QI.PT.2=''
+*                 CALL ELINE("Check Date option must be entered in form of [C][+1] or [CHECKDATE][+1]")    ; * SWB02
+                  CALL ELINE("Check Date option must be entered in form of [C][+1] or [CHECK DATE][+1]")       ; * SWB02
+                  GOTO 200
+               CASE NOT(NUM(QI.PT.2))
+*                 CALL ELINE("Check Date option must be entered in form of [C][+1] or [CHECKDATE][+1]")    ; * SWB02
+                  CALL ELINE("Check Date option must be entered in form of [C][+1] or [CHECK DATE][+1]")       ; * SWB02
+                  GOTO 200
+               CASE QI.PT.2#INT(QI.PT.2)
+                  CALL ELINE("The number after the 'C +' option must be a whole number")
+                  GOTO 200
+               CASE QI.PT.2<1
+                  CALL ELINE("The number after the 'C +' option must be a whole number bigger than 0")
+                  GOTO 200
+               CASE QI.PT.2>7
+                  CALL ELINE("The number after the 'C +' option must be a whole number smaller than 8")
+                  GOTO 200
+               CASE 1
+*Good Entry
+
+            END CASE
+*        CASE QI[1,10]='CHECKDATE+'    ; * SWB02
+         CASE QI[1,11]='CHECK DATE+'     ; * SWB02
+            BEGIN CASE
+               CASE QI.PT.2=''
+*                 CALL ELINE("Check Date option must be entered in form of [CHECKDATE][+1] or [C][+1]")    ; * SWB02
+                  CALL ELINE("Check Date option must be entered in form of [CHECK DATE][+1] or [C][+1]")       ; * SWB02
+                  GOTO 200
+               CASE NOT(NUM(QI.PT.2))
+*                 CALL ELINE("Check Date option must be entered in form of [CHECKDATE][+1] or [C][+1]")    ; * SWB02
+                  CALL ELINE("Check Date option must be entered in form of [CHECK DATE][+1] or [C][+1]")       ; * SWB02
+                  GOTO 200
+               CASE QI.PT.2#INT(QI.PT.2)
+                  CALL ELINE("The number after the 'CHECK DATE +' option must be a whole number")
+                  GOTO 200
+               CASE QI.PT.2<1
+                  CALL ELINE("The number after the 'CHECK DATE +' option must be a whole number bigger than 0")
+                  GOTO 200
+               CASE QI.PT.2>7
+                  CALL ELINE("The number after the 'CHECK DATE +' option must be a whole number smaller than 8")
+                  GOTO 200
+
+               CASE 1
+*Good Entry
+            END CASE
+
+         CASE 1
+            CALL ELINE('Invalid Entry')
+            GOTO 200
+      END CASE
+*
+      DELAY.BASIS=QI.PT.1
+      DELAY.DAYS=QI.PT.2
+      PREV.DELAY.BASIS=DELAY.BASIS
+      PREV.DELAY.DAYS=DELAY.DAYS
+
+      IF DELAY.DAYS+0 <= 0 THEN
+         CRT @(29,5):DELAY.BASIS:@(-4)   ; * SWB01
+      END ELSE
+         CRT @(29,5):DELAY.BASIS:' + ':DELAY.DAYS:@(-4)      ; * SWB01
+      END
+      IF CHANGE.MODE THEN GOTO 400
+
+************************************************************************
+* Enter the time of day to send the email
+************************************************************************
+
+300:
+      IF OCONV.PREV.DELAY.TO.TIME = '' THEN
+         PROMPT.DELAY.TO.TIME='##:##'
+      END ELSE
+         PROMPT.DELAY.TO.TIME=OCONV.PREV.DELAY.TO.TIME
+      END
+      HELP="Enter the Time of Day Delayed Emails will automatically be sent. [X]Back [EX]it"
+      CALL GEN.IN(0,7,'3) Enter the Time of Day to delay the email to: ':PROMPT.DELAY.TO.TIME:@(-4),'',Q,0,5,'','',0,48,7,0,QI,HELP,0,23)
+      IF QI='' THEN QI=OCONV.PREV.DELAY.TO.TIME
+      QI=OCONV(QI,'MCU')                 ; * SWB01
+      Q=OCONV(ICONV(QI,'MTH'),'MTH')
+      Q.ICONV=ICONV(Q,'MTH')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,7):@(-3):
+            GOTO 200
+         CASE QI='EX'
+            DELETE F.TABLES,'EMAIL.DELAY_PROCESS'
+            GOTO CLEANUP.AND.STOP
+         CASE Q.ICONV=''                 ; * SWB01
+            CALL ELINE('ERROR - ':QI:' is not a valid time.')          ; * SWB01
+            GO 300                       ; * SWB01
+         CASE NUM(Q.ICONV)
+         CASE 1
+            CALL ELINE('ERROR - Invalid Time.')
+            GO 300
+      END CASE
+      CRT @(48,7):OCONV(Q.ICONV,'MTH')
+      DELAY.TO.TIME=Q.ICONV
+      OCONV.DELAY.TO.TIME=OCONV(DELAY.TO.TIME,'MTH')
+      PREV.DELAY.TO.TIME=DELAY.TO.TIME
+      OCONV.PREV.DELAY.TO.TIME=OCONV.DELAY.TO.TIME
+      IF CHANGE.MODE THEN GOTO 400
+
+************************************************************************
+* Verify selection criteria is correct.
+************************************************************************
+400:  HELP="Prompt #. X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            GOTO 300
+         CASE QI='EX'
+            DELETE F.TABLES,'EMAIL.DELAY_PROCESS'
+            GOTO CLEANUP.AND.STOP
+         CASE QI=''
+            NULL
+         CASE NUM(QI)
+            BEGIN CASE
+               CASE QI=1
+                  CHANGE.MODE=1
+                  GOTO 100
+               CASE QI=2
+                  CHANGE.MODE=1
+                  GOTO 200
+               CASE QI=3
+                  CHANGE.MODE=1
+                  GOTO 300
+               CASE 1
+            END CASE
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO 400
+      END CASE
+
+************************************************************************
+* Save the data, if it was changed
+************************************************************************
+      PARAMETER.CHANGED=0
+      CHANGED.MESSAGE=''
+      IF CALENDAR.MODE#ORIG.CALENDAR.MODE THEN
+         PARAMETER.CHANGED=1
+         CTRL.REC<1>=CALENDAR.MODE
+         CHANGED.MESSAGE:='Calendar Mode changed from ':ORIG.CALENDAR.MODE:' to ':CALENDAR.MODE:'.':@VM:@VM
+      END
+      IF DELAY.BASIS#ORIG.DELAY.BASIS THEN
+         PARAMETER.CHANGED=1
+         CTRL.REC<2>=DELAY.BASIS
+         CHANGED.MESSAGE:='Delay Basis changed from ':ORIG.DELAY.BASIS:' to ':DELAY.BASIS:'.':@VM:@VM
+      END
+      IF DELAY.DAYS#ORIG.DELAY.DAYS THEN
+         PARAMETER.CHANGED=1
+         CTRL.REC<3>=DELAY.DAYS
+         CHANGED.MESSAGE:='Number of Days Delay changed from ':ORIG.DELAY.DAYS:' to ':DELAY.DAYS:'.':@VM:@VM
+      END
+      IF DELAY.TO.TIME#ORIG.DELAY.TO.TIME THEN
+         PARAMETER.CHANGED=1
+         CTRL.REC<4>=DELAY.TO.TIME
+         CHANGED.MESSAGE:='Delay To Time changed from ':OCONV(ORIG.DELAY.TO.TIME,'MTH'):' to ':OCONV(DELAY.TO.TIME,'MTH'):'.':@VM:@VM        ; * SWB01
+      END
+      IF PARAMETER.CHANGED THEN
+
+         BEGIN CASE
+            CASE USER='KAREN' ; NULL
+            CASE USER='DEBBIE' ; NULL
+            CASE USER='DGARRETT' ; NULL
+            CASE USER='KSHELTON' ; NULL  ; * DRF01
+            CASE 1
+               EMAIL.OUT=''
+               EMAIL.OUT<1,1>='KGilbert@afs.net'
+               EMAIL.OUT<1,2>='DCurtis@afs.net'
+               EMAIL.OUT<1,3>='dgarrett@afs.net'
+               EMAIL.OUT<1,4>='KShelton@afs.net'   ; * DRF02
+               EMAIL.OUT<3>=''           ; * BCC: Email addresses
+               EMAIL.OUT<4>='EMAIL.DELAY.PARMS@afs.net'      ; * From Email address
+               EMAIL.OUT<5>=USER:' made the following changes in the Email Delay Parameters Entry Screen'
+               DEFAULT.CHANGE.MESSAGE='This is informational only. If you think the above '
+               DEFAULT.CHANGE.MESSAGE:="change(s) were made incorrectly or shouldn't have "
+               DEFAULT.CHANGE.MESSAGE:='been made, please check with user ':USER:'.'
+               EMAIL.OUT<6>=CHANGED.MESSAGE:DEFAULT.CHANGE.MESSAGE
+               EMAIL.OUT<7>=1
+               CALL SENDMAIL(EMAIL.OUT,VOUT)
+         END CASE
+
+*Since the user changed at least one parameter, put the current contents
+*of all 4 parameters in 'history'
+         CTRL.REC=INSERT(CTRL.REC,11,1,0,CALENDAR.MODE)
+         CTRL.REC=INSERT(CTRL.REC,12,1,0,DELAY.BASIS)
+         CTRL.REC=INSERT(CTRL.REC,13,1,0,DELAY.DAYS)
+         CTRL.REC=INSERT(CTRL.REC,14,1,0,DELAY.TO.TIME)
+
+         CTRL.REC<5> = DATE()
+         CTRL.REC=INSERT(CTRL.REC,15,1,0,DATE())
+         CTRL.REC<6> = TIME()
+         CTRL.REC=INSERT(CTRL.REC,16,1,0,TIME())
+         CTRL.REC<7> = USER
+         CTRL.REC=INSERT(CTRL.REC,17,1,0,USER)
+
+         WRITE CTRL.REC ON F.TABLES, CTRL.REC.ID
+
+      END
+
+      DELETE F.TABLES,'EMAIL.DELAY_PROCESS'
+
+*****************
+CLEANUP.AND.STOP:
+*****************
+
+      RELEASE F.TABLES,'EMAIL.DELAY_PROCESS'
+
+      STOP
+
+********************
+VALIDATE.DELAY.DAYS:
+********************
+
+      VALIDATE.ERR=0
+      DELAY.DAYS=QI.PT.2
+      IF NUM(DELAY.DAYS) THEN
+         IF INT(DELAY.DAYS) # DELAY.DAYS THEN
+            CALL ELINE("Number of days must be a whole number....i.e. 'TODAY + 1'")
+            VALIDATE.ERR=1
+         END
+         IF DELAY.DAYS < 0 THEN
+            CALL ELINE("Number of days must be bigger than 0....i.e. 'TODAY + 2'")
+            VALIDATE.ERR=1
+         END
+         IF DELAY.DAYS > 7 THEN
+            CALL ELINE("Number of days must be 7 or less....i.e. is 'TODAY + 7'")
+            VALIDATE.ERR=1
+         END
+      END ELSE
+         CALL ELINE("Number of days must be a positive whole number between 0 and 7 inclusive'")
+         VALIDATE.ERR=1
+      END
+
+      RETURN

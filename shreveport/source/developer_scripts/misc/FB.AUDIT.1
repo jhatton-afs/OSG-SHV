@@ -1,0 +1,1683 @@
+*******************************************************
+* Program name : FB.AUDIT.1
+* Author       : JIM T. ROW
+* Date written : UNKNOWN
+* Library      : FBBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* Carrier/Client Profile Editor for AutoAudit
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 09:22:51 on 04/01/2019.
+*
+* Start modification history
+* 04/01/19 : NKH01 : ACCU-316 Modified CREATE-FILE file sizes
+* End modification history
+*
+*******************************************************
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_CLIENTS
+
+    *
+    * Local equates
+    *
+    EQU TRUE            TO 1
+    EQU FALSE           TO 0
+
+
+    EQU E.LOGISTICS     TO 1
+    EQU E.CURRENT       TO 2
+
+    EQU CLIENT.DISABLE.FILE TO 'DISABLE'        ;* Make sure to make changes in FB.AUDIT.1
+
+    *
+    * Initialize app variables
+    *
+    PROMPT''
+    PROG.NAME='FB.AUDIT.1'
+    PROG.DESC='Carrier Audit Profile Setup'
+    PACK.NAME='Carrier Audit'
+    CO.NAME='AFS Logistics, LLC'
+     UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.AUDIT.1' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+     CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+    PORT.NUM = SYSTEM(19)                ;* Port user is sitting on
+*    USER.NAME = OCONV(PORT.NUM,'MCU')    ;* User's Name
+    CALL GET.USER(USER.NAME)
+
+    *
+    * Entry Title Headers (use EQUs)
+    *
+    ENTRY.TITLE=''
+    ENTRY.TITLE<E.CURRENT>    = '- Contract Rate Schedule - '
+    ENTRY.TITLE<E.LOGISTICS>  = '- Logistics Rate Schedule -'
+
+    STATUS.FLAGS=''
+    STATUS.FLAGS<1>="[DISABLED]"
+    STATUS.FLAGS<2>="[ENABLED ]"
+
+    *
+    * Record Offsets based upon ENTRY.PAGE (use EQUs)
+    *
+    REC.OFS.POS=''
+    REC.OFS.POS<E.CURRENT> = 0        ;* Starts at record Position 1
+    REC.OFS.POS<E.LOGISTICS> = 20     ;* Starts at record Position 21
+
+    ENTRY.PAGE = E.CURRENT            ;* Rate Page (Current or Logistics)
+    OFS = REC.OFS.POS<E.CURRENT>      ;* Profile.rec offset for page
+
+    *
+    * Init variables
+    *
+    CLIENT.NAME='' ; CLIENT.ID=''
+    MAT CLIENT.REC = ''
+    CARRIER.NAME='' ; CARRIER.ID='' ; CARRIER.CITY='' ; CARRIER.STATE=''
+    CARRIER.REC=''
+    LCARRIER.NAME='' ; LCARRIER.ID='' ; LCARRIER.CITY='' ; LCARRIER.STATE=''
+    LCARRIER.REC=''
+
+    PROFILE.REC=''              ;* Contains all the information for the
+                                ;* Carrier Profile for this client.
+
+    *
+    * Open general files
+    *
+    OPEN '','CLIENTS' TO F.CLIENTS ELSE
+       CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+    END
+    OPEN 'DICT','CLIENTS' TO F.DICT.CLIENTS ELSE
+       CALL OPEN.ABORT("DICT CLIENTS",PROG.NAME)
+    END
+    OPEN '','CARRIERS' TO F.CARRIERS ELSE
+       CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+    END
+    OPEN 'DICT','CARRIERS' TO F.DICT ELSE
+       CALL OPEN.ABORT("DICT CARRIERS",PROG.NAME)
+    END
+    OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+       CALL OPEN.ABORT("FB.TRANSPORT",PROG.NAME)
+    END
+
+    *
+    * ENTER CLIENT NAME/NUMBER
+    *
+50:
+    GOSUB INPUT.SCREEN
+    HELP = "Enter client name or number to setup. [EX] = Exit"
+    MASK = '#####'
+    CRT @(9, 3):@(-4)
+    CRT @(9, 4):@(-4)
+    CRT @(9, 5):@(-4)
+
+100:
+    CALL GEN.IN(9,3,MASK,'',Q,0,20,'','',2,-5,3,1,QI,HELP,0,23)
+    QI = OCONV(QI,'MCU')
+    BEGIN CASE
+       CASE QI = 'EX'
+          STOP
+       CASE NUM(QI) AND QI # ''
+            CLIENT.ID = QI'R%5'
+       CASE NOT(QI MATCHES "0N") AND QI # ''
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            BEGIN CASE
+               CASE ITEM.LIST = ''
+                  GOTO 50                            ;* START OVER
+               CASE DCOUNT(ITEM.LIST,@AM) GT 1
+                  GOTO 50                            ;* START OVER
+               CASE 1
+                  DATA ITEM.LIST
+                  GOTO 50                            ;* START OVER
+            END CASE
+       CASE 1
+            CALL ELINE('Invalid Client Name, Try Again.')
+            GOTO 100
+    END CASE
+
+    *
+    * Open Client Records
+    *
+    MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+       CALL ELINE("Client number ":CLIENT.ID:" is not a valid client #")
+       GOTO 100
+    END
+
+125:
+    *
+    * Get Client Name - Use CL.??????? Variables for client info.
+    *
+    CLIENT.NAME = CL.NAME
+    ZIP.LEN = CL.ZIP.FLAG
+    GOSUB DSP.SCREEN.DATA
+*    CRT @(9, 3):CLIENT.ID:', ':CL.NAME:@(-4)
+*    CRT @(9, 4):CL.ADDR:@(-4)
+*    CRT @(9, 5):CL.CITY:', ':CL.ST:' ':CL.ZIP:@(-4)
+
+    *
+    * Open Client Audit File
+    *
+    OPEN '','FB.AUDIT,':CLIENT.ID TO F.AUDIT THEN
+        *
+        * See if the Client is Enabled/Disabled
+        *
+        READ TEMP FROM F.AUDIT,'DISABLE' THEN
+            CLIENT.ENABLED = FALSE
+        END ELSE
+            CLIENT.ENABLED = TRUE
+        END
+
+    END ELSE
+        YN.MSG = '"':CLIENT.ID:'" is not setup! Do you want to add it? :'
+        YN.MASK = 'N '
+        GOSUB ASK.Y.OR.N
+        IF YN.ANSWER = 'Y' THEN
+            CRT @(1,22):'Setting up files for client - Please wait':@(-4)
+            CRT @(1,23):@(-4):
+            EXECUTE 'CREATE-FILE DATA FB.AUDIT,':CLIENT.ID:' 101,1' PASSLIST CAPTURING OUTPUT   ; * NKH01
+            OPEN '','FB.AUDIT,':CLIENT.ID TO F.AUDIT ELSE
+                CALL OPEN.ABORT("FB.AUDIT,":CLIENT.ID, PROG.NAME)
+            END
+            CLIENT.ENABLED = FALSE
+        END ELSE
+            GOTO 50
+        END
+    END
+
+
+    *
+    * ASK FOR CARRIER
+    *
+150:
+    CARRIER.ID = ''   ; CARRIER.NAME = ''
+    CARRIER.CITY = '' ; CARRIER.STATE = ''
+    CHANGES.MADE = ''
+    GOSUB INPUT.SCREEN
+    GOSUB DSP.SCREEN.DATA
+
+    CRT @(9, 7):@(-4)
+    CRT @(9, 8):@(-4)
+    HELP = "Enter Carrier Number. [L]=List Carriers [X]=Back [EX]=Exit"
+    MASK = '#####'
+
+200:
+    CALL GEN.IN(9,7,MASK,'',Q,0,20,'','',2,-5,7,1,QI,HELP,0,23)
+    QI = OCONV(QI,'MCU')
+    BEGIN CASE
+       CASE QI = 'EX'
+          STOP
+       CASE QI='X'
+          GOTO 50
+       CASE QI = 'L'
+          EXECUTE 'SORT FB.AUDIT,':CLIENT.ID:' WITH 1 EQ "AIRBRN" CARRIER# CARRIER.NAME'
+          CALL ELINE('')
+          GOTO 150
+       CASE NUM(QI)
+          CARRIER.ID = QI'R%5'
+       CASE 1
+          CALL SOUNDEX.DISPLAY(Q,'CARRIERS','SDX.CARRIER,NAME','1,3,4',QX)
+          CT=DCOUNT(QX<1>,@VM)
+          IF CT=1 AND QX<1,1> # 'X' THEN
+             DATA QX<1,1>
+          END
+          GOTO 150
+    END CASE
+
+    *
+    * Open Carrier Records
+    *
+    READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE
+        CALL ELINE('"':CARRIER.ID:'" is an invalid Carrier Number. Try Again.')
+        GOTO 150
+    END
+
+    CARRIER.NAME  = CARRIER.REC<1>
+    CARRIER.CITY  = CARRIER.REC<3>
+    CARRIER.STATE = CARRIER.REC<4>
+    GOSUB DSP.SCREEN.DATA
+
+    *
+    * Open Carrier Audit Information
+    *
+    READ PROFILE.REC FROM F.AUDIT,CARRIER.ID ELSE
+        YN.MSG = 'Carrier "':CARRIER.ID:'" is not setup for this client!  Create it? :'
+        YN.MASK = 'N '
+        GOSUB ASK.Y.OR.N
+        IF YN.ANSWER = 'Y' THEN
+            PROFILE.REC=''
+            PROFILE.REC<1> = "AIRBRN"
+            PROFILE.REC<11>= "DISABLE"
+            CHANGES.MADE = 1
+        END ELSE
+            CARRIER.ID = ''
+            GOTO 150
+        END
+    END
+
+    *
+
+    LCARRIER.ID = PROFILE.REC<REC.OFS.POS<E.LOGISTICS>+1>
+    IF LCARRIER.ID # '' THEN
+        READ LCARRIER.REC FROM F.CARRIERS,LCARRIER.ID ELSE
+            CALL ELINE('"':LCARRIER.ID:'" is an invalid Carrier Number. Try Again.')
+            STOP
+        END
+
+        LCARRIER.NAME  = LCARRIER.REC<1>
+        LCARRIER.CITY  = LCARRIER.REC<3>
+        LCARRIER.STATE = LCARRIER.REC<4>
+    END
+
+    *
+    GOSUB DSP.ENTRY.SCN
+
+    *
+    *
+    * Main processing
+    *
+    *
+
+    EXIT.IT = 0
+    LOOP
+250:
+        GOSUB DSP.ENTRY.OPTIONS
+        CRT @(0,22):'Enter Selection Number :'
+        HELP = "Enter Option Number. [X]=Back to Carrier Selection [EX]=Exit"
+        MASK = '#####'
+
+300:
+        CALL GEN.IN(23,22,MASK,'',Q,0,3,'','',2,-5,22,1,QI,HELP,0,23)
+        QI = OCONV(QI,'MCU')
+        CRT @(0,22):@(-4)
+
+        BEGIN CASE
+           CASE QI = 'EX'
+                IF CHANGES.MADE THEN
+                    YN.MSG = 'Changes were made! Save changes before exiting? :'
+                    YN.MASK = 'Y '
+                    GOSUB ASK.Y.OR.N
+                    IF YN.ANSWER = 'Y' THEN
+                        GOSUB SAVE.REC
+                    END
+                    IF YN.ANSWER # 'X' THEN
+                        EXIT.IT = 1                 ;* Exit Application
+                    END
+                END ELSE
+                    EXIT.IT = 1                     ;* Exit Application
+                END
+
+           CASE QI='X'
+              GOSUB SAVE.REC
+              GOSUB INPUT.SCREEN
+              GOTO 125
+
+           CASE QI = '1'
+                GOSUB ENTER.OVERRIDE.ZONE
+
+           CASE QI = '2'
+                IF PROFILE.REC<OFS+4> THEN
+                    CALL ELINE("Can't enter valid zones when the 'OVERRIDE zone' is enabled")
+                END ELSE
+                    GOSUB ENTER.VALID.ZONES
+                END
+
+           CASE QI = '3'
+                GOSUB ENTER.OVERRIDE.MODE
+
+           CASE QI = '4'
+                IF PROFILE.REC<OFS+6> THEN
+                    CALL ELINE("Can't enter valid modes when the 'OVERRIDE mode' is enabled")
+                END ELSE
+                    GOSUB ENTER.VALID.MODES
+                END
+
+           CASE QI = '5'
+                GOSUB RATE.TABLE.OPTIONS
+
+           CASE QI = '6'
+                GOSUB SWITCH.PAGES
+
+           CASE QI = '7' AND ENTRY.PAGE = E.LOGISTICS
+                GOSUB LOGISTICS.MAINTENANCE
+
+           CASE QI = '7' AND ENTRY.PAGE = E.CURRENT  ;* T Client
+                CLIENT.ENABLED = NOT(CLIENT.ENABLED)
+                IF CLIENT.ENABLED THEN
+                    GOSUB ENABLE.CLIENT
+                    CALL ELINE('On-Line Audit (AIR & LTL) has been ENABLED for this client.')
+                END ELSE
+                    GOSUB DISABLE.CLIENT
+                    CALL ELINE('On-Line Audit (AIR & LTL) has been DISABLED for this client.')
+                END
+                GOTO 250
+
+           CASE QI = '8' AND ENTRY.PAGE = E.CURRENT  ;* T Carrier
+                CHANGES.MADE = 1
+                BEGIN CASE
+                    CASE PROFILE.REC<11>="DISABLE"
+                          PROFILE.REC<11> = "ENABLE"
+                    CASE 1
+                          PROFILE.REC<11> = "DISABLE"
+                END CASE
+                GOTO 250
+
+           CASE 1
+                CALL ELINE('Invalid option, Try Again.')
+                GOTO 250
+        END CASE
+
+    WHILE NOT(EXIT.IT) DO
+    REPEAT
+
+STOP
+
+
+
+*----------------------------------------------------------------------
+* LOGISTICS.MAINTENANCE
+*----------------------------------------------------------------------
+LOGISTICS.MAINTENANCE:***
+
+
+LM.1:
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+    CALL FB.PRINT.CENT(48,48+30,10,'Benchmark Maintenance')
+    CALL FB.PRINT.CENT(48,48+30,11,'---------------------')
+    CALL FB.PRINT.CENT(48,48+30,13,'1) Change Carrier  ')
+    CALL FB.PRINT.CENT(48,48+30,14,'2) Remove Benchmark')
+    CRT @(55,17):'Enter Option :'
+    HELP = "Enter a 'Benchmark Maintenance' Option. [X]=Back"
+    MASK = 'X '
+
+LM.2:
+    CALL GEN.IN(70,17,MASK,'',Q,0,3,'','',1,70,17,1,QI,HELP,0,23)
+    QI = OCONV(QI,'MCU')
+    BEGIN CASE
+       CASE QI = 'X' OR QI = ''
+          GOTO LM.3
+       CASE QI = '1'
+          YN.MSG = 'Change the Benchmark carrier? Are you sure? :'
+          YN.MASK = 'N '
+          GOSUB ASK.Y.OR.N
+          IF YN.ANSWER # 'Y' THEN GOTO LM.3
+          BAK.LCARRIER.ID =    LCARRIER.ID
+          BAK.LCARRIER.NAME =  LCARRIER.NAME
+          BAK.LCARRIER.CITY =  LCARRIER.CITY
+          BAK.LCARRIER.STATE = LCARRIER.STATE
+          GOSUB CHOOSE.LCARRIER
+          IF LCARRIER.ID = '' THEN
+              LCARRIER.ID =    BAK.LCARRIER.ID
+              LCARRIER.NAME =  BAK.LCARRIER.NAME
+              LCARRIER.CITY =  BAK.LCARRIER.CITY
+              LCARRIER.STATE = BAK.LCARRIER.STATE
+              CALL FB.DRAW.BOX(48,8,30,12,' ','')
+              GOSUB DSP.ENTRY.SCN
+              GOSUB DSP.ENTRY.OPTIONS
+              GOTO LM.1
+          END
+          YN.MSG = 'Remove prior Zone, Mode, and Rate information? :'
+          YN.MASK = 'N '
+          GOSUB ASK.Y.OR.N
+          IF YN.ANSWER = 'Y' THEN
+             FOR TEMP.X = 1 TO 7
+                 PROFILE.REC<REC.OFS.POS<E.LOGISTICS>+TEMP.X> = ''
+             NEXT TEMP.X
+          END
+          PROFILE.REC<REC.OFS.POS<E.LOGISTICS>+1> = LCARRIER.ID
+          CHANGES.MADE = 1
+
+       CASE QI = '2'
+          YN.MSG = 'Remove the Benchmark carrier? Are you sure? :'
+          YN.MASK = 'N '
+          GOSUB ASK.Y.OR.N
+          IF YN.ANSWER = 'Y' THEN
+             LCARRIER.ID = ''
+             FOR TEMP.X = 1 TO 7
+                PROFILE.REC<REC.OFS.POS<E.LOGISTICS>+TEMP.X> = ''
+             NEXT TEMP.X
+             ENTRY.PAGE = E.CURRENT
+             OFS = REC.OFS.POS<E.CURRENT>
+             CHANGES.MADE = 1
+          END
+
+       CASE 1
+          CALL ELINE('Invalid option, valid options are "1","2" or "X".  Try Again.')
+          GOTO LM.2
+    END CASE
+
+LM.3:
+
+    CALL FB.DRAW.BOX(48,8,30,12,' ','')
+    GOSUB DSP.ENTRY.SCN
+    GOSUB DSP.ENTRY.OPTIONS
+
+
+RETURN
+
+
+
+
+*----------------------------------------------------------------------
+* ENTER.OVERRIDE.ZONE
+*----------------------------------------------------------------------
+ENTER.OVERRIDE.ZONE:***
+
+ORZ.1:
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+    CALL FB.PRINT.CENT(48,48+30,10,'Override Zone Options')
+    CALL FB.PRINT.CENT(48,48+30,11,'---------------------')
+    CALL FB.PRINT.CENT(48,48+30,13,'1) Change Zone')
+    CALL FB.PRINT.CENT(48,48+30,14,'2) Clear Zone ')
+    CRT @(55,17):'Enter Option :'
+    HELP = "Enter a 'Override Zone Option'. [X]=Back to Option Screen"
+    MASK = 'X '
+
+ORZ.2:
+    CALL GEN.IN(70,17,MASK,'',Q,0,3,'','',1,70,17,1,QI,HELP,0,23)
+    QI = OCONV(QI,'MCU')
+    BEGIN CASE
+       CASE QI = 'X' OR QI = ''
+          CALL FB.DRAW.BOX(48,8,30,12,' ','')
+          RETURN
+       CASE QI = '1'
+          GOSUB CHANGE.OVERRIDE.ZONE
+       CASE QI = '2'
+          CALL FB.DRAW.BOX(48,8,30,12,' ','')
+          PROFILE.REC<OFS+4> = ''
+          CHANGES.MADE = 1
+       CASE 1
+          CALL ELINE('Invalid option, valid options are "1","2" or "X".  Try Again.')
+          GOTO ORZ.2
+    END CASE
+
+    GOSUB DSP.ENTRY.OPTIONS
+
+RETURN
+
+
+*----------------------------------------------------------------------
+* CHANGE.OVERRIDE.ZONE
+*----------------------------------------------------------------------
+CHANGE.OVERRIDE.ZONE:***
+
+COZ.1:
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+    CALL FB.PRINT.CENT(48,48+30,10,'Change Override Zone')
+    CALL FB.PRINT.CENT(48,48+30,11,'--------------------')
+    CRT @(50,13):'Enter New Zone :'
+    HELP = "Enter a new 'Override Zone'.  NOTE: This will disable any Valid Zones."
+    MASK = PROFILE.REC<OFS+4>:' '
+
+COZ.2:
+    CALL GEN.IN(67,13,MASK,'',Q,0,10,'','',2,67,13,1,QI,HELP,0,23)
+    QI = OCONV(QI,'MCU')
+    IF QI='' THEN QI=PROFILE.REC<OFS+4>
+    TEMP.ZONE = TRIM(QI)
+
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+    CALL FB.PRINT.CENT(48,48+30,10,'Change Override Zone')
+    CALL FB.PRINT.CENT(48,48+30,11,'--------------------')
+    CRT @(50,13):'New Zone : ':TEMP.ZONE
+
+    *
+    * Locate any invalid characters
+    *
+    FAILURE = 0
+    FAILURE+=INDEX(TEMP.ZONE,' ',1)
+    FAILURE+=INDEX(TEMP.ZONE,'*',1)
+    IF FAILURE THEN
+        CALL ELINE('The Zone entered contains invalid character. Please re-enter a Valid Zone.')
+        GOTO COZ.1
+    END
+
+
+COZ.3:
+    HELP = CHAR(7):"Entry Options: [Y]-Yes [N]-No,Reenter [X]-Abort Entry"
+    CRT @(50,15):'Is this correct?:'
+    MASK = 'Y '
+    Q=''
+    CALL GEN.IN(69,15,MASK,'',Q,0,2,'','',2,69,15,0,QI,HELP,1,23)
+    QI = OCONV(QI,'MCU')
+
+    IF QI='' THEN QI=MASK'L#1'
+
+    BEGIN CASE
+       CASE QI = 'Y'
+          PROFILE.REC<OFS+4> = TEMP.ZONE
+          CHANGES.MADE = 1
+       CASE QI = 'N'
+          GOTO COZ.1
+       CASE QI = 'X'
+       CASE 1
+          CALL ELINE('Invalid entry. Valid options are "Y","N" or "X". Please try again.')
+          GOTO COZ.3
+    END CASE
+
+    CALL FB.DRAW.BOX(48,8,30,12,' ','')
+
+RETURN
+
+
+*----------------------------------------------------------------------
+* ENTER.VALID.ZONES
+*----------------------------------------------------------------------
+ENTER.VALID.ZONES:***
+
+EVZ.1:
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+    CALL FB.PRINT.CENT(48,48+30,10,'Valid Zone Entry Options')
+    CALL FB.PRINT.CENT(48,48+30,11,'------------------------')
+    CALL FB.PRINT.CENT(48,48+30,13,'1) List Zones ')
+    CALL FB.PRINT.CENT(48,48+30,14,'2) Delete Zone')
+    CALL FB.PRINT.CENT(48,48+30,15,'3) Add Zone   ')
+    CRT @(55,17):'Enter Option :'
+    HELP = "Enter a 'Valid Zone Entry Option'. [X]=Back to Option Screen"
+    MASK = 'X '
+
+EVZ.2:
+    CALL GEN.IN(70,17,MASK,'',Q,0,3,'','',1,70,17,1,QI,HELP,0,23)
+    QI = OCONV(QI,'MCU')
+    BEGIN CASE
+       CASE QI = 'X' OR QI = ''
+          CALL FB.DRAW.BOX(48,8,30,12,' ','')
+          RETURN
+       CASE QI = '1'
+          GOSUB LIST.VALID.ZONES
+          CRT @(56,19):'[ Press Enter ]'
+          CALL GEN.IN(71,19,'','',Q,0,1,'','',1,71,19,1,QI,HELP,0,23)
+       CASE QI = '2'
+          GOSUB DELETE.VALID.ZONE
+       CASE QI = '3'
+          GOSUB ADD.VALID.ZONE
+       CASE 1
+          CALL ELINE('Invalid option, valid options are "1","2","3" or "X".  Try Again.')
+          GOTO EVZ.2
+    END CASE
+
+    GOTO EVZ.1
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* LIST.VALID.ZONES
+*----------------------------------------------------------------------
+LIST.VALID.ZONES:***
+
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+
+    NUM.LINES = DCOUNT(PROFILE.REC<OFS+5>, @VM)
+    IF NUM.LINES > 0 THEN
+        CRT @(50,9):'##  ZONE NAME'
+        FOR Y = 1 TO NUM.LINES
+            CRT @(50,9+Y):Y'R%2':'  ':PROFILE.REC<OFS+5,Y>
+        NEXT
+    END ELSE
+        CALL FB.PRINT.CENT(48,48+30,8+6,'* No Zones *')
+    END
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* ADD.VALID.ZONE
+*----------------------------------------------------------------------
+ADD.VALID.ZONE:***
+
+AVZ.1:
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+    CALL FB.PRINT.CENT(48,48+30,10,'Add Valid Zone')
+    CALL FB.PRINT.CENT(48,48+30,11,'--------------')
+    CRT @(50,13):'Enter New Zone :'
+    HELP = "Enter a new 'Valid Zone'."
+    MASK = '#  '
+
+AVZ.2:
+    CALL GEN.IN(67,13,MASK,'',Q,0,10,'','',2,67,13,1,QI,HELP,0,23)
+    QI = OCONV(QI,'MCU')
+    BEGIN CASE
+       CASE QI = ''
+          RETURN
+       CASE 1
+          TEMP.ZONE = TRIM(QI)
+    END CASE
+
+    *
+    * Does this entry already exist?
+    *
+    LOCATE TEMP.ZONE IN PROFILE.REC<OFS+5> SETTING WHERE THEN
+        CALL ELINE('Zone entry already exists.  Please try again')
+        GOTO AVZ.1
+    END
+
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+    CALL FB.PRINT.CENT(48,48+30,10,'Add Valid Zone')
+    CALL FB.PRINT.CENT(48,48+30,11,'--------------')
+    CRT @(50,13):'New Zone : ':TEMP.ZONE
+
+    *
+    * Locate any invalid characters
+    *
+    FAILURE = 0
+    FAILURE+=INDEX(TEMP.ZONE,' ',1)
+    FAILURE+=INDEX(TEMP.ZONE,'*',1)
+    IF FAILURE THEN
+        CALL ELINE('The Zone entered contains invalid character. Please re-enter a Valid Zone.')
+        GOTO AVZ.1
+    END
+
+AVZ.3:
+    HELP = CHAR(7):"Entry Options: [Y]-Yes [N]-No,Reenter [X]-Abort Entry"
+    CRT @(50,15):'Is this correct?:'
+    MASK = 'Y '
+    Q=''
+    CALL GEN.IN(69,15,MASK,'',Q,0,2,'','',2,69,15,0,QI,HELP,1,23)
+    QI = OCONV(QI,'MCU')
+
+    IF QI='' THEN QI=MASK'L#1'
+
+    BEGIN CASE
+       CASE QI = 'Y'
+          PROFILE.REC<OFS+5,-1> = TRIM(TEMP.ZONE)
+          CHANGES.MADE = 1
+       CASE QI = 'N'
+          GOTO AVZ.1
+       CASE QI = 'X'
+          CALL FB.DRAW.BOX(48,8,30,12,' ','')
+          RETURN
+       CASE 1
+          CALL ELINE('Invalid entry. Valid options are "Y","N" or "X". Please try again.')
+          GOTO AVZ.3
+    END CASE
+
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* DELETE.VALID.ZONE
+*----------------------------------------------------------------------
+DELETE.VALID.ZONE:***
+
+DVZ.1:
+    GOSUB LIST.VALID.ZONES
+
+    IF NUM.LINES > 0 THEN
+DVZ.2:
+        HELP = 'Select which zone number to delete. [X]-Abort Delete'
+        CRT @(50,18):'Delete Zone # :'
+        MASK = 'X '
+        Q=''
+        CALL GEN.IN(66,18,MASK,'',Q,0,2,'','',2,66,18,0,QI,HELP,1,23)
+        QI = OCONV(QI,'MCU')
+
+        BEGIN CASE
+           CASE QI = 'X' OR QI = ''
+              CALL FB.DRAW.BOX(48,8,30,12,' ','')
+              RETURN
+           CASE NUM(QI)
+              NUM = QI'R%5'
+              IF NUM < 1 OR NUM > NUM.LINES THEN
+                  CALL ELINE('Invalid Zone Number.  Valid zone numbers are 1 - ':NUM.LINES:'. Try again.')
+                  GOTO DVZ.2
+              END ELSE
+                YN.MSG = 'DELETE Zone ':NUM:'? Are you sure you want to delete this zone? :'
+                YN.MASK = 'N '
+                GOSUB ASK.Y.OR.N
+                IF YN.ANSWER = 'Y' THEN
+                   CHANGES.MADE = 1
+                   DEL PROFILE.REC<OFS+5,NUM>
+                END
+              END
+              GOTO DVZ.1
+           CASE 1
+              CALL ELINE('Invalid entry. Valid options are "Y","N" or "X". Please try again.')
+              GOTO DVZ.2
+        END CASE
+    END ELSE
+        CRT @(56,19):'[ Press Enter ]'
+        CALL GEN.IN(71,19,'','',Q,0,1,'','',1,71,19,1,QI,HELP,0,23)
+    END
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* ENTER.OVERRIDE.MODE
+*----------------------------------------------------------------------
+ENTER.OVERRIDE.MODE:***
+
+ORM.1:
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+    CALL FB.PRINT.CENT(48,48+30,10,'Override Mode Options')
+    CALL FB.PRINT.CENT(48,48+30,11,'---------------------')
+    CALL FB.PRINT.CENT(48,48+30,13,'1) Change Mode')
+    CALL FB.PRINT.CENT(48,48+30,14,'2) Clear Mode ')
+    CRT @(55,17):'Enter Option :'
+    HELP = "Enter a 'Override Mode Option'. [X]=Back to Option Screen"
+    MASK = 'X '
+
+ORM.2:
+    CALL GEN.IN(70,17,MASK,'',Q,0,3,'','',1,70,17,1,QI,HELP,0,23)
+    QI = OCONV(QI,'MCU')
+    BEGIN CASE
+       CASE QI = 'X' OR QI = ''
+          CALL FB.DRAW.BOX(48,8,30,12,' ','')
+          RETURN
+       CASE QI = '1'
+          GOSUB CHANGE.OVERRIDE.MODE
+       CASE QI = '2'
+          CALL FB.DRAW.BOX(48,8,30,12,' ','')
+          PROFILE.REC<OFS+6> = ''
+          CHANGES.MADE = 1
+       CASE 1
+          CALL ELINE('Invalid option, valid options are "1","2" or "X".  Try Again.')
+          GOTO ORM.2
+    END CASE
+
+    GOSUB DSP.ENTRY.OPTIONS
+
+RETURN
+
+
+*----------------------------------------------------------------------
+* CHANGE.OVERRIDE.MODE
+*----------------------------------------------------------------------
+CHANGE.OVERRIDE.MODE:***
+
+COM.1:
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+    CALL FB.PRINT.CENT(48,48+30,10,'Change Override Mode')
+    CALL FB.PRINT.CENT(48,48+30,11,'--------------------')
+    CRT @(50,13):'Enter New Mode :'
+    HELP = "Enter a new 'Override Mode'.  NOTE: This will disable any Valid Modes."
+    MASK = PROFILE.REC<OFS+6>:' '
+
+COM.2:
+    CALL GEN.IN(67,13,MASK,'',Q,0,10,'','',2,67,13,1,QI,HELP,0,23)
+    QI = OCONV(QI,'MCU')
+    IF QI='' THEN QI=PROFILE.REC<OFS+6>
+    TEMP.MODE = TRIM(QI)
+
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+    CALL FB.PRINT.CENT(48,48+30,10,'Change Override Mode')
+    CALL FB.PRINT.CENT(48,48+30,11,'--------------------')
+    CRT @(50,13):'New Mode : ':TEMP.MODE
+
+    *
+    * Locate any invalid characters
+    *
+    FAILURE = 0
+    FAILURE+=INDEX(TEMP.MODE,' ',1)
+    FAILURE+=INDEX(TEMP.MODE,'*',1)
+    IF FAILURE THEN
+        CALL ELINE('The Mode entered contains invalid character. Please re-enter a Valid Mode.')
+        GOTO COM.1
+    END
+
+COM.3:
+    HELP = CHAR(7):"Entry Options: [Y]-Yes [N]-No,Reenter [X]-Abort Entry"
+    CRT @(50,15):'Is this correct?:'
+    MASK = 'Y '
+    Q=''
+    CALL GEN.IN(69,15,MASK,'',Q,0,2,'','',2,69,15,0,QI,HELP,1,23)
+    QI = OCONV(QI,'MCU')
+
+    IF QI='' THEN QI=MASK'L#1'
+
+    BEGIN CASE
+       CASE QI = 'Y'
+          PROFILE.REC<OFS+6> = TEMP.MODE
+          CHANGES.MADE = 1
+       CASE QI = 'N'
+          GOTO COM.1
+       CASE QI = 'X'
+       CASE 1
+          CALL ELINE('Invalid entry. Valid options are "Y","N" or "X". Please try again.')
+          GOTO COM.3
+    END CASE
+
+    CALL FB.DRAW.BOX(48,8,30,12,' ','')
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* ENTER.VALID.MODES
+*----------------------------------------------------------------------
+ENTER.VALID.MODES:***
+
+EVM.1:
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+    CALL FB.PRINT.CENT(48,48+30,10,'Valid Mode Entry Options')
+    CALL FB.PRINT.CENT(48,48+30,11,'------------------------')
+    CALL FB.PRINT.CENT(48,48+30,13,'1) List Modes ')
+    CALL FB.PRINT.CENT(48,48+30,14,'2) Delete Mode')
+    CALL FB.PRINT.CENT(48,48+30,15,'3) Add Mode   ')
+    CRT @(55,17):'Enter Option :'
+    HELP = "Enter a 'Valid Mode Entry Option'. [X]=Back to Option Screen"
+    MASK = 'X '
+
+EVM.2:
+    CALL GEN.IN(70,17,MASK,'',Q,0,3,'','',1,70,17,1,QI,HELP,0,23)
+    QI = OCONV(QI,'MCU')
+    BEGIN CASE
+       CASE QI = 'X' OR QI = ''
+          CALL FB.DRAW.BOX(48,8,30,12,' ','')
+          RETURN
+       CASE QI = '1'
+          GOSUB LIST.VALID.MODES
+          CRT @(56,19):'[ Press Enter ]'
+          CALL GEN.IN(71,19,'','',Q,0,1,'','',1,71,19,1,QI,HELP,0,23)
+       CASE QI = '2'
+          GOSUB DELETE.VALID.MODE
+       CASE QI = '3'
+          GOSUB ADD.VALID.MODE
+       CASE 1
+          CALL ELINE('Invalid option, valid options are "1","2","3" or "X".  Try Again.')
+          GOTO EVM.2
+    END CASE
+
+    GOTO EVM.1
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* LIST.VALID.MODES
+*----------------------------------------------------------------------
+LIST.VALID.MODES:***
+
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+
+    NUM.LINES = DCOUNT(PROFILE.REC<OFS+7>, @VM)
+    IF NUM.LINES > 0 THEN
+        CRT @(50,9):'##  MODE NAME'
+        FOR Y = 1 TO NUM.LINES
+            CRT @(50,9+Y):Y'R%2':'  ':PROFILE.REC<OFS+7,Y>
+        NEXT
+    END ELSE
+        CALL FB.PRINT.CENT(48,48+30,8+6,'* No Modes *')
+    END
+
+RETURN
+
+
+
+
+*----------------------------------------------------------------------
+* ADD.VALID.MODE
+*----------------------------------------------------------------------
+ADD.VALID.MODE:***
+
+AVM.1:
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+    CALL FB.PRINT.CENT(48,48+30,10,'Add Valid Mode')
+    CALL FB.PRINT.CENT(48,48+30,11,'--------------')
+    CRT @(50,13):'Enter New Mode :'
+    HELP = "Enter a new 'Valid Mode'."
+    MASK = '#  '
+
+AVM.2:
+    CALL GEN.IN(67,13,MASK,'',Q,0,10,'','',2,67,13,1,QI,HELP,0,23)
+    QI = OCONV(QI,'MCU')
+    BEGIN CASE
+       CASE QI = ''
+          RETURN
+       CASE 1
+          TEMP.MODE = TRIM(QI)
+    END CASE
+
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+    CALL FB.PRINT.CENT(48,48+30,10,'Add Valid Mode')
+    CALL FB.PRINT.CENT(48,48+30,11,'--------------')
+    CRT @(50,13):'New Mode : ':TEMP.MODE
+
+    *
+    * Locate any invalid characters
+    *
+    FAILURE = 0
+    FAILURE+=INDEX(TEMP.MODE,' ',1)
+    FAILURE+=INDEX(TEMP.MODE,'*',1)
+    IF FAILURE THEN
+        CALL ELINE('The Mode entered contains invalid character. Please re-enter a Valid Mode.')
+        GOTO AVM.1
+    END
+
+    *
+    * Does this entry already exist?
+    *
+    LOCATE TEMP.MODE IN PROFILE.REC<OFS+7> SETTING WHERE THEN
+        CALL ELINE('Mode entry already exists.  Please try again')
+        GOTO AVM.1
+    END
+
+
+AVM.3:
+    HELP = CHAR(7):"Entry Options: [Y]-Yes [N]-No,Reenter [X]-Abort Entry"
+    CRT @(50,15):'Is this correct?:'
+    MASK = 'Y '
+    Q=''
+    CALL GEN.IN(69,15,MASK,'',Q,0,2,'','',2,69,15,0,QI,HELP,1,23)
+    QI = OCONV(QI,'MCU')
+
+    IF QI='' THEN QI=MASK'L#1'
+
+    BEGIN CASE
+       CASE QI = 'Y'
+          PROFILE.REC<OFS+7,-1> = TRIM(TEMP.MODE)
+          CHANGES.MADE = 1
+       CASE QI = 'N'
+          GOTO AVM.1
+       CASE QI = 'X'
+          CALL FB.DRAW.BOX(48,8,30,12,' ','')
+          RETURN
+       CASE 1
+          CALL ELINE('Invalid entry. Valid options are "Y","N" or "X". Please try again.')
+          GOTO AVM.3
+    END CASE
+
+
+RETURN
+
+
+*----------------------------------------------------------------------
+* DELETE.VALID.MODE
+*----------------------------------------------------------------------
+DELETE.VALID.MODE:***
+
+DVM.1:
+    GOSUB LIST.VALID.MODES
+
+    IF NUM.LINES > 0 THEN
+DVM.2:
+        HELP = 'Select which mode number to delete. [X]-Abort Delete'
+        CRT @(50,18):'Delete Mode # :'
+        MASK = 'X '
+        Q=''
+        CALL GEN.IN(66,18,MASK,'',Q,0,2,'','',2,66,18,0,QI,HELP,1,23)
+        QI = OCONV(QI,'MCU')
+
+        BEGIN CASE
+           CASE QI = 'X' OR QI = ''
+              CALL FB.DRAW.BOX(48,8,30,12,' ','')
+              RETURN
+           CASE NUM(QI)
+              NUM = QI'R%5'
+              IF NUM < 1 OR NUM > NUM.LINES THEN
+                  CALL ELINE('Invalid Mode Number.  Valid mode numbers are 1 - ':NUM.LINES:'. Try again.')
+                  GOTO DVM.2
+              END ELSE
+                YN.MSG = 'DELETE Mode ':Q:'? Are you sure you want to delete this mode? :'
+                YN.MASK = 'N '
+                GOSUB ASK.Y.OR.N
+                IF YN.ANSWER = 'Y' THEN
+                  DEL PROFILE.REC<OFS+7,NUM>
+                  CHANGES.MADE = 1
+                END
+              END
+              GOTO DVM.1
+           CASE 1
+              CALL ELINE('Invalid entry. Valid options are "Y","N" or "X". Please try again.')
+              GOTO DVM.2
+        END CASE
+    END ELSE
+        CRT @(56,19):'[ Press Enter ]'
+        CALL GEN.IN(71,19,'','',Q,0,1,'','',1,71,19,1,QI,HELP,0,23)
+    END
+
+RETURN
+
+
+
+
+
+*----------------------------------------------------------------------
+* RATE.TABLE.OPTIONS
+*----------------------------------------------------------------------
+RATE.TABLE.OPTIONS:***
+
+RTO.1:
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+    CALL FB.PRINT.CENT(48,48+30,10,'Rate Table Options')
+    CALL FB.PRINT.CENT(48,48+30,11,'------------------')
+    CALL FB.PRINT.CENT(48,48+30,12,'1) List Tables ')
+    CALL FB.PRINT.CENT(48,48+30,13,'2) Delete Table')
+    CALL FB.PRINT.CENT(48,48+30,14,'3) Add Table   ')
+    CALL FB.PRINT.CENT(48,48+30,15,'4) Close Table ')
+    CRT @(55,17):'Enter Option :'
+    HELP = "Enter a 'Valid Mode Entry Option'. [X]=Back to Option Screen"
+    MASK = 'X '
+
+RTO.2:
+    CALL GEN.IN(70,17,MASK,'',Q,0,3,'','',1,70,17,1,QI,HELP,0,23)
+    QI = OCONV(QI,'MCU')
+    BEGIN CASE
+       CASE QI = 'X' OR QI = ''
+          CALL FB.DRAW.BOX(48,8,30,12,' ','')
+          RETURN
+       CASE QI = '1'
+          GOSUB LIST.TABLES
+          CRT @(56,19):'[ Press Enter ]'
+          CALL GEN.IN(71,19,'','',Q,0,1,'','',1,71,19,1,QI,HELP,0,23)
+       CASE QI = '2'
+
+          GOSUB DELETE.TABLE
+       CASE QI = '3'
+          GOSUB ADD.TABLE
+       CASE QI = '4'
+          GOSUB CLOSE.TABLE
+       CASE 1
+          CALL ELINE('Invalid option, valid options are "1","2","3","4" or "X".  Try Again.')
+          GOTO RTO.2
+    END CASE
+
+    GOTO RTO.1
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* LIST.TABLES
+*----------------------------------------------------------------------
+LIST.TABLES:***
+
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+    NUM.TABLES = DCOUNT(PROFILE.REC<OFS+2>, @VM)
+    IF NUM.TABLES > 0 THEN
+        CRT @(50,9):'##  BEG DATE - END DATE'
+        FOR Y = 1 TO NUM.TABLES
+            CRT @(50,9+Y):Y'R%2':'  ':PROFILE.REC<OFS+2,Y>'D2/':' - ':PROFILE.REC<OFS+3,Y>'D2/'
+        NEXT
+    END ELSE
+        CALL FB.PRINT.CENT(48,48+30,8+6,'* No Tables *')
+    END
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* ADD.TABLE
+*----------------------------------------------------------------------
+ADD.TABLE:***
+
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+
+    TABLE.NUM = 0
+    TABLE.BACK = 0
+    NEW.TABLE = 1
+    NUM.TABLES = DCOUNT(PROFILE.REC<OFS+2>, @VM)
+
+    IF NUM.TABLES > 0 THEN
+
+        *
+        * Locate any OPEN tables that have not been closed yet
+        *
+        Y = 1
+        LOOP
+        WHILE Y<=NUM.TABLES DO
+            IF PROFILE.REC<OFS+3,Y> = '' THEN TABLE.NUM = Y     ;* Found Open
+            Y+=1
+        REPEAT
+
+        *
+        * Was a NON Closed Table Found?
+        *
+        IF TABLE.NUM > 0 THEN
+AT.0:
+            CRT @(50,11):'   Close Prior Table'
+            CRT @(50,12):'##  BEG DATE - END DATE'
+            CRT @(50,13):'-----------------------'
+            CRT @(50,14):TABLE.NUM'R%2':'  ':PROFILE.REC<OFS+2,TABLE.NUM>'D2/':' - '
+AT.1:
+            MASK = 'MM/DD/YY'
+            IF TABLE.BACK THEN
+                HELP = "Enter the Closing Date for these Rates. [T]=Today [X]=Abort, Don't change."
+            END ELSE
+                HELP = "Enter the Closing Date for these Rates. [T]=Today [X]=Back to Table Options"
+            END
+            CALL GEN.IN(65,14,MASK,'DATE',Q,1,8,'','',2,-8,14,0,QI,HELP,0,23)
+            QI = OCONV(QI,'MCU')
+            BEGIN CASE
+               CASE QI = 'T'
+                  Q = DATE()
+               CASE QI = 'X'
+                  RETURN
+               CASE QI = ''
+                  CALL ELINE('Invalid Option. Valid options are "T", "X", and a date formatted MM/DD/YY.')
+                  GOTO AT.1
+            END CASE
+
+            CLOSE.OLD.DATE = TRIM(Q)
+            IF CLOSE.OLD.DATE < PROFILE.REC<OFS+2,TABLE.NUM> THEN
+               CALL ELINE("Invalid Date - The Closing date can't be before the opening date!")
+               GOTO AT.1
+            END
+            CRT @(65,14):CLOSE.OLD.DATE'D2/'
+        END ELSE
+            *
+            * An open table was not found... Get the closing date
+            * of previous table to avoid over lap on new opening table.
+            *
+            CLOSE.OLD.DATE = PROFILE.REC<OFS+3,NUM.TABLES>
+        END
+    END
+
+    *
+    * Add New Table - OPEN DATE
+    *
+AT.11:
+    TABLE.BACK = 0
+    CRT @(50,11):'    Adding New Table'
+    CRT @(50,12):'##  BEG DATE - END DATE'
+    CRT @(50,13):'-----------------------'
+    IF NUM.TABLES > 0 THEN
+        TEMP = PROFILE.REC<OFS+2,NUM.TABLES>'D2/'
+        TEMP:= ' - ':PROFILE.REC<OFS+3,NUM.TABLES>'D2/'
+    END ELSE
+        TEMP = 'No prior tables'
+    END
+    NEW.TABLE = NUM.TABLES+1
+    CRT @(50,14):NUM.TABLES'R%2':'  ':TEMP
+    CRT @(50,15):NEW.TABLE'R%2':STR(' ',23)
+
+AT.2:
+    MASK = 'MM/DD/YY'
+    HELP = "Enter the Opening Date for the New Rates. [T]=Today [X]=Back"
+    CALL GEN.IN(54,15,MASK,'DATE',Q,1,8,'','',2,-8,15,0,QI,HELP,0,23)
+    QI = OCONV(QI,'MCU')
+    BEGIN CASE
+       CASE QI = 'T'
+          Q = DATE()
+       CASE QI = 'X'
+          IF TABLE.NUM > 0 THEN
+             TABLE.BACK = 1
+             GOTO AT.0
+          END ELSE
+             RETURN
+          END
+       CASE QI = ''
+          CALL ELINE('Invalid Option. Valid options are "T", "X", and a date formatted MM/DD/YY.')
+          GOTO AT.2
+    END CASE
+
+    OPEN.DATE = TRIM(Q)
+    IF (NUM.TABLES > 0) THEN
+        IF OPEN.DATE <= CLOSE.OLD.DATE THEN
+            CALL ELINE("Invalid Date - The Opening date must be after the prior Closeing date!")
+            GOTO AT.2
+        END
+    END
+    CRT @(54,15):OPEN.DATE'D2/':' - '
+
+    *
+    * Add New Table - CLOSE DATE
+    *
+AT.3:
+    CRT @(65,15):STR(' ',10)
+    MASK = 'MM/DD/YY'
+    HELP = "Enter the Closing Date for the New Rates. ''-Leave Open [T]=Today [X]=Back"
+    CALL GEN.IN(65,15,MASK,'DATE',Q,0,8,'','',2,-8,15,0,QI,HELP,0,23)
+    QI = OCONV(QI,'MCU')
+    BEGIN CASE
+       CASE QI = 'T'
+          Q = DATE()
+       CASE QI = 'X'
+          GOTO AT.11
+       CASE QI = ''
+          Q = ''
+    END CASE
+
+    CLOSE.DATE = Q
+    IF CLOSE.DATE # '' THEN
+        IF CLOSE.DATE < OPEN.DATE THEN
+            CALL ELINE("Invalid Date - The Closing date can't be before the opening date!")
+            GOTO AT.3
+        END
+    END
+
+    CRT @(65,15):CLOSE.DATE'D2/'
+    IF TABLE.NUM > 0 THEN PROFILE.REC<OFS+3,TABLE.NUM> = CLOSE.OLD.DATE
+    PROFILE.REC<OFS+2,NEW.TABLE> = OPEN.DATE
+    PROFILE.REC<OFS+3,NEW.TABLE> = CLOSE.DATE
+    NUM.TABLES = DCOUNT(PROFILE.REC<OFS+2>, @VM)
+    CHANGES.MADE = 1
+    CRT @(56,19):'[ Press Enter ]'
+    CALL GEN.IN(71,19,'','',Q,0,1,'','',1,71,19,1,QI,HELP,0,23)
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* CLOSE.TABLE
+*----------------------------------------------------------------------
+CLOSE.TABLE:***
+
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+
+    NUM.TABLES = DCOUNT(PROFILE.REC<OFS+2>, @VM)
+    IF NUM.TABLES > 0 THEN
+        TABLE.NUM = 0
+        Y = 1
+        LOOP
+        WHILE  Y<=NUM.TABLES DO
+            IF PROFILE.REC<OFS+3,Y> = '' THEN TABLE.NUM = Y
+            Y+=1
+        REPEAT
+
+        IF TABLE.NUM THEN
+            CRT @(50,11):'  Close Current Table'
+            CRT @(50,12):'##  BEG DATE - END DATE'
+            CRT @(50,13):'-----------------------'
+            CRT @(50,14):TABLE.NUM'R%2':'  ':PROFILE.REC<OFS+2,TABLE.NUM>'D2/':' - '
+CT.1:
+            MASK = 'MM/DD/YY'
+            HELP = "Enter the Closing Date for these Rates. [T]=Today [X]=Back to Table Options"
+            CALL GEN.IN(65,14,MASK,'DATE',Q,1,8,'','',2,-8,17,0,QI,HELP,0,23)
+            QI = OCONV(QI,'MCU')
+            BEGIN CASE
+               CASE QI = 'T'
+                  Q = DATE()
+               CASE QI = 'X'
+                  GOTO 300
+               CASE QI = 'EX'
+                  STOP
+               CASE QI = ''
+                  CALL ELINE('Invalid Option. Valid options are "T", "X", and a date formatted MM/DD/YY.')
+                  GOTO CT.1
+            END CASE
+
+            CLOSE.DATE = Q
+            IF CLOSE.DATE < PROFILE.REC<OFS+2,TABLE.NUM> THEN
+               CALL ELINE("Invalid Date - The Closing date can't be before the opening date!")
+               GOTO CT.1
+            END
+            CRT @(65,14):CLOSE.DATE'D2/'
+            CHANGES.MADE = 1
+            PROFILE.REC<OFS+3,TABLE.NUM> = CLOSE.DATE
+            CRT @(56,19):'[ Press Enter ]'
+            CALL GEN.IN(71,19,'','',Q,0,1,'','',1,71,19,1,QI,HELP,0,23)
+        END ELSE
+            CALL FB.PRINT.CENT(48,48+30,8+6,'* No Open Tables *')
+        END
+    END ELSE
+        CALL FB.PRINT.CENT(48,48+30,8+6,'* No Tables *')
+    END
+
+RETURN
+
+
+*----------------------------------------------------------------------
+* DELETE.TABLE
+*----------------------------------------------------------------------
+DELETE.TABLE:***
+
+DT.1:
+    GOSUB LIST.TABLES
+
+    IF NUM.TABLES > 0 THEN
+DT.2:
+        HELP = 'Select which table to delete. [X]-Abort Delete'
+        CRT @(50,18):'Delete Table # :'
+        MASK = 'X '
+        Q=''
+        CALL GEN.IN(67,18,MASK,'',Q,0,2,'','',2,67,18,0,QI,HELP,1,23)
+        QI = OCONV(QI,'MCU')
+
+        BEGIN CASE
+           CASE QI = 'X' OR QI = ''
+              CALL FB.DRAW.BOX(48,8,30,12,' ','')
+              RETURN
+           CASE NUM(QI)
+              NUM = QI'R%5'
+              IF NUM < 1 OR NUM > NUM.TABLES THEN
+                  CALL ELINE('Invalid Table Number.  Valid table numbers are 1 - ':NUM.TABLES:'. Try again.')
+                  GOTO DT.2
+              END ELSE
+                YN.MSG = 'DELETE Table ':NUM:'? Are you sure you want to delete this table? :'
+                YN.MASK = 'N '
+                GOSUB ASK.Y.OR.N
+                IF YN.ANSWER = 'Y' THEN
+                  DEL PROFILE.REC<OFS+2,NUM>
+                  DEL PROFILE.REC<OFS+3,NUM>
+                  CHANGES.MADE = 1
+                END
+              END
+              GOTO DT.1
+           CASE 1
+              CALL ELINE('Invalid entry. Valid options are "Y","N" or "X". Please try again.')
+              GOTO DT.2
+        END CASE
+    END ELSE
+        CRT @(56,19):'[ Press Enter ]'
+        CALL GEN.IN(71,19,'','',Q,0,1,'','',1,71,19,1,QI,HELP,0,23)
+    END
+
+RETURN
+
+
+
+
+*----------------------------------------------------------------------
+* SWITCH.PAGES
+*----------------------------------------------------------------------
+SWITCH.PAGES:***
+
+    BEGIN CASE
+        CASE ENTRY.PAGE = E.LOGISTICS
+            CRT @(0,13):'6) Switch to Contract Rates.:':CARRIER.ID
+            ENTRY.PAGE = E.CURRENT
+            OFS = REC.OFS.POS<E.CURRENT>
+
+        CASE ENTRY.PAGE = E.CURRENT
+            LCARRIER.ID = PROFILE.REC<REC.OFS.POS<E.LOGISTICS>+1>
+
+            IF LCARRIER.ID = '' THEN
+               GOSUB CHOOSE.LCARRIER
+               IF LCARRIER.ID = '' THEN GOTO SP.EXIT
+               PROFILE.REC<REC.OFS.POS<E.LOGISTICS>+1> = LCARRIER.ID
+            END
+            OFS = REC.OFS.POS<E.LOGISTICS>
+            ENTRY.PAGE = E.LOGISTICS
+    END CASE
+
+SP.EXIT:
+
+    GOSUB DSP.ENTRY.SCN
+
+RETURN
+
+
+*----------------------------------------------------------------------
+* CHOOSE.LCARRIER
+*----------------------------------------------------------------------
+CHOOSE.LCARRIER:
+
+    CALL FB.DRAW.BOX(0,3,79,19,' ','')
+    *
+    * ASK FOR CARRIER
+    *
+L150:
+    LCARRIER.ID = ''   ; LCARRIER.NAME = ''
+    LCARRIER.CITY = '' ; LCARRIER.STATE = ''
+
+    GOSUB INIT.SCREEN
+    CRT @(0, 5):'Carrier:':@(-4)
+    HELP = "Enter Logistics Carrier Number for a benchmark.  [X]=Back"
+    MASK = '#####'
+
+L200:
+    CALL GEN.IN(9,5,MASK,'',Q,0,20,'','',2,-5,5,1,QI,HELP,0,23)
+    QI = OCONV(QI,'MCU')
+    BEGIN CASE
+       CASE QI='X'
+          RETURN
+       CASE QI = 'L'
+          GOTO L150
+       CASE NUM(QI)
+          LCARRIER.ID = QI'R%5'
+       CASE 1
+          CALL ELINE('Invalid Carrier Number, Try Again.')
+          GOTO L150
+    END CASE
+
+
+    GOSUB READ.LCARRIER
+    IF LCARRIER.ID = -1 THEN
+        CALL ELINE('Invalid Carrier Number')
+        GOTO L150
+    END
+
+RETURN
+
+
+*----------------------------------------------------------------------
+* READ.LCARRIER:
+*
+* SETS LCARRIER.ID TO -1 ON ERRORS
+*----------------------------------------------------------------------
+READ.LCARRIER:
+
+    *
+    * Open Carrier Records
+    *
+    READ LCARRIER.REC FROM F.CARRIERS,LCARRIER.ID ELSE
+        CALL ELINE('"':LCARRIER.ID:'" is an invalid Carrier Number. Try Again.')
+        LCARRIER.ID = -1
+    END
+
+    LCARRIER.NAME  = LCARRIER.REC<1>
+    LCARRIER.CITY  = LCARRIER.REC<3>
+    LCARRIER.STATE = LCARRIER.REC<4>
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* SAVE.REC
+*----------------------------------------------------------------------
+SAVE.REC:***
+
+    *
+    * Save Carrier Profile
+    *
+    WRITE PROFILE.REC ON F.AUDIT,CARRIER.ID
+    CHANGES.MADE = 0
+
+RETURN
+
+
+*--------------------------------------------------------------------------
+* DISABLE.CLIENT:
+*
+*  Any changes to this routine should also be made in FB.AUDIT.1
+*
+*--------------------------------------------------------------------------
+DISABLE.CLIENT:
+
+    TEMP = ''
+    TEMP<1> = 'DISABLE'
+    TEMP<2> = 'REMOVE THIS FILE TO ENABLE THE CLIENT'
+    WRITE TEMP ON F.AUDIT,CLIENT.DISABLE.FILE
+    CLIENT.ENABLED = FALSE
+
+RETURN
+
+
+*--------------------------------------------------------------------------
+* ENABLE.CLIENT:
+*
+*  Any changes to this routine should also be made in FB.AUDIT.1
+*
+*--------------------------------------------------------------------------
+ENABLE.CLIENT:
+
+    DELETE F.AUDIT, CLIENT.DISABLE.FILE
+    CLIENT.ENABLED = TRUE
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* ASK.Y.OR.N
+*
+* A General Yes No prompt routine.
+*
+*----------------------------------------------------------------------
+ASK.Y.OR.N:***
+
+    YN.ANSWER = ''
+
+Y.OR.N:
+
+    HELP = CHAR(7):"Entry Options: [Y]-Yes [N]-No [X]-Back"
+    CRT @(1,22):YN.MSG:@(-4)
+    MASK = YN.MASK'L#1'
+    Q=''
+    CALL GEN.IN(LEN(YN.MSG)+1,22,MASK,'',Q,0,1,'','',2,LEN(YN.MSG)+1,22,0,QI,HELP,1,23)
+    QI = OCONV(QI,'MCU')
+
+    IF QI='' THEN QI=MASK
+
+    BEGIN CASE
+       CASE QI = 'Y'
+       CASE QI = 'N'
+       CASE QI = 'X'
+       CASE 1
+          CALL ELINE('Invalid entry.')
+          GOTO Y.OR.N
+    END CASE
+
+    CRT @(1,22):@(-4):
+    CRT @(1,23):@(-4):
+    YN.ANSWER = QI
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* Initialize Screen
+*----------------------------------------------------------------------
+INIT.SCREEN:***
+
+    CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+    CRT @(0,2):STR('-',79);
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* Client Screen
+*----------------------------------------------------------------------
+INPUT.SCREEN:***
+
+    GOSUB INIT.SCREEN
+    CRT @(0, 3):'Client :':@(-4)
+    CRT @(0, 7):'Carrier:':@(-4)
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* Display Screen Data
+*----------------------------------------------------------------------
+DSP.SCREEN.DATA:***
+
+    *
+    * Display Client Information
+    *
+    IF CLIENT.ID THEN
+        CRT @(9, 3):CLIENT.ID:', ':CL.NAME:@(-4)
+        CRT @(9, 4):CL.ADDR:@(-4)
+        CRT @(9, 5):CL.CITY:', ':CL.ST:' ':CL.ZIP:@(-4)
+    END
+
+    *
+    * Display Carrier Information
+    *
+    IF CARRIER.ID THEN
+        CRT @(9, 7):CARRIER.ID:', ':CARRIER.NAME:@(-4)
+        CRT @(9, 8):CARRIER.CITY:', ':CARRIER.STATE:@(-4)
+    END ELSE
+        CRT @(9, 7):@(-4)
+        CRT @(9, 8):@(-4)
+    END
+
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* Entry/Edit Screen
+*----------------------------------------------------------------------
+DSP.ENTRY.SCN:***
+
+    GOSUB INIT.SCREEN
+
+    TEMP = CLIENT.ID:', ':CL.NAME:' (':CL.CITY:', ':CL.ST:')'
+    CRT @(0, 3):'Client : ':TEMP'L#70':@(-4):
+
+    BEGIN CASE
+        CASE ENTRY.PAGE = E.LOGISTICS
+            TEMP = LCARRIER.ID:', ':LCARRIER.NAME:' (':LCARRIER.CITY:', ':LCARRIER.STATE:')'
+        CASE ENTRY.PAGE = E.CURRENT
+            TEMP = CARRIER.ID:', ':CARRIER.NAME:' (':CARRIER.CITY:', ':CARRIER.STATE:')'
+    END CASE
+
+    CRT @(0, 4):'Carrier: ':TEMP'L#70':@(-4):
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* Entry/Edit Options
+*----------------------------------------------------------------------
+DSP.ENTRY.OPTIONS:***
+    *
+    *
+
+    CRT @(67, 3):STATUS.FLAGS<1+CLIENT.ENABLED>:
+    IF PROFILE.REC<11>='DISABLE' THEN
+       MSG = STATUS.FLAGS<1>
+    END ELSE
+       MSG = STATUS.FLAGS<2>
+    END
+    CRT @(67, 4):MSG:
+
+
+    CALL FB.PRINT.CENT(0,79,6,ENTRY.TITLE<ENTRY.PAGE>)
+*    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+
+    CRT @(0, 8):'1) Override Zone Options.....> ':PROFILE.REC<OFS+4>:@(-4)
+    CRT @(0, 9):'2) Valid Zones Options.......> ':
+    IF PROFILE.REC<OFS+4> THEN
+        CRT '-OVERRIDDEN-'
+    END ELSE
+        CRT @(-4)
+    END
+    CRT @(0,10):'3) Override Mode Options.....> ':PROFILE.REC<OFS+6>:@(-4)
+    CRT @(0,11):'4) Valid Modes Options.......> ':
+    IF PROFILE.REC<OFS+6> THEN
+        CRT '-OVERRIDDEN-'
+    END ELSE
+        CRT @(-4)
+    END
+    CRT @(0,12):'5) Rate Table Options........> '
+
+    BEGIN CASE
+        CASE ENTRY.PAGE = E.LOGISTICS
+            CRT @(0,13):'6) Switch to Contract Rates..> ':CARRIER.ID:@(-4)
+            CRT @(0,14):'7) Logistics Carrier Maint...> '
+            CRT @(0,15):@(-4)
+
+        CASE ENTRY.PAGE = E.CURRENT
+            TEMP = PROFILE.REC<REC.OFS.POS<E.LOGISTICS>+1>
+            IF TEMP # '' THEN
+                CRT @(0,13):'6) Switch to Benchmark Rates > ':TEMP:@(-4)
+            END ELSE
+                CRT @(0,13):'6) Setup Benchmark for Client> ':@(-4)
+            END
+            CRT @(0,14):'7) Toggle Client Status......> '
+            CRT @(0,15):'8) Toggle Carrier Status.....> '
+    END CASE
+
+    CRT @(0,21):STR('-',79);
+
+
+RETURN
+
+
+*
+*
+*

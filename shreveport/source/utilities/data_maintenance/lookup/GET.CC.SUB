@@ -1,0 +1,234 @@
+      SUBROUTINE GET.CC.SUB(RVIN,RVOUT)
+*
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'GET.CC.SUB' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                           ;* NPR_UPL 04/23/2010
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: OWEN HOLMAN
+* DATE: JUNE 15, 2001
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE EXPRESS
+* WRITTEN CONSENT OF SAME.
+*
+****************************************************************
+* MODIFICATIONS:
+* 103108 - JMK01 - T081156 - Change BLS column heading from Benchmark to Gross Charges
+* 052809 - JMK02 - C090692 - Need to not take commissions on Fuel
+* 091409 - JMK03 - ALL FOR AFS500 RATES
+* 110609 - JMK04 - C091350 - Reid Supply -- UPS Freight --- Fuel Commission
+****************************************************************
+* Initialize variables
+****************************************************************
+      CRT @(0,20):@(-3):
+      TEXT='Reviewing Rates...'
+      CALL CENTER(TEXT,80)
+      CRT @(0,20):TEXT
+      DATA.START=2                       ; * Line number that 1st line of data is on
+      BILLDATA.USER=RVIN<1>              ; * Name of BILLDATA FILE THAT DATA IS IN
+      ITEM.NAME=RVIN<2>                  ; * Name of "File" in BILLDATA
+      RR.EFF.DATE=DATE()
+
+      CALL CHANNEL(CH.NUM)
+      CALL GET.USER(USER)
+
+      CLIENT.AUDIT=1
+      ERROR=''
+      PROG.NAME='GET.CC.SUB'
+      PROG.DESC="Get Service Information from Carrier Connect"
+      PACK.NAME="Freight Billing"
+      CONTR.AMT=''
+      BENCH.AMT=''
+      CARRIER.EST.ARRAY=''
+      ERROR.ARRAY=''
+      VALID.CLASSES=50:@VM:55:@VM:60:@VM:65:@VM:70:@VM:77:@VM:85:@VM:92:@VM:100:@VM:110:@VM:125:@VM:150:@VM:175:@VM:200:@VM:250:@VM:300:@VM:400:@VM:500
+
+*
+* Open general files
+*
+      OPEN 'BILLDATA.':BILLDATA.USER TO F.BILLDATA ELSE
+         CALL OPEN.ABORT("BILLDATA.":BILLDATA.USER,PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         ERROR = "CANNOT OPEN FILE CLIENTS"
+         GO 9000
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         ERROR = "CANNOT OPEN FILE F.TABLES"
+         GO 9000
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         ERROR = "CANNOT OPEN FILE CARRIERS"
+         GO 9000
+      END
+
+*NPR01      OPEN '','FB.NFSC' TO F.NFSC ELSE
+*NPR01         ERROR = "CANNOT OPEN FILE FB.NFSC"
+*NPR01         GO 9000
+*NPR01      END
+
+      OPEN '','FB.BC.FSC' TO F.NFSC ELSE
+         ERROR = "CANNOT OPEN FILE FB.BC.FSC"
+         GO 9000
+      END
+
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         ERROR = "CANNOT OPEN FILE FB.TABLES"
+         GO 9000
+      END
+
+*---- Open mileage input and output files
+
+      OPEN '','PCIN' TO F.PCIN ELSE
+         ERROR = "CANNOT OPEN FILE PCIN"
+         GO 9000
+      END
+      OPEN '','PCOUT' TO F.PCOUT ELSE
+         ERROR = "CANNOT OPEN FILE  "
+         GO 9000
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+         ERROR = "CANNOT OPEN ZIPS FILE "
+         GO 9000
+      END
+      OPEN '','CAN.ZIP.CODES' TO F.CAN.ZIPS ELSE
+         ERROR = "CANNOT OPEN CAN.ZIP.CODES FILE "
+         GO 9000
+      END
+
+*
+* Read Source Data
+*
+      READ DA FROM F.BILLDATA,ITEM.NAME ELSE
+         CALL ELINE('BILLDATA.':BILLDATA.USER:' ':ITEM.NAME:' is not on file.. Aborting!')
+         ABORT
+      END
+
+      TAB=CHAR(9)
+      DA=CHANGE(DA,TAB,@VM)
+      NEW.DA=''
+      NROWS=DCOUNT(DA,@AM)
+      NCOLS=DCOUNT(DA<1>,@VM)
+      HDG.LINE=DA<1>
+      LOCATE 'SCAC' IN HDG.LINE<1> SETTING SCACPOS ELSE
+         SCACPOS=1
+      END
+      LOCATE 'L/T' IN HDG.LINE<1> SETTING TYPEPOS ELSE
+         TYPEPOS=2
+      END
+      LOCATE 'Origin City' IN HDG.LINE<1> SETTING OCPOS ELSE
+         OCPOS=3
+      END
+      LOCATE 'Origin State' IN HDG.LINE<1> SETTING OSPOS ELSE
+         OSPOS=4
+      END
+      LOCATE 'Origin Zip' IN HDG.LINE<1> SETTING OZPOS ELSE
+         OZPOS=5
+      END
+      LOCATE 'Dest City' IN HDG.LINE<1> SETTING DCPOS ELSE
+         DCPOS=6
+      END
+      LOCATE 'Dest State' IN HDG.LINE<1> SETTING DSPOS ELSE
+         DSPOS=7
+      END
+      LOCATE 'Dest Zip' IN HDG.LINE<1> SETTING DZPOS ELSE
+         DZPOS=8
+      END
+      LOCATE 'Days' IN HDG.LINE<1> SETTING SVCPOS ELSE
+         SVCPOS=9
+      END
+      LOCATE 'D/I' IN HDG.LINE<1> SETTING DIPOS ELSE
+         DIPOS=10
+      END
+      LOCATE 'Error' IN HDG.LINE<1> SETTING ERRPOS ELSE
+         ERRPOS=11
+      END
+      NEW.DA<1>=HDG.LINE
+
+
+      CARPOS=''
+*
+* Process the data
+*
+      BRK.CARRIER=''
+      PRV.CLIENT.ID=''
+      BRK.PRO=''
+      ROW.PER=''
+      FOR ROW = 1 TO NROWS
+         CALL PROG.BAR(22,ROW,NROWS,ROW.PER)
+         IF ROW < DATA.START THEN
+            NEW.DA<ROW>=DA<ROW>
+            IF ROW='3' THEN
+               NEW.DA<ROW>=HDG.LINE
+            END
+            GO SKIP.LINE
+         END
+         LINE=DA<ROW>
+         SCAC=LINE<1,SCACPOS>
+         TYPE=LINE<1,TYPEPOS>
+         IF TYPE='L' THEN TYPE='A'
+         IF TYPE='LTL' THEN TYPE='A'
+         IF TYPE='T' THEN TYPE='B'
+         IF TYPE='TL' THEN TYPE='B'
+         OZIP=LINE<1,OZPOS>
+         IF OZIP # "" AND NUM(OZIP) THEN OZIP=OZIP'R%5'
+         READ OZIP.REC FROM F.ZIPS,OZIP ELSE OZIP.REC=''
+         OCITY=OZIP.REC<1>
+         IF LINE<1,OCPOS>='' THEN
+            LINE<1,OCPOS>=OCITY
+         END
+         OSTATE=OZIP.REC<2>
+         IF LINE<1,OSPOS>='' THEN
+            LINE<1,OSPOS>=OSTATE
+         END
+         DZIP=LINE<1,DZPOS>
+         IF DZIP # "" AND NUM(DZIP) THEN DZIP=DZIP'R%5'
+         READ DZIP.REC FROM F.ZIPS,DZIP ELSE DZIP.REC=''
+         DCITY=DZIP.REC<1>
+         IF LINE<1,DCPOS>='' THEN
+            LINE<1,DCPOS>=DCITY
+         END
+         DSTATE=DZIP.REC<2>
+         IF LINE<1,DSPOS>='' THEN
+            LINE<1,DSPOS>=DSTATE
+         END
+         VIN=''
+         VIN<3>=SCAC
+         VIN<4>=TYPE
+         VIN<5>=OZIP
+         VIN<6>=DZIP
+         CALL RWS.SVC(VIN,VOUT,F.TABLES)
+         ERROR=TRIM(VOUT<1>)
+         DAYS=VOUT<2>
+         OTYP=VOUT<3>
+         DTYP=VOUT<4>
+         CTYP=VOUT<5>
+         IF OTYP='I' THEN DAYS+=1'R%2'
+         IF DTYP='I' THEN DAYS+=1'R%2'
+         IF TRIM(DAYS)='' AND TRIM(CTYP)='' THEN
+            ERROR='Not available via CarrierConnect'
+         END
+         LINE<1,SVCPOS>=DAYS
+         LINE<1,DIPOS>=CTYP
+         LINE<1,ERRPOS>=ERROR
+
+         NEW.DA<-1>=LINE
+SKIP.LINE: ****
+      NEXT ROW
+      NEW.DA=CHANGE(NEW.DA,@VM,TAB)
+      WRITE NEW.DA ON F.BILLDATA,'CC-':ITEM.NAME
+      RVOUT<1>='CC-':ITEM.NAME
+      ERROR=''
+      RETURN
+      STOP
+
+9000: ****
+
+      IF ERROR#'' THEN            ;* NPR01
+         CALL ELINE(ERROR)        ;* NPR01
+         RVOUT<1>=""              ;* NPR01
+         RVOUT<2>=ERROR           ;* NPR01
+      END                         ;* NPR01
+      RETURN                      ;* NPR01
+
+      STOP

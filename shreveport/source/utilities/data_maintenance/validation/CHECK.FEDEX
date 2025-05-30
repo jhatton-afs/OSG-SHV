@@ -1,0 +1,280 @@
+      ****************************************
+      * Program name : CHECK.FEDEX
+      * Author       : Greg Bino
+      * Date written : 11-16-2015
+      * Library      : FBBP
+      * COPYRIGHT (C) 1998 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+      *
+      * FEDEX edi remittance errors
+      *
+* Last updated by AFS (gbino) at 07:57:18 on 11/23/2015.
+      *
+      * Start modification history
+      * End modification history
+      *
+      ****************************************
+      *
+$INCLUDE SYSTEM.INIT.INCLUDE
+      PROMPT ""
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'CHECK.FEDEX' ; UPL.VIN<7> = 'S' ; UPL.VOUT = ''
+      CALL UPD.PROGRAM.LOG2(UPL.VIN,UPL.VOUT)
+      CALL GET.USER(USER)
+      VIN=''
+      VIN<3>='R'
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'CHECK.FEDEX' ; UPL.VIN<7> = 'E' ; UPL.VOUT = ''
+      
+      * INITS
+      DIM EDI(50)
+      *
+      MAT EDI = ''
+      GRND.TOT='' ; COD.TOT=''
+      CNT=0
+      DLM = CHAR(9)
+      OLD.CODE = "*"
+      OLD.CARRIER="*"
+      OLD.CLIENT="*"
+      CARRIER.TOTAL = 0
+      GRND.ORIG.AMT = 0
+      GRND.REMIT.AMT = 0
+      SUB.ORIG.AMT=0
+      SUB.REMIT.AMT=0
+      CARRIER.TOT = ''
+      EOJ = 0
+      CRT @(-1)
+      * OPENS
+
+      FILENAME = "CHECK.FEDEX.xls"
+      OPEN 'EDI.REMITTANCE' TO FILE.EDI ELSE 
+      	CALL ELINE('UNABLE TO OPEN EDI.REMITTANCEC FILE')
+         STOP
+         END
+      OPEN '','VOC' TO F.VOC ELSE
+         CALL ELINE("CALL NETWORK ADMINISTRATOR!")
+         CALL ELINE('UNABLE TO OPEN VOC FILE')
+         STOP
+      END
+      READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE
+         CALL ELINE("CALL NETWORK ADMINISTRATOR!")
+         CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')
+         STOP
+      END
+      BILLDATA.REC<2>:='\':USER
+      WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER ELSE
+         CALL ELINE("CALL NETWORK ADMINISTRATOR!")
+         CALL ELINE("YOUR USER NAME '":USER:"' IS NOT IN THE BILLDATA FOLDER - PLEASE SEE JIM/OWEN")
+         STOP
+      END
+      OPENSEQ 'BILLDATA.':USER,FILENAME TO BILLDATA ELSE
+         CALL ELINE("CALL NETWORK ADMINISTRATOR!")
+         CALL ELINE('UNABLE TO OPEN "BILLDATA.":USER')
+         STOP
+      END
+      WEOFSEQ BILLDATA
+      GOSUB 9000
+      *
+      ****************************************
+      CMD = \SSELECT EDI.REMITTANCE WITH 8 # "" BY CARRIER# BY 8 BY CLIENT#\
+      EXECUTE CMD CAPTURING STUFF RETURNING JUNK
+      IF JUNK<1,1> # 0 THEN
+      LOOP
+         READNEXT ID ELSE EOJ = 1
+      UNTIL EOJ DO
+         MATREAD EDI FROM FILE.EDI, ID THEN
+            CARRIER = FIELD(ID,"*",2)
+            CLIENT = FIELD(ID,"*",1)
+            CODE = EDI(8)
+            ACCT = EDI(14)
+            INV = TRIM(EDI(1))
+            PRONUM = TRIM(EDI(2))
+            ORIG.BILL.AMT = EDI(6)
+            REMIT.AMT = EDI(7)
+            GOSUB PROCESS
+            CNT = CNT + 1
+         END
+      REPEAT
+         GOSUB 9600                      ; * detail
+         GOSUB 9650                      ; * code subtotal
+         GOSUB 9700                      ; * carrier subtotal
+         GOSUB 9800                      ; * grand total
+      END
+      CRT @(0,23):" Hit return to continue":
+      STOP
+      *
+      *********************************
+PROCESS:
+      *********************************
+      *
+      IF OLD.CARRIER = "*" THEN
+         OLD.CARRIER = CARRIER
+      END
+      IF OLD.CARRIER # CARRIER THEN
+         GOSUB 9600
+         GOSUB 9650
+         GOSUB 9700
+         OLD.CARRIER = CARRIER
+         OLD.CODE = CODE
+         OLD.CLIENT = CLIENT
+      END
+      IF OLD.CODE = "*" THEN
+         OLD.CODE = CODE
+      END
+      IF OLD.CODE # CODE THEN
+      *****   GOSUB 9600
+       LOCATE(OLD.CODE,COD.TOT,1;QQ;'AR') ELSE
+         COD.TOT<1,QQ> = OLD.CODE
+      END
+      COD.TOT<2,QQ> = COD.TOT<2,QQ> + SUB.ORIG.AMT
+      COD.TOT<3,QQ> = COD.TOT<3,QQ> + SUB.REMIT.AMT
+      *
+      GRND.ORIG.AMT = GRND.ORIG.AMT + SUB.ORIG.AMT
+      GRND.REMIT.AMT = GRND.REMIT.AMT + SUB.REMIT.AMT
+      *
+      SUB.ORIG.AMT=0
+      SUB.REMIT.AMT=0
+         GOSUB 9650
+         OLD.CODE = CODE
+         OLD.CLIENT = CLIENT
+      END
+      IF OLD.CLIENT = "*" THEN
+         OLD.CLIENT = CLIENT
+         FIRST=1
+      END
+      IF OLD.CLIENT # CLIENT THEN
+         GOSUB 9600
+         OLD.CLIENT = CLIENT
+      END ELSE
+      END
+      GOSUB 9500
+      RETURN
+      *
+      ****************************************
+9000: * Headings
+      ****************************************
+      *
+      HEADER = DLM:"CARRIER":DLM:"CODE":DLM:"CLIENT NUM":DLM:"ACCNT#":DLM:"INVOICE NUM":DLM:"TRACKING#/PRONUMBER":DLM:"ORG BILL AMT":DLM:"REMIT AMT"
+      WRITESEQ HEADER ON BILLDATA ELSE NULL
+      RETURN
+      *
+      RETURN
+      *
+      ************************************
+9500: * PRINT DETAIL
+      *************************************
+      *
+      DATA.LINE = DLM:CARRIER:DLM:CODE:DLM:CLIENT:DLM:ACCT:DLM:INV:DLM:PRONUM:DLM:OCONV(ORIG.BILL.AMT,"MR2,"):DLM:OCONV(REMIT.AMT,"MR2,")
+      WRITESEQ DATA.LINE ON BILLDATA ELSE NULL
+      WRITE.LINE1 = TRUE
+      *
+      SUB.ORIG.AMT = SUB.ORIG.AMT + ORIG.BILL.AMT
+      SUB.REMIT.AMT = SUB.REMIT.AMT + REMIT.AMT
+      *
+      RETURN
+      *
+      *************************************
+9600: * PRINT SUBTOTALS   CLIENT
+      *************************************
+      *
+      DATA.LINE = "CLIENT ":OLD.CLIENT:DLM:DLM:DLM:DLM:DLM:DLM:DLM:DLM:DLM:OCONV(SUB.ORIG.AMT,"MR2,")'R#14':DLM:OCONV(SUB.REMIT.AMT ,"MR2,")'R#13'
+      WRITESEQ DATA.LINE ON BILLDATA ELSE NULL
+      LOCATE(OLD.CODE,COD.TOT,1;QQ;'AR') ELSE
+         COD.TOT<1,QQ> = OLD.CODE
+      END
+      COD.TOT<2,QQ> = COD.TOT<2,QQ> + SUB.ORIG.AMT
+      COD.TOT<3,QQ> = COD.TOT<3,QQ> + SUB.REMIT.AMT
+      *
+      GRND.ORIG.AMT = GRND.ORIG.AMT + SUB.ORIG.AMT
+      GRND.REMIT.AMT = GRND.REMIT.AMT + SUB.REMIT.AMT
+      *
+      SUB.ORIG.AMT=0
+      SUB.REMIT.AMT=0
+      *
+      RETURN
+      *
+      *************************************
+9650: * PRINT CODE SUBTOTALS
+      *************************************
+      *
+      COD.CNT = 0
+      COD.ORIG.AMT = 0
+      COD.REMIT.AMT = 0
+      BNAME = "CODE TOTALS"
+      CLASS.DESC = "CODE TOTALS"
+      CODE.CNT = DCOUNT(COD.TOT<1>,VM)
+      *
+      LOCATE(OLD.CODE,COD.TOT,1;COD;'AR') THEN
+         *
+         COD.CNT = COD.CNT + COD.TOT<8,COD>
+         COD.ORIG.AMT = COD.ORIG.AMT + COD.TOT<2,COD>
+          COD.REMIT.AMT = COD.REMIT.AMT + COD.TOT<3,COD>
+
+          LOCATE COD.TOT<1,COD> IN CARRIER.TOT<1> BY 'AR' SETTING QQ ELSE
+          CARRIER.TOT<1,QQ> = COD.TOT<1,COD>
+         END
+         CARRIER.TOT<2,QQ> = CARRIER.TOT<2,QQ> + COD.TOT<2,COD>
+          CARRIER.TOT<3,QQ> = CARRIER.TOT<3,QQ> + COD.TOT<3,COD>
+      END
+      *
+      DATA.LINE = "CODE ":OLD.CODE:DLM:DLM:DLM:DLM:DLM:DLM:DLM:DLM:DLM:OCONV(COD.ORIG.AMT,"MR2,")'R#14':DLM:OCONV(COD.REMIT.AMT,"MR2,")'R#13'
+      WRITESEQ DATA.LINE ON BILLDATA ELSE NULL
+      COD.TOT = ''
+      COD.CNT=0
+      COD.ORIG.AMT=0
+      COD.REMIT.AMT=0
+      *
+      RETURN
+      *
+      *************************************
+9700: * PRINT CARRIER SUBTOTALS
+      *************************************
+      *
+      CARR.ORIG.AMT = 0
+      CARR.REMIT.AMT = 0
+      OLD.CODE = ""
+      CARRIER.TOTAL = 1
+      CARR.CNT = DCOUNT(CARRIER.TOT<1>,VM)
+      *
+      FOR J = 1 TO CARR.CNT
+         CARR.CNT = CARR.CNT + CARRIER.TOT<8,J>
+         CARR.ORIG.AMT = CARR.ORIG.AMT + CARRIER.TOT<2,J>
+         CARR.REMIT.AMT = CARR.REMIT.AMT + CARRIER.TOT<3,J>
+         GRND.TOT<1,QQ> = CARRIER.TOT<1,J>
+         LOCATE CARRIER.TOT<1,J> IN GRND.TOT<1> BY 'AR' SETTING QQ ELSE
+            GRND.TOT<1,QQ> = CARRIER.TOT<1,J>
+         END
+         GRND.TOT<2,QQ> = GRND.TOT<2,QQ> + CARRIER.TOT<2,J>
+         GRND.TOT<3,QQ> = GRND.TOT<3,QQ> + CARRIER.TOT<3,J>
+      NEXT J
+
+      DATA.LINE = "CARRIER ":OLD.CARRIER:DLM:DLM:DLM:DLM:DLM:DLM:DLM:DLM:DLM:OCONV(CARR.ORIG.AMT,"MR2,")'R#14':DLM:OCONV(CARR.REMIT.AMT,"MR2,")'R#13'
+      WRITESEQ DATA.LINE ON BILLDATA ELSE NULL
+      DATA.LINE = ""
+      WRITESEQ DATA.LINE ON BILLDATA ELSE NULL
+      
+      CARRIER.TOT = ''
+      CARR.CNT = 0
+      CARR.ORIG.AMT=0
+      CARR.REMIT.AMT=0
+      *
+      RETURN
+      *
+      **************************************
+9800: * GRAND TOTALS
+      *************************************
+      *
+      CODE.CNT = DCOUNT(GRND.TOT<1>,VM)
+      DATA.LINE = "GRAND TOTALS":DLM:DLM:DLM:DLM:DLM:DLM:DLM:OCONV(GRND.ORIG.AMT,"MR2,")'R#13':DLM:OCONV(GRND.REMIT.AMT,"MR2,")'R#12':SPACE(3)
+      WRITESEQ DATA.LINE ON BILLDATA ELSE NULL
+      *
+      RETURN
+      *
+******************************************
+*
+*
+* Detailed documentation
+* Program generates a xls spreadsheet from the EDI.REMITTANCE file when att 8 (code) is not null.
+* This report is sorted by carrier then 8 then client.
+* The report will break and generate subtotals and grand totals of original billing amount and remittance amount.
+* The file is written to the users BILLDATA directory with the name CHECK.FEDEX.xls
+* End of program
+*
+   END

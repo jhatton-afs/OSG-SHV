@@ -1,0 +1,315 @@
+*************************************************************************
+* Program : INET.GET.FSC.SQL.UPD
+* Desc: Export Fuel Surcharge
+* Author  : TAG
+* Date    : 03/30/2017
+*
+* Copyright (c) 2016 by AFS Logistics, LLC. - All Rights Reserved
+
+
+
+* Last updated by afs (AFSLOGISTICS\GBINO) at 11:40:02 on 10/05/2018.
+
+
+
+* Comments
+*************************************************************************
+* 032017 - TAG01 - SysAid 31338 Create SQL export program for FSC push
+$INCLUDE UNIVERSE.INCLUDE ODBC.H
+      CALL GET.SERVER.INFO(SVR.VIN,SVR.VOUT)
+      SVR.NAME=SVR.VOUT<1>
+*
+      START.SQL.FLG = 1
+*
+      form = "T##########"
+      dash = "----------"
+      EXPECT = ""
+      NULL=""
+      ERRORS=""
+      ERROR.CNT=0
+* Initiallize Variables
+      CNTR=1
+      COMMON PROGPARAMS(24)
+      EQU PROGFROM TO PROGPARAMS(1)
+      EQU USER TO PROGPARAMS(2)
+      EQU PROCDATE TO PROGPARAMS(3)
+      EQU CHNUM TO PROGPARAMS(4)
+      TODAY.DATE = OCONV(DATE(),'D2/')
+      PROG.NAME = "INET.GET.FSC.SQL.UPD"
+*
+      CALL GET.USER.NEW(USER,CH.NUM)
+      VIN1=""
+      VIN1<1> = PROG.NAME
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "S"
+      CALL PROGTRACK(VIN1,VOUT1)
+*Open Files
+      GOSUB OPEN.FILES
+       GOSUB SETUP.SQL
+      GOSUB SETUP.SQL.FSC
+* Get Records
+      STMT='SELECT FB.BC.FSC WITH BC = "B" AND WITH CLIENT# = "" AND WITH 30 = "ENABLE" AND WITH CARRIER.MODE = "1" AND WITH CARRIER.STATUS = "A"'
+      EXECUTE STMT CAPTURING OUTPUT RETURNING ERRNUM
+      READLIST FSC.IDS ELSE FSC.IDS = ""
+      IF FSC.IDS = '' THEN 
+         ERROR.CNT+=1
+         ERRORS<1,-1> = 'No FSC.IDS Selected For Program INET.GET.FSC.SQL.UPD'
+         GO END.PGM
+      END
+*
+     
+* Main Processing
+      NUM.FSC.IDS = DCOUNT(FSC.IDS,@AM)
+      FOR CTR = 1 TO NUM.FSC.IDS
+         FSC.ID=FSC.IDS<CTR>
+         BEGIN CASE
+            CASE FSC.ID='B*99999' ; CONTINUE       ; * Test Account
+            CASE FSC.ID='B*08519' ; CONTINUE       ; * AFS Logistics / Air Cargo
+            CASE FSC.ID='B*99994' ; CONTINUE       ; * AFS Logistics / Air Cargo
+            CASE 1
+         END CASE
+*
+         READ DFSC.REC FROM F.FB.NFSC,FSC.ID ELSE CONTINUE
+         CARRIER.ID=FIELD(FSC.ID,'*',2)
+         READ DCARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE
+            DCARRIER.REC=CARRIER.ID:'-Not on file in Carriers'
+         END
+         CARRIER.NAME=DCARRIER.REC<1>
+         CARRIER.ADDR1=DCARRIER.REC<2,1>
+         CARRIER.ADDR2=DCARRIER.REC<2,2>
+         CARRIER.CITY =DCARRIER.REC<3>
+         CARRIER.ST =DCARRIER.REC<4>
+         CARRIER.ZIP =DCARRIER.REC<5>
+         CARRIER.PHONE=DCARRIER.REC<6>
+         CARRIER.SCAC=DCARRIER.REC<12>
+*
+         FSC.DATE=DATE()
+         VIN=FSC.DATE
+         VIN<2>=5000                     ; * Weight
+         VIN<5>=0
+         VIN<6>="15000"                  ; * For a $150.00 Shipment
+         VIN<7>="LA"                     ; * Special for Xpedx & AFS
+         VIN<8>="TX"                     ; * Special for AFS
+         CALL CALC.FSC(VIN,VOUT,DFSC.REC,F.TABLES)
+         FSC.PERC=VOUT<3>
+         IF FSC.PERC+0#0 THEN
+            SQL.FSC.ID=CARRIER.ID'R#5'
+            SQL.FSC.SCAC=CARRIER.SCAC
+            SQL.FSC.NAME=CARRIER.NAME
+            SQL.FSC.PERC=OCONV(VOUT<3>,'MR3')    ; * FSC %
+            SQL.FSC.DOLLARS=OCONV(VOUT<1>,'MR2')           ; * FSC $
+            SQL.FSC.DATE=FSC.DATE'D4/'
+*
+     ****       GOSUB UPDATE.SQL.FSC
+            FN="SQLExecute"
+      STATUS = SQLEXECUTE(UPDFSCENV)
+      STMTENV=UPDFSCENV
+      GOSUB CKSTMTENV
+         END
+      NEXT CTR
+      GO END.PGM
+****************************************************************************
+SETUP.SQL:*
+****************************************************************************
+* CREATE AN ODBC ENVIRONMENT & A CONNECTION ENVIRONMENT. USE THE
+* SSQLSETCONNECTOPTION TO SPECIFY THE OPERATING SYSTEM USER ID AND
+* PASSWORD.
+
+      STATUS = SQLALLOCENV(DBCENV)
+      IF STATUS <> SQL.SUCCESS THEN
+         ERROR.CNT+=1
+         ERRORS<1,-1>="SETUP.SQL Failed to allocate an ODBC environment"
+         RETURN TO END.PGM
+      END
+
+      STATUS = SQLALLOCCONNECT(DBCENV,CONENV)
+      IF STATUS <> SQL.SUCCESS THEN
+         ERROR.CNT+=1
+         ERRORS<1,-1>="SETUP.SQL Failed to allocate a CONNECT environment"
+         RETURN TO END.PGM
+      END
+
+*
+* GATHER THE DATA SOURCE NAME, USERID AND PASSWORD FOR THE SERVER O/S AND
+* INFORMATION FOR THE DBMS AT THE SERVER. THE DBMS INFO IS OFTEN ALSO
+* A USER NAME AND PASSWORD, BUT NOT IN ALL CASES.
+      BEGIN CASE
+         CASE SVR.NAME='AFS'
+            SOURCE='PRODODS'
+            UID="uv_sql"
+            PWD="4@gAbreg"
+         CASE 1
+            SOURCE='DEVODS'
+            UID="uv_sql"
+            PWD="4@gAbreg"
+      END CASE
+*
+* ESTABLISH A SESSION TO THE SPECIFIED DATA SOURCE
+*
+      FN = "SQLConnect"
+      STATUS = SQLCONNECT(CONENV,SOURCE,UID,PWD)
+      GOSUB CKCONENV
+      RETURN
+****************************************************************************
+SETUP.SQL.FSC:*
+****************************************************************************
+*
+* NOW ALLOCATE AN SQL STATEMENT ENVIRONMENT
+* TO BE USED FOR EXECUTING SQL STATEMENTS
+*
+      FN = "SQLAllocStmt"
+      STATUS = SQLALLOCSTMT(CONENV,UPDFSCENV)
+      GOSUB CKCONENV
+      IF STATUS = -2 THEN
+         RETURN TO END.PGM
+      END
+*
+* NOTE THAT WE ARE USING PARAMETER MARKERS IN THE SQL STATEMENT TO FACILITATE
+* LOADING MULTIPLE ROWS OF DATA EFFICIENTLY
+      OPT.STR = STR(' ?,',6)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_UpdCarrierFSC (":OPT.STR:")}"
+
+      ROWNUM = 0
+      FN = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*     STATUS = SQLSETPARAM(STMTENV, COL, SQL.B.BASIC, SQL.DATA.TYPE, PREC, SCALE, VAR.NAME) ; GOSUB CKSTMTENV
+*
+      STATUS = SQLSETPARAM(UPDFSCENV, 1, SQL.B.BASIC, SQL.VARCHAR, 5, 0, SQL.FSC.ID) ; STMTENV=UPDFSCENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDFSCENV, 2, SQL.B.BASIC, SQL.VARCHAR, 5, 0, SQL.FSC.SCAC) ; STMTENV=UPDFSCENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDFSCENV, 3, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.FSC.NAME) ; STMTENV=UPDFSCENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDFSCENV, 4, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.FSC.PERC) ; STMTENV=UPDFSCENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDFSCENV, 5, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.FSC.DOLLARS) ; STMTENV=UPDFSCENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDFSCENV, 6, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.FSC.DATE) ; STMTENV=UPDFSCENV ; GOSUB CKSTMTENV
+
+      FN = "SQLPrepare"
+      STATUS = SQLPREPARE(UPDFSCENV,INST1)
+      STMTENV=UPDFSCENV
+      ENVSRC='UPDFSC'
+      GOSUB CKSTMTENV
+*
+      
+      RETURN
+****************************************************************************
+CKCONENV:
+****************************************************************************
+      IF STATUS = 0 THEN RETURN
+      IF STATUS EQ -2 THEN
+         ERROR.CNT+=1
+         ERRORS<1,-1>= "Invalid Connection Handle Returned For ":FN
+         RETURN
+      END
+*
+      SQL.ERROR.CHK=0
+      LOOP UNTIL SQL.ERROR.CHK DO
+         ST = SQLERROR(-1,CONENV,-1,STATE,NATCODE,ERRTXT)
+         IF ST = SQL.NO.DATA.FOUND THEN SQL.ERROR.CHK=1 ; CONTINUE
+         COUNT = 1
+         IF EXPECT NE 0 AND STATE = EXPECT AND ST <> SQL.NO.DATA.FOUND THEN
+            SQL.ERROR.CHK=1 ; CONTINUE
+         END ELSE
+            ERROR.CNT+=1
+            ERRORS<1,-1>="Status for ":FN:" call is: ":STATUS
+            ERRORS<1,-1>="SQLSTATE is: ":STATE
+            ERRORS<1,-1>="NATCODE is: ":NATCODE
+            ERRORS<1,-1>="Error text is ":ERRTXT
+         END
+         IF ST = SQL.SUCCESS THEN CONTINUE
+         IF STATUS = -1 AND COUNT = 1 THEN
+            SQL.ERROR.CHK=1
+         END
+      REPEAT
+      RETURN
+****************************************************************************
+CKSTMTENV:
+****************************************************************************
+      IF STATUS = 0 OR STATUS = 100 THEN RETURN
+*
+      IF STATUS EQ -2 THEN
+         ERRORS<1,-1> = 'FSC ID ':FSC.ID:' but did not succeed in updating SQL due to: '
+         ERRORS<1,-1>="INVALID STATEMENT HANDLE"
+         RETURN
+      END
+*
+      SQL.ERROR.CHK=0
+      LOOP UNTIL SQL.ERROR.CHK DO
+         ST = SQLERROR(-1,-1,STMTENV,STATE,NATCODE,ERRTXT)
+         IF ST = SQL.NO.DATA.FOUND THEN SQL.ERROR.CHK=1 ; CONTINUE
+         COUNT = 1
+         IF EXPECT NE 0 AND STATE = EXPECT AND ST <> SQL.NO.DATA.FOUND THEN
+            SQL.ERROR.CHK=1 ; CONTINUE
+         END ELSE
+            ERROR.CNT+=1
+            ERRORS<1,-1>="Status for ":FN:" call is: ":STATUS
+            ERRORS<1,-1>="SQLSTATE is: ":STATE
+            ERRORS<1,-1>="NATCODE is: ":NATCODE
+            ERRORS<1,-1>="Error text is ":ERRTXT
+         END
+         IF ST = SQL.SUCCESS THEN CONTINUE
+         IF STATUS = -1 AND COUNT = 1 THEN
+            ERROR.CNT+=1
+            ERRORS<1,-1> = 'FSC ID ':FSC.ID:' but did not succeed in updating SQL due to these errors.'
+            ERRORS<1,-1>=ERRTXT
+            SQL.ERROR.CHK=1
+         END
+      REPEAT
+      RETURN
+
+****************
+OPEN.FILES:
+****************
+      OPEN '','FB.BC.FSC' TO F.FB.NFSC ELSE CALL OPEN.ABORT("FB.BC.FSC",PROG.NAME)
+      OPEN '','FB.TABLES' TO F.TABLES ELSE CALL OPEN.ABORT("FB.TABLES",PROG.NAME)
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      RETURN
+*****************************************************************************
+REPORT.ERRORS:***
+*****************************************************************************
+      MVIN=''
+      MVIN<1>='PICK@afs.net'
+      MVIN<4>='AFS_INET.GET.FSC.SQL.UPD'
+      MVIN<5>='SQL Export FSC Errors'
+      TEXT='On ':DATE()'D2/':' ':OCONV(TIME(),'MTHS'):', ':USER:' updated '
+      TEXT<1,-1>='INET.GET.FSC.SQL.UPD did not succeed in updating SQL due to:'
+      TEXT<1,-1>=' '
+      TEXT<1,-1>=ERRORS
+      MVIN<6>=TEXT
+      MVIN<7>=1
+      CALL SENDMAIL(MVIN,MVOUT)
+      RETURN
+****************
+END.PGM:
+****************
+*
+* Now just clean up the environment and leave
+*
+      Fn = "SQLFreeStmt"
+      STATUS = SQLFreeStmt(UPDFSCENV, SQL.DROP)
+      STMTMENV=UPDFSCENV
+      ENVSRC='CLIENT'
+      GOSUB CKSTMTENV
+
+      Fn = "SQLDisconnect"
+      STATUS = SQLDisconnect(CONENV)
+      GOSUB CKCONENV
+
+      Fn = "SQLFreeConnect"
+      STATUS = SQLFreeConnect(CONENV)
+      GOSUB CKCONENV
+
+      Fn = "SQLFreeEnv"
+      STATUS = SQLFreeEnv(DBCENV)
+      IF STATUS <> SQL.SUCCESS THEN
+         ERROR.CNT+=1
+         ERRORS<1,-1>="Failed to release ODBC environment"
+      END
+      IF ERROR.CNT THEN GOSUB REPORT.ERRORS
+      VIN1=''
+      VIN1<1> = PROG.NAME
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "E"
+      CALL PROGTRACK(VIN1,VOUT1)
+      STOP

@@ -1,0 +1,1421 @@
+      SUBROUTINE RERATE.SS.SUB(RVIN,RVOUT)
+***************************************************
+* Program name : RERATE.SS.SUB
+* Author       : Owen Holman
+* Date written : June 15, 2001
+* Library      : FBBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* Freight Billing Package
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 08:02:36 on 03/02/2018.
+*
+* Start modification history
+* 103108 - JMK01 - T081156 - Change BLS column heading from Benchmark to Gross Charges
+* 052809 - JMK02 - C090692 - Need to not take commissions on Fuel
+* 091409 - JMK03 - ALL FOR AFS500 RATES
+* 110609 - JMK04 - C091350 - Reid Supply -- UPS Freight --- Fuel Commission
+* 110512 - JMK05 - CAPTURE CONTRACT AND BENCHMARK TARIFF FOR DATA USAGE
+* 072913 - JMK06 - Add QWlikView Tarriff Reporting Options
+* 062714 - JMK07 - Rerate Subroutine Access
+* 111715 - DRF01 - SysAid 20981 assigned variable that were unassigned
+* 030218 - NKH01 - Modified to call Carrier Connect XL
+* 032018 - NKH02 - Added restart option
+* 051718 - NKH03 - Corrected issue with headings
+* 092018 - NKH04 - Ticket ACCU-44 Use the substitute client for FB.AUDIT.ACC file
+* End modification history.
+*******************************************************
+* Initialize variables
+****************************************************************
+      COMMON PROG.PARAMS(24)
+      EQU CH.NUM TO PROG.PARAMS(1)
+      **      EQU USER TO PROG.PARAMS(2)
+      EQU SERVER.NAME TO PROG.PARAMS(3)
+      EQU DISP.FLG TO PROG.PARAMS(4)
+      DISP.FLG = 1
+      CALL GET.USER.NEW(USER,CH.NUM)
+
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'RERATE.SS.SUB' ; UPL.VOUT = ''  ; * NPR_UPL 04/23/2010
+      UPL.VIN<3> = USER ; UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+
+      * Begin GRB01
+      VIN1=""
+      VIN1<1> = UPL.VIN<2>
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "S"
+      CALL PROGTRACK(VIN1,VOUT1)
+      * End GRB01
+      CRT @(0,20):@(-3):
+      TEXT='Reviewing Rates...'
+      CALL CENTER(TEXT,80)
+      CRT @(0,20):TEXT
+      TAB=CHAR(9)
+      DATA.START=4                       ; * Line number that 1st line of data is on
+      BILLDATA.USER=RVIN<1>              ; * Name of BILLDATA FILE THAT DATA IS IN
+      ITEM.NAME=RVIN<2>                  ; * Name of "File" in BILLDATA
+      CLIENT.OPT=RVIN<3>                 ; * 'OLA' Client Number (Rating Files)
+      RR.EFF.DATE=RVIN<4>
+      CARRIER.OPT=RVIN<5>                ; * Rate all (Least Cost) or a specific carrier
+      QV.OPT=0                           ; * JMK06
+      IF CARRIER.OPT='Q' THEN            ; * JMK06
+         QV.OPT=1                        ; * JMK06
+         RR.EFF.DATE='S'                 ; * JMK06
+         CARRIER.OPT='S'                 ; * JMK06
+      END                                ; * JMK06
+      ORIG.CARRIER.OPT=CARRIER.OPT
+      FAK.OPT=RVIN<6>
+      ZIP.OPT=RVIN<7>
+      BEG.DATE=RVIN<8>                   ; * JMK06
+      END.DATE=RVIN<9>                   ; * JMK06
+      RR.CONT = RVIN<10>                 ; * GRB01
+      OLD.VIN=""
+      SAME.CNT=0
+
+      DIM CLIENT.REC(300)
+      MAT CLIENT.REC = ""
+      FAK.ARRAY=''
+      NVAL=DCOUNT(FAK.OPT<1>,@VM)
+      FOR VAL=1 TO NVAL
+         FAK.LVL=FAK.OPT<1,VAL>
+         CLASS.RANGE=FIELD(FAK.LVL,';',1)
+         CLASS.LOW=FIELD(CLASS.RANGE,'-',1)
+         CLASS.HIGH=FIELD(CLASS.RANGE,'-',2)
+         IF CLASS.HIGH='' THEN CLASS.HIGH=CLASS.LOW
+         CLASS.FAK=FIELD(FAK.LVL,';',2)
+         FAK.ARRAY<1,VAL>=CLASS.LOW
+         FAK.ARRAY<2,VAL>=CLASS.HIGH
+         FAK.ARRAY<3,VAL>=CLASS.FAK
+      NEXT VAL
+
+      MVIN=''
+      MVIN<1>='HelpDesk@afs.net'
+      ***     MVIN<2,2>='MMcKay@afs.net'         ; * JMK07
+      ***     MVIN<3,1>='BFranklin@afs.net'
+
+      MVIN<3,3>='LJuneau@afs.net'
+      MVIN<4>='AFS'
+      MVIN<5>='Rerate Subroutine Access'
+      MVIN<6>=USER:' is starting the rerating process (RERATE.SS.SUB) on ':OCONV(DATE(),'D2/'):' at ':OCONV(TIME(),'MTHS'):'.  This may affect system performance.'
+      *******    CALL SENDMAIL(MVIN,MVOUT)
+
+      CLIENT.AUDIT=1
+      ERROR=''
+      PROG.NAME='RERATE.SS.SUB'
+      PROG.DESC="(Re) Rate freight on shipments using OLA setups"
+      PACK.NAME="Freight Billing"
+      CONTR.AMT=''
+      BENCH.AMT=''
+      CARRIER.EST.ARRAY=''
+      ERROR.ARRAY=''
+      ADDZIP.ARRAY=ZIP.OPT
+      ADDZIP.NVAL=DCOUNT(ZIP.OPT<1>,@VM)
+      FIRST.TIME = 1                     ; * NKH01
+**********************************************************************
+* Open general files
+***********************************************************************
+      IF QV.OPT=1 THEN                   ; * JMK06
+         OPEN 'BILLDATA.QV.TARIFF' TO F.BILLDATA.QV ELSE
+            CALL OPEN.ABORT("BILLDATA.QV.TARIFF",PROG.NAME)
+         END
+      END                                ; * JMK06
+      OPEN 'BILLDATA.':BILLDATA.USER TO F.BILLDATA ELSE
+         CALL OPEN.ABORT("BILLDATA.":BILLDATA.USER,PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         ERROR = "CANNOT OPEN FILE CLIENTS"
+         GO 9000
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         ERROR = "CANNOT OPEN FILE F.TABLES"
+         GO 9000
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         ERROR = "CANNOT OPEN FILE CARRIERS"
+         GO 9000
+      END
+      OPEN '','FB.BC.FSC' TO F.BC.FSC ELSE
+         ERROR = "CANNOT OPEN FILE FB.BC.FSC"
+         GO 9000
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         ERROR = "CANNOT OPEN FILE FB.TABLES"
+         GO 9000
+      END
+
+*---- Open mileage input and output files
+
+      OPEN '','PCIN' TO F.PCIN ELSE
+         ERROR = "CANNOT OPEN FILE PCIN"
+         GO 9000
+      END
+      OPEN '','PCOUT' TO F.PCOUT ELSE
+         ERROR = "CANNOT OPEN FILE  "
+         GO 9000
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+         ERROR = "CANNOT OPEN ZIPS FILE "
+         GO 9000
+      END
+      OPEN '','CAN.ZIP.CODES' TO F.CAN.ZIPS ELSE
+         ERROR = "CANNOT OPEN CAN.ZIP.CODES FILE "
+         GO 9000
+      END
+      OPEN '','ZIPS' TO ZIPS ELSE        ; * NKH01
+         CALL OPEN.ABORT('ZIPS','RERATE.SS.SUB')   ; * NKH01
+      END                                ; * NKH01
+      * Begin NKH02
+      OPEN '','FB.BUILD.SPEC' TO F.BSPEC ELSE
+         ERROR = 'CANNOT OPEN FB.BUILD.SPEC FILE'
+         GO 9000
+      END
+      READ FB.SPECS FROM F.BSPEC,"GBS" ELSE FB.SPECS = ""
+*
+      READ DTARIFF.DATE.XREF FROM F.TABLES,'TARIFF.DATE.XREF' ELSE DTARIFF.DATE.XREF=''    ; * GRB01
+      READ DTARIFFS FROM F.TABLES,'TARIFFS' ELSE DTARIFFS=''           ; * GRB01
+      READ LI.CODES FROM F.TABLES,'LI.CODES' ELSE LI.CODES=''          ; * GRB01
+
+* Read Zip for Names
+*
+      FOR ADDZIP.VAL=1 TO ADDZIP.NVAL
+         ZIP=ADDZIP.ARRAY<1,ADDZIP.VAL>
+         READ ZIP.REC FROM F.ZIPS,ZIP THEN
+            ADDZIP.ARRAY<2,ADDZIP.VAL>=ZIP.REC<1>
+            ADDZIP.ARRAY<3,ADDZIP.VAL>=ZIP.REC<2>
+         END
+      NEXT ADDZIP.VAL
+***********************************************************************
+* Read Source Data
+* Begin Mod GRB01
+      IF RR.CONT = 1 THEN
+         DA=''
+****         READ DA FROM F.BILLDATA,ITEM.NAME ELSE
+****            CALL ELINE('BILLDATA.':BILLDATA.USER:' ':ITEM.NAME:' is not on file.. Aborting!')
+****            ABORT
+****         END
+
+         DA = FB.SPECS<1>
+         DA=CHANGE(DA,TAB,@VM)
+         HDRLINE = DA<1>
+         HDRLINE = DA
+         GOSUB BUILD.HEADER
+         LOCATE 'Client #' IN HDG.LINE<1> SETTING CLIPOS ELSE CLIPOS=0
+         OUT.ID = 'RR-':ORIG.CARRIER.OPT:'-':ITEM.NAME
+         OPENSEQ 'BILLDATA.':USER, OUT.ID TO OUTSEQ.FILE ELSE
+            CREATE OUTSEQ.FILE ELSE
+            END
+         END
+         OPENSEQ 'BILLDATA.':USER, ITEM.NAME TO INSEQ.FILE ELSE
+            CREATE INSEQ.FILE ELSE
+            END
+         END
+         EOJF = 0
+         GB.LINE.CNT = 0
+         LOOP
+         UNTIL EOJF DO
+            READSEQ DATOUT FROM OUTSEQ.FILE ELSE EOJF=1
+            IF DATOUT = "" AND GB.LINE.CNT GT 4 THEN
+               EOJF = 1
+               CONTINUE
+            END
+            READSEQ DA FROM INSEQ.FILE ELSE INSEQ.DONE =1
+            GB.LINE.CNT = GB.LINE.CNT + 1
+         REPEAT
+      END ELSE
+         GB.LINE.CNT = 0
+         ****   ITEM.NAME = "ALL-12011231.XLS"
+         READ DA FROM F.BILLDATA,ITEM.NAME ELSE
+            CALL ELINE('BILLDATA.':BILLDATA.USER:' ':ITEM.NAME:' is not on file.. Aborting!')
+            ABORT
+         END
+         DA=CHANGE(DA,TAB,@VM)
+         HDRLINE = DA<3>
+         DA = ""
+         GOSUB BUILD.HEADER
+         OPENSEQ 'BILLDATA.':USER, ITEM.NAME TO INSEQ.FILE ELSE
+            CREATE INSEQ.FILE ELSE
+            END
+         END
+         OUT.ID = 'RR-':ORIG.CARRIER.OPT:'-':ITEM.NAME
+         OPENSEQ 'BILLDATA.':USER, OUT.ID TO OUTSEQ.FILE ELSE
+            CREATE OUTSEQ.FILE ELSE
+            END
+         END
+      END
+      NEW.DA=''
+      GB = HDG.LINE<1>
+      LOCATE 'Client #' IN HDG.LINE<1> SETTING CLIPOS ELSE CLIPOS=0
+      LOCATE 'Carrier #' IN HDG.LINE<1> SETTING CARPOS ELSE CARPOS=1
+      LOCATE 'Carrier Name' IN HDG.LINE<1> SETTING CARNPOS ELSE CARNPOS=2
+      LOCATE 'Pro #' IN HDG.LINE<1> SETTING PPOS ELSE PPOS=3
+      LOCATE 'Bill Date' IN HDG.LINE<1> SETTING BPOS ELSE BPOS=4
+      LOCATE 'Origin Zip' IN HDG.LINE<1> SETTING OPOS ELSE OPOS=6
+      LOCATE 'Destin Zip' IN HDG.LINE<1> SETTING DPOS ELSE DPOS=9
+      LOCATE 'I/O' IN HDG.LINE<1> SETTING IPOS ELSE IPOS=5
+*     LOCATE 'Benchmark Charge' IN HDG.LINE<1> SETTING BMPOS ELSE BMPOS=13       ; * JMK01
+      LOCATE 'Gross Charge' IN HDG.LINE<1> SETTING BMPOS ELSE BMPOS=13           ; * JMK01
+      LOCATE 'Actual Charge' IN HDG.LINE<1> SETTING ACPOS ELSE ACPOS=14
+*
+* Process the data
+*
+      BRK.CARRIER=''
+      PRV.CLIENT.ID=''
+      BRK.PRO=''
+      ROW.PER=''
+      INSEQ.DONE = 0
+      GBROW = 0
+      ****   NROWS=DCOUNT(DA,@AM)
+      LOOP
+         GB.CNT = 0
+         READSEQ DA FROM INSEQ.FILE ELSE INSEQ.DONE =1
+         GB.LINE.CNT = GB.LINE.CNT + 1
+         IF NOT(REM(GB.LINE.CNT,1000)) THEN
+            CRT @(48,10):GB.LINE.CNT
+         END
+      UNTIL INSEQ.DONE DO
+         GBROW = GB.LINE.CNT
+         IF GB.LINE.CNT = 3 THEN DA = GB           ; * NKH03
+         DA=CHANGE(DA,TAB,@VM)
+         IF DISP.FLG = 1 THEN
+******            CRT "DA LINE ":DA
+         END
+         ORGCOLVAL=DCOUNT(DA,@VM)
+         IF GBROW < DATA.START THEN
+            NEW.DA<GBROW> = DA
+            NWDA=CHANGE(NEW.DA<GBROW>,@VM,TAB)
+            WRITESEQ NWDA ON OUTSEQ.FILE ELSE
+               CRT "WRITE FILE ERROR ":OUTSEQ.FILE
+            END
+            CONTINUE
+         END
+         LINE = DA
+         LINE<1,118>=''
+         IF CLIPOS=0 THEN
+            CLIENT.ID=CLIENT.OPT
+         END ELSE
+            CLIENT.ID=LINE<1,CLIPOS>'R%5'
+         END
+         IF CLIENT.ID#PRV.CLIENT.ID THEN
+*
+* Open client's files.
+*
+            AUDIT.CLIENT=1
+            AUDIT.CLIENT.ID = CLIENT.ID
+            OPEN '','FB.AUDIT,':CLIENT.ID TO F.AUDIT THEN
+               READV SUB.CLIENT FROM F.AUDIT,'SUBSTITUTE',1 THEN
+                  AUDIT.CLIENT.ID = SUB.CLIENT
+                  OPEN '','FB.AUDIT,':AUDIT.CLIENT.ID TO F.AUDIT ELSE CLIENT.AUDIT=0
+               END ELSE
+                  AUDIT.CLIENT.ID = CLIENT.ID
+               END
+            END ELSE CLIENT.AUDIT=0
+            IF CLIENT.AUDIT=0 THEN
+               ERROR = "Client ":CLIENT.ID:" is not setup for freight estimates"
+               NEW.DA<-1>=LINE
+            END
+            OPEN '','FB.AUDIT.TABLES,':AUDIT.CLIENT.ID TO F.AUDIT.TABLES ELSE
+               ERROR = "Cannot open file FB.AUDIT.TABLES,":AUDIT.CLIENT.ID
+               NEW.DA<-1>=LINE
+            END
+            OPEN '','FB.AUDIT.ZIPS,':AUDIT.CLIENT.ID TO F.AUDIT.ZIPS ELSE
+               ERROR = "Cannot open FB.AUDIT.ZIPS,":AUDIT.CLIENT.ID:" No On-Line Audit Allowed!"
+               NEW.DA<-1>=LINE
+            END
+            OPEN '','FB.BILLS.HIST,':AUDIT.CLIENT.ID TO F.BILLS ELSE
+               ERROR = "Cannot open FB.BILLS.HIST,":AUDIT.CLIENT.ID:" No On-Line Audit Allowed!"
+               NEW.DA<-1>=LINE
+            END
+            MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE MAT CLIENT.REC=''   ; * JMK06
+            PRV.CLIENT.ID=CLIENT.ID
+         END
+
+         CARRIER.ID=LINE<1,CARPOS>'R%5'
+         IF CARRIER.OPT='L' THEN CARRIER.ID='ALL'
+         IF CARRIER.OPT='A' THEN CARRIER.ID='99990'          ; * JMK03
+         IF CARRIER.OPT='O' THEN CARRIER.ID='ALL'
+         PRO=LINE<1,PPOS>
+         IOT=LINE<1,IPOS>
+         OSHIP.DATE=LINE<1,BPOS>
+         ORIG.ZIP=LINE<1,OPOS>
+         IF NUM(ORIG.ZIP) AND ORIG.ZIP#'' THEN ORIG.ZIP=ORIG.ZIP'R%5'
+         DEST.ZIP=LINE<1,DPOS>
+         IF NUM(DEST.ZIP) AND DEST.ZIP#'' THEN DEST.ZIP=DEST.ZIP'R%5'
+* Classes, Weights, & Codes
+         PRV.CLASS=''
+         CLASSES=''
+         WEIGHTS=''
+         MISC.CHG.CODES=''
+         MISC.CHG.AMTS=''
+         CODE.START=26
+         IF CLIENT.OPT='ALL' THEN CODE.START+=2
+         FOR Y = 1 TO 14
+            CODE=LINE<1,CODE.START+((Y-1)*5)>
+            CODE.DESC=LINE<1,(CODE.START+1)+((Y-1)*5)>
+            CLASS=LINE<1,(CODE.START+2)+((Y-1)*5)>
+            IF CLASS='' AND PRV.CLASS#'' THEN CLASS=PRV.CLASS
+            IF FAK.ARRAY#'' THEN
+            	BEGIN CASE
+            		CASE CLASS GE FAK.ARRAY<1,1> AND CLASS LE FAK.ARRAY<2,1>
+            		CLASS = FAK.ARRAY<3,1>
+            	CASE CLASS GE FAK.ARRAY<1,2> AND CLASS LE FAK.ARRAY<2,2>
+            		CLASS = FAK.ARRAY<3,2>
+            		CASE CLASS GE FAK.ARRAY<1,3> AND CLASS LE FAK.ARRAY<2,3>
+            		CLASS = FAK.ARRAY<3,3>
+            		CASE CLASS GE FAK.ARRAY<1,4> AND CLASS LE FAK.ARRAY<2,4>
+            		CLASS = FAK.ARRAY<3,4>
+            		CASE CLASS GE FAK.ARRAY<1,5> AND CLASS LE FAK.ARRAY<2,5>
+            		CLASS = FAK.ARRAY<3,5>
+            		CASE 1
+            	END CASE
+            	
+           ***    LOCATE CLASS IN FAK.ARRAY<2> BY 'AR' SETTING FAKPOS THEN
+           **        CLASS=FAK.ARRAY<3,FAKPOS>
+           **    END
+            END
+            WEIGHT=LINE<1,(CODE.START+3)+((Y-1)*5)>
+            AMT=LINE<1,(CODE.START+4)+((Y-1)*5)>
+            BEGIN CASE
+               CASE CODE='FRT'
+               CASE CODE='TMIN'
+               CASE CODE='FSC'
+               CASE CODE='FUEL'
+               CASE CODE#''
+                  MISC.CHG.CODES<1,-1>=CODE
+                  MISC.CHG.AMTS<1,-1>=AMT
+            END CASE
+            IF CLASS#'' AND WEIGHT#'' THEN
+               CLASSES<1,-1>=CLASS
+               WEIGHTS<1,-1>=WEIGHT
+               PRV.CLASS=CLASS
+            END
+         NEXT Y
+         A.VOUT=''
+         FSC.CVOUT=''
+         FSC.BVOUT=''
+         FOR TIMES=1 TO 3
+            ERROR=''
+            EFF.ERROR=''
+            ORIG.ERROR=''
+            SCC.ERROR=''
+            LCC.ERROR=''
+            BENCH.AMT=''
+            CONTR.AMT=''
+            BENCH.TARIFF=''              ; * JMK05
+            CONTR.TARIFF=''              ; * JMK05
+            BENCH.TIME.LINE=''
+            CONTR.TIME.LINE=''
+            BENCH.FRT.AMT=''
+            BENCH.FSC.AMT=''
+            CONTR.FRT.AMT=''
+            CONTR.FSC.AMT=''
+            CONS.FRT.AMT=''
+            CONS.FSC.AMT=''
+            FRT.LOGIS.AMT=''
+            CONTR.CHG.CODES=''
+            CONTR.CHG.CLASS=''
+            CONTR.CHG.WGTS=''
+            CONTR.CHG.RATES=''
+            CONTR.CHG.AMTS=''
+            CONTR.DISC.AMT=''
+            CONTR.GROSS.AMTS=''
+            CONTR.DISC.PCNTS=''
+            CONTR.DISC.AMTS=''
+****DEBUG
+            BEGIN CASE
+               CASE TIMES=1
+                  IF ORIG.CARRIER.OPT='O' THEN CARRIER.OPT='S'
+                  ORATE.DATE=OSHIP.DATE
+                  CARRIER.ID=LINE<1,CARPOS>'R%5'
+                  IF CARRIER.OPT='L' THEN CARRIER.ID='ALL'
+                  IF NUM(CARRIER.OPT) THEN CARRIER.ID=CARRIER.OPT
+                  ORIG.CARRIER.ID=''
+                  ORIG.CARRIER.NAME=''
+               CASE TIMES=2
+                  IF ORIG.CARRIER.OPT='O' THEN CARRIER.OPT='S'
+                  IF RR.EFF.DATE='S' THEN
+                     ORATE.DATE=OSHIP.DATE
+                  END ELSE
+                     ORATE.DATE=OCONV(RR.EFF.DATE,'D2/')
+                  END
+                  CARRIER.ID=LINE<1,CARPOS>'R%5'
+                  IF CARRIER.OPT='L' THEN CARRIER.ID='ALL'
+                  IF NUM(CARRIER.OPT) THEN CARRIER.ID=CARRIER.OPT
+                  IF CARRIER.OPT='A' THEN
+                     CARRIER.ID='99990'
+                     CLIENT.ID='79999'
+                     IF CLIENT.ID#PRV.CLIENT.ID THEN
+*
+* Open client's files.
+*
+                        AUDIT.CLIENT=1
+                        AUDIT.CLIENT.ID = CLIENT.ID
+                        OPEN '','FB.AUDIT,':CLIENT.ID TO F.AUDIT THEN
+                           READV SUB.CLIENT FROM F.AUDIT,'SUBSTITUTE',1 THEN
+                              AUDIT.CLIENT.ID = SUB.CLIENT
+                              OPEN '','FB.AUDIT,':AUDIT.CLIENT.ID TO F.AUDIT ELSE CLIENT.AUDIT=0
+                           END ELSE
+                              AUDIT.CLIENT.ID = CLIENT.ID
+                           END
+                        END ELSE CLIENT.AUDIT=0
+                        IF CLIENT.AUDIT=0 THEN
+                           ERROR = "Client ":CLIENT.ID:" is not setup for freight estimates"
+                           NEW.DA<-1>=LINE
+                        END
+                        OPEN '','FB.AUDIT.TABLES,':AUDIT.CLIENT.ID TO F.AUDIT.TABLES ELSE
+                           ERROR = "Cannot open file FB.AUDIT.TABLES,":AUDIT.CLIENT.ID
+                           NEW.DA<-1>=LINE
+                        END
+                        OPEN '','FB.AUDIT.ZIPS,':AUDIT.CLIENT.ID TO F.AUDIT.ZIPS ELSE
+                           ERROR = "Cannot open FB.AUDIT.ZIPS,":AUDIT.CLIENT.ID:" No On-Line Audit Allowed!"
+                           NEW.DA<-1>=LINE
+                        END
+                        OPEN '','FB.BILLS.HIST,':AUDIT.CLIENT.ID TO F.BILLS ELSE
+                           ERROR = "Cannot open FB.BILLS.HIST,":AUDIT.CLIENT.ID:" No On-Line Audit Allowed!"
+                           NEW.DA<-1>=LINE
+                        END
+                        PRV.CLIENT.ID=CLIENT.ID
+                     END
+                  END
+                  EFF.CARRIER.ID=''
+                  EFF.CARRIER.NAME=''
+               CASE TIMES=3
+                  IF ORIG.CARRIER.OPT='O' THEN
+                     CARRIER.OPT='L'
+                     CARRIER.ID='ALL'
+                     ORATE.DATE=OCONV(RR.EFF.DATE,'D2/')
+                     EFF.CARRIER.ID=''
+                     EFF.CARRIER.NAME=''
+                  END
+            END CASE
+            GOSUB RATE.SHIPMENT
+            BEGIN CASE
+               CASE CARRIER.EST.ARRAY#''
+                  APP.CARRIER.ID=CARRIER.EST.ARRAY<2,1>
+                  APP.CARRIER.NAME=CARRIER.EST.ARRAY<3,1>
+                  ERROR=CARRIER.EST.ARRAY<7,1>
+                  BENCH.AMT=CARRIER.EST.ARRAY<8,1>
+                  BENCH.FSC.AMT=CARRIER.EST.ARRAY<9,1>
+                  CONTR.AMT=CARRIER.EST.ARRAY<10,1>
+                  CONTR.FSC.AMT=CARRIER.EST.ARRAY<11,1>
+                  FRT.LOGIS.AMT=CARRIER.EST.ARRAY<12,1>
+                  CONTR.CHG.CODES=CARRIER.EST.ARRAY<13,1>
+                  CONTR.CHG.CLASS=CARRIER.EST.ARRAY<14,1>
+                  CONTR.CHG.WGTS=CARRIER.EST.ARRAY<15,1>
+                  CONTR.CHG.RATES=CARRIER.EST.ARRAY<16,1>
+                  CONTR.CHG.AMTS=CARRIER.EST.ARRAY<17,1>
+                  CONTR.DISC.AMT=CARRIER.EST.ARRAY<18,1>
+                  CONTR.GROSS.AMTS=CARRIER.EST.ARRAY<19,1>
+                  CONTR.DISC.PCNTS=CARRIER.EST.ARRAY<20,1>
+                  CONTR.DISC.AMTS=CARRIER.EST.ARRAY<21,1>
+                  CONTR.TARIFF=CARRIER.EST.ARRAY<22,1>       ; * JMK05
+                  BENCH.TARIFF=CARRIER.EST.ARRAY<23,1>       ; * JMK05
+                  CONTR.TIME.LINE=CARRIER.EST.ARRAY<25,1>
+               CASE 1
+                  APP.CARRIER.ID=LINE<1,CARPOS>'R%5'
+                  APP.CARRIER.NAME=LINE<1,CARNPOS>
+                  ERROR=''
+                  EFF.ERROR=''
+                  ORIG.ERROR=''
+                  SCC.ERROR=''
+                  LCC.ERROR=''
+                  BENCH.AMT=''
+                  CONTR.AMT=''
+                  BENCH.TARIFF=''        ; * JMK05
+                  CONTR.TARIFF=''        ; * JMK05
+                  CONTR.TIME.LINE=A.VOUT<94>
+                  BENCH.FRT.AMT=''
+                  BENCH.FSC.AMT=''
+                  CONTR.FRT.AMT=''
+                  CONTR.FSC.AMT=''
+                  CONS.FRT.AMT=''
+                  CONS.FSC.AMT=''
+                  FRT.LOGIS.AMT=''
+                  A.VOUT=''
+                  FSC.CVOUT=''
+                  FSC.BVOUT=''
+                  BENCH.FSC.AMT=''
+                  CONTR.FSC.AMT=''
+                  CONTR.CHG.CODES=''
+                  CONTR.CHG.CLASS=''
+                  CONTR.CHG.WGTS=''
+                  CONTR.CHG.RATES=''
+                  CONTR.CHG.AMTS=''
+                  CONTR.DISC.AMT=''
+                  CONTR.GROSS.AMTS=''
+                  CONTR.DISC.PCNTS=''
+                  CONTR.DISC.AMTS=''
+            END CASE
+            BEGIN CASE
+               CASE TIMES=1
+                  ORIG.BENCH.AMT=BENCH.AMT
+                  ORIG.CONTR.AMT=CONTR.AMT
+                  ORIG.BENCH.FRT.AMT=BENCH.AMT-BENCH.FSC.AMT
+                  ORIG.BENCH.FSC.AMT=BENCH.FSC.AMT
+                  ORIG.CONTR.FRT.AMT=CONTR.AMT-CONTR.FSC.AMT
+                  ORIG.CONTR.FSC.AMT=CONTR.FSC.AMT
+                  ORIG.CONS.FRT.AMT=ORIG.BENCH.FRT.AMT-ORIG.CONTR.FRT.AMT
+                  ORIG.CONS.FSC.AMT=ORIG.BENCH.FSC.AMT-ORIG.CONTR.FSC.AMT
+                  ORIG.LOGIS.AMT=FRT.LOGIS.AMT
+                  ORIG.CARRIER.ID=APP.CARRIER.ID
+                  ORIG.CARRIER.NAME=APP.CARRIER.NAME
+                  IF ORIG.BENCH.AMT+0=0 AND ORIG.CONTR.AMT+0=0 THEN
+                     ORIG.CARRIER.ID='None'
+                     ORIG.CARRIER.NAME='No Approved Carriers for this Route'
+                  END
+                  ORIG.ERROR=ERROR
+                  ORIG.CONTR.CHG.CODES=CHANGE(CONTR.CHG.CODES,@SVM,"|")
+                  ORIG.CONTR.CHG.CLASS=CHANGE(CONTR.CHG.CLASS,@SVM,"|")
+                  ORIG.CONTR.CHG.WGTS=CHANGE(CONTR.CHG.WGTS,@SVM,"|")
+                  ORIG.CONTR.CHG.RATES=CHANGE(CONTR.CHG.RATES,@SVM,"|")
+                  ORIG.CONTR.CHG.AMTS=CHANGE(FMTS(CONTR.CHG.AMTS,'R26'),@SVM,"|")
+                  ORIG.CONTR.DISC.AMT=CHANGE(FMTS(CONTR.DISC.AMT,'R26'),@SVM,"|")
+                  ORIG.CONTR.GROSS.AMTS=CHANGE(FMTS(CONTR.GROSS.AMTS,'R26'),@SVM,"|")
+                  ORIG.CONTR.DISC.PCNTS=CHANGE(FMTS(CONTR.DISC.PCNTS,'R26'),@SVM,"|")
+                  ORIG.CONTR.DISC.AMTS=CHANGE(FMTS(CONTR.DISC.AMTS,'R26'),@SVM,"|")
+                  ORIG.CONTR.TARIFF=CONTR.TARIFF   ; * JMK05
+                  ORIG.BENCH.TARIFF=BENCH.TARIFF   ; * JMK05
+                  ORIG.CONTR.TIME.LINE=CONTR.TIME.LINE
+                  ORIG.BENCH.TIME.LINE=BENCH.TIME.LINE
+               CASE TIMES=2
+                  EFF.BENCH.AMT=BENCH.AMT
+                  EFF.CONTR.AMT=CONTR.AMT
+                  EFF.BENCH.FRT.AMT=BENCH.AMT-BENCH.FSC.AMT
+                  EFF.BENCH.FSC.AMT=BENCH.FSC.AMT
+                  EFF.CONTR.FRT.AMT=CONTR.AMT-CONTR.FSC.AMT
+                  EFF.CONTR.FSC.AMT=CONTR.FSC.AMT
+                  EFF.CONS.FRT.AMT=EFF.BENCH.FRT.AMT-EFF.CONTR.FRT.AMT
+                  EFF.CONS.FSC.AMT=EFF.BENCH.FSC.AMT-EFF.CONTR.FSC.AMT
+                  EFF.LOGIS.AMT=FRT.LOGIS.AMT
+                  EFF.CARRIER.ID=APP.CARRIER.ID
+                  EFF.CARRIER.NAME=APP.CARRIER.NAME
+                  IF EFF.BENCH.AMT+0=0 AND EFF.CONTR.AMT+0=0 THEN
+                     EFF.CARRIER.ID='None'
+                     EFF.CARRIER.NAME='No Approved Carriers for this Route'
+                  END
+                  EFF.ERROR=ERROR
+                  EFF.CONTR.TARIFF=CONTR.TARIFF    ; * JMK05
+                  EFF.BENCH.TARIFF=BENCH.TARIFF    ; * JMK05
+                  IF ORIG.CARRIER.OPT='O' THEN
+                     SCC.BENCH.AMT=BENCH.AMT
+                     SCC.CONTR.AMT=CONTR.AMT
+                     SCC.BENCH.FRT.AMT=BENCH.AMT-BENCH.FSC.AMT
+                     SCC.BENCH.FSC.AMT=BENCH.FSC.AMT
+                     SCC.CONTR.FRT.AMT=CONTR.AMT-CONTR.FSC.AMT
+                     SCC.CONTR.FSC.AMT=CONTR.FSC.AMT
+                     SCC.CONS.FRT.AMT=SCC.BENCH.FRT.AMT-SCC.CONTR.FRT.AMT
+                     SCC.CONS.FSC.AMT=SCC.BENCH.FSC.AMT-SCC.CONTR.FSC.AMT
+                     SCC.LOGIS.AMT=FRT.LOGIS.AMT
+                     SCC.CARRIER.ID=APP.CARRIER.ID
+                     SCC.CARRIER.NAME=APP.CARRIER.NAME
+                     IF SCC.BENCH.AMT+0=0 AND SCC.CONTR.AMT+0=0 THEN
+                        SCC.CARRIER.ID='None'
+                        SCC.CARRIER.NAME='No Approved Carriers for this Route'
+                     END
+                     SCC.ERROR=ERROR
+                     SCC.CONTR.CHG.CODES=CHANGE(CONTR.CHG.CODES,@SVM,"|")
+                     SCC.CONTR.CHG.CLASS=CHANGE(CONTR.CHG.CLASS,@SVM,"|")
+                     SCC.CONTR.CHG.WGTS=CHANGE(CONTR.CHG.WGTS,@SVM,"|")
+                     SCC.CONTR.CHG.RATES=CHANGE(CONTR.CHG.RATES,@SVM,"|")
+                     SCC.CONTR.CHG.AMTS=CHANGE(FMTS(CONTR.CHG.AMTS,'R26'),@SVM,"|")
+                     SCC.CONTR.DISC.AMT=CHANGE(FMTS(CONTR.DISC.AMT,'R26'),@SVM,"|")
+                     SCC.CONTR.GROSS.AMTS=CHANGE(FMTS(CONTR.GROSS.AMTS,'R26'),@SVM,"|")
+                     SCC.CONTR.DISC.PCNTS=CHANGE(FMTS(CONTR.DISC.PCNTS,'R26'),@SVM,"|")
+                     SCC.CONTR.DISC.AMTS=CHANGE(FMTS(CONTR.DISC.AMTS,'R26'),@SVM,"|")
+                     SCC.CONTR.TARIFF=CONTR.TARIFF           ; * JMK05
+                     SCC.BENCH.TARIFF=BENCH.TARIFF           ; * JMK05
+                  END
+               CASE TIMES=3
+                  IF ORIG.CARRIER.OPT='O' THEN
+                     LCC.BENCH.AMT=BENCH.AMT
+                     LCC.CONTR.AMT=CONTR.AMT
+                     LCC.BENCH.FRT.AMT=BENCH.AMT-BENCH.FSC.AMT
+                     LCC.BENCH.FSC.AMT=BENCH.FSC.AMT
+                     LCC.CONTR.FRT.AMT=CONTR.AMT-CONTR.FSC.AMT
+                     LCC.CONTR.FSC.AMT=CONTR.FSC.AMT
+                     LCC.CONS.FRT.AMT=LCC.BENCH.FRT.AMT-LCC.CONTR.FRT.AMT
+                     LCC.CONS.FSC.AMT=LCC.BENCH.FSC.AMT-LCC.CONTR.FSC.AMT
+                     LCC.LOGIS.AMT=FRT.LOGIS.AMT
+                     LCC.CARRIER.ID=APP.CARRIER.ID
+                     LCC.CARRIER.NAME=APP.CARRIER.NAME
+                     IF LCC.BENCH.AMT+0=0 AND LCC.CONTR.AMT+0=0 THEN
+                        LCC.CARRIER.ID='None'
+                        LCC.CARRIER.NAME='No Approved Carriers for this Route'
+                     END
+                     LCC.ERROR=ERROR
+                     LCC.CONTR.CHG.CODES=CHANGE(CONTR.CHG.CODES,@SVM,"|")
+                     LCC.CONTR.CHG.CLASS=CHANGE(CONTR.CHG.CLASS,@SVM,"|")
+                     LCC.CONTR.CHG.WGTS=CHANGE(CONTR.CHG.WGTS,@SVM,"|")
+                     LCC.CONTR.CHG.RATES=CHANGE(CONTR.CHG.RATES,@SVM,"|")
+                     LCC.CONTR.CHG.AMTS=CHANGE(FMTS(CONTR.CHG.AMTS,'R26'),@SVM,"|")
+                     LCC.CONTR.DISC.AMT=CHANGE(FMTS(CONTR.DISC.AMT,'R26'),@SVM,"|")
+                     LCC.CONTR.GROSS.AMTS=CHANGE(FMTS(CONTR.GROSS.AMTS,'R26'),@SVM,"|")
+                     LCC.CONTR.DISC.PCNTS=CHANGE(FMTS(CONTR.DISC.PCNTS,'R26'),@SVM,"|")
+                     LCC.CONTR.DISC.AMTS=CHANGE(FMTS(CONTR.DISC.AMTS,'R26'),@SVM,"|")
+                     LCC.CONTR.TARIFF=CONTR.TARIFF           ; * JMK05
+                     LCC.BENCH.TARIFF=BENCH.TARIFF           ; * JMK05
+                  END
+            END CASE
+         NEXT TIMES
+         IF DISP.FLG = 1 THEN
+****            CRT "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$    ":OCONV(TIME(),"MTHS"):"  ":GB.LINE.CNT:" ":GB.CNT
+         END
+
+         NVAL=DCOUNT(LINE<1>,@VM)
+         IF NVAL>103 THEN
+            FOR VAL=104 TO NVAL
+               DEL LINE<1,104>
+            NEXT VAL
+         END
+
+         IF ORIG.CARRIER.OPT#'O' THEN
+            LINE<1,104>=ORIG.BENCH.FRT.AMT'R26'
+            LINE<1,105>=ORIG.BENCH.FSC.AMT'R26'
+            LINE<1,106>=ORIG.CONTR.FRT.AMT'R26'
+            LINE<1,107>=ORIG.CONTR.FSC.AMT'R26'
+            LINE<1,108>=ORIG.CONS.FRT.AMT'R26'
+            LINE<1,109>=ORIG.CONS.FSC.AMT'R26'
+            LINE<1,110>=ORIG.CARRIER.ID:'-':ORIG.CARRIER.NAME
+            LINE<1,111>=ORIG.CONTR.TARIFF          ; * JMK05
+            LINE<1,112>=ORIG.BENCH.TARIFF          ; * JMK05
+
+            LINE<1,113>=EFF.BENCH.FRT.AMT'R26'
+            LINE<1,114>=EFF.BENCH.FSC.AMT'R26'
+            LINE<1,115>=EFF.CONTR.FRT.AMT'R26'
+            LINE<1,116>=EFF.CONTR.FSC.AMT'R26'
+            LINE<1,117>=EFF.CONS.FRT.AMT'R26'
+            LINE<1,118>=EFF.CONS.FSC.AMT'R26'
+            LINE<1,119>=EFF.CARRIER.ID:'-':EFF.CARRIER.NAME
+            LINE<1,120>=EFF.CONTR.TARIFF           ; * JMK05
+            LINE<1,121>=EFF.BENCH.TARIFF           ; * JMK05
+             LINE<1,124>=CLASS 
+            IF ERROR#'' THEN
+               LINE<1,122>=ERROR
+            END
+            IF QV.OPT=1 THEN             ; * JMK06
+               PRO.ID=CARRIER.ID:'*':PRO:'*0'
+               READ PRO.REC FROM F.BILLS,PRO.ID ELSE PRO.REC=''
+               VIN = ''
+               VIN<1> = PRO.ID           ; * JMK06
+               VIN<2> = CLIENT.REC(84)   ; * JMK06 ; * DATE.SETUP
+               VIN<3> = CLIENT.REC(34)   ; * JMK06 ; * DISCOUNT.RATE
+               VIN<4> = CLIENT.REC(33)   ; * JMK06 ; * OVERCHG.RATE
+               VIN<5> = CLIENT.REC(85)   ; * JMK06 ; * CONSULTING.RATE -
+               VIN<6> = CLIENT.REC(88)   ; * JMK06 ; * UPS.RATE        -
+               VIN<7> = CARRIER.ID       ; * JMK06 ; * CARRIER.ID
+               VIN<8> = CLIENT.ID        ; * JMK06 ; * CLIENT Number (For Watlow Override)
+               VIN<9> = USER             ; * JMK06 ; * USER (Name of Current User)
+               VIN<10> = CLIENT.REC(131)           ; * JMK06 ; * OVERCHG.CAP     -
+               VIN<11> = CLIENT.REC(177)           ; * JMK06 ; * MGMT.SVC.TMODE  -
+               VIN<12> = CLIENT.REC(178)           ; * JMK06 ; * MGMT.SVC.RATE   -
+               VIN<13> = CLIENT.REC(187)           ; * JMK06 ; * FDX.GRD.RATE    -
+               VIN<14> = CLIENT.REC(200)           ; * JMK06 ; * FDX.AIR.RATE    -
+               VIN<15> = CLIENT.REC(208)           ; * JMK06 ; * TRANS.MODE      -
+               VIN<16> = CLIENT.REC(209)           ; * JMK06 ; * TRANS.FEE       -
+               VIN<17> = CLIENT.REC(210)           ; * JMK06 ; * TRANS.PCT       -
+               VIN<18> = CLIENT.REC(211)           ; * JMK06 ; * TRANS.MIN       -
+               VIN<19> = CLIENT.REC(212)           ; * JMK06 ; * TRANS.CAP       -
+               VIN<20> = CLIENT.REC(213)           ; * JMK06 ; * TRANS.MAX       -
+               VIN<21> = CLIENT.REC(214)           ; * JMK06 ; * CARR.CODE       -
+               VIN<22> = CLIENT.REC(215)           ; * JMK06 ; * CARR.FEE        -
+               VIN<23> = CLIENT.REC(216)           ; * JMK06 ; * CARR.PCT        -
+               VIN<24> = CLIENT.REC(217)           ; * JMK06 ; * CARR.MIN        -
+               VIN<25> = CLIENT.REC(218)           ; * JMK06 ; * CARR.CAP        -
+               VIN<26> = CLIENT.REC(219)           ; * JMK06 ; * CARR.MAX        -
+*              VIN<27>  = OVRC.MAX
+               VIN<28> = CLIENT.REC(268)           ; * JMK06 ; * CONSUL.CAP      -
+
+               CALL CALC.COMMISSION(PRO.REC,VIN,VOUT)
+               CONS.PERC= VOUT<8>
+               LINE<1,123>=CONS.PERC 'R28'
+*
+            END                          ; * JMK06
+            IF ADDZIP.ARRAY#'' THEN
+               COLLECT=0
+               IF USER='SWINSTEAD' OR USER='RBOEHNLEIN' THEN
+                  IF CLIENT.ID='01079' THEN COLLECT=1
+                  IF CLIENT.ID='01083' THEN COLLECT=1
+                  IF CLIENT.ID='01101' THEN COLLECT=1
+                  IF CLIENT.ID='01113' THEN COLLECT=1
+               END
+               FOR ADDZIP.VAL=1 TO ADDZIP.NVAL
+                  BEGIN CASE
+                     CASE IOT='O'
+                        ORIG.ZIP=ADDZIP.ARRAY<1,ADDZIP.VAL>
+                        ORIG.CITY=ADDZIP.ARRAY<2,ADDZIP.VAL>
+                        ORIG.ST=ADDZIP.ARRAY<3,ADDZIP.VAL>
+                     CASE IOT='I'
+                        DEST.ZIP=ADDZIP.ARRAY<1,ADDZIP.VAL>
+                        DEST.CITY=ADDZIP.ARRAY<2,ADDZIP.VAL>
+                        DEST.ST=ADDZIP.ARRAY<3,ADDZIP.VAL>
+                     CASE IOT='T'
+                  END CASE
+                  IF CARRIER.OPT='L' THEN CARRIER.ID='ALL'
+                  IF NUM(CARRIER.OPT) THEN CARRIER.ID=CARRIER.OPT
+                  IF CARRIER.OPT='A' THEN CARRIER.ID='99990'
+                  GOSUB RATE.SHIPMENT
+                  IF CARRIER.OPT='L' THEN
+                     IF CARRIER.EST.ARRAY#'' THEN
+                        APP.CARRIER.ID=CARRIER.EST.ARRAY<2,1>
+                        APP.CARRIER.NAME=CARRIER.EST.ARRAY<3,1>
+                        ERROR=CARRIER.EST.ARRAY<7,1>
+                        BENCH.AMT=CARRIER.EST.ARRAY<8,1>
+                        BENCH.FSC.AMT=CARRIER.EST.ARRAY<9,1>
+                        CONTR.AMT=CARRIER.EST.ARRAY<10,1>
+                        CONTR.FSC.AMT=CARRIER.EST.ARRAY<11,1>
+                     END ELSE
+                        CARRIER.ID=LINE<1,CARPOS>'R%5'
+                        APP.CARRIER.ID=LINE<1,CARPOS>'R%5'
+                        APP.CARRIER.NAME=LINE<1,CARNPOS>
+                        ERROR=''
+                        A.VOUT=''
+                        GOSUB RATE.SHIPMENT
+                     END
+                  END ELSE
+                     APP.CARRIER.ID=LINE<1,CARPOS>'R%5'
+                     APP.CARRIER.NAME=LINE<1,CARNPOS>
+                  END
+                  LINE<1,122+((ADDZIP.VAL-1)*2)+1>=CONTR.AMT'R26'
+                  IF ERROR#'' THEN
+                     LINE<1,122+((ADDZIP.VAL-1)*2)+2>=ERROR
+                  END
+               NEXT ADDZIP.VAL
+            END
+         END ELSE
+            LINE<1,104>=ORIG.BENCH.FRT.AMT'R26'
+            LINE<1,105>=ORIG.CONTR.FRT.AMT'R26'
+            LINE<1,106>=ORIG.LOGIS.AMT'R26'
+            LINE<1,107>=ORIG.CARRIER.ID:'-':ORIG.CARRIER.NAME
+            LINE<1,108>=ORIG.CONTR.CHG.CODES
+            LINE<1,109>=ORIG.CONTR.CHG.CLASS
+            LINE<1,110>=ORIG.CONTR.CHG.WGTS
+            LINE<1,111>=ORIG.CONTR.CHG.RATES
+            LINE<1,112>=ORIG.CONTR.GROSS.AMTS
+            LINE<1,113>=ORIG.CONTR.DISC.PCNTS
+            LINE<1,114>=ORIG.CONTR.DISC.AMTS
+            LINE<1,115>=ORIG.CONTR.CHG.AMTS
+            LINE<1,116>=ORIG.CONTR.TARIFF          ; * JMK05
+            LINE<1,117>=ORIG.BENCH.TARIFF          ; * JMK05
+
+            LINE<1,118>=SCC.BENCH.FRT.AMT'R26'
+            LINE<1,119>=SCC.CONTR.FRT.AMT'R26'
+            LINE<1,120>=SCC.LOGIS.AMT'R26'
+            LINE<1,121>=SCC.CARRIER.ID:'-':SCC.CARRIER.NAME
+            LINE<1,122>=SCC.CONTR.CHG.RATES
+            LINE<1,123>=SCC.CONTR.GROSS.AMTS
+            LINE<1,124>=SCC.CONTR.DISC.PCNTS
+            LINE<1,125>=SCC.CONTR.DISC.AMTS
+            LINE<1,126>=SCC.CONTR.CHG.AMTS
+            LINE<1,127>=SCC.CONTR.TARIFF           ; * JMK05
+            LINE<1,128>=SCC.CONTR.TARIFF           ; * JMK05
+            IF SCC.ERROR#'' THEN
+               LINE<1,129>=SCC.ERROR
+            END
+
+            LINE<1,130>=LCC.BENCH.FRT.AMT'R26'
+            LINE<1,131>=LCC.CONTR.FRT.AMT'R26'
+            LINE<1,132>=LCC.LOGIS.AMT'R26'
+            LINE<1,133>=LCC.CARRIER.ID:'-':LCC.CARRIER.NAME
+            LINE<1,134>=LCC.CONTR.CHG.RATES
+            LINE<1,135>=LCC.CONTR.GROSS.AMTS
+            LINE<1,136>=LCC.CONTR.DISC.PCNTS
+            LINE<1,137>=LCC.CONTR.DISC.AMTS
+            LINE<1,138>=LCC.CONTR.CHG.AMTS
+            LINE<1,139>=LCC.CONTR.TARIFF           ; * JMK05
+            LINE<1,140>=LCC.BENCH.TARIFF           ; * JMK05
+            IF LCC.ERROR#'' THEN
+               LINE<1,141>=LCC.ERROR
+            END
+         END
+         IF ORIG.CARRIER.OPT#'O' THEN
+            ***NEW.DA=CHANGE(NEW.DA,@VM,TAB)
+            **   NEW.DA<-1>=LINE
+            LINE=CHANGE(LINE,@VM,TAB)
+            WRITESEQ LINE ON OUTSEQ.FILE ELSE
+               CRT "WRITE FILE ERROR ":OUTSEQ.FILE
+            END
+         END ELSE
+            IF ORIG.ERROR='' AND ORIG.CARRIER.ID#'None' THEN
+               ****	 NEW.DA=CHANGE(NEW.DA,@VM,TAB)
+               LINE=CHANGE(LINE,@VM,TAB)
+               **     NEW.DA<-1>=LINE
+               WRITESEQ LINE ON OUTSEQ.FILE ELSE
+                  CRT "WRITE FILE ERROR ":OUTSEQ.FILE
+               END
+            END
+         END
+         BLS.CARR.CHG=ICONV(LINE<1,BMPOS>,'MD2')
+         BLS.ACT.CHG=ICONV(LINE<1,ACPOS>,'MD2')
+         RTD.CARR.CHG=ORIG.BENCH.AMT
+         RTD.ACT.CHG=ORIG.CONTR.AMT
+
+
+SKIP.LINE:****
+      REPEAT
+      ************ **********************    NEXT ROW
+      NEW.DA=CHANGE(NEW.DA,@VM,TAB)
+
+      IF QV.OPT=1 THEN                   ; * JMK06
+         OBEG.DATE=BEG.DATE'D4/'         ; * JMK76
+         OEND.DATE=END.DATE'D4/'         ; * JMK76
+         NEW.ITEM.NAME='RR-':ORIG.CARRIER.OPT:'-':ITEM.NAME[1,4]:OBEG.DATE[7,4]:OBEG.DATE[1,2]:OBEG.DATE[4,2]:'-':OEND.DATE[7,4]:OEND.DATE[1,2]:OEND.DATE[4,2]:'.XLS'      ; * JMK76
+         *******     WRITE NEW.DA ON F.BILLDATA.QV,NEW.ITEM.NAME         ; * JMK06    GRB01
+         ********      DELETE F.BILLDATA,ITEM.NAME     ; * JMK06                 GRB01
+      END ELSE
+         ********    WRITE NEW.DA ON F.BILLDATA,'RR-':ORIG.CARRIER.OPT:'-':ITEM.NAME     ; GRB01
+      END                                ; * JMK06
+      RVOUT<1>='RR-':ORIG.CARRIER.OPT:'-':ITEM.NAME
+      ERROR=''
+      RETURN
+      STOP
+
+**************************************************************************
+RATE.SHIPMENT:***
+**************************************************************************
+*    X=LEN(OSHIP.DATE)
+*    CALL DATE.IN(OSHIP.DATE,"",1)
+      RATE.DATE=ICONV(ORATE.DATE,'D')
+      IF RATE.DATE='' THEN
+         ERROR='Invaid Ship Date of ':ORATE.DATE
+         RETURN
+      END
+      IF RATE.DATE > DATE() THEN
+         ERROR='Ship date cannot be in the future. Use today as the date.'
+         RETURN
+      END
+      NUM.WEIGHTS = DCOUNT(WEIGHTS,@VM)
+      TOT.WEIGHT = 0
+      TOT.WEIGHT = SUM(WEIGHTS)
+      IF TOT.WEIGHT GT 15000 THEN
+         ERROR = "Total weight exceeds program limits. Please contact AFS"
+         RETURN
+      END
+**************************************
+* READ TABLES THAT MAY BE NEEDED
+***************************************
+
+      READ DCLIENTS FROM F.CLIENTS,CLIENT.ID ELSE
+         ERROR = "Client ":CLIENT.ID:" not on file."
+         RETURN
+      END
+      CL.LOG.FSC=DCLIENTS<111>
+      LOGISTICS=DCLIENTS<93>='Y'
+      CARR.ONLY.FSC=DCLIENTS<189>
+      MAX.LTL=15000
+      IF DCLIENTS<150>#'' THEN MAX.LTL=DCLIENTS<150>
+      IN.QUOTE.PERC = DCLIENTS<136>
+      OUT.QUOTE.PERC = DCLIENTS<137>
+      TP.QUOTE.PERC = DCLIENTS<138>
+      BEGIN CASE
+         CASE IOT = "I"
+            IOT.DESC = "Inbound"
+            SAVINGS.QUOTE.PERC=IN.QUOTE.PERC
+         CASE IOT = "O"
+            IOT.DESC = "Outbound"
+            SAVINGS.QUOTE.PERC=OUT.QUOTE.PERC
+         CASE IOT = "T"
+            IOT.DESC = "Third Party"
+            SAVINGS.QUOTE.PERC=TP.QUOTE.PERC
+      END CASE
+      IF SAVINGS.QUOTE.PERC = 'NO' THEN
+         ERROR="Cannot Rate! Quote percent has not been set up."
+         RETURN
+      END
+*
+* Select Carrier(s) (Even if only one) to Loop thru
+*
+      STMT= 'SELECT FB.AUDIT,':AUDIT.CLIENT.ID
+      STMT:=' WITH 1 = "LTLALL"'
+      IF CARRIER.ID # 'ALL' THEN
+         STMT:=" AND WITH CARRIER# '":CARRIER.ID:"'"
+      END ELSE
+         STMT:=' AND WITH 11 = "ENABLE"'
+         STMT:=' AND WITH 13 = "Y"'      ; * Core Carrier Flag = "Y"
+      END
+      EXECUTE STMT RTNLIST CHECK.LIST CAPTURING OUTPUT RETURNING JUNK
+      IF @SELECTED < 1 THEN
+         IF CARRIER.ID # 'ALL' THEN
+            ERROR='Carrier ':CARRIER.ID:' is not set up for freight estimates'
+         END ELSE
+            ERROR='There are no core carriers set up for freight estimates'
+         END
+         RETURN
+      END
+*
+* Setup AUDIT.VIN
+*
+      READ O.ZIP.REC FROM F.ZIPS,ORIG.ZIP ELSE
+         READ O.ZIP.REC FROM F.CAN.ZIPS,ORIG.ZIP ELSE
+            ERROR=ORIG.ZIP:' ZIP NOT ON FILE, PLEASE TRY ANOTHER ZIP'
+            RETURN
+         END
+      END
+      ORIG.CITY = O.ZIP.REC<1>
+      ORIG.ST = O.ZIP.REC<2>
+
+      READ D.ZIP.REC FROM F.ZIPS,DEST.ZIP ELSE
+         READ D.ZIP.REC FROM F.CAN.ZIPS,DEST.ZIP ELSE
+            ERROR=DEST.ZIP:' ZIP NOT ON FILE, PLEASE TRY ANOTHER ZIP'
+            RETURN
+         END
+      END
+      DEST.CITY = D.ZIP.REC<1>
+      DEST.ST = D.ZIP.REC<2>
+
+      A.VIN=''
+      A.VIN<3>=RATE.DATE
+      A.VIN<11>=AUDIT.CLIENT.ID
+      A.VIN<12>=IOT
+      A.VIN<13,1>=ORIG.ZIP
+      A.VIN<13,2>=ORIG.CITY
+      A.VIN<13,3>=ORIG.ST
+      A.VIN<14,1>=DEST.ZIP
+      A.VIN<14,2>=DEST.CITY
+      A.VIN<14,3>=DEST.ST
+      A.VIN<16>=USER
+
+*     A.VIN<17>=1                        ; *Misroute Flag to Ignore Misc Charge Code Errors
+      A.VIN<18>=CLASSES
+      A.VIN<19>=WEIGHTS
+      IF DISP.FLG = 1 THEN
+****DEBUG
+*****         CRT "weight ":WEIGHTS
+      END
+      A.VIN<21>=MISC.CHG.CODES
+      A.VIN<22>=MISC.CHG.AMTS
+      A.VIN<23>=MISC.CHG.AMTS
+      A.VIN<24>=LOGISTICS
+      A.VIN<25>=''
+      A.VIN<35>=CL.LOG.FSC='N'           ; * Flag to NOT Calculate Log FSC
+      A.VIN<46>=MAX.LTL                  ; * JMK02
+      A.VIN<48>=DCLIENTS<188>            ; * JMK03 Forced Benchmark Minimum Flag Y/N
+      A.VIN<49>=CARR.ONLY.FSC            ; * JMK05
+*
+**** Begin "Loop" of all Carriers *****
+*
+      CARRIER.EST.ARRAY=''
+*<1>=Amount (MV Lowest to Highest)
+*<2>=Carrier #
+*<3>=Carrier Name
+*<4>=Carrier Address
+*<5>=Carrier City
+*<6>=Carrier State
+*<7>=Error (If Any)
+*<8>=Flag
+*********************************************************************
+GET.NEXT.CARRIER:
+*********************************************************************
+      READNEXT CHECK.CARRIER.ID FROM CHECK.LIST ELSE
+         RETURN
+      END
+      ERROR=''
+      IF AUDIT.CLIENT.ID='01505' THEN
+         CARR.ONLY.FSC=DCLIENTS<189>
+         IF CARR.ONLY.FSC='Y' OR CARR.ONLY.FSC='C' THEN
+            BEGIN CASE
+               CASE CHECK.CARRIER.ID='00124'
+                  CARR.ONLY.FSC='N'
+               CASE CHECK.CARRIER.ID='01786'
+                  CARR.ONLY.FSC='N'
+               CASE CHECK.CARRIER.ID='05156'
+                  CARR.ONLY.FSC='N'
+               CASE CHECK.CARRIER.ID='08924'
+                  CARR.ONLY.FSC='N'
+            END CASE
+         END
+         A.VIN<49>=CARR.ONLY.FSC
+      END
+      IF AUDIT.CLIENT.ID='01758' THEN    ; * JMK02
+         CARR.ONLY.FSC=DCLIENTS<189>     ; * JMK02
+         IF CARR.ONLY.FSC='Y' OR CARR.ONLY.FSC='C' THEN      ; * JMK02
+            BEGIN CASE                   ; * JMK02
+               CASE CHECK.CARRIER.ID='00748'       ; * JMK02
+                  CARR.ONLY.FSC='N'      ; * JMK02
+            END CASE                     ; * JMK02
+         END                             ; * JMK02
+         A.VIN<49>=CARR.ONLY.FSC         ; * JMK02
+      END                                ; * JMK02
+      IF AUDIT.CLIENT.ID='01784' THEN    ; * JMK04
+         CARR.ONLY.FSC=DCLIENTS<189>     ; * JMK04
+         IF CARR.ONLY.FSC='Y' OR CARR.ONLY.FSC='C' THEN      ; * JMK04
+            BEGIN CASE                   ; * JMK04
+               CASE CHECK.CARRIER.ID='00014'       ; * JMK04
+                  CARR.ONLY.FSC='N'      ; * JMK04
+            END CASE                     ; * JMK04
+         END                             ; * JMK04
+         A.VIN<49>=CARR.ONLY.FSC         ; * JMK04
+      END                                ; * JMK04
+      IF AUDIT.CLIENT.ID='01810' THEN    ; * JMK04
+         CARR.ONLY.FSC=DCLIENTS<189>     ; * JMK04
+         IF CARR.ONLY.FSC='Y' OR CARR.ONLY.FSC='C' THEN      ; * JMK04
+            BEGIN CASE                   ; * JMK04
+               CASE CHECK.CARRIER.ID='00014'       ; * JMK04
+                  CARR.ONLY.FSC='N'      ; * JMK04
+            END CASE                     ; * JMK04
+         END                             ; * JMK04
+         A.VIN<49>=CARR.ONLY.FSC         ; * JMK04
+      END                                ; * JMK04
+      GOSUB GET.CARRIER.INFO
+      IF ERROR#'' AND CARRIER.ID # 'ALL' THEN
+         ERROR='Carrier ':CARRIER.ID:' is not set up for freight estimates'
+         RETURN
+      END
+**********************************************************************
+      A.VIN<10>= CHECK.CARRIER.ID        ; * Add "Current" Carrier to AUDIT.VIN
+      A.VIN<50>= CHECK.CARRIER.SCAC      ; * JMK26
+      A.VIN<51>= CHECK.CARRIER.TYPE      ; * JMK26
+      VIN=A.VIN
+      A.VOUT=''
+      TEST.VIN=CHANGE(A.VIN,@AM,@VM)
+
+      VIN<6> = ""                        ; * NKH02
+      * Begin NKH01
+      GOSUB GET.CC.INFO
+
+      ORIG.DIR.FLG = ''
+      DEST.DIR.FLG = ''
+      COMB.DIR.FLG = ''
+
+      SCAC.COUNT = DCOUNT(CCVOUT<1>,@VM)
+      FOR SC = 1 TO SCAC.COUNT
+         LOCATE(CHECK.CARRIER.SCAC,CCVOUT,1,SC;S.POS;'AL') THEN
+            * From TransitMethod
+            TRANSIT.TIME = CCVOUT<29,SC>
+            IF TRANSIT.TIME = 0 THEN TRANSIT.TIME = 1
+            ORIG.DIR.FLG = CCVOUT<31,SC>[1,1]
+            IF ORIG.DIR.FLG = 'C' OR ORIG.DIR.FLG = 'P' THEN ORIG.DIR.FLG = 'I'
+            DEST.DIR.FLG = CCVOUT<30,SC>[1,1]
+            IF DEST.DIR.FLG = 'C' OR DEST.DIR.FLG = 'P' THEN DEST.DIR.FLG = 'I'
+            COMB.DIR.FLG = CCVOUT<32,SC>[1,1]
+            IF COMB.DIR.FLG = 'C' OR COMB.DIR.FLG = 'P' THEN COMB.DIR.FLG = 'I'
+         END
+      NEXT SC
+
+      VIN<56>=ORIG.DIR.FLG
+      VIN<57>=DEST.DIR.FLG
+      VIN<58>=COMB.DIR.FLG
+      VIN<59>=AUDIT.CLIENT.ID            ; * NKH04
+      * End NKH01
+      IF OLD.VIN # "" AND OLD.VIN # VIN THEN
+      END ELSE
+         SAME.CNT +=1
+****         CRT " THE SAME   ":SAME.CNT
+****         CRT "************************************************************"
+      END
+****      CRT "NEW VALUE ":VIN
+****      CRT "OLD VALUE ":OLD.VIN
+****      CRT
+
+      CALL FB.AUTO.V2(VIN,A.VOUT,D.AUDIT,CONTR.DFSC,BENCH.DFSC,DTARIFFS,DTARIFF.DATE.XREF,LI.CODES,F.AUDIT.TABLES,F.AUDIT.ZIPS,F.PCIN,F.PCOUT,F.TABLES)          ; * NKH01
+      GB.CNT = GB.CNT + 1
+      OLD.VIN = VIN
+      WHY=A.VOUT<24>                     ; * Save for Debugging purposes
+      A.VOUT<24>=''                      ; * Kill Why So you can look at A.VOUT with Debugger
+      CONTR.AMT = A.VOUT<8>
+      BENCH.AMT = A.VOUT<9>
+      OLA.ERROR = A.VOUT<1>
+      CONTR.FSC.AMT=A.VOUT<46,7>
+      CONTR.CHG.CODES=CHANGE(A.VOUT<40>,@VM,@SVM)
+      CONTR.CHG.CLASS=CHANGE(A.VOUT<41>,@VM,@SVM)
+      CONTR.CHG.WGTS=CHANGE(A.VOUT<42>,@VM,@SVM)
+      CONTR.CHG.RATES=CHANGE(A.VOUT<43>,@VM,@SVM)
+      CONTR.CHG.AMTS=CHANGE(A.VOUT<44>,@VM,@SVM)
+      CONTR.DISC.AMT=CHANGE(A.VOUT<45>,@VM,@SVM)
+      CONTR.GROSS.AMTS=CHANGE(A.VOUT<86>,@VM,@SVM)
+      CONTR.DISC.PCNTS=CHANGE(A.VOUT<87>,@VM,@SVM)
+      CONTR.DISC.AMTS=CHANGE(A.VOUT<88>,@VM,@SVM)
+      BEGIN CASE
+         CASE A.VIN<49>='Y'
+            BENCH.FSC.AMT=A.VOUT<47,7>
+         CASE A.VIN<49>='C'
+            BENCH.FSC.AMT=A.VOUT<47,7>
+         CASE A.VIN<49>='O'
+            BENCH.FSC.AMT=A.VOUT<83,7>
+         CASE 1
+            BENCH.FSC.AMT=A.VOUT<48,7>
+      END CASE
+      CONTR.TARIFF=A.VOUT<92>            ; * JMK05
+      BENCH.TARIFF=A.VOUT<93>            ; * JMK05
+      CONTR.TIME.LINE=A.VOUT<94>         ; * JMKXX
+      BENCH.TIME.LINE=A.VOUT<95>         ; * JMKXX
+      AUDIT=A.VOUT<2>
+      IF OLA.ERROR # "" THEN
+         IF CARRIER.ID # 'ALL' AND CONTR.AMT+0=0 THEN
+            ERROR=OLA.ERROR
+            RETURN
+         END
+      END
+      IF AUDIT # "Y" AND CARRIER.ID="ALL" THEN GO GET.NEXT.CARRIER
+      IF AUDIT = "MA" THEN OLA.ERROR = "Not an approved carrier for this shipment!"
+      IF CONTR.AMT+0=0 THEN GO GET.NEXT.CARRIER
+      IF LOGISTICS AND BENCH.AMT+0=0 THEN GO GET.NEXT.CARRIER
+*
+*** Add Quote Percentage Logic Here ***
+**********************************************************************
+
+*** Locate and set percentages for quotes and commissions
+      IF LOGISTICS THEN
+         LOCATE RATE.DATE IN DCLIENTS<84> BY 'AR' SETTING POS ELSE
+            POS=POS-1
+         END
+         IF POS LT 1 THEN POS = 1
+         COMM.PERC = DCLIENTS<85,POS>
+         SAVINGS = BENCH.AMT-CONTR.AMT
+*****DEBUG
+         LOG.COMM = SAVINGS*COMM.PERC/100
+         CL.SAVINGS = SAVINGS - LOG.COMM
+         SAVINGS.QUOTE.AMT = CL.SAVINGS*(1-SAVINGS.QUOTE.PERC/10000)
+         QUOTE.AMT=OCONV(CONTR.AMT + LOG.COMM + SAVINGS.QUOTE.AMT,'MR0')
+
+         BENCH.FRT.AMT=BENCH.AMT-BENCH.FSC.AMT
+         CONTR.FRT.AMT=CONTR.AMT-CONTR.FSC.AMT
+         FRT.SAVINGS = BENCH.FRT.AMT-CONTR.FRT.AMT
+         FRT.LOG.COMM = FRT.SAVINGS*COMM.PERC/10000
+         FRT.LOGIS.AMT = OCONV(FRT.LOG.COMM,'MR0')
+         IF FRT.LOGIS.AMT < 0 THEN FRT.LOGIS.AMT = 0
+      END ELSE
+         QUOTE.AMT=CONTR.AMT
+         FRT.LOGIS.AMT=0
+      END
+      QUOTE.AMT=CONTR.AMT
+
+      LOCATE (QUOTE.AMT:'_':BENCH.AMT) IN CARRIER.EST.ARRAY<1> BY 'AR' SETTING POS ELSE NULL
+      INS (QUOTE.AMT:'_':BENCH.AMT) BEFORE CARRIER.EST.ARRAY<1,POS>
+      INS CHECK.CARRIER.ID BEFORE CARRIER.EST.ARRAY<2,POS>
+      INS CHECK.CARRIER.NAME BEFORE CARRIER.EST.ARRAY<3,POS>
+      INS CHECK.CARRIER.STREET BEFORE CARRIER.EST.ARRAY<4,POS>
+      INS CHECK.CARRIER.CITY BEFORE CARRIER.EST.ARRAY<5,POS>
+      INS CHECK.CARRIER.STATE BEFORE CARRIER.EST.ARRAY<6,POS>
+      INS OLA.ERROR BEFORE CARRIER.EST.ARRAY<7,POS>
+      INS BENCH.AMT BEFORE CARRIER.EST.ARRAY<8,POS>
+      INS BENCH.FSC.AMT BEFORE CARRIER.EST.ARRAY<9,POS>
+      INS CONTR.AMT BEFORE CARRIER.EST.ARRAY<10,POS>
+      INS CONTR.FSC.AMT BEFORE CARRIER.EST.ARRAY<11,POS>
+      INS FRT.LOGIS.AMT BEFORE CARRIER.EST.ARRAY<12,POS>
+      INS CONTR.CHG.CODES BEFORE CARRIER.EST.ARRAY<13,POS>
+      INS CONTR.CHG.CLASS BEFORE CARRIER.EST.ARRAY<14,POS>
+      INS CONTR.CHG.WGTS BEFORE CARRIER.EST.ARRAY<15,POS>
+      INS CONTR.CHG.RATES BEFORE CARRIER.EST.ARRAY<16,POS>
+      INS CONTR.CHG.AMTS BEFORE CARRIER.EST.ARRAY<17,POS>
+      INS CONTR.DISC.AMT BEFORE CARRIER.EST.ARRAY<18,POS>
+      INS CONTR.GROSS.AMTS BEFORE CARRIER.EST.ARRAY<19,POS>
+      INS CONTR.DISC.PCNTS BEFORE CARRIER.EST.ARRAY<20,POS>
+      INS CONTR.DISC.AMTS BEFORE CARRIER.EST.ARRAY<21,POS>
+      INS BENCH.TARIFF BEFORE CARRIER.EST.ARRAY<22,POS>      ; * JMK05
+      INS CONTR.TARIFF BEFORE CARRIER.EST.ARRAY<23,POS>      ; * JMK05
+      INS BENCH.TIME.LINE BEFORE CARRIER.EST.ARRAY<24,POS>   ; * JMK05
+      INS CONTR.TIME.LINE BEFORE CARRIER.EST.ARRAY<25,POS>   ; * JMK05
+      GO GET.NEXT.CARRIER
+**************************************************************************
+GET.CARRIER.INFO:***
+**************************************************************************
+      READ CHECK.CARRIER.REC FROM F.CARRIERS,CHECK.CARRIER.ID ELSE
+         ERROR = "Carrier ":CHECK.CARRIER.ID:" not on file."
+         IF CARRIER.ID='ALL' THEN        ; * DRF01
+            CHECK.CARRIER.TYPE=''        ; * DRF01
+            D.AUDIT=''                   ; * DRF01
+         END                             ; * DRF01
+         RETURN
+      END
+      CHECK.CARRIER.NAME = CHECK.CARRIER.REC<1>
+      CHECK.CARRIER.STREET = TRIM(CHANGE(CHECK.CARRIER.REC<2>,@VM,' '))
+      CHECK.CARRIER.CITY = CHECK.CARRIER.REC<3>
+      CHECK.CARRIER.STATE = CHECK.CARRIER.REC<4>
+      CHECK.CARRIER.SCAC = CHECK.CARRIER.REC<12>   ; *Added By ROB GAUDET 9/23/2003
+      CHECK.CARRIER.STATUS = CHECK.CARRIER.REC<89>           ; * JMK14
+      IF CHECK.CARRIER.STATUS = "I" THEN           ; * JMK14
+         ERROR = "CARRIER IS NOT ACTIVE - CARRIER# ":CHECK.CARRIER.ID  ; * JMK14
+         IF CARRIER.ID='ALL' THEN        ; * DRF01
+            CHECK.CARRIER.TYPE=''        ; * DRF01
+            D.AUDIT=''                   ; * DRF01
+         END                             ; * DRF01
+         RETURN                          ; * JMK14
+      END                                ; * JMK14
+      CHECK.CARRIER.TYPE = 'A'           ; * JMK09
+      IF CHECK.CARRIER.REC<44>='6' THEN  ; * JMK09
+         CHECK.CARRIER.TYPE='B'          ; * JMK09
+      END                                ; * JMK09
+      CHECK.CARRIER.TEXT=TRIM(CHECK.CARRIER.ID:' ':CHECK.CARRIER.NAME:' ':CHECK.CARRIER.STREET:' ':CHECK.CARRIER.CITY)
+      READ D.AUDIT FROM F.AUDIT, CHECK.CARRIER.ID ELSE
+         ERROR = "CARRIER NOT SETUP FOR AUTO AUDIT - CARRIER#":CHECK.CARRIER.ID
+         RETURN
+      END
+      IF D.AUDIT<11>#'ENABLE' THEN
+         ERROR='Not Considered in On-Line Audit - Carrier Disabled'
+         RETURN
+      END
+      READ BENCH.DFSC FROM F.BC.FSC,'B*':CHECK.CARRIER.ID:'*':AUDIT.CLIENT.ID ELSE
+         READ BENCH.DFSC FROM F.BC.FSC,'B*':CHECK.CARRIER.ID ELSE BENCH.DFSC=''
+      END
+      IF BENCH.DFSC<30>='DISABLE' THEN
+         BENCH.DFSC=''                   ; ** No Effect
+         CONTR.DFSC=''
+      END ELSE
+         READ CONTR.DFSC FROM F.BC.FSC,'C*':CHECK.CARRIER.ID:'*':AUDIT.CLIENT.ID ELSE CONTR.DFSC=BENCH.DFSC
+         IF CONTR.DFSC<30>='DISABLE' THEN CONTR.DFSC=''
+      END
+      RETURN
+
+* Begin NKH01
+*********************************************************************
+GET.CC.INFO:
+*********************************************************************
+      IF CARRIER.ID > '' AND CARRIER.ID # 'ALL' THEN
+         READV CARRIER.SCAC FROM F.CARRIERS, CARRIER.ID, 12 ELSE CARRIER.SCAC = ''
+      END ELSE
+         CARRIER.SCAC = 'ALL'
+      END
+
+      READV ORIG.COUNTRY FROM ZIPS, ORIG.ZIP, 3 ELSE
+         IF NUM(ORIG.ZIP[1,1]) THEN
+            ORIG.COUNTRY = 'US'
+         END ELSE
+            ORIG.COUNTRY = 'CAN'
+         END
+      END
+      BEGIN CASE
+         CASE ORIG.COUNTRY = 'US'
+            ORIG.COUNTRY = 'USA'
+         CASE ORIG.COUNTRY = 'CA'
+            ORIG.COUNTRY = 'CAN'
+         CASE ORIG.COUNTRY = 'MX'
+            ORIG.COUNTRY = 'MEX'
+      END CASE
+      READV DEST.COUNTRY FROM ZIPS, DEST.ZIP, 3 ELSE
+         IF NUM(DEST.ZIP[1,1]) THEN
+            DEST.COUNTRY = 'US'
+         END ELSE
+            DEST.COUNTRY = 'CAN'
+         END
+      END
+      BEGIN CASE
+         CASE DEST.COUNTRY = 'US'
+            DEST.COUNTRY = 'USA'
+         CASE DEST.COUNTRY = 'CA'
+            DEST.COUNTRY = 'CAN'
+         CASE DEST.COUNTRY = 'MX'
+            DEST.COUNTRY = 'MEX'
+      END CASE
+
+      CCVIN = ''
+      CCVIN<1> = CARRIER.SCAC
+      CCVIN<2> = DEST.COUNTRY
+      CCVIN<3> = DEST.ZIP
+      CCVIN<4> = ORIG.COUNTRY
+      CCVIN<5> = ORIG.ZIP
+      CCVIN<6> = CLIENT.ID
+
+      IF FIRST.TIME THEN
+         CCVOUT = ''
+         CALL CCXL.V2(CCVIN,CCVOUT)
+         SAVE.CCVIN = CCVIN
+         FIRST.TIME = 0
+      END ELSE
+         IF SAVE.CCVIN # CCVIN THEN
+            CCVOUT = ''
+            CALL CCXL.V2(CCVIN,CCVOUT)
+            SAVE.CCVIN = CCVIN
+         END
+      END
+
+      RETURN
+* End NKH01
+* Begin NKH02
+*************************************************************************
+BUILD.HEADER:
+*************************************************************************
+*
+      IF ORIG.CARRIER.OPT='O' THEN
+         HDG.LINE=HDRLINE
+         HDG.LINE<1,104>='Orig BM Amt'
+         HDG.LINE<1,105>='Orig Contr Amt'
+         HDG.LINE<1,106>='Orig Logis Amt'
+         HDG.LINE<1,107>='Orig Approved Carrier'
+         HDG.LINE<1,108>='Orig Charge Codes'
+         HDG.LINE<1,109>='Orig Frt Cls'
+         HDG.LINE<1,110>='Orig Frt Wgts'
+         HDG.LINE<1,111>='Orig Frt Rates'
+         HDG.LINE<1,112>='Orig Gross Amts'
+         HDG.LINE<1,113>='Orig Disc %'
+         HDG.LINE<1,114>='Orig Disc Amts'
+         HDG.LINE<1,115>='Orig Net Amts'
+         HDG.LINE<1,116>='Orig Contract Tariff'    ; * JMK05
+         HDG.LINE<1,117>='Orig Benchmark Tariff'   ; * JMK05
+         HDG.LINE<1,118>='SCC BM Amt'
+         HDG.LINE<1,119>='SCC Contr Amt'
+         HDG.LINE<1,120>='SCC Logis Amt'
+         HDG.LINE<1,121>='SCC Approved Carrier'
+         HDG.LINE<1,122>='SCC Frt Rates'
+         HDG.LINE<1,123>='SCC Gross Amts'
+         HDG.LINE<1,124>='SCC Disc %'
+         HDG.LINE<1,125>='SCC Disc Amts'
+         HDG.LINE<1,126>='SCC Net Amts'
+         HDG.LINE<1,127>='Orig Contract Tariff'    ; * JMK05
+         HDG.LINE<1,128>='Orig Benchmark Tariff'   ; * JMK05
+         HDG.LINE<1,129>='SCC Rating Errors'
+         HDG.LINE<1,130>='LCC BM Amt'
+         HDG.LINE<1,131>='LCC Contr Amt'
+         HDG.LINE<1,132>='LCC Logis Amt'
+         HDG.LINE<1,133>='LCC Approved Carrier'
+         HDG.LINE<1,134>='LCC Frt Rates'
+         HDG.LINE<1,135>='LCC Gross Amts'
+         HDG.LINE<1,136>='LCC Disc %'
+         HDG.LINE<1,137>='LCC Disc Amts'
+         HDG.LINE<1,138>='LCC Net Amts'
+         HDG.LINE<1,139>='Orig Contract Tariff'    ; * JMK05
+         HDG.LINE<1,140>='Orig Benchmark Tariff'   ; * JMK05
+         HDG.LINE<1,141>='LCC Rating Errors'
+      END ELSE
+         HDG.LINE=HDRLINE
+         HDG.LINE<1,104>='Orig BM Amt'
+         HDG.LINE<1,105>='Orig BM FSC Amt'
+         HDG.LINE<1,106>='Orig Contr Amt'
+         HDG.LINE<1,107>='Orig Contr FSC Amt'
+         HDG.LINE<1,108>='Orig Consult Amt'
+         HDG.LINE<1,109>='Orig Consult FSC Amt'
+         HDG.LINE<1,110>='Orig Approved Carrier'
+         HDG.LINE<1,111>='Orig Contract Tariff'    ; * JMK05
+         HDG.LINE<1,112>='Orig Benchmark Tariff'   ; * JMK05
+         HDG.LINE<1,113>='Eff BM Amt'
+         HDG.LINE<1,114>='Eff BM FSC Amt'
+         HDG.LINE<1,115>='Eff Contr Amt'
+         HDG.LINE<1,116>='Eff Contr FSC Amt'
+         HDG.LINE<1,117>='Eff Consult Amt'
+         HDG.LINE<1,118>='Eff Consult FSC Amt'
+         HDG.LINE<1,119>='Eff Approved Carrier'
+         HDG.LINE<1,120>='Eff Contract Tariff'     ; * JMK05
+         HDG.LINE<1,121>='Eff Benchmark Tariff'    ; * JMK05
+         HDG.LINE<1,122>='Rating Errors'
+         HDG.LINE<1,124>='FAK Class'
+         IF QV.OPT=1 THEN                ; * JMK06
+            HDG.LINE<1,123>='Gainshare %'          ; * JMK06
+         END                             ; * JMK06
+
+         IF ADDZIP.ARRAY#'' THEN
+            FOR ADDZIP.VAL=1 TO ADDZIP.NVAL
+               IF ADDZIP.ARRAY<1,ADDZIP.VAL>#'' THEN
+                  HDG.LINE<1,122+((ADDZIP.VAL-1)*2)+1>=ADDZIP.ARRAY<1,ADDZIP.VAL>:'-':ADDZIP.ARRAY<2,ADDZIP.VAL>:' ':ADDZIP.ARRAY<3,ADDZIP.VAL>
+                  HDG.LINE<1,122+((ADDZIP.VAL-1)*2)+2>='Rating Errors'
+               END
+            NEXT ADDZIP.VAL
+         END
+      END
+*
+      RETURN
+
+**************************************************************************
+9000: ****
+**************************************************************************
+
+      CLOSESEQ OUTSEQ.FILE
+      CLOSESEQ INSEQ.FILE
+      IF ERROR#'' THEN RVOUT<1>=ERROR
+* Begin GRB01
+      VIN1=''
+      VIN1<1> = UPL.VIN<2>
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "E"
+      CALL PROGTRACK(VIN1,VOUT1)
+      * End GRB01
+      STOP

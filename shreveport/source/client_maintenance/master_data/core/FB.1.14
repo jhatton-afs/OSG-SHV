@@ -1,0 +1,405 @@
+*****************************************************************************
+* PROGRAM FB.1.14 (NEW)
+* PURPOSE: TO COMBINE VENDOR AND CUSTOMER ITEMS
+*
+* FREIGHT BILLING PACKAGE (FBBP)
+*
+* AUTHOR - TAMI SEAGO
+* DATE - SEPETEMBER 22, 1999
+*
+*****************************************************************************
+$OPTIONS HEADER.EJECT
+$OPTIONS EXEC.EQ.PREF
+$OPTIONS INFO.ABORT
+      ERRMSG=''
+
+*****************************************************************************
+*Startup (Initialize Variables and do Opens)
+*****************************************************************************
+      PROG.NAME='FB.1.14'
+      PROG.DESC='COMBINE VENDOR AND CUSTOMER'
+      PACK.NAME='FREIGHT BILLING'
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.1.14' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+
+      OPEN '','CLIENTS' TO F.CLIENT ELSE CALL OPEN.ABORT("BCUST",PROG.NAME)
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE CALL OPEN.ABORT('ZIPS.CODES',PROG.NAME)
+      OPEN '','FB.TABLES' TO F.TABLES ELSE CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+
+*****************************************************************************
+* Enter Client Number
+*****************************************************************************
+ENTER.CLIENT.ID:
+      CRT @(0,2):@(-3)
+      HELP='Enter the client number - Name for Search - [EX]it'
+      CALL GEN.IN(0,3,'Enter Client : #####','',Q,0,20,'','',0,-5,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      CALL GET.USER(USER)
+      BEGIN CASE
+         CASE QI=''
+            STOP
+         CASE QI='EX' OR QI='X'
+            STOP
+         CASE NUM(QI)
+            Q=QI'R%5'
+         CASE 1
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME','2,1,3,4',ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            IF ITEM.LIST='' ! DCOUNT(ITEM.LIST<1>,@VM) > 1 THEN GOTO ENTER.CLIENT.ID
+            IF NOT(NUM(ITEM.LIST<1,1>))THEN GOTO ENTER.CLIENT.ID
+            Q=ITEM.LIST<1,1>'R%5'
+      END CASE
+      CLIENT.ID=Q'R%5'
+*****************************************************************************
+* Read Client Items
+*****************************************************************************
+      READ CLIENT.REC FROM F.CLIENT,CLIENT.ID ELSE
+         CALL ELINE('Client Number ':CLIENT.ID:' not on file!')
+         GOTO ENTER.CLIENT.ID
+      END
+      CLIENT.NAME=CLIENT.REC<2>
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,3):'Enter Client : '
+      CRT @(15,3):CLIENT.ID:' ':CLIENT.NAME
+
+*****************************************************************************
+* Open Vend/Cust Files and Cross References
+*****************************************************************************
+      SEL=''
+      PAGE = 1
+
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS.HIST ELSE
+         CALL OPEN.ABORT('FB.BILLS.HIST,':CLIENT.ID,PROG.NAME)
+      END
+      OPEN '','FB.BILLS,':CLIENT.ID TO F.BILLS ELSE
+         CALL OPEN.ABORT('FB.BILLS,':CLIENT.ID,PROG.NAME)
+      END
+
+      OPEN '','VEND.CUST,':CLIENT.ID TO F.VC ELSE CALL OPEN.ABORT("VEND.CUST,":CLIENT.ID,PROG.NAME)
+      OPEN '','VEND.CUST.XREF,':CLIENT.ID TO F.VC.XREF ELSE CALL OPEN.ABORT("VEND.CUST.XREF,":CLIENT.ID,PROG.NAME)
+      OPEN '','VEND.CUST.ZIPS,':CLIENT.ID TO F.VC.ZIPS ELSE CALL OPEN.ABORT("VEND.CUST.ZIPS,":CLIENT.ID,PROG.NAME)
+      OPEN '','VEND.CUST.EDI.XREF,':CLIENT.ID TO F.VC.EDI.XREF ELSE CALL ELINE("UNABLE TO OPEN FILE VEND.CUST.EDI.EXREF,":CLIENT.ID)
+
+*****************************************************************************
+* Search by Zip Code
+*****************************************************************************
+SEARCH.BY.ZIP:***
+      HELP='Please type in the zip to search for!'
+      CALL GEN.IN(0,4,'Zip          : #####','',Q,0,20,'','',0,-5,4,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='' OR QI='X'
+            GO ENTER.CLIENT.ID
+         CASE QI='EX'
+            STOP
+         CASE QI MATCHES "5N"
+            Q = QI
+         CASE 1
+            CALL ELINE('Invalid Zip Code, please try again.')
+            GO SEARCH.BY.ZIP
+      END CASE
+      VC.ARRAY = ''
+      VC.ZIP = Q'R%5'
+      READ ZIP.REC FROM F.ZIPS,VC.ZIP THEN
+         VC.CITY=ZIP.REC<1>
+         VC.STATE=ZIP.REC<2>
+      END
+      CRT@(0,4):'Zip          : ':VC.ZIP'R%5':' ':VC.CITY:', ':VC.STATE
+      VAR.ARR = ''
+
+*****************************************************************************
+* Get Vend/Cust information and store in array
+*****************************************************************************
+      NUM.ITEMS=0
+      READ VC.ZIPS FROM F.VC.ZIPS,VC.ZIP THEN
+         NUM.ITEMS=DCOUNT(VC.ZIPS<1>,@VM)
+         IF NUM.ITEMS = 1 THEN
+            CALL ELINE('ONLY ONE VENDOR IN THIS ZIP CANNOT COMBINE ANYTHING')
+            GO SEARCH.BY.ZIP
+         END
+         LAST.PAGE=INT(NUM.ITEMS/9)+1
+         FOR X = 1 TO NUM.ITEMS
+            VC.ID = VC.ZIPS<1,X>
+            READ VC.REC FROM F.VC,VC.ID THEN
+               LOCATE VC.REC<1> IN VC.ARRAY<2> BY 'AL' SETTING POS ELSE
+                  INS VC.ID BEFORE VC.ARRAY<1,POS>
+                  INS VC.REC<1> BEFORE VC.ARRAY<2,POS>
+                  INS VC.REC<2> BEFORE VC.ARRAY<3,POS>
+                  IF VC.REC<11> #'' THEN
+                     INS 'm' BEFORE VC.ARRAY<4,POS>
+                  END ELSE
+                     INS '' BEFORE VC.ARRAY<4,POS>
+                  END
+               END
+            END ELSE
+               CALL ELINE('ERROR - Cannot read record in VEND.CUST for vendor/customer ':VC.ID)
+            END
+         NEXT X
+      END ELSE
+         CALL ELINE('NO CUSTOMER/VENDORS FOR THIS ZIP')
+         GO SEARCH.BY.ZIP
+      END
+
+
+
+*****************************************************************************
+* Display window headings
+******************************************************************************
+BEGIN.DISPLAY:***
+      GOSUB DISPLAY.PAGE
+
+******************************************************************************
+* Display Data
+******************************************************************************
+      MASK1 = 'Enter line # to combine.  '
+      MASK2 = 'Enter line # to be combined with.  '
+      STEP = 1
+
+
+******************************************************************************
+* Enter selection of vend/cust
+******************************************************************************
+START.SEL:***
+      STEP = 1
+      LOOP UNTIL STEP = 3 DO
+         HELP="Enter LN# [N]=Next [P]revious [T]op [B]ottom [F]irst letter(s) [X]Back [EX]it"
+         IF STEP = 1 THEN
+            CALL GEN.IN(0,18,MASK1,'',Q,0,5,'','',0,-1,18,0,QI,HELP,0,23)
+         END ELSE
+            CALL GEN.IN(0,18,MASK2,'',Q,0,5,'','',0,-1,18,0,QI,HELP,0,23)
+         END
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='P'
+               PAGE=PAGE-1
+               IF PAGE=0 THEN PAGE=1
+            CASE QI='' OR QI = 'N'
+               PAGE=PAGE+1
+            CASE QI='X'
+               IF STEP = 1 THEN
+                  GOSUB CLEAR.WINDOW
+                  GO SEARCH.BY.ZIP
+               END ELSE
+                  STEP = 1
+                  PAGE = 1
+                  GOSUB CLEAR.WINDOW
+               END
+            CASE QI = 'T'
+               PAGE=1
+            CASE QI = 'B'
+               PAGE = LAST.PAGE
+            CASE QI = 'F'
+               GOSUB FIND.FIRST
+            CASE QI='EX'
+               STOP
+            CASE NUM(QI)
+               IF QI > NUM.ITEMS+1 OR QI < 1 THEN
+                  CALL ELINE('Invalid line #, please try again')
+                  GO START.SEL
+               END
+               IF STEP = 1 AND VC.ARRAY<4,QI> = 'm' THEN
+                  CALL ELINE('CAN NOT COMBINE AND DELETE A VENDOR WITH MISROUTES')
+                  GO START.SEL
+               END
+               SEL = QI
+               VC.ID = VC.ARRAY<1,SEL>
+               GOSUB ASSIGN.DISPLAY.VC
+               GOSUB DISPLAY.PAGE
+               STEP=STEP+1
+               GO NEXT.STEP
+            CASE 1
+               GO ENTER.CLIENT.ID
+         END CASE
+         GOSUB DISPLAY.PAGE
+NEXT.STEP:***
+      REPEAT
+
+************************************************************************
+* Verify selection criteria is correct.
+************************************************************************
+400:  HELP="[X]-Back [EX]it [Y]es"
+      CALL GEN.IN(0,22,'Are you sure you want to combine these vendors? --','',Q,0,2,'','',0,-2,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            CRT @(0,18):@(-3):
+            GOSUB CLEAR.WINDOW
+            GOSUB DISPLAY.PAGE
+            GOTO START.SEL
+         CASE QI='EX'
+            STOP
+         CASE QI='Y'
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be Y, X, EX, or RETURN.')
+            GOTO 400
+      END CASE
+
+*****************************************************************************
+* Update the necessary files
+*****************************************************************************
+UPDATE.VC:***
+
+      STMT = 'SELECT FB.BILLS.HIST,':CLIENT.ID:' WITH VEND.CUST = ':OLD.VC.ID
+      EXECUTE STMT RTNLIST BILLS.LIST CAPTURING OUTPUT
+      BILLS.ITEMS = @SELECTED
+      CRT @(0,22):CLIENT.ID:" ":CLIENT.NAME:" - Now processing ":BILLS.ITEMS:" Freight Bills":@(-4):
+      COUNTER.1=0
+      IF BILLS.ITEMS = 0 THEN GO CHECK.XREF
+      LOOP
+         DONE=0
+         READNEXT PRO.ID FROM BILLS.LIST ELSE DONE=1
+      UNTIL DONE=1 DO
+         COUNTER.1=COUNTER.1+1
+         PRINT @(0,23):COUNTER.1'L%6':PRO.ID:
+         READ PRO.REC FROM F.BILLS.HIST,PRO.ID THEN
+            PRO.REC<17> = NEW.VC.ID
+            WRITE PRO.REC ON F.BILLS.HIST,PRO.ID
+         END
+         READ PRO.REC FROM F.BILLS,PRO.ID THEN
+            WRITE PRO.REC ON F.BILLS,PRO.ID
+         END
+      REPEAT
+
+CHECK.XREF:***
+
+      READ VC.ZIP.XREF FROM F.VC.ZIPS,VC.ZIP THEN
+         LOCATE OLD.VC.ID IN VC.ZIP.XREF<1> SETTING POS THEN
+            DEL VC.ZIP.XREF<1,POS>
+            WRITE VC.ZIP.XREF ON F.VC.ZIPS,VC.ZIP
+         END
+      END
+
+      UP.DESC = TRIM(OCONV(OLD.VC.DESC,'MCU'))
+      VC.XREF.ID = UP.DESC:'*':NEW.VC.ZIP
+      READ VC.XREF.REC FROM F.VC.XREF,VC.XREF.ID THEN
+         DELETE F.VC.XREF,VC.XREF.ID
+      END
+      STMT = 'SELECT VEND.CUST.EDI.XREF,':CLIENT.ID:' WITH 1 = ':OLD.VC.ID
+      EXECUTE STMT RTNLIST XREF.LIST CAPTURING OUTPUT
+      XREF.ITEMS = @SELECTED
+      IF XREF.ITEMS = 0 THEN GO ENTER.CLIENT.ID
+      LOOP
+         DONE=0
+         READNEXT VC.XREF.ID FROM XREF.LIST ELSE DONE=1
+      UNTIL DONE=1 DO
+         READ VC.EDI.XREF FROM F.VC.EDI.XREF,VC.XREF.ID THEN
+            WRITEV NEW.VC.ID ON F.VC.EDI.XREF,VC.XREF.ID,1
+         END
+      REPEAT
+      GO ENTER.CLIENT.ID
+
+*****************************************************************************
+* Display Vend/Cust
+*****************************************************************************
+ASSIGN.DISPLAY.VC:***
+      READ VC.REC FROM F.VC,VC.ID ELSE
+         CALL ELINE('ERROR - Cannot read record in VEND.CUST for vendor/customer ':VC.ID)
+         GO START.SEL
+      END
+      IF STEP = 1 THEN
+         OLD.VC.ID = VC.ARRAY<1,SEL>
+      END ELSE
+         NEW.VC.ID = VC.ARRAY<1,SEL>
+      END
+
+      IF STEP = 1 THEN
+         OLD.VC.DESC = VC.REC<1>
+         OLD.VC.CODE = VC.REC<2>
+         OLD.VC.ADDR1 = VC.REC<3,1>
+         OLD.VC.ADDR2 = VC.REC<3,2>
+         OLD.VC.CITY = VC.REC<5>
+         OLD.VC.ST = VC.REC<6>
+         OLD.VC.ZIP = VC.REC<7>
+         CRT @(40,6): 'Vendor to Delete: ':OLD.VC.ID'R%5'
+         CRT @(40,7): '--------------------------------------'
+         CRT @(40,8): 'Desc......':OLD.VC.DESC
+         CRT @(40,9): 'Code......':OLD.VC.CODE
+         CRT @(40,10):'Address...':OLD.VC.ADDR1
+         CRT @(40,11):'          ':OLD.VC.ADDR2
+         PAGE = 1
+      END ELSE
+         NEW.VC.DESC = VC.REC<1>
+         NEW.VC.CODE = VC.REC<2>
+         NEW.VC.ADDR1 = VC.REC<3,1>
+         NEW.VC.ADDR2 = VC.REC<3,2>
+         NEW.VC.CITY = VC.REC<5>
+         NEW.VC.ST = VC.REC<6>
+         NEW.VC.ZIP = VC.REC<7>
+         CRT @(40,13):'Vendor to be Combined with: ':NEW.VC.ID'R%5'
+         CRT @(40,14):'--------------------------------------'
+         CRT @(40,15):'Desc......':NEW.VC.DESC
+         CRT @(40,16):'Code......':NEW.VC.CODE
+         CRT @(40,17):'Address...':NEW.VC.ADDR1
+         CRT @(40,18):'          ':NEW.VC.ADDR2
+      END
+      RETURN
+
+*****************************************************************************
+* Search for a vendor by first letter
+*****************************************************************************
+FIND.FIRST:***Get Starting Letter(s) in List to Jump to in Display
+      HELP="Enter the first letter(s) of the name you are seaching for"
+      CALL GEN.IN(0,22,'Enter first letter(s) -------------------------','',Q,0,15,'','',0,-25,22,1,QI,HELP,0,23)
+      LOOK=OCONV(QI,'MCU')
+      POS=INDEX(@VM:OCONV(VC.ARRAY<2>,'MCU'),@VM:LOOK,1)
+      IF POS=0 THEN                      ; * Not Found
+         CALL ELINE("A name starting with the letter(s) '":QI:"' was not found")
+         GO DISPLAY.PAGE
+      END
+      VAL=COUNT((@VM:VC.ARRAY<2>)[1,POS],@VM)
+      PAGE=INT(VAL/9)
+      IF REM(VAL,9)>0 THEN PAGE+=1
+      GO DISPLAY.PAGE
+      RETURN
+
+
+
+*****************************************************************************
+* Display the data
+*****************************************************************************
+DISPLAY.PAGE:***
+
+      START=(PAGE*9)-8
+      IF START > NUM.ITEMS+1 THEN RETURN
+      STOP=START+8
+      CRT @(0,6):' #         Description       Mrt'
+      CRT @(0,7):'--- ------------------------ ---'
+
+
+      FOR SEL=START TO STOP
+         GOSUB CALCULATE.LINE
+         IF VC.ARRAY<1,SEL>='' THEN
+            CRT @(0,LINE):SEL'L#3':SPACE(30)
+         END ELSE
+            CRT @(0,LINE):SEL'L#3':' ':VC.ARRAY<2,SEL>'L#25':' ':VC.ARRAY<4,SEL>'L#1'
+         END
+      NEXT SEL
+      RETURN
+
+*****************************************************************************
+* Calculate line
+*****************************************************************************
+CALCULATE.LINE:***
+      X=REM(SEL,9)
+      IF X=0 THEN X=9
+      LINE=7+X
+      RETURN
+
+*****************************************************************************
+* Clear the Window
+*****************************************************************************
+CLEAR.WINDOW:***
+      FOR X = 6 TO 21
+         CRT @(0,X):@(-4)
+      NEXT X
+      RETURN
+
+*****************************************************************************
+* Exit the program
+*****************************************************************************
+EXIT.PROGRAM:* Exit
+      STOP

@@ -1,0 +1,1345 @@
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: TAMI SEAGO
+* DATE: SEPTEMBER 6, 2000
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE EXPRESS
+* WRITTEN CONSENT OF SAME.
+*
+* 111004 - JMK01 - ADD SCHEDULED PROCESSING DATE
+* 111104 - JMK02 - CORRECT CHECK CLEARING STATUS
+* 051605 - JMK03 - SEND TRANSPORTATION MODE BAY WITH STATUS
+* 030706 - JMK04 - CHANGE LOCATION OF REJECT DATE FOR MULTIPLE BILLS
+* 060706 - JMK05 - CHECK FOR ALL CARRIERS IN CARRIER XREF FIELD
+* 061906 - JCW01 - USE EDI.BILLS.HIST,CLIENT.ID
+* 091106 - JCW02 - USE NEW FB.CHECKS FILES
+* 110106 - JMK06 - T200611010005  / priority 2 / FW: Carriers checking bill status on AFS Intranet / UPS pro # issue
+* 110206 - JMK07 - ADD RESPONSE TO ACTIVITY LOG
+* 121306 - JMK08 - T200612110012 / priority 3  / Freight Bill Status Report
+* 062907 - JMK09 - T200706290004  / priority 2 / due date account process date
+* 070307 - JMK10 - C200704240003 /  ASAP  /   FW: New Request - FB Inquiry Alert / Audit Date Storage
+* 091007 - NPR01 - Add Anticipated Pay Date option to inquiry status
+* 010808 - JMK11 - T080092 - Bill needs to be selected so it will print on a check
+* 022908 - NPR02 - Fixed error where Client Name was not being displayed on some Carrier queries
+* 041808 - JMK12 - C081049 - Batch FB Status
+* 061808 - JMK13 - T081565 - Freight bill look up not showing /1AD bill
+* 073008 - JMK14 - Create new FB Status program for the Web Service side
+* 091208 - NPR03 - Temporary fix to pick up all Bills if FB.BILLS.CRX record is missing. Builds missing CRX items
+* 050609 - JMK15 - T090557  RE: Central Transport PRO #555-1657746-1
+* 082709 - NPR04 - T091091 - Added option to overide Pro Format based on Client/Carrier combination if it exists
+* 021511 - NPR05 - T110103 - Modified calculation of process date based on Client Due date flag.
+* 021711 - NPR06 - T110062 - Added XML tag to indicate EDI and transport mode
+* 032411 - JMK16 - T999999 - ADJUST SAIA TRAILING "1" TO "0" FOR STATUS
+* 080212 - JMK17 - ADD NOTES TO AFSCS OUTPUT
+* 100914 - JMK18 - SysAid#12653 - Freight bill status
+* 120116 - DRF01 - SysAid 28900 - Remove estimated payment date for 02459
+* 040319 - NKH01 - ACCU-316 Modified CREATE-FILE file sizes
+****************************************************************
+* Initialize variables
+****************************************************************
+$INCLUDE FILE.DEFS INC_CLIENTS
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'INET.FB.STATUS.WEB' ; UPL.VIN<3> = SYSTEM(19)
+      UPL.VIN<4> = SYSTEM(18) ; UPL.VOUT = ''
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+*        PRINT "%ERROR:CANNOT OPEN FILE CLIENTS"   ; * JMK14
+*        STOP                            ; * JMK14
+         ERROR='Cannot open CLIENTS file.'         ; * JMK14
+         GO EXPORT.FINISH                ; * JMK14
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+*        PRINT "%ERROR:CANNOT OPEN FILE CARRIERS"  ; * JMK14
+*        STOP                            ; * JMK14
+         ERROR='Cannot open CARRIERS file.'        ; * JMK14
+         GO EXPORT.FINISH                ; * JMK14
+      END
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+*        PRINT "%ERROR:CANNOT OPEN FB.BILLS.CRX"   ; * JMK14
+*        STOP                            ; * JMK14
+         ERROR='Cannot open FB.BILLS.CRX file.'    ; * JMK14
+         GO EXPORT.FINISH                ; * JMK14
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+*        PRINT "%ERROR:CANNOT OPEN FB.TABLES"      ; * JMK14
+*        STOP                            ; * JMK14
+         ERROR='Cannot open FB.TABLES file.'       ; * JMK14
+         GO EXPORT.FINISH                ; * JMK14
+      END
+*NPR01
+      OPEN '','FB.PAY' TO F.PAY ELSE
+*        PRINT "%ERROR:CANNOT OPEN FB.PAY"         ; * JMK14
+*        STOP                            ; * JMK14
+         ERROR='Cannot open FB.PAY file.'          ; * JMK14
+         GO EXPORT.FINISH                ; * JMK14
+      END
+*NPR01
+*     OPEN '','INET.PROS' TO F.PROS ELSE ; * JMK18
+*        PRINT "%ERROR:CANNOT OPEN FB.PROS"        ; * JMK14
+*        STOP                            ; * JMK14
+*        ERROR='Cannot open INET.PROS file.'       ; * JMK14 ; * JMK18
+*        GO EXPORT.FINISH                ; * JMK14 ; * JMK18
+*     END                                ; * JMK18
+
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE   ; * JMK03
+*        CRT "%ERROR:CANNOT OPEN FB.TRANSPORT"     ; * JMK03 ; * JMK14
+*        STOP                            ; * JMK03 ; * JMK14
+         ERROR='Cannot open FB.TRANSPORT file.'    ; * JMK14
+         GO EXPORT.FINISH                ; * JMK14
+      END                                ; * JMK03
+      EDI.DESC='NEDI'                    ; * JMK03
+
+*     OPEN '','EDI.BILLS.HIST' TO F.EDI ELSE       ; * JMK03 ; * JCW01
+*        CRT "%ERROR:CANNOT OPEN EDI.BILLS.HIST"   ; * JMK03 ; * JCW01
+*        STOP                            ; * JMK03           ; * JCW01
+*     END                                ; * JMK03           ; * JCW01
+
+*     OPEN '','FB.CHECKS' TO F.CHECKS ELSE        ; * JCW02
+*        PRINT "%ERROR:CANNOT OPEN FB.CHECKS"     ; * JCW02
+*        STOP                                     ; * JCW02
+*     END                                         ; * JCW02
+      OPEN '','FB.CHECKS.HDR' TO F.CHECKS ELSE     ; * JCW02
+*        PRINT "%ERROR:CANNOT OPEN FB.CHECKS.HDR"  ; * JCW02 ; * JMK14
+*        STOP                            ; * JCW02 ; * JMK14
+         ERROR='Cannot open FB.CHECKS.HDR file.'   ; * JMK14
+         GO EXPORT.FINISH                ; * JMK14
+      END                                ; * JCW02
+
+      OPEN '','FB.PRO.FORMAT' TO F.PRO.FORMAT ELSE           ; *NPR04
+*        CALL OPEN.ABORT("FB.PRO.FORMAT",PROG.NAME)  ; *NPR04
+         ERROR='Cannot open FB.PRO.FORMAT file.'   ; * NPR04
+         GO EXPORT.FINISH                ; * NPR04
+      END                                ; *NPR04
+
+***Added 5/7/3 -- Kevin Messenger
+      READ DLI.CODES FROM F.TABLES,'LI.CODES' ELSE DLI.CODES=''
+**--KM
+
+      READ REJECT.CODES FROM F.TABLES,'REJECT.CODES' ELSE REJECT.CODES=''
+
+      PROMPT ''                          ; * JMK14
+      HUSH ON                            ; * JMK14
+      INPUT CARRIER
+      INPUT CLIENT
+      INPUT USER.NAME
+      INPUT USER.PWD
+      INPUT PRONUMS
+      HUSH OFF                           ; * JMK14
+
+      IND=0                              ; * JMK14
+      XML.REC='<?xml version="1.0" encoding="ISO-8859-1" ?> '          ; * JMK14
+      IND+=3                             ; * JMK14
+      XML.REC<-1>=SPACE(IND):'<INET.FB.STATUS.WEB>'          ; * JMK14
+      IND+=3                             ; * JMK14
+      XML.REC<-1>=SPACE(IND):'<FreightBillStatus>'           ; * JMK14
+      IND+=3                             ; * JMK14
+      ERROR=''                           ; * JMK14
+
+      READ CARRIER.REC FROM F.CARRIERS,CARRIER ELSE
+*        PRINT "%ERROR:CARRIER #": CARRIER: " DOES NOT EXIST"          ; * JMK14
+*        STOP                            ; * JMK14
+         ERROR='Carrier #': CARRIER:' does not exist.'       ; * JMK14
+         GO EXPORT.FINISH                ; * JMK14
+      END
+      IF CARRIER='00018' THEN SAIA=1 ELSE SAIA=0   ; * JMK16
+
+      XREF.CARRIERS=CARRIER.REC<28>      ; * JMK05
+      XREF.VAL=DCOUNT(XREF.CARRIERS,@VM)           ; * JMK05
+
+
+      PRONUMS=OCONV(PRONUMS,'MCU')       ; * Force all Caps
+      IF INDEX(PRONUMS,'|',1) THEN       ; * JMK14
+         PRONUMS=CHANGE(PRONUMS,'|',@VM)           ; * JMK14
+      END                                ; * JMK14
+
+*     Client user.
+      DUE.DT.FLG=''                      ; * JMK01
+      CLIENT.DOW=''                      ; * JMK01
+      LOG.USER=USER.NAME                 ; * JMK10
+
+      IF CLIENT#'' THEN
+         USER.TYPE='CLIENT'
+         CLIENT.USER=1
+         CLIENT.USER.ID=CLIENT
+*    *  READV CLIENT.USER.NAME FROM F.CLIENTS,CLIENT.USER.ID,2 ELSE CLIENT.USER.NAME=CLIENT.USER.ID:' Not on File'
+         READ DCLIENTS FROM F.CLIENTS,CLIENT.USER.ID ELSE
+            DCLIENTS=''
+            DCLIENTS<2>=CLIENT.USER.ID:' is Not on File!'
+         END
+         CLIENT.USER.NAME=DCLIENTS<2>
+         BANK.CODE=DCLIENTS<81>
+         IF BANK.CODE='V' OR BANK.CODE='N' THEN VOUCHER=1 ELSE VOUCHER=0
+         CLIENT.DOW=DCLIENTS<151>        ; * JMK01
+         DUE.DT.FLG=DCLIENTS<186>        ; * JMK01
+
+*NPR04 Start changes - Replace Pro Formatting for Client with Client/Carrier specific formatting
+         ID.PRO.FORMAT = CLIENT.USER.ID:"*":CARRIER ; PRO.FORMAT.REC = ''
+         READ PRO.FORMAT.REC FROM F.PRO.FORMAT, ID.PRO.FORMAT THEN
+            CARRIER.REC<47> = PRO.FORMAT.REC<1>    ; * PRO.FORMAT
+            CARRIER.REC<51> = PRO.FORMAT.REC<2>    ; * MASK.ACTIVE
+            CARRIER.REC<52> = PRO.FORMAT.REC<3>    ; * CHECK.DIG.ACTIVE
+            CARRIER.REC<53> = PRO.FORMAT.REC<4>    ; * CHECK.DIG.POS
+            CARRIER.REC<54> = PRO.FORMAT.REC<5>    ; * SEED.BEG.POS
+            CARRIER.REC<55> = PRO.FORMAT.REC<6>    ; * SEED.END.POS
+            CARRIER.REC<56> = PRO.FORMAT.REC<7>    ; * METHOD.STR
+            CARRIER.REC<57> = PRO.FORMAT.REC<8>    ; * OLD.BEG.POS
+            CARRIER.REC<58> = PRO.FORMAT.REC<9>    ; * OLD.END.POS
+         END
+*NPR04 End changes
+
+      END ELSE
+*      Not a client user.
+         CLIENT.USER=0
+         CLIENT.USER.ID=''
+         CLIENT.USER.NAME=''
+         USER.TYPE=''                    ; * JMK14
+         VOUCHER=0
+      END
+
+      OPEN '','INET.FBSTATUS.ACTIVITY' TO F.ACTIVITY ELSE
+*        PRINT "%ERROR:COULD NOT OPEN ACTIVITY"    ; * JMK14
+*        STOP                            ; * JMK14
+         ERROR='Cannot open INET.FBSTATUS.ACTIVITY file.'    ; * JMK14
+         GO EXPORT.FINISH                ; * JMK14
+      END
+
+      ACTIVITY.ID = USER.TYPE:'*':CLIENT:'*':USER.NAME:'*':USER.PWD:'*':DATE():'*':TIME()
+      ACTIVITY.REC = PRONUMS
+      ACTIVITY.REC<2>=CARRIER            ; * Owen Added 11-22-02
+
+      IF USER.TYPE#'AFSCS' THEN          ; * JMK12
+         WRITE ACTIVITY.REC ON F.ACTIVITY,ACTIVITY.ID
+      END                                ; * JMK12
+*
+*ZZ
+*ZZ   ACTIVITY.REC<3> = ACTIVITY.ID
+*ZZ   NP.IDT = "NPRATT*":TIME()
+*ZZ   WRITE ACTIVITY.REC ON F.TABLES, NP.IDT
+*ZZ
+*
+      METADATA = ""
+      METADATA<1,1> = "VARCHAR" ; METADATA<1,2> = "Results" ; METADATA<1,3> = 0
+      CONVERT @AM TO CHAR(30) IN METADATA
+      IF USER.TYPE='AFSCS' THEN          ; * JMK12
+         STATUS.ROW=''                   ; * JMK12
+         STATUS.ROW<1,1>='Pro #'         ; * JMK12
+         STATUS.ROW<1,2>='Status'        ; * JMK12
+         STATUS.ROW<1,3>='Billed Amt'    ; * JMK12
+         STATUS.ROW<1,4>='Paid Amt'      ; * JMK12
+         STATUS.ROW<1,5>='Approval Date'           ; *JMK12
+         STATUS.ROW<1,6>='Check Date'    ; * JMK12
+         STATUS.ROW<1,7>='Check #'       ; * JMK12
+         STATUS.ROW<1,8>='Check Amt'     ; * JMK12
+         STATUS.ROW<1,9>='Cleared Date'  ; * JMK12
+         STATUS.ROW<1,10>='Cut Back Amt'           ; * JMK12
+         STATUS.ROW<1,11>='Cut Back Reason'        ; * JMK12
+         STATUS.ROW<1,12>='Cut Back Auditor'       ; * JMK12
+         STATUS.ROW<1,13>='Status Details'         ; * JMK12
+         STATUS.ROW<1,14>='Notes'        ; * JMK17
+         CRT STATUS.ROW                  ; * JMK12
+      END ELSE                           ; * JMK12
+*     PRINT "%METADATA:":METADATA ; * JMK12
+*        CRT "%METADATA:":METADATA       ; * JMK12 ; * JMK14
+      END                                ; *JMK12
+      CALL GET.USER(CURRENT.USER)
+      IF LOG.USER='' THEN LOG.USER=CURRENT.USER    ; * JMK10
+      NUM.PROS = DCOUNT(PRONUMS,@VM)
+      RESULTS = ''
+      FOR X = 1 TO NUM.PROS
+         STATUS=''
+*        IF USER.TYPE='AFSCS' THEN       ; * JMK12 ; * JMK14
+         PRO.ID=''                       ; * JMK12
+         BRIEF.STATUS=''                 ; * JMK12
+         BILLED.AMT=''                   ; * JMK12
+         ACTUAL.CHG=''                   ; * JMK12
+         PROC.DATE=''                    ; * JMK12
+         CHECK.DATE=''                   ; * JMK12
+         CHECK.NUM=''                    ; * JMK12
+         CHECK.AMT=''                    ; * JMK12
+         CLEARED.DATE=''                 ; * JMK12
+         CUT.BACK.AMT=''                 ; * JMK12
+         CUT.BACK.REASON=''              ; * JMK12
+         CUT.BACK.AUDITOR=''             ; * JMK12
+         BANK.CODE=''                    ; * JMK12
+*        END                             ; * JMK12 ; * JMK14
+         ANTICIPATED.PAY.DATE = ""       ; *NPR01
+         TRAN.DESC=''
+         FOUND = 1
+         PRO.ID = TRIM(PRONUMS<1,X>)
+         IF PRO.ID[LEN(PRO.ID),1]='.' THEN         ; * JMK999
+            VIN=''                       ; * JMK999
+            VOUT=''                      ; * JMK999
+            VIN<1>=PRO.ID                ; * JMK999
+            VIN<2>=LOG.USER              ; * JMK999
+            CALL CHECK.PRO.NEW(VIN,CARRIER.REC,VOUT)         ; * JMK999
+            IF VOUT<5>#'' THEN           ; * JMK999
+               PRO.ID=PRO.ID[1,LEN(PRO.ID)-1]:VOUT<5>        ; * JMK999
+            END                          ; * JMK999
+         END                             ; * JMK999
+         IF SAIA THEN                    ; * JMK16
+            IF PRO.ID[LEN(PRO.ID),1]='1' THEN      ; * JMK16
+               PRO.ID=PRO.ID[1,LEN(PRO.ID)-1]:'0'  ; * JMK16
+            END                          ; * JMK16
+         END                             ; * JMK16
+         ADATE = DATE()
+         TEMP.PRO.ID = CARRIER:'*':PRO.ID:"*0"
+*        TEMP2.PRO.ID = CARRIER:'*':PRO.ID:"*0*":ADATE       ; * JMK18
+         XREF.CNT=0                      ; * JMK05
+TRY.XREF:* ; * JMK05
+         TEMP = ""
+*        WRITE TEMP ON F.PROS,TEMP2.PRO.ID         ; * JMK18
+         IF PRO.ID = "" THEN GO SKIP.PRO
+         PRO.DESC = PRO.ID
+***CALL GET.USER(CURRENT.USER)
+***IF CURRENT.USER='OWEN' THEN CALL ELINE('GOING TO READ FROM FC')
+         READ DUMMY FROM F.CRX,TEMP.PRO.ID THEN
+FOUND.DUMMY:***
+            PRO.REC = DUMMY
+            FOUND.PRO=FIELD(TEMP.PRO.ID,"*",2)
+            PRO.REC<1>=DUMMY<2>          ; * Correct the Position of the Date
+            PRO.REC<2>=''                ; * Correct the I/O Flag (Not on CRX File)
+            CLIENT=DUMMY<1>
+            IF CLIENT.USER THEN
+               IF CLIENT#CLIENT.USER.ID THEN
+*              This bill doesn't belong to this client
+                  STATUS = 'Pro # ':PRO.ID:': Was not on file for ':CLIENT.USER.NAME
+                  STATUS:= 'Submit copies of these bills via email to : FreightInvoices@afs.net'
+                  FOUND=0
+                  GO PRINT.STATUS
+               END
+            END
+* Assign the Data to PRO.REC then try to read the REAL File
+            OPEN 'FB.BILLS.HIST,':CLIENT TO F.HIST ELSE
+               FOUND = 0
+            END
+            READ PRO.REC FROM F.HIST,TEMP.PRO.ID ELSE FOUND = 0
+*           IF CLIENT[1,2]#'99' THEN     ; * JMK10 ; * JMK12
+            IF CLIENT[1,2]#'99' AND USER.TYPE#'AFSCS' THEN   ; * JMK10 ; * JMK12
+               OPEN '','FB.BILLS.ACCESS,':CLIENT TO F.ACCESS ELSE      ; * JMK10
+                  EXECUTE 'CREATE-FILE DATA FB.BILLS.ACCESS,':CLIENT:' 1009,1' CAPTURING OUTPUT       ; * JMK10      NKH01
+                  OPEN '','FB.BILLS.ACCESS,':CLIENT TO F.ACCESS ELSE   ; * JMK10
+*                    PRINT "%ERROR:COULD NOT OPEN ACTIVITY"  ; * JMK10 ; * JMK14
+*                    STOP                ; * JMK10 ; * JMK14
+                     ERROR='Cannot open FB.BILLS.ACCESS,':CLIENT:' file.'        ; * JMK14
+                     GO EXPORT.FINISH    ; * JMK14
+                  END                    ; * JMK10
+               END                       ; * JMK10
+               READ CLIENT.ITM FROM F.CLIENTS,CLIENT THEN    ; * JMK10
+                  VIN=''                 ; * JMK10
+                  VOUT=''                ; * JMK10
+                  VIN<1>=CLIENT          ; * JMK10
+                  VIN<2>=TEMP.PRO.ID     ; * JMK10
+                  VIN<3>=LOG.USER        ; * JMK10
+                  VIN<4>='IN'            ; * JMK10
+                  VIN<5>=DATE()          ; * JMK10
+                  VIN<6>=TIME()          ; * JMK10
+                  VIN<7>='1'             ; * JMK10
+                  VIN<8>='INET.FB.STATUS.WEB'      ; * JMK10
+                  VIN<9>='FB INQUIRY'    ; * JMK10
+                  VIN<10>='FREIGHT BILLING'        ; * JMK10
+                  VIN<11>='AFS Logistics, LLC'     ; * JMK10
+                  VIN<12>='INQ_WEB'
+                  CALL UPD.FB.BILLS.ACCESS(VIN,VOUT,CLIENT.ITM,CARRIER.REC,PRO.REC,F.ACCESS,F.TABLES)          ; * JMK10
+               END                       ; * JMK10
+            END                          ; * JMK10
+
+         END ELSE
+********************************************************************
+*** Look for "Old" Style Pro Numbers
+            IF INDEX(PRO.ID,'-',1) OR PRO.ID[1,1]='0' OR INDEX(PRO.ID,'.',1) THEN
+               CHK.PRO=PRO.ID
+               CHK.PRO=CHANGE(CHK.PRO,'-','')
+               CHK.PRO=CHANGE(CHK.PRO,'.','')
+               POS.CNTR=0
+            LOOP POS.CNTR+=1 ; UNTIL CHK.PRO[1,1]#'0' DO
+                  CHK.PRO=CHK.PRO[2,999]
+               REPEAT
+               TEMP.PRO.ID = CARRIER:'*':CHK.PRO:'*0'
+               READ DUMMY FROM F.CRX,TEMP.PRO.ID THEN
+                  PRO.ID=CHK.PRO         ; * Look like you entered the "Old" number
+                  PRO.DESC=CHK.PRO
+                  GO FOUND.DUMMY         ; * Skip "Pro Format" Routine
+               END
+            END
+********************************************************************
+            FOUND = 0
+         END
+         IF FOUND THEN
+*NPR02            MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT ELSE CLIENT.REC(1) = ''
+            MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT ELSE MAT CLIENT.REC = ''    ; *NPR02
+            CLIENT.USER.NAME=CLIENT.REC(2)
+            BANK.CODE=CLIENT.REC(81)     ; * JMK15
+            IF BANK.CODE='V' OR BANK.CODE='N' THEN VOUCHER=1 ELSE VOUCHER=0      ; * JMK15
+            CLIENT.DOW=CLIENT.REC(151)   ; * JMK15
+            DUE.DT.FLG=CLIENT.REC(186)   ; * JMK15
+            POS = X
+            GOSUB GET.STATUS
+         END ELSE
+            TEMP.PRO.ID = CHANGE(PRO.ID,'-','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,'.','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,'*','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,',','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,'(','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,')','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,'_','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,'+','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,'/','')
+            GOSUB FORCE.CHECK.PROS
+            IF FOUND=0 THEN
+               IF XREF.CARRIERS#'' THEN  ; * JMK05
+                  XREF.CNT+=1            ; * JMK05
+                  IF XREF.CNT<=XREF.VAL THEN       ; * JMK05
+                     XREF.CARRIER=TRIM(XREF.CARRIERS<1,XREF.CNT>)      ; * JMK05
+                     IF XREF.CARRIER#'' THEN       ; * JMK05
+                        FOUND=1          ; * JMK05
+                        TEMP.PRO.ID = XREF.CARRIER:'*':PRO.ID:"*0"     ; * JMK05
+*                       TEMP2.PRO.ID = XREF.CARRIER:'*':PRO.ID:"*0*":ADATE       ; * JMK05 ; * JMK18
+                        GO TRY.XREF      ; * JMK05
+                     END                 ; * JMK05
+                  END                    ; * JMK05
+               END                       ; * JMK05
+               STATUS = 'Pro # ':PRO.ID:': '
+               STATUS = STATUS:'  Freight Bill not on file.  Please verify that you entered'
+               STATUS = STATUS:' the Pro number exactly as it appears on your invoice including'
+               STATUS = STATUS:' dashes and excluding spaces.  If this is correct then, please'
+               STATUS = STATUS:' submit a copy of your bill(s) with POD(Proof of Delivery) and'
+               STATUS = STATUS:' BOL(Bill of Lading) to AFS Logistics, LLC via email to :'
+               STATUS:= ' FreightInvoices@afs.net'
+               BRIEF.STATUS='Freight Bill not yet received.'           ; * JMK12
+            END
+         END
+PRINT.STATUS:***
+         IF STATUS # '' THEN
+            STATUS = CHANGE(STATUS,'..','.')
+            STATUS:='~':TRAN.DESC        ; * JMK03
+            STATUS:='~':EDI.DESC         ; * JMK03
+            IF USER.TYPE='AFSCS' THEN    ; * JMK12
+               STATUS.ROW=''             ; * JMK12
+               STATUS.ROW<1,1>=PRO.ID    ; * JMK12
+               STATUS.ROW<1,2>=BRIEF.STATUS        ; * JMK12
+               STATUS.ROW<1,3>=BILLED.AMT'R26'     ; * JMK12
+               STATUS.ROW<1,4>=ACTUAL.CHG          ; * JMK12
+               STATUS.ROW<1,5>=PROC.DATE'D2/'      ; * JMK12
+               STATUS.ROW<1,6>=CHECK.DATE          ; * JMK12
+               IF BANK.CODE#'V' AND BANK.CODE#'N' THEN       ; * JMK12
+                  STATUS.ROW<1,7>=CHECK.NUM        ; * JMK12
+               END                       ; * JMK12
+               STATUS.ROW<1,8>=CHECK.AMT           ; * JMK12
+               STATUS.ROW<1,9>=CLEARED.DATE        ; * JMK12
+               STATUS.ROW<1,10>=CUT.BACK.AMT       ; * JMK12
+               STATUS.ROW<1,11>=CUT.BACK.REASON    ; * JMK12
+               STATUS.ROW<1,12>=CUT.BACK.AUDITOR   ; * JMK12
+               STATUS.ROW<1,13>=FIELD(STATUS,'~',1)          ; * JMK12
+               STATUS.ROW<1,14>=CHANGE(PRO.REC<213>,@VM,' ')           ; * JMK17
+               CRT STATUS.ROW            ; * JMK12
+            END ELSE                     ; * JMK12
+*              PRINT STATUS              ; * JMK12
+*              CRT STATUS                ; * JMK12 ; * JMK14
+               XML.REC<-1>=SPACE(IND):'<FreightBillInfo>'    ; * JMK14
+               IND+=3                    ; * JMK14
+               IF PRO.ID#'' THEN         ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<ProID>':PRO.ID:'</ProID>'
+               END                       ; * JMK14
+               IF BRIEF.STATUS#'' THEN   ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<BriefStatus>':BRIEF.STATUS:'</BriefStatus>'
+               END                       ; * JMK14
+               IF BILLED.AMT#'' THEN     ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<BillAmt>':BILLED.AMT'R26':'</BillAmt>'
+               END                       ; * JMK14
+               IF ACTUAL.CHG#'' THEN     ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<ActualCharge>':ACTUAL.CHG:'</ActualCharge>'
+               END                       ; * JMK14
+               IF PROC.DATE#'' THEN      ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<ProcessDate>':PROC.DATE'D2/':'</ProcessDate>'
+               END                       ; * JMK14
+               IF CHECK.DATE#'' THEN     ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<CheckDate>':CHECK.DATE:'</CheckDate>'
+               END                       ; * JMK14
+               IF CHECK.NUM#'' AND BANK.CODE#'V' AND BANK.CODE#'N' THEN          ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<PymtNumber>':CHECK.NUM:'</PymtNumber>'
+               END                       ; * JMK14
+               IF CHECK.AMT#'' THEN      ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<PymtAmt>':CHECK.AMT:'</PymtAmt>'
+               END                       ; * JMK14
+               IF CLEARED.DATE#'' THEN   ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<ClearDate>':CLEARED.DATE:'</ClearDate>'
+               END                       ; * JMK14
+               IF CUT.BACK.AMT#'' THEN   ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<CutBackAmt>':CUT.BACK.AMT:'</CutBackAmt>'
+               END                       ; * JMK14
+               IF CUT.BACK.REASON#'' THEN          ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<CutBackReason>':CUT.BACK.REASON:'</CutBackReason>'
+               END                       ; * JMK14
+               IF CUT.BACK.AUDITOR#'' THEN         ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<CutBackAuditor>':CUT.BACK.AUDITOR:'</CutBackAuditor>'
+               END                       ; * JMK14
+               IF EDI.DESC #'' THEN      ; * NPR04
+                  XML.REC<-1>=SPACE(IND):'<EDIFlag>':EDI.DESC:'</EDIFlag>'       ; * NPR04
+               END                       ; * NPR04
+               IF TRAN.DESC #'' THEN     ; * NPR04
+                  XML.REC<-1>=SPACE(IND):'<TranMode>':TRAN.DESC:'</TranMode>'    ; * NPR04
+               END                       ; * NPR04
+               IF FIELD(STATUS,'~',1)#'' THEN      ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<StatusText>':FIELD(STATUS,'~',1):'</StatusText>'
+               END                       ; * JMK14
+               IND-=3                    ; * JMK14
+               XML.REC<-1>=SPACE(IND):'</FreightBillInfo>'   ; * JMK14
+            END                          ; * JMK12
+            ACTIVITY.REC<-1>=STATUS      ; * JMK07
+         END
+         IF FOUND THEN
+            IF CARRIER='00041' THEN      ; * JMK06
+               GOSUB CHECK.UPS           ; * JMK06
+            END                          ; * JMK06
+            FOUND.CARRIER=FIELD(TEMP.PRO.ID,'*',1)           ; * JMK08
+            GOSUB CHECK.AD.BD
+            GOSUB CHECK.SLASH
+         END
+
+SKIP.PRO:
+      NEXT X
+
+      IF USER.TYPE#'AFSCS' THEN          ; * JMK12
+         WRITE ACTIVITY.REC ON F.ACTIVITY,ACTIVITY.ID        ; * JMK07
+EXPORT.FINISH:*
+         IF ERROR#'' THEN                ; * JMK14
+            XML.REC<-1>=SPACE(IND):'<Errors>':ERROR:'</Errors>'        ; * JMK14
+         END                             ; * JMK14
+         IND-=3                          ; * JMK14
+         XML.REC<-1>=SPACE(IND):'</FreightBillStatus>'       ; * JMK14
+         IND-=3                          ; * JMK14
+         XML.REC<-1>=SPACE(IND):'</INET.FB.STATUS.WEB>'      ; * JMK14
+         IND-=3                          ; * JMK14
+         XML.REC=CHANGE(XML.REC,'&','&amp;')       ; * JMK14
+         XML.REC=CHANGE(XML.REC,@AM,CHAR(10))      ; * JMK14
+         CRT XML.REC                     ; * JMK14
+      END                                ; * JMK12
+*
+*ZZ
+*ZZ   ACTIVITY.REC<3> = ACTIVITY.ID
+*ZZ   NP.IDT = "NPRATT*":TIME()
+*ZZ   WRITE ACTIVITY.REC ON F.TABLES, NP.IDT
+*ZZ
+*
+
+      RETURN
+
+FORCE.CHECK.PROS:***
+
+      PRO.FORMAT = CARRIER.REC<47>
+      PROS=''
+      IF PRO.FORMAT<1,1>='' ELSE
+         VIN = PRO.FORMAT
+         VIN<2> = CARRIER.REC<51>
+         VIN<3> = TEMP.PRO.ID
+         CALL FORMAT.PROS(VIN,VOUT)
+         PROS = VOUT<3>
+      END
+      NUM.T.PROS = DCOUNT(PROS,@VM)
+      PRONUMSTATUS= ''
+      FORMATPRONUM = ''
+      FOUND = 0
+      FOR Y = 1 TO NUM.T.PROS
+         T.FOUND = 1
+         PRO.DESC = PROS<1,Y>
+         TEMP.PRO.ID = CARRIER:'*':PROS<1,Y>:"*0"
+         READ DUMMY FROM F.CRX,TEMP.PRO.ID THEN
+            PRO.REC = DUMMY
+            PRO.REC<1>=DUMMY<2>          ; * Correct the Position of the Date
+            PRO.REC<2>=''                ; * Correct the I/O Flag (Not on CRX File)
+            CLIENT=DUMMY<1>
+            IF CLIENT.USER THEN
+               IF CLIENT#CLIENT.USER.ID THEN
+*              This bill doesn't belong to this client
+                  STATUS = 'Pro # ':PRO.ID:': Was not on file for ':CLIENT.USER.NAME
+                  STATUS:= 'Submit copies of these bills via email to : FreightInvoices@afs.net'
+                  FOUND=0
+                  RETURN TO PRINT.STATUS
+               END
+            END
+* Assign the Data to PRO.REC then try to read the REAL File
+            OPEN 'FB.BILLS.HIST,':CLIENT TO F.HIST ELSE
+               T.FOUND = 0
+            END
+            READ PRO.REC FROM F.HIST,TEMP.PRO.ID ELSE FOUND = 0
+         END ELSE
+            T.FOUND = 0
+         END
+         IF T.FOUND THEN
+*NPR02            MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT ELSE CLIENT.REC(1) = ''
+            MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT ELSE MAT CLIENT.REC = ''    ; *NPR02
+            CLIENT.USER.NAME=CLIENT.REC(2)
+            BANK.CODE=CLIENT.REC(81)     ; * JMK15
+            IF BANK.CODE='V' OR BANK.CODE='N' THEN VOUCHER=1 ELSE VOUCHER=0      ; * JMK15
+            CLIENT.DOW=CLIENT.REC(151)   ; * JMK15
+            DUE.DT.FLG=CLIENT.REC(186)   ; * JMK15
+            FOUND = 1
+            POS = Y
+            GOSUB GET.STATUS
+            FOUND.PRO = PROS<1,Y>
+         END
+      NEXT Y
+      RETURN
+
+CHECK.AD.BD:****
+
+*    TEMP.PRO = FIELD(FOUND.PRO,"*",2)
+      TEMP.PRO = FOUND.PRO
+      AD.BD.PROS = ''
+      AD.BD.PROS<1,-1> = TEMP.PRO:'AD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'ADAD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'ADADAD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'ADADADAD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'BD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'BDBD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'BDBDBD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'BDBDBDBD'
+      AD.BD.BASE = AD.BD.PROS            ; * JMK13
+      BASE.CNT=DCOUNT(AD.BD.BASE,@VM)    ; * JMK13
+      FOR K=1 TO 10                      ; * JMK13
+         FOR VAL=1 TO BASE.CNT           ; * JMK13
+            AD.BD.PROS<1,-1>=AD.BD.BASE<1,VAL>:'/':K         ; * JMK13
+         NEXT VAL
+      NEXT K                             ; * JMK13
+      NUM.AD.BD = DCOUNT(AD.BD.PROS,@VM)
+      FOR Z = 1 TO NUM.AD.BD
+         STATUS = ''
+         T.FOUND = 1
+         PRO.DESC = AD.BD.PROS<1,Z>
+*        TEMP.PRO.ID = CARRIER:'*':AD.BD.PROS<1,Z>:"*0"      ; * JMK08
+         TEMP.PRO.ID = FOUND.CARRIER:'*':AD.BD.PROS<1,Z>:"*0"          ; * JMK08
+         READ DUMMY FROM F.CRX,TEMP.PRO.ID THEN
+            PRO.REC = DUMMY
+            PRO.REC<1>=DUMMY<2>          ; * Correct the Position of the Date
+            PRO.REC<2>=''                ; * Correct the I/O Flag (Not on CRX File)
+            CLIENT=DUMMY<1>
+            IF CLIENT.USER THEN
+               IF CLIENT#CLIENT.USER.ID THEN
+*              This bill doesn't belong to this client
+                  STATUS = 'Pro # ':AD.BD.PROS<1,Z>:': Was not on file for ':CLIENT.USER.NAME
+                  STATUS:= 'Submit copies of these bills via email to : FreightInvoices@afs.net'
+                  FOUND=0
+                  RETURN TO PRINT.STATUS
+               END
+            END
+* Assign the Data to PRO.REC then try to read the REAL File
+            OPEN 'FB.BILLS.HIST,':CLIENT TO F.HIST ELSE
+               T.FOUND = 0
+            END
+            READ PRO.REC FROM F.HIST,TEMP.PRO.ID ELSE FOUND = 0
+         END ELSE
+            T.FOUND = 0
+         END
+         IF T.FOUND THEN
+*NPR02            MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT ELSE CLIENT.REC(1) = ''
+            MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT ELSE MAT CLIENT.REC = ''    ; *NPR02
+            CLIENT.USER.NAME=CLIENT.REC(2)
+            BANK.CODE=CLIENT.REC(81)     ; * JMK15
+            IF BANK.CODE='V' OR BANK.CODE='N' THEN VOUCHER=1 ELSE VOUCHER=0      ; * JMK15
+            CLIENT.DOW=CLIENT.REC(151)   ; * JMK15
+            DUE.DT.FLG=CLIENT.REC(186)   ; * JMK15
+            FOUND = 1
+            POS = X
+            GOSUB GET.STATUS
+         END
+         IF STATUS # '' THEN
+            STATUS = CHANGE(STATUS,'..','.')
+            STATUS:='~':TRAN.DESC        ; * JMK03
+            STATUS:='~':EDI.DESC         ; * JMK03
+            IF USER.TYPE='AFSCS' THEN    ; * JMK12
+               STATUS.ROW=''             ; * JMK12
+*              STATUS.ROW<1,1>=PRO.ID    ; * JMK12 ; * JMK14
+               STATUS.ROW<1,1>=TEMP.PRO.ID         ; * JMK12 ; * JMK14
+               STATUS.ROW<1,2>=BRIEF.STATUS        ; * JMK12
+               STATUS.ROW<1,3>=BILLED.AMT'R26'     ; * JMK12
+               STATUS.ROW<1,4>=ACTUAL.CHG          ; * JMK12
+               STATUS.ROW<1,5>=PROC.DATE'D2/'      ; * JMK12
+               STATUS.ROW<1,6>=CHECK.DATE          ; * JMK12
+               IF BANK.CODE#'V' AND BANK.CODE#'N' THEN       ; * JMK12
+                  STATUS.ROW<1,7>=CHECK.NUM        ; * JMK12
+               END                       ; * JMK12
+               STATUS.ROW<1,8>=CHECK.AMT           ; * JMK12
+               STATUS.ROW<1,9>=CLEARED.DATE        ; * JMK12
+               STATUS.ROW<1,10>=CUT.BACK.AMT       ; * JMK12
+               STATUS.ROW<1,11>=CUT.BACK.REASON    ; * JMK12
+               STATUS.ROW<1,12>=CUT.BACK.AUDITOR   ; * JMK12
+               STATUS.ROW<1,13>=FIELD(STATUS,'~',1)          ; * JMK12
+               STATUS.ROW<1,14>=CHANGE(PRO.REC<213>,@VM,' ')           ; * JMK17
+               CRT STATUS.ROW            ; * JMK12
+            END ELSE                     ; * JMK12
+*              PRINT STATUS              ; * JMK12
+*              CRT STATUS                ; * JMK12 ; * JMK14
+               XML.REC<-1>=SPACE(IND):'<FreightBillInfo>'    ; * JMK14
+               IND+=3                    ; * JMK14
+               IF TEMP.PRO.ID#'' THEN    ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<ProID>':FIELD(TEMP.PRO.ID,'*',2):'</ProID>'
+               END                       ; * JMK14
+               IF BRIEF.STATUS#'' THEN   ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<BriefStatus>':BRIEF.STATUS:'</BriefStatus>'
+               END                       ; * JMK14
+               IF BILLED.AMT#'' THEN     ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<BillAmt>':BILLED.AMT'R26':'</BillAmt>'
+               END                       ; * JMK14
+               IF ACTUAL.CHG#'' THEN     ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<ActualCharge>':ACTUAL.CHG:'</ActualCharge>'
+               END                       ; * JMK14
+               IF PROC.DATE#'' THEN      ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<ProcessDate>':PROC.DATE'D2/':'</ProcessDate>'
+               END                       ; * JMK14
+               IF CHECK.DATE#'' THEN     ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<CheckDate>':CHECK.DATE:'</CheckDate>'
+               END                       ; * JMK14
+               IF CHECK.NUM#'' AND BANK.CODE#'V' AND BANK.CODE#'N' THEN          ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<PymtNumber>':CHECK.NUM:'</PymtNumber>'
+               END                       ; * JMK14
+               IF CHECK.AMT#'' THEN      ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<PymtAmt>':CHECK.AMT:'</PymtAmt>'
+               END                       ; * JMK14
+               IF CLEARED.DATE#'' THEN   ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<ClearDate>':CLEARED.DATE:'</ClearDate>'
+               END                       ; * JMK14
+               IF CUT.BACK.AMT#'' THEN   ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<CutBackAmt>':CUT.BACK.AMT:'</CutBackAmt>'
+               END                       ; * JMK14
+               IF CUT.BACK.REASON#'' THEN          ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<CutBackReason>':CUT.BACK.REASON:'</CutBackReason>'
+               END                       ; * JMK14
+               IF CUT.BACK.AUDITOR#'' THEN         ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<CutBackAuditor>':CUT.BACK.AUDITOR:'</CutBackAuditor>'
+               END                       ; * JMK14
+               IF FIELD(STATUS,'~',1)#'' THEN      ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<StatusText>':FIELD(STATUS,'~',1):'</StatusText>'
+               END                       ; * JMK14
+               IND-=3                    ; * JMK14
+               XML.REC<-1>=SPACE(IND):'</FreightBillInfo>'   ; * JMK14
+            END                          ; * JMK12
+            ACTIVITY.REC<-1>=STATUS      ; * JMK07
+         END
+      NEXT Z
+      RETURN
+
+CHECK.UPS:**** ; * JMK06
+
+      TEMP.PRO = FOUND.PRO               ; * JMK06
+      LPRO=LEN(TEMP.PRO)                 ; * JMK06
+      BASE.PRO=TEMP.PRO[1,LPRO-2]        ; * JMK06
+      UPS.PROS = ''                      ; * JMK06
+      BEGIN CASE                         ; * JMK06
+         CASE TEMP.PRO[LPRO-1,2]='-O'    ; * JMK06
+            UPS.PROS<1,-1> = BASE.PRO:'-I'         ; * JMK06
+            UPS.PROS<1,-1> = BASE.PRO:'-T'         ; * JMK06
+         CASE TEMP.PRO[LPRO-1,2]='-I'    ; * JMK06
+            UPS.PROS<1,-1> = BASE.PRO:'-O'         ; * JMK06
+            UPS.PROS<1,-1> = BASE.PRO:'-T'         ; * JMK06
+         CASE TEMP.PRO[LPRO-1,2]='-T'    ; * JMK06
+            UPS.PROS<1,-1> = BASE.PRO:'-O'         ; * JMK06
+            UPS.PROS<1,-1> = BASE.PRO:'-I'         ; * JMK06
+      END CASE                           ; * JMK06
+      NUM.UPS = DCOUNT(UPS.PROS,@VM)     ; * JMK06
+      FOR Z = 1 TO NUM.UPS               ; * JMK06
+         STATUS = ''                     ; * JMK06
+         T.FOUND = 1                     ; * JMK06
+         PRO.DESC = UPS.PROS<1,Z>        ; * JMK06
+         TEMP.PRO.ID = CARRIER:'*':UPS.PROS<1,Z>:"*0"        ; * JMK06
+         READ DUMMY FROM F.CRX,TEMP.PRO.ID THEN    ; * JMK06
+            PRO.REC = DUMMY              ; * JMK06
+            PRO.REC<1>=DUMMY<2>          ; * Correct the Position of the Date ; * JMK06
+            PRO.REC<2>=''                ; * Correct the I/O Flag (Not on CRX File) ; * JMK06
+            CLIENT=DUMMY<1>              ; * JMK06
+            IF CLIENT.USER THEN          ; * JMK06
+               IF CLIENT#CLIENT.USER.ID THEN       ; * JMK06
+*              This bill doesn't belong to this client ; * JMK06
+                  STATUS = 'Pro # ':UPS.PROS<1,Z>:': Was not on file for ':CLIENT.USER.NAME          ; * JMK06
+                  STATUS:= 'Submit copies of these bills via email to : FreightInvoices@afs.net'
+                  FOUND=0                ; * JMK06
+                  RETURN TO PRINT.STATUS           ; * JMK06
+               END                       ; * JMK06
+            END                          ; * JMK06
+* Assign the Data to PRO.REC then try to read the REAL File ; * JMK06
+            OPEN 'FB.BILLS.HIST,':CLIENT TO F.HIST ELSE      ; * JMK06
+               T.FOUND = 0               ; * JMK06
+            END                          ; * JMK06
+            READ PRO.REC FROM F.HIST,TEMP.PRO.ID ELSE FOUND = 0        ; * JMK06
+         END ELSE                        ; * JMK06
+            T.FOUND = 0                  ; * JMK06
+         END                             ; * JMK06
+         IF T.FOUND THEN                 ; * JMK06
+*NPR02            MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT ELSE CLIENT.REC(1) = ''
+            MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT ELSE MAT CLIENT.REC = ''    ; *NPR02
+            CLIENT.USER.NAME=CLIENT.REC(2)
+            BANK.CODE=CLIENT.REC(81)     ; * JMK15
+            IF BANK.CODE='V' OR BANK.CODE='N' THEN VOUCHER=1 ELSE VOUCHER=0      ; * JMK15
+            CLIENT.DOW=CLIENT.REC(151)   ; * JMK15
+            DUE.DT.FLG=CLIENT.REC(186)   ; * JMK15
+            FOUND = 1                    ; * JMK06
+            POS = X                      ; * JMK06
+            GOSUB GET.STATUS             ; * JMK06
+         END                             ; * JMK06
+         IF STATUS # '' THEN             ; * JMK06
+            STATUS = CHANGE(STATUS,'..','.')       ; * JMK06
+            STATUS:='~':TRAN.DESC        ; * JMK03 ; * JMK06
+            STATUS:='~':EDI.DESC         ; * JMK03 ; * JMK06
+            IF USER.TYPE='AFSCS' THEN    ; * JMK12
+               STATUS.ROW=''             ; * JMK12
+               STATUS.ROW<1,1>=PRO.ID    ; * JMK12
+               STATUS.ROW<1,2>=BRIEF.STATUS        ; * JMK12
+               STATUS.ROW<1,3>=BILLED.AMT'R26'     ; * JMK12
+               STATUS.ROW<1,4>=ACTUAL.CHG          ; * JMK12
+               STATUS.ROW<1,5>=PROC.DATE'D2/'      ; * JMK12
+               STATUS.ROW<1,6>=CHECK.DATE          ; * JMK12
+               IF BANK.CODE#'V' AND BANK.CODE#'N' THEN       ; * JMK12
+                  STATUS.ROW<1,7>=CHECK.NUM        ; * JMK12
+               END                       ; * JMK12
+               STATUS.ROW<1,8>=CHECK.AMT           ; * JMK12
+               STATUS.ROW<1,9>=CLEARED.DATE        ; * JMK12
+               STATUS.ROW<1,10>=CUT.BACK.AMT       ; * JMK12
+               STATUS.ROW<1,11>=CUT.BACK.REASON    ; * JMK12
+               STATUS.ROW<1,12>=CUT.BACK.AUDITOR   ; * JMK12
+               STATUS.ROW<1,13>=FIELD(STATUS,'~',1)          ; * JMK12
+               STATUS.ROW<1,14>=CHANGE(PRO.REC<213>,@VM,' ')           ; * JMK17
+               CRT STATUS.ROW            ; * JMK12
+            END ELSE                     ; * JMK12
+*              PRINT STATUS              ; * JMK06 ; * JMK12
+*              CRT STATUS                ; * JMK12 ; * JMK14
+               XML.REC<-1>=SPACE(IND):'<FreightBillInfo>'    ; * JMK14
+               IND+=3                    ; * JMK14
+               IF TEMP.PRO.ID#'' THEN    ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<ProID>':FIELD(TEMP.PRO.ID,'*',2):'</ProID>'
+               END                       ; * JMK14
+               IF BRIEF.STATUS#'' THEN   ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<BriefStatus>':BRIEF.STATUS:'</BriefStatus>'
+               END                       ; * JMK14
+               IF BILLED.AMT#'' THEN     ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<BillAmt>':BILLED.AMT'R26':'</BillAmt>'
+               END                       ; * JMK14
+               IF ACTUAL.CHG#'' THEN     ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<ActualCharge>':ACTUAL.CHG:'</ActualCharge>'
+               END                       ; * JMK14
+               IF PROC.DATE#'' THEN      ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<ProcessDate>':PROC.DATE'D2/':'</ProcessDate>'
+               END                       ; * JMK14
+               IF CHECK.DATE#'' THEN     ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<CheckDate>':CHECK.DATE:'</CheckDate>'
+               END                       ; * JMK14
+               IF CHECK.NUM#'' AND BANK.CODE#'V' AND BANK.CODE#'N' THEN          ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<PymtNumber>':CHECK.NUM:'</PymtNumber>'
+               END                       ; * JMK14
+               IF CHECK.AMT#'' THEN      ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<PymtAmt>':CHECK.AMT:'</PymtAmt>'
+               END                       ; * JMK14
+               IF CLEARED.DATE#'' THEN   ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<ClearDate>':CLEARED.DATE:'</ClearDate>'
+               END                       ; * JMK14
+               IF CUT.BACK.AMT#'' THEN   ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<CutBackAmt>':CUT.BACK.AMT:'</CutBackAmt>'
+               END                       ; * JMK14
+               IF CUT.BACK.REASON#'' THEN          ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<CutBackReason>':CUT.BACK.REASON:'</CutBackReason>'
+               END                       ; * JMK14
+               IF CUT.BACK.AUDITOR#'' THEN         ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<CutBackAuditor>':CUT.BACK.AUDITOR:'</CutBackAuditor>'
+               END                       ; * JMK14
+               IF FIELD(STATUS,'~',1)#'' THEN      ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<StatusText>':FIELD(STATUS,'~',1):'</StatusText>'
+               END                       ; * JMK14
+               IND-=3                    ; * JMK14
+               XML.REC<-1>=SPACE(IND):'</FreightBillInfo>'   ; * JMK14
+            END                          ; * JMK12
+            ACTIVITY.REC<-1>=STATUS      ; * JMK07
+         END                             ; * JMK06
+      NEXT Z                             ; * JMK06
+      RETURN                             ; * JMK06
+
+GET.STATUS:
+      TRAN.CODE=PRO.REC<21>              ; * JMK03
+      IF CARRIER='08767' THEN TRAN.CODE=1
+      READ TRAN.REC FROM F.TRANSPORT,TRAN.CODE ELSE TRAN.REC=''        ; * JMK03
+      TRAN.DESC=TRAN.REC<1>              ; * JMK03
+      EDI.DESC='NEDI'                    ; * JMK03
+      EDI.ID=PRO.REC<88>                 ; * JMK03
+      CALL PARSE.EDI.ID(EDI.ID, CLIENT.ID, EDI.HIST.ID)      ; * JCW01
+      OPEN 'EDI.BILLS.HIST,':CLIENT.ID TO F.EDI THEN         ; * JCW01
+*       READ EDI.REC FROM F.EDI,EDI.ID THEN EDI.DESC='EDI'     ; * JMK03 ; * JCW01
+         READ EDI.REC FROM F.EDI, EDI.HIST.ID THEN EDI.DESC = 'EDI'    ; * JCW01
+      END                                ; * JCW01
+      CHECK.DATE = PRO.REC<15>'D2/'
+      CHECK.NUM = PRO.REC<14>
+      CLEARED.DATE=''                    ; * JMK12
+      READ CHECK.REC FROM F.CHECKS,CHECK.NUM ELSE CHECK.REC=''         ; * JMK12
+*      READV CLEARED.DATE FROM F.CHECKS,CHECK.NUM,21 THEN     ; * JMK12
+*         CLEARED.DATE=CLEARED.DATE'D2/' ; * JMK12
+*      END ELSE CLEARED.DATE=''          ; * JMK12
+      IF CHECK.REC<21>#'' THEN CLEARED.DATE=CHECK.REC<21>'D2/'         ; * JMK12
+      IF CHECK.REC<26>#'' THEN ACH.FLG=1 ELSE ACH.FLG=0      ; * JMK12
+*NPR01
+      ID.PAY = CLIENT:"*":TEMP.PRO.ID
+      READV ANTICIPATED.PAY.DATE FROM F.PAY,ID.PAY,134 ELSE ANTICIPATED.PAY.DATE = ""
+*NPR01
+      CHECK.NUM = CHANGE(CHECK.NUM,'*F','')
+      CHECK.NUM = CHANGE(CHECK.NUM,'*V','')
+      CHECK.AMT = OCONV(PRO.REC<13>,'MR2,')
+*     CUT.BACK.AMT = -OCONV(PRO.REC<11>,'MR2')
+      CUT.BACK.AMT = -(PRO.REC<11>+PRO.REC<10>)'R26'
+      IF CUT.BACK.AMT # "0.00" THEN
+         CUT.BACK.REASON = TRIM(PRO.REC<41,1>:' ':PRO.REC<41,2>)
+         CUT.BACK.AUDITOR = PRO.REC<89>  ; * JMK12
+      END ELSE
+         CUT.BACK.REASON = ""
+         CUT.BACK.AUDITOR = ""           ; * JMK12
+      END
+** Added 5/7/3 -- Kevin Messenger
+      CHARGE.TYPE = PRO.REC<70>
+      CHARGE.AMOUNT = PRO.REC<77>
+      CHARGES.INCLUDE = ''
+      NUM.INCLUDES=0
+      NUM.CHARGES = DCOUNT(CHARGE.TYPE,@VM)
+      FOR POS = 1 TO NUM.CHARGES
+         BEGIN CASE
+            CASE CHARGE.TYPE<1,POS>='FRT'
+            CASE CHARGE.TYPE<1,POS>='FSC'
+            CASE CHARGE.TYPE<1,POS>=''
+            CASE 1
+               NUM.INCLUDES = NUM.INCLUDES + 1
+               CHARGES.INCLUDE<NUM.INCLUDES> = CHARGE.TYPE<1,POS>:'-'
+               LOCATE CHARGE.TYPE<1,POS> IN DLI.CODES<1> SETTING P THEN
+                  CHARGE.NAME=DLI.CODES<2,P>
+               END ELSE
+                  CHARGE.NAME='** Unknown **'
+               END
+               CHARGES.INCLUDE<NUM.INCLUDES>:=CHARGE.NAME:' '
+               CHARGES.INCLUDE<NUM.INCLUDES>:=' $':OCONV(CHARGE.AMOUNT<1,POS>,'MR2'):'.'
+         END CASE
+      NEXT POS
+****KM
+
+*OWEN*     BILLED.AMT=PRO.REC<7>
+      BILLED.AMT=PRO.REC<8>-PRO.REC<10>-PRO.REC<11>
+      ACTUAL.CHG = OCONV(PRO.REC<8>,'MR2')
+      BILL.DATE = PRO.REC<1>
+      PROCESS.DATE = PRO.REC<37>'D2/'
+      PROC.DATE = PRO.REC<37>
+      DUE.DATE = PRO.REC<38>             ; * JMK01
+      ENTRY.DATE = PRO.REC<30>'D2/'
+      REJECT = PRO.REC<39>
+      REJECT.REASONS = PRO.REC<59>
+      REJECT.USER.DATE = PRO.REC<60>
+      FREE.FORM.REJECT = PRO.REC<61>
+      REJECT.FREE.USER.DATE = PRO.REC<62>
+      NUM.REJECTS = DCOUNT(REJECT.REASONS,@VM)
+      NUM.FREE.REJECTS = DCOUNT(FREE.FORM.REJECT,@VM)
+*    IF STATUS#'' THEN STATUS:='  '
+      STATUS = 'Pro # ':PRO.DESC:': '
+
+      IF CLIENT='00900' OR CLIENT='00801' OR CLIENT='00862' OR CLIENT='00892' OR CLIENT='00853' OR CLIENT='00961' OR CLIENT='00952' THEN
+         VP.CLIENT='1'
+      END ELSE
+         VP.CLIENT='0'
+      END
+      BANK.CODE=PRO.REC<40>
+      IF BANK.CODE='V' OR BANK.CODE='N' THEN
+*        PAID.STATEMENT='AFS returned the bill to ':CLIENT.USER.NAME:' for payment'        ; * JMK12
+         PAID.STATEMENT='AFS forwarded the bill to ':CLIENT.USER.NAME:' for payment'       ; * JMK12
+         CHECK.WORD=', total amount submitted for this reference# $'
+         CHECK.NO.WORD=' remittance reference #'
+      END ELSE
+         IF USER.TYPE='CLIENT' THEN
+            PAID.STATEMENT='Bill was paid'
+         END ELSE
+            PAID.STATEMENT='Bill for ':CLIENT.USER.NAME:', was paid'
+         END
+         CHECK.WORD=', total check amount $'
+         CHECK.NO.WORD=' check #'
+      END
+*** START - Special Routine for SALES/CLIENT Demo *** Replace Dates with "Fresh" Dates
+      IF CLIENT='80000' AND CARRIER='00212' AND USER.NAME='SALES' AND USER.PWD='CLIENT' THEN
+
+         BEGIN CASE
+            CASE TEMP.PRO.ID='00212*0000000001*0'  ; * Processed, cut back, NOT paid
+               DVIN=DATE()-6 ; BEG.DATE=''
+               CALL NEXT.BUSINESS.DAY(BEG.DATE,NEXT.BUS.DATE,DSTATUS,DVIN,DVOUT)
+               PROCESS.DATE=DVOUT<1>'D2/'
+
+            CASE TEMP.PRO.ID='00212*0000000002*0'  ; * Entered NOT Processed
+               DVIN=DATE()-3 ; BEG.DATE=''
+               CALL NEXT.BUSINESS.DAY(BEG.DATE,NEXT.BUS.DATE,DSTATUS,DVIN,DVOUT)
+               ENTRY.DATE=DVOUT<1>'D2/'
+
+            CASE TEMP.PRO.ID='00212*0000000003*0'  ; * Processed AND Paid
+               DVIN=DATE()-16 ; BEG.DATE=''
+               CALL NEXT.BUSINESS.DAY(BEG.DATE,NEXT.BUS.DATE,DSTATUS,DVIN,DVOUT)
+               PROCESS.DATE=DVOUT<1>'D2/'
+
+               DVIN=DATE()-8 ; BEG.DATE=''
+               CALL NEXT.BUSINESS.DAY(BEG.DATE,NEXT.BUS.DATE,DSTATUS,DVIN,DVOUT)
+               CHECK.DATE=DVOUT<1>'D2/'
+               CHECK.NUM='12345'
+
+            CASE TEMP.PRO.ID='00212*0000000004*0'
+               DVIN=DATE()-30 ; BEG.DATE=''
+               CALL NEXT.BUSINESS.DAY(BEG.DATE,NEXT.BUS.DATE,DSTATUS,DVIN,DVOUT)
+               REJECT.USER.DATE<1>=CHANGE(REJECT.USER.DATE<1>,'11701',DVOUT<1>)
+
+               DVIN=DATE()-15 ; BEG.DATE=''
+               CALL NEXT.BUSINESS.DAY(BEG.DATE,NEXT.BUS.DATE,DSTATUS,DVIN,DVOUT)
+               REJECT.FREE.USER.DATE<1>=CHANGE(REJECT.FREE.USER.DATE<1>,'11713',DVOUT<1>)
+
+*REJECT.FREE.USER.DATE<1,T,2>
+*REJECT.USER.DATE<1,S,2>'D2/'
+
+            CASE TEMP.PRO.ID='00212*0000000005*0'  ; * Processed AND Paid
+               DVIN=DATE()-51 ; BEG.DATE=''
+               CALL NEXT.BUSINESS.DAY(BEG.DATE,NEXT.BUS.DATE,DSTATUS,DVIN,DVOUT)
+               PROCESS.DATE=DVOUT<1>'D2/'
+
+               DVIN=DATE()-43 ; BEG.DATE=''
+               CALL NEXT.BUSINESS.DAY(BEG.DATE,NEXT.BUS.DATE,DSTATUS,DVIN,DVOUT)
+               CHECK.DATE=DVOUT<1>'D2/'
+
+               CHECK.NUM='12346'
+
+               DVIN=DATE()-20 ; BEG.DATE=''
+               CALL NEXT.BUSINESS.DAY(BEG.DATE,NEXT.BUS.DATE,DSTATUS,DVIN,DVOUT)
+               CLEARED.DATE=DVOUT<1>'D2/'
+
+
+            CASE TEMP.PRO.ID='00212*0000000006*0'
+            CASE TEMP.PRO.ID='00212*0000000007*0'
+            CASE TEMP.PRO.ID='00212*0000000008*0'
+            CASE TEMP.PRO.ID='00212*0000000009*0'
+         END CASE
+      END
+*** END - Special Routine for SALES/CLIENT Demo *** Replace Dates with "Fresh" Dates
+
+
+
+
+
+      BEGIN CASE
+         CASE CHECK.DATE # '' AND CHECK.NUM # '' AND CHECK.AMT # '' AND CUT.BACK.AMT = "0.00" AND REJECT # "R"
+            IF BANK.CODE='V' OR BANK.CODE='N' THEN           ; * JMK12
+               STATUS := PAID.STATEMENT:' on ':CHECK.DATE:CHECK.WORD:CHECK.AMT   ; * JMK12
+            END ELSE                     ; * JMK12
+               STATUS := PAID.STATEMENT:' on ':CHECK.DATE:CHECK.WORD:CHECK.AMT:',':CHECK.NO.WORD:' ':CHECK.NUM
+            END                          ; * JMK12
+            IF CLEARED.DATE#'' THEN STATUS:= ' which cleared on ':CLEARED.DATE:"." ELSE STATUS:='.'
+            IF BANK.CODE#'V' AND BANK.CODE#'N' THEN          ; * JMK12
+               STATUS :=' Actual charges paid for this pro # were $':ACTUAL.CHG
+            END                          ; * JMK12
+            IF PROCESS.DATE # '' THEN
+               STATUS := ' The bill was processed on ':PROCESS.DATE
+            END
+            IF BANK.CODE='V' OR BANK.CODE='N' THEN           ; * JMK12
+               BRIEF.STATUS='Forwarded to Client for Payment'          ; * JMK12
+            END ELSE                     ; * JMK12
+               BRIEF.STATUS='Paid '      ; * JMK12
+               IF CLEARED.DATE#'' THEN   ; * JMK12
+                  BRIEF.STATUS:='and Cleared '     ; * JMK12
+               END                       ; * JMK12
+               IF ACH.FLG THEN           ; * JMK12
+                  BRIEF.STATUS:='via ACH'          ; * JMK12
+               END ELSE                  ; * JMK12
+                  BRIEF.STATUS:='via Check'        ; * JMK12
+               END                       ; * JMK12
+            END                          ; * JMK12
+         CASE CHECK.DATE # '' AND CHECK.NUM # '' AND CHECK.AMT # '' AND CUT.BACK.AMT # "0.00" AND REJECT # "R"
+*           STATUS := PAID.STATEMENT:' on ':CHECK.DATE:CHECK.WORD:CHECK.AMT:',':CHECK.NO.WORD:' ':CHECK.NUM:'.'
+*           STATUS := ' Actual charges paid for this pro # were $':ACTUAL.CHG
+*           STATUS := ' This amount includes a cutback in the amount of $':CUT.BACK.AMT:' for the following reason : ':CUT.BACK.REASON:'.'
+*           STATUS := PAID.STATEMENT:' on ':CHECK.DATE:CHECK.WORD:CHECK.AMT:',':CHECK.NO.WORD:' ':CHECK.NUM ; * JMK02
+            IF BANK.CODE='V' OR BANK.CODE='N' THEN           ; * JMK12
+               STATUS := PAID.STATEMENT:' on ':CHECK.DATE:CHECK.WORD:CHECK.AMT   ; * JMK12
+            END ELSE                     ; * JMK12
+               STATUS := PAID.STATEMENT:' on ':CHECK.DATE:CHECK.WORD:CHECK.AMT:',':CHECK.NO.WORD:' ':CHECK.NUM:'.'       ; * JMK02
+            END                          ; * JMK12
+
+*           IF CLEARED.DATE#'' THEN STATUS:= ' which cleared on ':CLEARED.DATE:"." ELSE STATUS:='.' ; * JMK02
+            IF BANK.CODE#'V' AND BANK.CODE#'N' THEN          ; * JMK12
+               STATUS := ' Actual charges paid for this pro # were $':ACTUAL.CHG
+            END                          ; * JMK12
+            IF CLEARED.DATE#'' THEN STATUS:= ' The check cleared our bank on ':CLEARED.DATE:'.'
+            GOSUB ADD.CHARGE.ITEMS
+            STATUS := ' Original billed amount was $':BILLED.AMT'R26':' cutback to $':ACTUAL.CHG
+            STATUS := ' in the amount of $':CUT.BACK.AMT:' for the following reason: ':CUT.BACK.REASON:'.'
+            IF PROCESS.DATE # '' THEN
+               STATUS := ' The bill was processed on ':PROCESS.DATE
+            END
+            IF BANK.CODE='V' OR BANK.CODE='N' THEN           ; * JMK12
+               BRIEF.STATUS='Forwarded to Client for Payment'          ; * JMK12
+            END ELSE                     ; * JMK12
+               BRIEF.STATUS='Paid '      ; * JMK12
+               IF CLEARED.DATE#'' THEN   ; * JMK12
+                  BRIEF.STATUS:='and Cleared '     ; * JMK12
+               END                       ; * JMK12
+               IF ACH.FLG THEN           ; * JMK12
+                  BRIEF.STATUS:='via ACH'          ; * JMK12
+               END ELSE                  ; * JMK12
+                  BRIEF.STATUS:='via Check'        ; * JMK12
+               END                       ; * JMK12
+            END                          ; * JMK12
+         CASE PROCESS.DATE # '' & REJECT # 'R' & VP.CLIENT & BILL.DATE LE ICONV('12/28/00','D')
+            STATUS := 'Bill processed on ':PROCESS.DATE:' in the amount of $':ACTUAL.CHG:' Payment subject to Chapter 11 petition'
+         CASE PROCESS.DATE # '' AND REJECT # 'R'
+            STATUS := ' The bill was processed on ':PROCESS.DATE
+            BRIEF.STATUS='Approved for Payment'    ; * JMK12
+            IF CUT.BACK.AMT = "0.00" OR CUT.BACK.AMT = "0.01" THEN
+               STATUS:=' in the amount of $':ACTUAL.CHG
+**Added 5/7/3 Kevin Messenger
+               GOSUB ADD.CHARGE.ITEMS
+            END ELSE
+               STATUS:=' for the billed amount of $':BILLED.AMT'R26'
+               GOSUB ADD.CHARGE.ITEMS
+               STATUS := ' Which was then cutback to $':ACTUAL.CHG:' in the amount of $':CUT.BACK.AMT:' for the following reason: ':CUT.BACK.REASON:'.'
+            END
+            IF PRO.REC<8>+0#"0" THEN     ; * JMK11
+* NPR01        STATUS:=' Estimated check date is '
+               IF ANTICIPATED.PAY.DATE NE "" THEN  ; * NPR01
+                  STATUS := 'Anticipated check date is ':OCONV(ANTICIPATED.PAY.DATE,"D2/"):" "       ; * NPR01
+                  BRIEF.STATUS='Planned Pymt ':ANTICIPATED.PAY.DATE'D2/'         ; * JMK12
+               END ELSE
+                  IF CL.LAST.CHECKS#'' AND CL.BANK # 'V' AND CL.BANK # 'N' THEN
+                     NUM.OF.CHECK.DATES=DCOUNT(CL.LAST.CHECKS<1>,@VM)
+                     IF NUM.OF.CHECK.DATES > 8 THEN NUM.OF.CHECK.DATES = 8
+*            Only get the latest 8 items
+                     SUM.OF.DATES=0
+                     FOR XX = 1 TO NUM.OF.CHECK.DATES
+                        SUM.OF.DATES = SUM.OF.DATES + CL.LAST.CHECKS<1,XX> - CL.LAST.PROC.DATES<1,XX>
+                     NEXT XX
+                     AVG.DAYS = SUM.OF.DATES/NUM.OF.CHECK.DATES
+                     AVG.DAYS = AVG.DAYS + .99     ; * Round up
+                     AVG.DAYS = AVG.DAYS'R0'
+                     IF CLIENT='00932' THEN AVG.DAYS=21
+                     EST.DATE.OF.CHECK=PROC.DATE+AVG.DAYS
+                     IF EST.DATE.OF.CHECK LE DATE()+7 THEN EST.DATE.OF.CHECK = DATE()+7
+*NPR01                     STATUS:=' Estimated check date is '     ; * NPR01
+*DF                     IF CLIENT#'01977' AND CLIENT#'01979' THEN    ; * DRF01
+                     IF CLIENT#'01977' AND CLIENT#'01979' AND CLIENT#'02459' THEN    ; * DRF01
+                        STATUS:=' Estimated payment date is '          ; * NPR01
+                        STATUS := EST.DATE.OF.CHECK'D2/':'.'
+                     END
+                     BRIEF.STATUS='Planned Pymt ':EST.DATE.OF.CHECK'D2/'         ; * JMK12
+                  END ELSE
+*NPR01                     STATUS := "Estimated check date is unavailable."  ; *NPR01
+                     STATUS := "Estimated payment date is unavailable."          ; *NPR01
+                     BRIEF.STATUS='Awaiting Payment'         ; * JMK12
+                  END                    ; * NPR01
+               END
+            END                          ; * JMK11
+         CASE ENTRY.DATE # '' AND REJECT # 'R'
+*        STATUS := 'Bill received and entered ':ENTRY.DATE:', will be processed within 96 hours.' ; * JMK01
+*           IF DUE.DT.FLG='Y' THEN       ; * JMK09
+* NPR05            IF DUE.DATE#'' AND DUE.DATE>DATE() THEN          ; * JMK09
+            IF DUE.DT.FLG # "N" AND DUE.DT.FLG # '' AND DUE.DATE > DATE() THEN   ; * NPR05
+               PROC.DT=DUE.DATE          ; * JMK01
+            END ELSE                     ; * JMK01
+               PROC.DT=DATE()            ; * JMK01
+            END                          ; * JMK01
+            CALL NEXT.PROCESS.DATE(PROC.DT,CLIENT.DOW)       ; * JMK01
+            STATUS := 'Bill received and entered ':ENTRY.DATE:', scheduled to be processed on ':PROC.DT 'D4/':'.'        ; * JMK01
+            BRIEF.STATUS='Awaiting Approval'       ; * JMK12
+            IF PROCESS.DATE # '' THEN
+               STATUS := 'Bill processed on ':PROCESS.DATE
+               BRIEF.STATUS='Approved for Payment'           ; * JMK12
+            END
+         CASE ENTRY.DATE # '' AND REJECT = 'R'
+            STATUS := 'Bill returned for the following reason(s) :'
+            BRIEF.STATUS='Rejected'      ; * JMK12
+            IF NUM.REJECTS GT 0 THEN
+               FOR S = 1 TO NUM.REJECTS
+*                 REJECT.DATE = REJECT.USER.DATE<1,X,2>'D2/' ; * JMK04
+                  REJECT.DATE = REJECT.USER.DATE<1,S,2>'D2/'           ; * JMK04
+                  IF REJECT.DATE # '' THEN
+                     STATUS := '(':S:') Returned on ':REJECT.DATE:' because:  '
+                  END ELSE
+                     STATUS := '(':S:') because:  '
+                  END
+                  CODE = REJECT.REASONS<1,S>
+                  LOCATE CODE IN REJECT.CODES<1> SETTING POS THEN
+                     IF OCONV(REJECT.CODES<2,POS>[1,3],'MCU')='REM' THEN
+                        STATUS := ' for more information, please contact AFS, '
+                     END ELSE
+                        STATUS := REJECT.CODES<2,POS>:', '
+                     END
+                  END
+               NEXT S
+            END
+            IF NUM.FREE.REJECTS GT 0 THEN
+               FOR T = 1 TO NUM.FREE.REJECTS
+                  FREE.DATE = REJECT.FREE.USER.DATE<1,T,2>'D2/'
+                  STATUS := '(':T:') Returned on ':FREE.DATE'D2/'
+                  REM.CHECK = OCONV(FREE.FORM.REJECT<1,T>[1,3],'MCU')
+                  IF REM.CHECK = 'REM' THEN        ; * Hide the REAL Reason
+                     STATUS := ' for more information, please contact AFS '
+                  END ELSE
+                     STATUS :=' because ' : FREE.FORM.REJECT<1,T>:' '
+                  END
+               NEXT T
+            END
+         CASE 1
+*        STATUS := 'Bill received and entered will be processed within 96 hours.' ; * JMK01
+*           IF DUE.DT.FLG='Y' THEN       ; * JMK09
+*NPR05            IF DUE.DATE#'' AND DUE.DATE>DATE() THEN          ; * JMK09
+            IF DUE.DT.FLG # "N" AND DUE.DT.FLG # '' AND DUE.DATE > DATE() THEN   ; * NPR05
+               PROC.DT=DUE.DATE          ; * JMK01
+            END ELSE                     ; * JMK01
+               PROC.DT=DATE()            ; * JMK01
+            END                          ; * JMK01
+            CALL NEXT.PROCESS.DATE(PROC.DT,CLIENT.DOW)       ; * JMK01
+            STATUS := 'Bill received and entered, scheduled to be processed on ':PROC.DT 'D4/':'.'   ; * JMK01
+            BRIEF.STATUS='Awaiting Approval'       ; * JMK12
+      END CASE
+      RETURN
+
+ADD.CHARGE.ITEMS:***
+**Added 5/7/3 Kevin Messenger
+      IF NUM.INCLUDES#0 THEN
+         STATUS := ' which includes the following charges:'
+         FOR POS = 1 TO NUM.INCLUDES
+            STATUS := CHARGES.INCLUDE<POS>
+            IF POS > 1 THEN
+               STATUS := ','
+            END
+         NEXT POS
+      END ELSE
+         STATUS := '.'
+      END
+      STATUS := '.'
+      RETURN
+**KM
+
+CHECK.SLASH:****
+** Added 5/8/3 -- Kevin Messenger
+      TEMP.PRO = FOUND.PRO
+      SLASH.PROS = ''
+      FOR K = 1 TO 10
+*        SLASH.PROS = TEMP.PRO:'/':K     ; * JMK13
+         SLASH.PROS<1,-1> = TEMP.PRO:'/':K         ; * JMK13
+         SLASH.PROS<1,-1> = TEMP.PRO:'/':K:'AD'    ; * JMK13
+         SLASH.PROS<1,-1> = TEMP.PRO:'/':K:'ADAD'  ; * JMK13
+         SLASH.PROS<1,-1> = TEMP.PRO:'/':K:'ADADAD'          ; * JMK13
+         SLASH.PROS<1,-1> = TEMP.PRO:'/':K:'ADADADAD'        ; * JMK13
+         SLASH.PROS<1,-1> = TEMP.PRO:'/':K:'BD'    ; * JMK13
+         SLASH.PROS<1,-1> = TEMP.PRO:'/':K:'BDBD'  ; * JMK13
+         SLASH.PROS<1,-1> = TEMP.PRO:'/':K:'BDBDBD'          ; * JMK13
+         SLASH.PROS<1,-1> = TEMP.PRO:'/':K:'BDBDBDBD'        ; * JMK13
+      NEXT K                             ; * JMK13
+      NUM.SLASH=DCOUNT(SLASH.PROS,@VM)   ; * JMK13
+      FOR K=1 TO NUM.SLASH               ; * JMK13
+         STATUS = ''
+         T.FOUND = 1
+*        PRO.DESC = SLASH.PROS           ; * JMK13
+         PRO.DESC = SLASH.PROS<1,K>      ; * JMK13
+*        TEMP.PRO.ID = CARRIER:'*':SLASH.PROS:"*0"           ; * JMK08
+*        TEMP.PRO.ID = FOUND.CARRIER:'*':SLASH.PROS:"*0"     ; * JMK08 ; * JMK13
+         TEMP.PRO.ID = FOUND.CARRIER:'*':SLASH.PROS<1,K>:"*0"          ; * JMK08 ; * JMK13
+         READ DUMMY FROM F.CRX,TEMP.PRO.ID THEN
+            PRO.REC = DUMMY
+            PRO.REC<1>=DUMMY<2>          ; * Correct the Position of the Date
+            PRO.REC<2>=''                ; * Correct the I/O Flag (Not on CRX File)
+            CLIENT=DUMMY<1>
+            IF CLIENT.USER THEN
+               IF CLIENT#CLIENT.USER.ID THEN GO SKIP.STEP
+*This bill doesn't belong to this client
+*                   STATUS = 'Pro # ':SLASH.PROS:': Was not on file for ':CLIENT.USER.NAME
+*                   FOUND=0
+*                   RETURN TO PRINT.STATUS
+*                END
+            END
+*Assign the Data to PRO.REC then try to read the REAL File
+            OPEN 'FB.BILLS.HIST,':CLIENT TO F.HIST ELSE
+               T.FOUND = 0
+            END
+            READ PRO.REC FROM F.HIST,TEMP.PRO.ID ELSE FOUND = 0
+         END ELSE
+            T.FOUND = 0
+         END
+         IF T.FOUND THEN
+*NPR02            MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT ELSE CLIENT.REC(1) = ''
+            MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT ELSE MAT CLIENT.REC = ''    ; *NPR02
+            CLIENT.USER.NAME=CLIENT.REC(2)
+            BANK.CODE=CLIENT.REC(81)     ; * JMK15
+            IF BANK.CODE='V' OR BANK.CODE='N' THEN VOUCHER=1 ELSE VOUCHER=0      ; * JMK15
+            CLIENT.DOW=CLIENT.REC(151)   ; * JMK15
+            DUE.DT.FLG=CLIENT.REC(186)   ; * JMK15
+            FOUND = 1
+            POS = X
+            GOSUB GET.STATUS
+         END
+         IF STATUS # '' THEN
+            STATUS = CHANGE(STATUS,'..','.')
+            STATUS:='~':TRAN.DESC        ; * JMK03
+            STATUS:='~':EDI.DESC         ; * JMK03
+            IF USER.TYPE='AFSCS' THEN    ; * JMK12
+               STATUS.ROW=''             ; * JMK12
+               STATUS.ROW<1,1>=PRO.ID    ; * JMK12
+               STATUS.ROW<1,2>=BRIEF.STATUS        ; * JMK12
+               STATUS.ROW<1,3>=BILLED.AMT'R26'     ; * JMK12
+               STATUS.ROW<1,4>=ACTUAL.CHG          ; * JMK12
+               STATUS.ROW<1,5>=PROC.DATE'D2/'      ; * JMK12
+               STATUS.ROW<1,6>=CHECK.DATE          ; * JMK12
+               IF BANK.CODE#'V' AND BANK.CODE#'N' THEN       ; * JMK12
+                  STATUS.ROW<1,7>=CHECK.NUM        ; * JMK12
+               END                       ; * JMK12
+               STATUS.ROW<1,8>=CHECK.AMT           ; * JMK12
+               STATUS.ROW<1,9>=CLEARED.DATE        ; * JMK12
+               STATUS.ROW<1,10>=CUT.BACK.AMT       ; * JMK12
+               STATUS.ROW<1,11>=CUT.BACK.REASON    ; * JMK12
+               STATUS.ROW<1,12>=CUT.BACK.AUDITOR   ; * JMK12
+               STATUS.ROW<1,13>=FIELD(STATUS,'~',1)          ; * JMK12
+               STATUS.ROW<1,14>=CHANGE(PRO.REC<213>,@VM,' ')           ; * JMK17
+               CRT STATUS.ROW            ; * JMK12
+            END ELSE                     ; * JMK12
+*              PRINT STATUS              ; * JMK12
+*              CRT STATUS                ; * JMK12 ; * JMK14
+               XML.REC<-1>=SPACE(IND):'<FreightBillInfo>'    ; * JMK14
+               IND+=3                    ; * JMK14
+               IF TEMP.PRO.ID#'' THEN    ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<ProID>':FIELD(TEMP.PRO.ID,'*',2):'</ProID>'
+               END                       ; * JMK14
+               IF BRIEF.STATUS#'' THEN   ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<BriefStatus>':BRIEF.STATUS:'</BriefStatus>'
+               END                       ; * JMK14
+               IF BILLED.AMT#'' THEN     ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<BillAmt>':BILLED.AMT'R26':'</BillAmt>'
+               END                       ; * JMK14
+               IF ACTUAL.CHG#'' THEN     ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<ActualCharge>':ACTUAL.CHG:'</ActualCharge>'
+               END                       ; * JMK14
+               IF PROC.DATE#'' THEN      ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<ProcessDate>':PROC.DATE'D2/':'</ProcessDate>'
+               END                       ; * JMK14
+               IF CHECK.DATE#'' THEN     ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<CheckDate>':CHECK.DATE:'</CheckDate>'
+               END                       ; * JMK14
+               IF CHECK.NUM#'' AND BANK.CODE#'V' AND BANK.CODE#'N' THEN          ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<PymtNumber>':CHECK.NUM:'</PymtNumber>'
+               END                       ; * JMK14
+               IF CHECK.AMT#'' THEN      ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<PymtAmt>':CHECK.AMT:'</PymtAmt>'
+               END                       ; * JMK14
+               IF CLEARED.DATE#'' THEN   ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<ClearDate>':CLEARED.DATE:'</ClearDate>'
+               END                       ; * JMK14
+               IF CUT.BACK.AMT#'' THEN   ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<CutBackAmt>':CUT.BACK.AMT:'</CutBackAmt>'
+               END                       ; * JMK14
+               IF CUT.BACK.REASON#'' THEN          ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<CutBackReason>':CUT.BACK.REASON:'</CutBackReason>'
+               END                       ; * JMK14
+               IF CUT.BACK.AUDITOR#'' THEN         ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<CutBackAuditor>':CUT.BACK.AUDITOR:'</CutBackAuditor>'
+               END                       ; * JMK14
+               IF FIELD(STATUS,'~',1)#'' THEN      ; * JMK14
+                  XML.REC<-1>=SPACE(IND):'<StatusText>':FIELD(STATUS,'~',1):'</StatusText>'
+               END                       ; * JMK14
+               IND-=3                    ; * JMK14
+               XML.REC<-1>=SPACE(IND):'</FreightBillInfo>'   ; * JMK14
+            END                          ; * JMK12
+            ACTIVITY.REC<-1>=STATUS      ; * JMK07
+         END
+
+SKIP.STEP:***
+      NEXT K
+      RETURN
+**KM

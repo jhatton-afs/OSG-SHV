@@ -1,0 +1,1238 @@
+***********************************************************************
+* Analyze bills acted upon by auditors
+* Copyright (c) AFS Logistics, LLC., 2002
+*
+* AUTHOR : Owen Holman
+* Date   : January 2002
+***********************************************************************
+*************************************************************************
+!
+* Include the ODBC definitions
+!
+      $INCLUDE UNIVERSE.INCLUDE ODBC.H
+
+      form = "T##########"
+      dash = "----------"
+      Expect = ""
+      NULL=""
+
+      $INCLUDE PROG.ADMIN INC_OPTIONS
+
+*
+***   Initialize general variables
+*
+
+      GET (ARG.,1) USER.NAME ELSE USER.NAME=''
+
+      IF USER.NAME='OLEDBAFS' THEN
+         CMD.MODE=1
+      END ELSE
+         CMD.MODE=0
+         CALL GET.USER(USER.NAME)
+      END
+
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='UPDATE.SQL.TU_PICK'
+      PROG.DESC='Export Data to SQL Server'
+      PACK.NAME='Time Accounting'
+      CO.NAME='AFS Logistics, LLC'
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'UPDATE.SQL.TU_PICK' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      PROMPT''
+      ERRORS=''
+      ALERTS=''                          ; * JMK01
+      ERRORS.ORG=ERRORS                  ; * JMK06
+      ALERTS.ORG=ALERTS                  ; * JMK06
+      OTODAY=OCONV(DATE(),"DYMD[4,2,2]":@VM:"MCN")           ; * JMK01
+      EXPORT.SUMMARY=''
+      AUTO.MODE=0
+      SUMMARY.ONLY=0
+      SKIP.CL=0
+      MASK.CHAR='-'
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+*
+***   Initialize input variables with their defaults
+*
+      CLIENT.ID='ALL'
+      TRANSPORT.MODE='ALL'
+      BEG.DATE=DATE()
+      END.DATE=DATE()
+      HISTID=''                          ; * JMK03
+      COGUPD=0                           ; * JMK03
+      SEQ=0
+
+      IF CMD.MODE THEN
+         GET (ARG.,2) CLIENT.ID ELSE CLIENT.ID=''
+         IF NUM(CLIENT.ID) THEN
+            IF LEN(CLIENT.ID) LE 5 THEN
+               CLIENT.ID=CLIENT.ID'R%5'
+            END ELSE
+               CLIENT.ID=''
+            END
+         END ELSE
+            IF CLIENT.ID='ALL' THEN
+               NULL
+            END ELSE
+               CLIENT.ID=''
+            END
+         END
+         IF CLIENT.ID='' THEN
+            CRT "Problem with Client# ":CLIENT.ID
+            GOTO THE.END
+         END
+
+         GET (ARG.,3) BEG.DATE ELSE BEG.DATE=''
+         BEG.DATE=ICONV(BEG.DATE,'D')
+         IF BEG.DATE='' THEN
+            CRT "Problem with Begining Date"
+            GOTO THE.END
+         END
+
+         GET (ARG.,4) END.DATE ELSE END.DATE=''
+         END.DATE=ICONV(END.DATE,'D')
+         IF END.DATE='' THEN
+            CRT "Problem with Ending Date"
+            GOTO THE.END
+         END
+
+         GET (ARG.,5) HISTID ELSE HISTID=''        ; * JMK03
+         IF HISTID#'' THEN COGUPD=1      ; * JMK03
+         IF HISTID='ALL' THEN HISTID=''  ; * JMK05
+
+      END ELSE
+
+*
+***   Write screen header
+*
+         CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+         CRT @(0, 2):STR('=',79)
+
+      END
+
+*
+***   Restrict program usage
+*
+      VALID.USER=1
+      BEGIN CASE
+         CASE USER.NAME='BRIAN'
+         CASE USER.NAME='MYRA'
+         CASE USER.NAME='MARY'
+         CASE USER.NAME='KAREN'
+         CASE USER.NAME='OWEN'
+         CASE USER.NAME='OLEDBAFS'
+         CASE USER.NAME='MKERBOW'
+         CASE USER.NAME='DAVID'
+         CASE 1
+            VALID.USER=0
+      END CASE
+
+      IF NOT(VALID.USER) THEN
+         CRT 'This is a restricted access application.'
+         CRT USER.NAME:' does not have access to run this program.'
+         GOTO THE.END
+      END
+
+
+*
+***   Open files
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+         CALL OPEN.ABORT('ZIPS.CODES',PROG.NAME)
+      END
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+         CALL OPEN.ABORT('FB.TRANSPORT',PROG.NAME)
+      END
+
+      IF CMD.MODE THEN
+         IF CLIENT.ID="ALL" OR CLIENT.ID="ALLREXEL" OR CLIENT.ID="00902" OR CLIENT.ID="00917" OR CLIENT.ID="00918" OR CLIENT.ID="00938" OR CLIENT.ID="01164" THEN
+            GOSUB BUILD.REXEL.DIV.XREF
+         END
+
+         GO EXECUTE.STMT
+      END
+*
+***   Get Client ID
+*
+100:  LN='Client ID Number    : '
+      MASK=CLIENT.ID:STR(MASK.CHAR,20-LEN(CLIENT.ID))
+      HELP='Enter Client# or NAME for search. [ENTER]=Accept [ALL]=All [EX]=Exit [ALLREXEL]'
+      CALL GEN.IN(0,3,LN:MASK:@(-4),'',Q,0,20,'','',2,-22,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      AUTO.MODE=0
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='ALL'
+            NULL
+         CASE QI='ALLREXEL'
+            NULL
+         CASE QI=''
+            QI=CLIENT.ID
+         CASE QI MATCHES "5N'L'"
+            CLIENT.ID=QI[1,5]
+            AUTO.MODE=1
+            OPEN 'FB.UNPROCESS,':CLIENT.ID TO F.UP ELSE
+               CALL ELINE("ERROR! UNABLE TO OPEN FB.UNPROCESS,":CLIENT.ID:" AFSI Build Process Aborting!")
+               STOP
+            END
+            READ DATE.ARRAY FROM F.UP,'PROCESS.DATES' ELSE
+               CALL ELINE("ERROR! UNABLE TO READ FB.UNPROCESS,":CLIENT.ID:" PROCESS.DATE RECORD AFSI Build Process Aborting!")
+               STOP
+            END
+            BEG.DATE=DATE.ARRAY<1>
+            LN='Beginning Date      : '
+            CRT @(0,7):LN:BEG.DATE'D4/':@(-4)
+            END.DATE=DATE.ARRAY<2>
+            LN='Ending Date         : '
+            CRT @(0,7):LN:END.DATE'D4/':@(-4)
+            AUTO.STMT='SELECT FB.UNPROCESS,':CLIENT.ID:' WITH FILE.NAME="FB.BILLS,':CLIENT.ID:'" ITEM.NAME'
+            GOTO EXECUTE.STMT
+
+         CASE NOT(QI MATCHES '0N')
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 100
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 100
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO 100
+            END CASE
+         CASE NUM(QI)
+            QI=QI'R%5'
+         CASE 1
+            GOTO 100
+      END CASE
+      CLIENT.ID=QI
+      IF CLIENT.ID='ALL' OR CLIENT.ID= 'ALLREXEL' THEN
+         CLIENT.NAME='CLIENTS'
+         SAVE.SCREEN.LINE.CLIENT=LN:CLIENT.ID:' ':CLIENT.NAME
+      END ELSE
+         IF CLIENT.ID[1,1]='9' THEN
+            CALL ELINE('Traffic Survey accounts are not allowed.')
+            CLIENT.ID='ALL'
+            GOTO 100
+         END
+         IF CLIENT.ID='00000' THEN
+            CALL ELINE('This is not a valid account.')
+            CLIENT.ID='ALL'
+            GOTO 100
+         END
+         READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID THEN
+            CLIENT.NAME=CLIENT.REC<2>
+            BEGIN CASE
+               CASE CLIENT.REC<30>='A'
+                  CLIENT.STATUS='Active'
+               CASE 1
+                  CALL ELINE('Error, The Client you selected is NOT set to Active')
+                  GOTO 100
+            END CASE
+            SAVE.SCREEN.LINE.CLIENT=LN:CLIENT.ID:' ':CLIENT.NAME:' (':CLIENT.STATUS:')'
+         END ELSE
+            CALL ELINE('Client ':CLIENT.ID:' not on file.')
+            GOTO 100
+         END
+      END
+      CRT @(0,3):SAVE.SCREEN.LINE.CLIENT:@(-4)
+      IF CLIENT.ID="ALL" OR CLIENT.ID="ALLREXEL" OR CLIENT.ID="00902" OR CLIENT.ID="00917" OR CLIENT.ID="00918" OR CLIENT.ID="00938" OR CLIENT.ID="01164" THEN
+         GOSUB BUILD.REXEL.DIV.XREF
+      END
+
+*
+***   Get beginning date
+*
+300:  LN='Beginning Date      : '
+      MASK=BEG.DATE'D4/'
+      HELP='Enter freight bill beginning date. [ENTER]=Accept [T]=Today [X]=Back [EX]=Exit'
+      CALL GEN.IN(0,7,LN:MASK:@(-4),'',Q,0,10,'','',2,-12,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            CRT @(0,7):@(-4)
+            GOTO 100
+         CASE QI='T'
+            QI=DATE()'D4/'
+         CASE QI=''
+            QI=BEG.DATE'D4/'
+         CASE QI MATCHES '0N'
+            BEGIN CASE
+               CASE LEN(QI)=4
+                  QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,4]
+               CASE LEN(QI)=6
+                  IF QI[5,2]<50 THEN
+                     QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,2]:QI[5,2]
+                  END ELSE
+                     QI=QI[1,2]:'.':QI[3,2]:'.':'19':QI[5,2]           ; * ((DATE()-365)'D4/')[7,2]:QI[5,2]
+                  END
+               CASE LEN(QI)=8
+                  QI=QI[1,2]:'.':QI[3,2]:'.':QI[5,4]
+               CASE 1
+                  CALL ELINE('Use one of the following formats: MMDD or MMDDYY or MMDDYYYY.')
+                  GOTO 300
+            END CASE
+      END CASE
+      BEG.DATE=ICONV(QI,'D')
+      IF BEG.DATE='' THEN
+         CALL ELINE('Invalid date.')
+         GOTO 300
+      END
+      CRT @(0,7):LN:BEG.DATE'D4/':@(-4)
+
+*
+***   Get ending date
+*
+400:  LN='Ending Date         : '
+      MASK=END.DATE'D4/'
+      HELP='Enter freight bill ending date. [ENTER]=Accept [T]=Today [X]=Back [EX]=Exit'
+      CALL GEN.IN(0,9,LN:MASK:@(-4),'',Q,0,10,'','',2,-12,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            CRT @(0,9):@(-4)
+            GOTO 300
+         CASE QI='T'
+            QI=DATE()'D4/'
+         CASE QI=''
+            QI=END.DATE'D4/'
+         CASE QI MATCHES '0N'
+            BEGIN CASE
+               CASE LEN(QI)=4
+                  QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,4]
+               CASE LEN(QI)=6
+                  IF QI[5,2]<50 THEN
+                     QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,2]:QI[5,2]
+                  END ELSE
+                     QI=QI[1,2]:'.':QI[3,2]:'.':'19':QI[5,2]           ; * ((DATE()-365)'D4/')[7,2]:QI[5,2]
+                  END
+               CASE LEN(QI)=8
+                  QI=QI[1,2]:'.':QI[3,2]:'.':QI[5,4]
+               CASE 1
+                  CALL ELINE('Use one of the following formats: MMDD or MMDDYY or MMDDYYYY.')
+                  GOTO 400
+            END CASE
+      END CASE
+      END.DATE=ICONV(QI,'D')
+      IF END.DATE='' THEN
+         CALL ELINE('Invalid date.')
+         GOTO 400
+      END
+      IF END.DATE LT BEG.DATE THEN
+         CALL ELINE('Ending date must occur later than beginning date.')
+         GOTO 400
+      END
+      CRT @(0,9):LN:END.DATE'D4/':@(-4)
+
+*
+***   Verify data
+*
+500:  LN='Enter selection : '
+      MASK=STR(MASK.CHAR,2)
+      HELP='[ENTER]=Continue [X]=Change [EX]=Exit'
+      CALL GEN.IN(0,22,LN:MASK,'',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            GOTO 400
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO 500
+      END CASE
+
+EXECUTE.STMT: ***
+      GOSUB SETUP.SQL
+*
+***   Select data and start processing
+*
+      OBEG.DATE=BEG.DATE'D4-'
+      BEG.YEAR=FIELD(OBEG.DATE,'-',3)'R%4'
+      BEG.MONTH=FIELD(OBEG.DATE,'-',1)'R%2'
+      BEG.DAY=FIELD(OBEG.DATE,'-',2)'R%2'
+
+      OEND.DATE=END.DATE'D4-'
+      END.YEAR=FIELD(OEND.DATE,'-',3)'R%4'
+      END.MONTH=FIELD(OEND.DATE,'-',1)'R%2'
+      END.DAY=FIELD(OEND.DATE,'-',2)'R%2'
+
+      ERROR.ID='ERRORS_':OTODAY:'.xls'   ; * JMK01
+      ERRORS=''                          ; * JMK01
+      ERRORS=CHANGE(ERRORS,TAB,@VM)      ; * JMK01
+      ERROR.ORG=ERRORS                   ; * JMK06
+
+      ALERT.ID='ALERTS_':OTODAY:'.xls'   ; * JMK01
+      ALERTS=''                          ; * JMK01
+      ALERTS=CHANGE(ALERTS,TAB,@VM)      ; * JMK01
+      ALERTS.ORG=ALERTS                  ; * JMK06
+
+      IF CLIENT.ID#'ALL' AND CLIENT.ID#'ALLREXEL' AND CLIENT.ID#'00918' THEN
+         NUM.CLIENTS=1
+         COUNTER.1=0 ; PER.1=0
+         CLIENT=CLIENT.ID
+         GOTO SELECT.BILLS
+      END
+      BEGIN CASE
+         CASE CLIENT.ID='00918'
+            STMT="SELECT CLIENTS '00918''01164'"
+         CASE CLIENT.ID='ALLREXEL'
+            STMT='SELECT CLIENTS WITH 147 = "89999"'
+         CASE 1
+            STMT='SSELECT CLIENTS # "9]"'          ; * JMK01
+      END CASE
+      TEXT='Selecting Clients...'
+      CRT @(0,12):TEXT
+      EXECUTE STMT RTNLIST CLIENT.LIST CAPTURING OUTPUT
+      NUM.CLIENTS=@SELECTED
+      TEXT:=NUM.CLIENTS:' Selected'
+      CRT @(0,12):TEXT
+      IF NUM.CLIENTS < 1 THEN            ; * JCW01
+         CALL ELINE('No clients on file with these criteria.')
+         GOTO THE.END
+      END
+      EOF=0
+      COUNTER.1=0 ; PER.1=1
+      LOOP
+         READNEXT CLIENT FROM CLIENT.LIST ELSE EOF=1
+      UNTIL EOF DO
+SELECT.BILLS:
+         COUNTER.1+=1
+         READ DCLIENTS FROM F.CLIENTS,CLIENT ELSE
+            DCLIENTS=''
+            DCLIENTS<2>=CLIENT:': *** Not On File ***'
+         END
+         IF SKIP.CL THEN GO SKIP.CLIENT
+         CLIENT.NAME=DCLIENTS<2>
+         CLIENT.SEQ=10                   ; * Sequence Number for File Names (Start at 10)
+         CRT @(0,15):CLIENT:' ':CLIENT.NAME:' #':COUNTER.1:' - Selecting Freight Bills':@(-3):
+         CALL PROG.BAR(17,COUNTER.1,NUM.CLIENTS,PER.1)
+         IF CLIENT.ID='ALL' OR CLIENT.ID='ALLREXEL' THEN
+            IF CLIENT='FB.BILLS.HIST' OR CLIENT='AFS' OR CLIENT[1,1]='9' OR CLIENT='00000' THEN      ; * JMK01
+               GOTO SKIP.CLIENT
+            END
+            IF DCLIENTS<30>#'A' AND DATE()-DCLIENTS<82> > 180 THEN     ; * JMK01
+               GOTO SKIP.CLIENT          ; * JMK01
+            END                          ; * JMK01
+         END
+
+         OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS THEN
+
+            IF AUTO.MODE THEN            ; * JCW01
+               EXECUTE AUTO.STMT RTNLIST CAPTURING OUTPUT    ; * JCW01
+               IF @SELECTED < 1 THEN GOTO SKIP.CLIENT        ; * JCW01
+               IF COGUPD AND HISTID#'' THEN        ; * JMK03   ; * JCW01 ; * JMK05
+                  STMT='SELECT FB.BILLS.HIST,':CLIENT        ; * JMK03  ; * JCW01
+                  STMT:=' WITH @ID = "':HISTID:'"'           ; * JMK03  ; * JCW01
+               END ELSE                  ; * JMK03  ; * JCW01
+                  STMT='SELECT FB.BILLS.HIST,':CLIENT        ; * JMK01  ; * JCW01
+                  STMT:=' WITH VERSION = "0"'      ; * JCW01
+                  STMT:=' AND WITH 39 # "R"'       ; * JCW01
+               END                       ; * JCW01
+               EXECUTE STMT PASSLIST RTNLIST BILLS.LIST CAPTURING OUTPUT         ; * JCW01
+            END ELSE                     ; * JCW01
+               IF COGUPD AND HISTID#'' THEN        ; * JCW01 ; * JMK05
+                  STMT='SELECT FB.BILLS.HIST,':CLIENT        ; * JMK03   ; * JCW01
+                  STMT:=' WITH @ID = "':HISTID:'"'           ; * JMK03   ; * JCW01
+                  STMT:=' AND WITH 37 GE "':OCONV(BEG.DATE,'D2/'):'"'  ; * JCW01
+                  STMT:=' AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'  ; * JCW01
+                  EXECUTE STMT RTNLIST BILLS.LIST CAPTURING OUTPUT     ; * JCW01
+               END ELSE                  ; * JCW01
+                  STMT = 'SELECT FB.PROC.DATE.XREF,':CLIENT  ; * JCW01
+                  STMT:=' WITH DATE GE "':OCONV(BEG.DATE,'D2/'):'"'    ; * JCW01
+                  STMT:=' AND WITH DATE LE "':OCONV(END.DATE,'D2/'):'"'          ; * JCW01
+                  EXECUTE STMT RTNLIST CAPTURING OUTPUT      ; * JCW01
+                  IF @SELECTED < 1 THEN GOTO SKIP.CLIENT     ; * JCW01
+                  STMT = 'QSELECT FB.PROC.DATE.XREF,':CLIENT           ; * JCW01
+                  EXECUTE STMT PASSLIST RTNLIST CAPTURING OUTPUT       ; * JCW01
+                  IF @SELECTED < 1 THEN GOTO SKIP.CLIENT     ; * JCW01
+                  STMT='SELECT FB.BILLS.HIST,':CLIENT        ; * JMK01   ; * JCW01
+                  STMT:=' WITH VERSION = "0"'      ; * JCW01
+                  STMT:=' AND WITH 39 # "R"'       ; * JCW01
+*                 STMT:=' SAVING UNIQUE @ID'       ; * JMKXXX
+                  EXECUTE STMT PASSLIST RTNLIST BILLS.LIST CAPTURING OUTPUT      ; * JCW01
+               END                       ; * JCW01
+            END                          ; * JCW01
+
+            NUM.BILLS=@SELECTED
+            IF NUM.BILLS < 1 THEN        ; * JCW01
+               IF CLIENT.ID='ALL' OR CLIENT.ID='ALLREXEL' THEN
+                  GOTO SKIP.CLIENT
+               END ELSE
+                  IF CMD.MODE=0 THEN
+                     CALL ELINE('No bills on file with these criteria.')
+                  END
+                  GOTO SKIP.CLIENT
+               END
+            END
+            EXPORT.LINE=CLIENT
+            EXPORT.LINE<1,-1>=CLIENT.NAME
+            EXPORT.LINE<1,-1>=NUM.BILLS
+            EXPORT.SUMMARY<-1>=EXPORT.LINE
+            CRT @(0,18):CLIENT:' ':CLIENT.NAME:' - Processing ':NUM.BILLS:' Freight Bills':@(-4):
+            IF SUMMARY.ONLY THEN GO SKIP.CLIENT
+            IF DCLIENTS<12>='Y' THEN DIVS=1 ELSE DIVS=0
+            OLD.DIV='START'
+            IF DIVS THEN
+               OPEN 'DIVISION.CODES,':CLIENT TO F.DIV ELSE DIVS=0
+            END
+
+            VC=1
+            OPEN 'VEND.CUST,':CLIENT TO F.VC ELSE VC=0
+
+            CLIENT.BILL.COUNT=0 ; PER.2=0
+            CLIENT.ACTUAL.CHARGE=0
+            BILL.ARRAY=''
+            ARRAY.ID=CLIENT:"-":BEG.YEAR:BEG.MONTH:BEG.DAY:"-":END.YEAR:END.MONTH:END.DAY:"-":CLIENT.SEQ
+            LOOP
+               READNEXT PRO.ID FROM BILLS.LIST ELSE PRO.ID='DONE'
+            UNTIL PRO.ID='DONE' DO
+               CLIENT.BILL.COUNT+=1
+               CALL PROG.BAR(20,CLIENT.BILL.COUNT,NUM.BILLS,PER.2)
+               BILL.ERROR=0              ; * Flag used to "Accumulate" Bill Errors
+               READ BILL.REC FROM F.BILLS,PRO.ID THEN
+                  IF BILL.REC<53>='Download' THEN GO SKIP.BILL         ; * Bill was imported not Keyed and Paid
+                  IF BILL.REC<39>='R' THEN GO SKIP.BILL      ; * If Auto Mode picks up Rejects
+                  IF FIELD(PRO.ID,"*",3)>0 THEN GO SKIP.BILL           ; * If Auto Mode Picks up Duplicates
+                  PROC.DATE=BILL.REC<37>           ; * JMK01
+                  OPROC.DATE=PROC.DATE'D4-'        ; * JMK01
+                  PROC.YEAR=FIELD(OPROC.DATE,'-',3)'R%4'     ; * JMK01
+                  PROC.MONTH=FIELD(OPROC.DATE,'-',1)'R%2'    ; * JMK01
+                  PROC.DAY=FIELD(OPROC.DATE,'-',2)'R%2'      ; * JMK01
+
+* Unique Key
+                  PRO=FIELD(PRO.ID,"*",2)
+                  LAST.TWO=PRO[LEN(PRO)-1,2]
+                  IF LAST.TWO='AD' OR LAST.TWO='BD' THEN
+                     ADBD=1
+                  END ELSE
+                     ADBD=0
+                  END
+                  CARRIER=FIELD(PRO.ID,"*",1)
+                  SQL.ID=CLIENT:CARRIER:PRO:PROC.YEAR:PROC.MONTH:PROC.DAY         ; * JMK01
+
+* Parent Client
+                  PARENT.CLIENT=DCLIENTS<147>
+                  IF PARENT.CLIENT=CLIENT THEN
+                     PARENT.CLIENT.NAME=CLIENT.NAME
+                  END ELSE
+                     BEGIN CASE
+                        CASE PARENT.CLIENT='00981'
+                           PARENT.CLIENT.NAME='Enpro Corporation'
+                        CASE PARENT.CLIENT='01045'
+                           PARENT.CLIENT.NAME='BFG Corporation'
+                        CASE 1
+                           READV PARENT.CLIENT.NAME FROM F.CLIENTS,PARENT.CLIENT,2 ELSE PARENT.CLIENT.NAME=PARENT.CLIENT:': Not On File'
+                     END CASE
+                  END
+                  SQL.PARENT.NUM=PARENT.CLIENT
+                  SQL.PARENT.NAME=PARENT.CLIENT.NAME[1,50]
+
+                  READ DCARRIERS FROM F.CARRIERS,CARRIER ELSE DCARRIERS=CARRIER:' Not On File'
+                  CARRIER.NAME=DCARRIERS<1>[1,100]
+                  CARRIER.TRANS.CODE=DCARRIERS<44>
+
+* Error Header (Build in case of an error)
+                  ERROR.START=CLIENT:@VM:CLIENT.NAME:@VM:CARRIER:@VM:CARRIER.NAME:@VM:PRO:@VM
+
+* Client
+                  BEGIN CASE
+                     CASE CLIENT="00902" OR CLIENT="00917" OR CLIENT="00918" OR CLIENT="00938" OR CLIENT="01164"
+                        DIV=BILL.REC<9>+0
+                        LOCATE DIV IN REXEL.DIV.XREF<1> SETTING POS THEN
+                           LOCATION.CODE=REXEL.DIV.XREF<2,POS>         ; * Location Code
+                           LOCATE LOCATION.CODE IN REXEL.LOC.XREF<1> SETTING POS THEN
+                              SQL.CLIENT.NUM=REXEL.LOC.XREF<2,POS>     ; * Client #
+                              SQL.CLIENT.NAME=REXEL.LOC.XREF<3,POS>[1,50]     ; * Client Name
+                           END ELSE
+                              ALERT.LINE=ERROR.START:"Cannot locate Rexel Location code:":LOCATION.CODE:" in REXEL.LOC.XREF Bill WAS included in the file"       ; * JMK01 ; * JMK06
+                              LOCATE ALERT.LINE IN ALERTS SETTING APOS ELSE      ; * JMK06
+                                 ALERTS<-1>=ALERT.LINE       ; * JMK06
+                              END        ; * JMK06
+                              SQL.CLIENT.NUM=CLIENT
+                              SQL.CLIENT.NAME=CLIENT.NAME[1,50]
+                           END
+                        END ELSE
+                           ALERT.LINE=ERROR.START:"Cannot locate Rexel Division:":DIV:" in REXEL.DIV.XREF Bill WAS included in the file"     ; * JMK01 ; * JMK06
+                           LOCATE ALERT.LINE IN ALERTS SETTING APOS ELSE         ; * JMK06
+                              ALERTS<-1>=ALERT.LINE          ; * JMK06
+                           END           ; * JMK06
+                           SQL.CLIENT.NUM=CLIENT
+                           SQL.CLIENT.NAME=CLIENT.NAME[1,50]
+                        END
+                     CASE 1
+                        SQL.CLIENT.NUM=CLIENT
+                        SQL.CLIENT.NAME=CLIENT.NAME[1,50]
+                  END CASE
+
+* Carrier
+                  SQL.CARR.NUM=CARRIER
+                  SQL.CARR.NAME=CARRIER.NAME[1,50]
+
+* Trans Code
+                  BEGIN CASE ; * BOH01
+                     CASE CLIENT='01485' OR CLIENT='01549' ; * BOH01
+                        BEGIN CASE ; * BOH01
+                           CASE CARRIER='17216' ; TRANS.CODE=11 ; * Frate, Inc ; * BOH01
+                           CASE CARRIER='17532' ; TRANS.CODE=11 ; * Jung Express ; * BOH01
+                           CASE CARRIER='06037' ; TRANS.CODE=11 ; * Landstar Express America ; * BOH01
+                           CASE CARRIER='09450' ; TRANS.CODE=11 ; * Nations Express, Inc. ; * BOH01
+                           CASE CARRIER='04771' ; TRANS.CODE=11 ; * Panther II Transportation ; * BOH01
+                           CASE CARRIER='04060' ; TRANS.CODE=11 ; * Tri State Express, Inc. ; * BOH01
+                           CASE CARRIER='06046' ; TRANS.CODE=11 ; * UPS Supply Chain /Menlo Expedite ; * BOH01
+                           CASE CARRIER='10414' ; TRANS.CODE=11 ; * DMW Expedite ; * BOH01
+                           CASE CARRIER='03921' ; TRANS.CODE=11 ; * Direct Expediters, Inc. ; * BOH01
+                           CASE CARRIER='01662' ; TRANS.CODE=11 ; * Fedex Custom Critical ; * BOH01
+                           CASE 1 ; * BOH01
+                              TRANS.CODE=BILL.REC<21> ; * BOH01
+                        END CASE ; * BOH01
+                     CASE 1 ; * BOH01
+                        TRANS.CODE=BILL.REC<21> ; * BOH01
+                  END CASE ; * BOH01
+                  READV TRANS.MODE FROM F.TRANSPORT,TRANS.CODE,1 ELSE
+                     TRANS.CODE=CARRIER.TRANS.CODE
+                     READV TRANS.MODE FROM F.TRANSPORT,TRANS.CODE,1 ELSE TRANS.MODE=TRANS.CODE:': Not On File'
+                  END
+                  SQL.TRANS.CODE=TRANS.CODE
+                  SQL.TRANS.MODE=TRANS.MODE[1,50]
+
+*Pro Number
+                  SQL.PRO.NUM=PRO
+
+*Bill Date
+                  BILL.DATE=BILL.REC<1>
+                  IF NOT(NUM(BILL.DATE)) THEN BILL.DATE=''
+                  IF BILL.DATE='' THEN
+                     ERROR.LINE=ERROR.START:"Bill Date is NULL"        ; * JMK06
+                     LOCATE ERROR.LINE IN ERRORS SETTING EPOS ELSE     ; * JMK06
+                        ERRORS<-1>=ERROR.LINE      ; * JMK06
+                        BILL.ERROR=1
+                     END                 ; * JMK06
+                  END
+                  IF BILL.REC<30>-BILL.DATE > 1095 THEN
+                     ALERT.LINE=ERROR.START:"Bill Date is ":BILL.DATE'D2/':" Date Entered was ":BILL.REC<30>'D2/'        ; * JMK06
+                     LOCATE ALERT.LINE IN ALERTS SETTING APOS ELSE     ; * JMK06
+                        ALERTS<-1>=ALERT.LINE      ; * JMK06
+                     END                 ; * JMK06
+                  END
+                  SQL.BILL.DT=BILL.DATE'D2/'
+
+* I/O/T
+                  IOT=BILL.REC<2>
+                  IF IOT#'I' AND IOT#'O' AND IOT#'T' THEN
+                     ERROR.LINE=ERROR.START:"IOT Is not an I or O or T"          ; * JMK06
+                     LOCATE ERROR.LINE IN ERRORS SETTING EPOS ELSE     ; * JMK06
+                        ERRORS<-1>=ERROR.LINE      ; * JMK06
+                        BILL.ERROR=1
+                     END                 ; * JMK06
+                  END
+                  SQL.IOT=IOT
+
+* Set up Intl Flag
+                  INTL=0
+
+* Bill Origin
+                  ORIG.ZIP=BILL.REC<3>
+                  LOOK.ZIP=ORIG.ZIP ; GOSUB GET.CITY.STATE
+                  SQL.ORIG.ZIP=LOOK.ZIP          ; * Orig Zip
+                  SQL.ORIG.CITY=LOOK.CITY[1,50]
+                  SQL.ORIG.ST=LOOK.STATE
+
+
+* Bill Destination
+                  DEST.ZIP=BILL.REC<4>
+                  LOOK.ZIP=DEST.ZIP ; GOSUB GET.CITY.STATE
+                  SQL.DEST.ZIP=LOOK.ZIP
+                  SQL.DEST.CITY=LOOK.CITY[1,50]
+                  SQL.DEST.ST=LOOK.STATE
+
+*                 USA/INTL Flag
+                  IF INTL THEN
+                     USA.INTL='INTL'
+                  END ELSE
+                     USA.INTL='USA'
+                  END
+                  SQL.USA.INTL=USA.INTL
+
+* Expense Code
+                  IF DCLIENTS<13>='Y' THEN
+                     SQL.EXP.CODE=BILL.REC<5>    ; * Expense Code
+                  END ELSE
+                     SQL.EXP.CODE=''      ; * Leave it Blank
+                  END
+
+* Weight
+                  IF ADBD THEN
+                     BILL.WEIGHT=0
+                  END ELSE
+                     BILL.WEIGHT=BILL.REC<6>       ; * Bill Weight
+                  END
+                  LOOP UNTIL BILL.WEIGHT[1,1]#' ' DO
+                     BILL.WEIGHT=BILL.WEIGHT[2,999]
+                  REPEAT
+                  SQL.WT=BILL.WEIGHT+0
+
+* Benchmark/Carrier Charge
+                  BENCHMARK.CHARGE=(BILL.REC<7>+0)
+                  SQL.BENCH.CHG=BENCHMARK.CHARGE'R26'       ; * Carrier Charge
+
+* Actual Charge
+                  ACTUAL.CHARGE=(BILL.REC<8>+0)    ; * Actual Charge
+                  CLIENT.ACTUAL.CHARGE=CLIENT.ACTUAL.CHARGE+ACTUAL.CHARGE
+                  SQL.ACTUAL.CHG=ACTUAL.CHARGE'R26'
+
+* Discount Commission
+                  DIS.COM=BILL.REC<42>+0           ; * Discount Commission
+                  SQL.DISC.COMM=DIS.COM'R26'
+
+* Overcharge Commission
+                  OVC.COM=BILL.REC<43>+0           ; * Overcharge Commission
+                  SQL.OVR.COMM=OVC.COM'R26'
+
+* Consulting Commission
+                  CON.COM=BILL.REC<44>+0           ; * Consulting Commission
+                  SQL.CONS.COMM=CON.COM'R26'
+
+* Division
+                  DIV=BILL.REC<9>
+                  IF DIVS AND DIV#'' THEN
+                     IF DIV#OLD.DIV THEN
+                        OLD.DIV=DIV
+                        READ DDIV FROM F.DIV,DIV ELSE DDIV=''
+                        DIV.DESC=DDIV<11>
+
+                        IF CLIENT="01271" THEN DIV.DESC:=' ':DDIV<16>:', ':DDIV<17>
+                        IF CLIENT="01282" THEN DIV.DESC:=' ':DDIV<16>:', ':DDIV<17>
+** Airgas East wanted the City and State on their division in COGNOS
+
+                        DIV.ZIP=DDIV<1>
+                        READ DZIP FROM F.ZIPS,DIV.ZIP THEN
+                           DIV.CITY=DZIP<1>
+                           DIV.STATE=DZIP<2>
+                        END ELSE
+                           DIV.CITY='Not On File'
+                           DIV.STATE='NOF'
+                        END
+                     END
+                  END ELSE
+                     DIV=''
+                     DIV.DESC=''
+                     DIV.ZIP=''
+                     DIV.CITY=''
+                     DIV.STATE=''
+                  END
+                  SQL.DIV=DIV
+                  IF DIV.DESC='' THEN DIV.DESC=DIV:" ":DIV.CITY:" ":DIV.STATE
+                  SQL.DIV.DESC=DIV.DESC[1,50]
+                  SQL.DIV.CITY=DIV.CITY[1,50]
+                  SQL.DIV.ST=DIV.STATE
+                  SQL.DIV.ZIP=DIV.ZIP
+
+*Discount Variance
+                  DIS.VAR=-BILL.REC<10>  ; * Discount Variance
+                  SQL.DISC.VAR=DIS.VAR'R26'
+
+*Overcharge Variance
+                  OVC.VAR=-BILL.REC<11>  ; * Overcharge Variance
+                  SQL.OVR.VAR=OVC.VAR'R26'
+
+* Consulting Variance
+                  CON.VAR=-BILL.REC<12>  ; * Consulting Variance
+                  SQL.CONS.VAR=CON.VAR'R26'
+
+* Check Amount
+                  SQL.CK.AMT=BILL.REC<13>'R26'           ; * Check Amount
+
+* Check Number
+                  CHECK.NUMBER=FIELD(BILL.REC<14>,"*",1)
+                  SQL.CK.NUM=CHECK.NUMBER
+
+*Check Date
+                  SQL.CK.DT=BILL.REC<15>'D2/'           ; * Check Date
+
+* Bill of Lading
+                  BOL=BILL.REC<16>       ; * Bill of Lading Number
+                  BOL=CHANGE(BOL,@VM,"*")          ; * Replace Value marks with Commas
+                  BOL=CHANGE(BOL,"|",":")          ; * Replace Pipes with colons
+                  SQL.BOL=BOL[1,50]         ; * Only Send 1st 20
+
+* Customer Vendor
+                  VEND.CUST.ID=BILL.REC<17>
+                  IF VEND.CUST.ID='' THEN
+                     VEND.CUST.NAME=''
+                  END ELSE
+                     IF NUM(VEND.CUST.ID) THEN
+                        IF VC THEN
+                           READV VEND.CUST.NAME FROM F.VC,VEND.CUST.ID,1 ELSE VEND.CUST.NAME=VEND.CUST.ID:': Not On File'
+                        END ELSE
+                           VEND.CUST.NAME=''
+                        END
+                     END ELSE
+                        VEND.CUST.NAME=VEND.CUST.ID
+                     END
+                  END
+                  VEND.CUST.NAME=CHANGE(VEND.CUST.NAME,"|",":")
+                  VEND.CUST.NAME=OCONV(VEND.CUST.NAME,'MCU')
+CLEAN.VEND.CUST.NAME: ****
+                  FIRST.CHAR=VEND.CUST.NAME[1,1]
+                  IF VEND.CUST.NAME#'' THEN
+                     SEQ.FIRST.CHAR=SEQ(FIRST.CHAR)
+                     IF SEQ.FIRST.CHAR GE 48 AND SEQ.FIRST.CHAR LE 57 ELSE
+                        IF SEQ.FIRST.CHAR GE 65 AND SEQ.FIRST.CHAR LE 90 ELSE
+                           IF SEQ.FIRST.CHAR GE 97 AND SEQ.FIRST.CHAR LE 122 ELSE
+                              VEND.CUST.NAME=VEND.CUST.NAME[2,999]
+                              GO CLEAN.VEND.CUST.NAME
+                           END
+                        END
+                     END
+                  END
+                  SQL.CV.NAME=OCONV(VEND.CUST.NAME,'MCT')[1,50]
+
+* Miles
+                  IF ADBD THEN
+                     MILES=0
+                  END ELSE
+                     MILES=BILL.REC<19>
+                  END
+                  SQL.MILES=MILES+0
+
+* Process Date
+                  PROCESS.DATE=BILL.REC<37>
+                  IF NOT(NUM(PROCESS.DATE)) THEN PROCESS.DATE=''
+                  IF PROCESS.DATE='' THEN
+                     ERROR.LINE=ERROR.START:"Process Date is NULL"     ; * JMK06
+                     LOCATE ERROR.LINE IN ERRORS SETTING EPOS ELSE     ; * JMK06
+                        ERRORS<-1>=ERROR.LINE      ; * JMK06
+                        BILL.ERROR=1
+                     END                 ; * JMK06
+                  END
+                  SQL.PROC.DT=PROCESS.DATE'D2/'           ; * Process Date
+
+* Misroute Information
+                  MISROUTE.AMOUNT=BILL.REC<63>
+                  IF MISROUTE.AMOUNT+0=0 THEN
+                     LOST.SAVINGS=0
+                     APPROVED.CARRIER.ID=''
+                     APPROVED.CARRIER.NAME=''
+                  END ELSE
+                     LOST.SAVINGS=ACTUAL.CHARGE-MISROUTE.AMOUNT+0
+                     APPROVED.CARRIER.ID=BILL.REC<69>
+                     READV APPROVED.CARRIER.NAME FROM F.CARRIERS,APPROVED.CARRIER.ID,1 ELSE APPROVED.CARRIER.NAME=APPROVED.CARRIER.ID:": Not on File"
+                  END
+                  IF LOST.SAVINGS < 0 THEN
+                     LOST.SAVINGS=0
+                     MISROUTE.AMOUNT=0
+                     APPROVED.CARRIER.ID=''
+                     APPROVED.CARRIER.NAME=''
+                  END
+                  SQL.MSR.AMT=MISROUTE.AMOUNT'R26'
+                  SQL.LOST.SAVINGS=LOST.SAVINGS'R26'
+                  SQL.APRV.CARR=APPROVED.CARRIER.ID
+                  SQL.APRV.CARR.NAME=APPROVED.CARRIER.NAME[1,50]
+
+* REAL Shipment Flag
+                  IF ADBD THEN
+                     SHIPMENT.FLAG=0
+                  END ELSE
+                     SHIPMENT.FLAG=1
+                  END
+                  SQL.SHIP=SHIPMENT.FLAG
+
+* True Cost (Calculation)
+                  TRUE.COST=ACTUAL.CHARGE+CON.COM+0
+                  SQL.TRUE.COST=TRUE.COST'R26'
+
+* Client Cost (Calculation)
+                  TOTAL.COM=DIS.COM+OVC.COM+CON.COM+0
+                  CLIENT.COST=ACTUAL.CHARGE+TOTAL.COM+0
+                  SQL.CLIENT.COST=CLIENT.COST'R26'
+
+* Total Commission (Calculation)
+                  SQL.TTL.COMM=TOTAL.COM'R26'
+
+* Total Variance (Calculation)
+                  TOTAL.VARIANCE=DIS.VAR+OVC.VAR+CON.VAR+0
+                  SQL.TTL.VAR=TOTAL.VARIANCE'R26'
+
+* Client Saving (Calculation)
+                  CLIENT.SAVINGS=(BENCHMARK.CHARGE-TRUE.COST)'R26'
+                  SQL.CL.SAVINGS=CLIENT.SAVINGS'R26'
+
+                  LCC.CARRIER=BILL.REC<147>
+                  READ LCC.CARRIER.REC FROM F.CARRIERS,LCC.CARRIER ELSE LCC.CARRIER.REC=''
+                  LCC.CARRIER.NAME=LCC.CARRIER.REC<1>
+
+* Least Cost Carrier Name
+                  SQL.LCC.NAME=LCC.CARRIER.NAME[1,50]
+
+* Least Cost Carrier Number
+                  SQL.LCC.NUM=LCC.CARRIER'R%5'
+
+* Least Cost Carrier Amount
+                  SQL.LCC.AMT=BILL.REC<145,1>'R26'
+
+                  FRT.AMT=0
+                  FSC.AMT=0
+                  ID.AMT=0
+                  RES.AMT=0
+                  L25.AMT=0
+                  L180.AMT=0
+                  DET.AMT=0
+                  SIT.AMT=0
+                  HAZ.AMT=0
+                  OTH.AMT=0
+                  UNS.AMT=0
+
+                  IF BILL.REC<151>#'' THEN
+                     FRT.AMT=SUM(BILL.REC<157>)
+                     OTH.AMT=SUM(BILL.REC<163>)
+                     LOCATE('FSC',BILL.REC,159;CPOS) THEN
+                        FSC.AMT=BILL.REC<163,CPOS>
+                        OTH.AMT=OTH.AMT-FSC.AMT
+                     END
+                     LOCATE('ID',BILL.REC,159;CPOS) THEN
+                        ID.AMT=BILL.REC<163,CPOS>
+                        OTH.AMT=OTH.AMT-ID.AMT
+                     END
+                     LOCATE('RES',BILL.REC,159;CPOS) THEN
+                        RES.AMT=BILL.REC<163,CPOS>
+                        OTH.AMT=OTH.AMT-RES.AMT
+                     END
+                     LOCATE('L25',BILL.REC,159;CPOS) THEN
+                        L25.AMT=BILL.REC<163,CPOS>
+                        OTH.AMT=OTH.AMT-L25.AMT
+                     END
+                     LOCATE('L180',BILL.REC,159;CPOS) THEN
+                        L180.AMT=BILL.REC<163,CPOS>
+                        OTH.AMT=OTH.AMT-L180.AMT
+                     END
+                     LOCATE('DET',BILL.REC,159;CPOS) THEN
+                        DET.AMT=BILL.REC<163,CPOS>
+                        OTH.AMT=OTH.AMT-DET.AMT
+                     END
+                     LOCATE('SIT',BILL.REC,159;CPOS) THEN
+                        SIT.AMT=BILL.REC<163,CPOS>
+                        OTH.AMT=OTH.AMT-SIT.AMT
+                     END
+                     LOCATE('HAZ',BILL.REC,159;CPOS) THEN
+                        HAZ.AMT=BILL.REC<163,CPOS>
+                        OTH.AMT=OTH.AMT-HAZ.AMT
+                     END
+                  END ELSE
+                     UNS.AMT=BILL.REC<8>
+                  END
+
+* FB Details Freight Chg (FRT)
+                  SQL.FRT.AMT=FRT.AMT'R26'
+
+* FB Details Fuel Surcharge (FSC)
+                  SQL.FSC.AMT=FSC.AMT'R26'
+
+* FB Details Inside Delivery (ID)
+                  SQL.ID.AMT=ID.AMT'R26'
+
+* FB Details Residential Delivery (RES)
+                  SQL.RES.AMT=RES.AMT'R26'
+
+* FB Details Lift Gate (L25)
+                  SQL.L25.AMT=L25.AMT'R26'
+
+* FB Details Lift Gate (L180)
+                  SQL.L180.AMT=L180.AMT'R26'
+
+* FB Details Detention (DET)
+                  SQL.DET.AMT=DET.AMT'R26'
+
+* FB Details Stop In Transit (SIT)
+                  SQL.SIT.AMT=SIT.AMT'R26'
+
+* FB Details Hazard Materials (HAZ)
+                  SQL.HAZ.AMT=HAZ.AMT'R26'
+
+* FB Details Other Charges (OTH)
+                  SQL.OTH.AMT=OTH.AMT'R26'
+
+* FB Details Unspecified Charges (UNS)
+                  SQL.UNS.AMT=UNS.AMT'R26'
+
+* FB Details Mgmt Svc Fees (MSF)
+                  SQL.MGMT.SVC.FEE=BILL.REC<165>'R26'
+
+
+                  Fn = "SQLExecute"
+                  STATUS = SQLExecute(STMTENV)
+                  GOSUB CKSTMTENV
+               END
+SKIP.BILL: ***
+            REPEAT
+
+         END ELSE
+            CRT @(0,23):'Could not open FB.BILLS.HIST,':CLIENT:'. Skipping this file.':
+         END                             ; * OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS
+SKIP.CLIENT: ***
+      REPEAT
+
+THE.END: ***
+*     End of program
+      CRT @(0,22):CO.NAME
+*
+* Now just clean up the environment and leave
+*
+      Fn = "SQLFreeStmt"
+      STATUS = SQLFreeStmt(STMTENV, SQL.DROP)
+      GOSUB CKSTMTENV
+
+      Fn = "SQLDisconnect"
+      STATUS = SQLDisconnect(CONENV)
+      GOSUB CKCONENV
+
+      Fn = "SQLFreeConnect"
+      STATUS = SQLFreeConnect(CONENV)
+      GOSUB CKCONENV
+
+      Fn = "SQLFreeEnv"
+      STATUS = SQLFreeEnv(DBCENV)
+      IF STATUS <> SQL.SUCCESS THEN STOPM "Failed to release ODBC environment"
+
+      STOP
+
+GET.CITY.STATE: ***
+
+      IF CARRIER='00041' OR (CARRIER='01075' AND LOOK.ZIP[1,3]='999') THEN
+         LOOK.CITY='Usa'
+         LOOK.STATE='USA'
+      END ELSE
+         IF LOOK.ZIP[1,5] MATCHES '5N' AND LOOK.ZIP[1,3]#999 THEN
+            READ DZIP FROM F.ZIPS,LOOK.ZIP THEN
+               LOOK.CITY=OCONV(DZIP<1>,'MCT')
+               LOOK.STATE=OCONV(DZIP<2>,'MCU')
+            END ELSE
+               LOOK.CITY='Not On File'
+               LOOK.STATE='NOF'
+            END
+         END ELSE
+            INTL=1
+            LOOK.CITY='Intl'
+            LOOK.STATE='INTL'
+         END
+      END
+      IF LOOK.STATE='HI' OR LOOK.STATE='AK' OR LOOK.STATE='PR' THEN
+         INTL=1
+         LOOK.CITY='Intl'
+         LOOK.STATE='INTL'
+      END
+      RETURN
+
+BUILD.REXEL.DIV.XREF: ***
+      OPEN 'BILLDATA.REXEL' TO F.REXEL THEN
+         READ DREXEL FROM F.REXEL,"BranchLocations20040902.txt" ELSE DREXEL=''
+         DREXEL=CHANGE(DREXEL,CHAR(9),@VM)
+         REXEL.DIV.XREF=''
+         REXEL.TIMES=DCOUNT(DREXEL,@AM)
+         FOR X = 2 TO REXEL.TIMES
+            REXEL.DIV.XREF<1,-1>=TRIM(DREXEL<X,2>)           ; ** Branch Number
+            REXEL.DIV.XREF<2,-1>=TRIM(DREXEL<X,1>)           ; ** Division Code
+         NEXT REXEL.TIMES
+         REXEL.LOC.XREF=''
+         REXEL.LOC.XREF<1,1>='DSCE' ; REXEL.LOC.XREF<2,1>='00902' ; REXEL.LOC.XREF<3,1>='South Central'
+         REXEL.LOC.XREF<1,2>='DSEA' ; REXEL.LOC.XREF<2,2>='00917' ; REXEL.LOC.XREF<3,2>='South East'
+         REXEL.LOC.XREF<1,3>='DSTH' ; REXEL.LOC.XREF<2,3>='00918' ; REXEL.LOC.XREF<3,3>='Southern'
+         REXEL.LOC.XREF<1,4>='DWST' ; REXEL.LOC.XREF<2,4>='00938' ; REXEL.LOC.XREF<3,4>='West Coast'
+      END
+      RETURN
+SETUP.SQL: *
+!
+* Create an ODBC environment & a connection environment. Use the
+* SSQLSetConnectOption to specify the Operating system user ID and
+* password.
+
+      STATUS = SQLAllocEnv(DBCENV)
+      IF STATUS <> SQL.SUCCESS THEN STOP "Failed to allocate an ODBC environment"
+
+      STATUS = SQLAllocConnect(DBCENV,CONENV)
+      IF STATUS <> SQL.SUCCESS THEN STOP "Failed to allocate a CONNECT environment"
+
+*
+* Gather the data source name, userid and password for the server O/S and
+* information for the DBMS at the server. The DBMS info is often also
+* a user name and password, but not in all cases.
+*
+      SOURCE='PRODODS'
+      UID="uv_sql"
+      PWD="4@gAbreg"
+*
+* Establish a session to the specified data source
+*
+      PRINT "Connecting to data source: ": SOURCE
+      Fn = "SQLConnect"
+      STATUS = SQLConnect(CONENV,SOURCE,UID,PWD)
+      GOSUB CKCONENV
+*
+* Now alloacate an SQL statement environment
+* to be used for executing SQL statements
+*
+      Fn = "SQLAllocStmt"
+      STATUS = SQLAllocStmt(CONENV,STMTENV)
+      GOSUB CKCONENV
+
+*
+* Note that we are using parameter markers in the SQL statement to facilitate
+* loading multiple rows of data efficiently
+*
+      INST1 = "{CALL PU_UPDPick (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}" ; * 66 PLACEHOLDERS
+
+      ROWNUM = 0
+      Fn = "SQLSetParam"
+*
+* Now
+*
+      STATUS = SQLSetParam(STMTENV,  1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.ID) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV,  2, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.PARENT.NUM) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV,  3, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.PARENT.NAME) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV,  4, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CLIENT.NUM) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV,  5, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CLIENT.NAME) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV,  6, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CARR.NUM) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV,  7, SQL.B.BASIC, SQL.VARCHAR, 100, 0, SQL.CARR.NAME) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV,  8, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.TRANS.CODE) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV,  9, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.TRANS.MODE) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 10, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.PRO.NUM) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 11, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.BILL.DT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 12, SQL.B.BASIC, SQL.CHAR, 1, 0, SQL.IOT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 13, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.ORIG.ZIP) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 14, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.ORIG.CITY) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 15, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.ORIG.ST) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 16, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.DEST.ZIP) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 17, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.DEST.CITY) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 18, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.DEST.ST) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 19, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.USA.INTL) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 20, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.EXP.CODE) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 21, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.WT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 22, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.BENCH.CHG) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 23, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.ACTUAL.CHG) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 24, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.DISC.COMM) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 25, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.OVR.COMM) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 26, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CONS.COMM) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 27, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.DIV) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 28, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.DIV.DESC) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 29, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.DIV.CITY) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 30, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.DIV.ST) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 31, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.DIV.ZIP) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 32, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.DISC.VAR) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 33, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.OVR.VAR) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 34, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CONS.VAR) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 35, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CK.AMT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 36, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CK.NUM) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 37, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CK.DT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 38, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.BOL) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 39, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CV.NAME) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 40, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.MILES) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 41, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.PROC.DT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 42, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.MSR.AMT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 43, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.LOST.SAVINGS) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 44, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.APRV.CARR) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 45, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.APRV.CARR.NAME) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 46, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.SHIP) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 47, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.TRUE.COST) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 48, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CLIENT.COST) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 49, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.TTL.COMM) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 50, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.TTL.VAR) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 51, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CL.SAVINGS) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 52, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.LCC.NAME) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 53, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.LCC.NUM) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 54, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.LCC.AMT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 55, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.FRT.AMT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 56, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.FSC.AMT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 57, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.ID.AMT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 58, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.RES.AMT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 59, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.L25.AMT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 60, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.L180.AMT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 61, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.DET.AMT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 62, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.SIT.AMT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 63, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.HAZ.AMT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 64, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.OTH.AMT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 65, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UNS.AMT) ; GOSUB CKSTMTENV
+      STATUS = SQLSetParam(STMTENV, 66, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.MGMT.SVC.FEE) ; GOSUB CKSTMTENV
+
+      Fn = "SQLPrepare"
+      STATUS = SQLPrepare(STMTENV, INST1)
+      GOSUB CKSTMTENV
+
+      RETURN
+
+CKCONENV:
+
+      COUNT = -1
+      IF STATUS EQ -2 THEN STOPM "INVALID CONNECTION HANDLE"
+      IF STATUS NE 0
+      THEN
+201: *
+         ST = SQLERROR(-1,CONENV,-1,STATE,NATCODE,ERRTXT)
+         IF ST <> SQL.NO.DATA.FOUND
+         THEN
+            PRINT "****************************************"
+            COUNT = 1
+            IF Expect NE 0 AND STATE = Expect AND ST <> SQL.NO.DATA.FOUND
+            THEN
+               PRINT "Allowed error of ":STATE:" returned for func ":Fn
+               GOTO 299
+            END
+            ELSE
+               PRINT "Status for ":Fn:" call is: ":STATUS
+               PRINT "SQLSTATE,NATCOD are:" : STATE:"  ":NATCODE
+               PRINT "Error text is"
+               PRINT "    " : ERRTXT
+            END
+            IF ST = SQL.SUCCESS THEN GOTO 201
+         END
+         IF STATUS = -1 AND COUNT = 1 THEN STOPM "EXITING CKCONENV"
+      END
+299: *
+      IF STATUS <> 0 THEN PRINT "****************************************"
+      RETURN
+
+CKSTMTENV:
+      IF STATUS EQ -2 THEN STOPM "INVALID STATEMENT HANDLE"
+
+      IF STATUS EQ 100 THEN RETURN
+      IF STATUS NE 0
+      THEN
+301: *
+         ST = SQLERROR(-1,-1,STMTENV,STATE,NATCODE,ERRTXT)
+         IF ST <> SQL.NO.DATA.FOUND
+         THEN
+            PRINT "****************************************"
+            COUNT = 1
+            IF Expect NE 0 AND STATE = Expect AND ST <> SQL.NO.DATA.FOUND
+            THEN
+               PRINT "Allowed error of ":STATE:" returned for func ":Fn
+               GOTO 399
+            END
+            ELSE
+               PRINT "Status for ":Fn:" call is: ":STATUS
+               PRINT "SQLSTATE,NATCOD are:" : STATE:"  ":NATCODE
+               PRINT "Error text is "
+               PRINT "    " : ERRTXT
+            END
+            IF ST = 0 THEN GOTO 301
+         END
+         IF STATUS = -1 AND COUNT = 1 THEN STOPM "EXITING CKSTMTENV"
+      END
+399: *
+      IF STATUS <> 0 THEN PRINT "****************************************"
+      RETURN
+
+

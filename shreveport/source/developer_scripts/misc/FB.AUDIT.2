@@ -1,0 +1,1634 @@
+*======================================================================
+*
+*  PROGRAM    : FB.AUDIT.2
+*
+*  PURPOSE    : Edit freight lists
+*
+*  PROGRAMMER : JIM T. ROW
+*
+*  NOTES      :
+*
+*  COMMENTS   : Program not yet named
+*
+*  EDIT HISTORY:
+*
+*    NAME :   DATE   : DESCRIPTION - Comments
+*  --------------------------------------------------------------
+*    JTR  : 10/31/95 : Program started
+*    JTR  : 11/3/95  : Program completed - also changed the temporary
+*         :          : program name from 'list' to a new temp name 'table'.
+*         :          :
+*======================================================================
+* PICK COMPILER INFORMATION
+* ~~~~~~~~~~~~~~~~~~~~~~~~~
+*  ~PICK-FILE: FBBP
+*  ~PICK-RECORD: FB.AUDIT.2
+*  ~COMPILE-REC: YES
+*  ~AUTO-ANSWER: YES
+*  ~RUN-REC: NO
+*======================================================================
+*   COPYRIGHT (C) 1995 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED
+*       ----------------------------------------------------
+*  This program is sole property of AFS Logistics, LLC (AUTOMATED
+*  FREIGHT SYSTEMS) and may not be used, copied, or modified without
+*  the express written consent of Brian Barker of AFS Logistics, LLC.
+*======================================================================
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_CLIENTS
+
+    *
+    * Internal Switches
+    *
+    WRITE.DATA = 1          ; * 1 = Write data to appropriate files
+                            ; * 0 = Don't write data.. In Test Mode
+
+    *
+    * Initialize variables
+    *
+    PROMPT''
+    PROG.NAME='FB.AUDIT.2'
+    PROG.DESC='AIR Rate Table Entry/Setup'
+    PACK.NAME='AIR Rate Table Entry'
+    CO.NAME='AFS Logistics, LLC'
+     UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.AUDIT.2' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+     CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+
+    PORT.NUM = SYSTEM(19)                ; * Port user is sitting on
+*    USER.NAME = OCONV(PORT.NUM,'MCU')    ; * User's Name
+    CALL GET.USER(USER.NAME)
+
+    WIDTH = 80
+    CTR = INT(WIDTH/2)
+    PAGE.SIZE = 15
+    LIST.REC=''
+    NUM.LINES=0
+    CUR.LINE=1
+    INPUT.Y=0
+    CLIENT.ID=''
+    MAT CLIENT.REC = ''
+    CARRIER.NAME='' ; CARRIER.ID='' ; CARRIER.CITY='' ; CARRIER.STATE=''
+    CARRIER.REC=''
+    FILE.CARRIER.NAME='' ; FILE.CARRIER.ID='' ; FILE.CARRIER.CITY='' ; FILE.CARRIER.STATE=''
+    FILE.CARRIER.REC=''
+    BCARRIER.NAME='' ; BCARRIER.ID='' ; BCARRIER.CITY='' ; BCARRIER.STATE=''
+    BCARRIER.REC=''
+
+    PROFILE.REC=''              ;* Contains all the information for the
+                                ;* Carrier Profile for this client.
+
+    CHANGES.MADE = ''
+    BACK = ''
+    WHERE = ''
+
+    *
+    * Open inital List File
+    *
+    OPEN '','CLIENTS' TO F.CLIENTS ELSE
+       CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+    END
+    OPEN 'DICT','CLIENTS' TO F.DICT.CLIENTS ELSE
+       CALL OPEN.ABORT("DICT CLIENTS",PROG.NAME)
+    END
+    OPEN '','CARRIERS' TO F.CARRIERS ELSE
+       CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+    END
+    OPEN 'DICT','CARRIERS' TO F.DICT ELSE
+       CALL OPEN.ABORT("DICT CARRIERS",PROG.NAME)
+    END
+    OPEN '','FB.RATE.TABLES' TO F.RATES ELSE
+       CALL OPEN.ABORT('FB.RATE.TABLES', PROG.NAME)
+    END
+
+
+    *
+    * Display Inital screen and prompt for input
+    *
+START.OVER:
+
+    GOSUB INPUT.SCREEN
+50:
+    HELP = "Enter client name or number to enter rates. [EX] = Exit"
+    MASK = '#####'
+    CRT @( 0, 3):'Client # :':@(-4)
+    CRT @(11, 4):@(-4)
+    CRT @(11, 6):@(-4)
+    CRT @( 0, 7):@(-4)
+    CRT @( 0, 9):@(-4)
+
+100:
+    CALL GEN.IN(11, 3, MASK,'',Q,0,20,'','',2,-5,3,1,QI,HELP,0,23)
+    QI = OCONV(QI,'MCU')
+    BEGIN CASE
+       CASE QI = 'EX'
+          STOP
+       CASE NUM(QI) AND QI # ''
+            CLIENT.ID = QI'R%5'
+       CASE NOT(QI MATCHES "0N") AND QI # ''
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            BEGIN CASE
+               CASE ITEM.LIST = ''
+                  GOTO 50                            ;* START OVER
+               CASE DCOUNT(ITEM.LIST,@AM) GT 1
+                  GOTO 50                            ;* START OVER
+               CASE 1
+                  DATA ITEM.LIST
+                  GOTO 50                            ;* START OVER
+            END CASE
+       CASE 1
+            CALL ELINE('Invalid Client Name, Try Again.')
+            GOTO 100
+    END CASE
+
+    *
+    * Open Client Records
+    *
+    MATREAD CLIENT.REC FROM F.CLIENTS, CLIENT.ID ELSE
+       CALL ELINE("Client number ":CLIENT.ID:" is not a valid client #")
+       GOTO 100
+    END
+
+    *
+    * Get Client Name - Use CL.??????? Variables for client info.
+    *
+    TEMP = CLIENT.ID:', ':CL.NAME:' (':CL.CITY:', ':CL.ST:')'
+    CRT @(11, 3):TEMP'L#65':@(-4)
+
+    *
+    * Open Client Audit File
+    *
+    OPEN '','FB.AUDIT,':CLIENT.ID TO F.AUDIT ELSE
+        CALL ELINE("Client is not setup.  The client must be first setup before editing Rates.")
+        GOTO 50
+    END
+
+
+    *---------------------
+    * ASK FOR CARRIER
+    *---------------------
+150:
+    CARRIER.ID = ''   ; CARRIER.NAME = ''
+    CARRIER.CITY = '' ; CARRIER.STATE = ''
+    CHANGES.MADE = ''
+
+    CRT @(0, 4):'Carrier #:':@(-4)
+    CRT @(0, 6):@(-4)
+    CRT @(0, 7):@(-4)
+    CRT @(0, 8):@(-4)
+    CRT @(0, 9):@(-4)
+    HELP = "Enter Carrier Number. [L]=List Carriers [X]=Back [EX]=Exit"
+    IF BACK THEN
+        MASK='X '
+        BACK = 0
+    END ELSE
+        MASK = '#####'
+    END
+
+200:
+    CALL GEN.IN(11,4,MASK,'',Q,0,20,'','',2,-5,4,1,QI,HELP,0,23)
+    QI = OCONV(QI,'MCU')
+    BEGIN CASE
+       CASE QI = 'EX'
+          STOP
+       CASE QI='X'
+          GOTO 50
+       CASE QI = 'L'
+          GOSUB LIST.CARRIERS
+          GOTO 150
+       CASE NUM(QI)
+          CARRIER.ID = QI'R%5'
+       CASE 1
+          CALL ELINE('Invalid Carrier Number, Try Again.')
+          GOTO 150
+    END CASE
+
+    *
+    * Open Carrier Records
+    *
+    READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE
+        CALL ELINE('"':CARRIER.ID:'" is an invalid Carrier Number. Try Again.')
+        GOTO 150
+    END
+
+    CARRIER.NAME  = CARRIER.REC<1>
+    CARRIER.CITY  = CARRIER.REC<3>
+    CARRIER.STATE = CARRIER.REC<4>
+    TEMP = CARRIER.ID:', ':CARRIER.NAME:' (':CARRIER.CITY:', ':CARRIER.STATE:')'
+    CRT @(11, 4):TEMP'L#65':@(-4)
+
+    *
+    * Open Carrier Audit Information
+    *
+    READ PROFILE.REC FROM F.AUDIT,CARRIER.ID ELSE
+        CALL ELINE('Carrier "':CARRIER.ID:'" needs to be setup before adding tables.')
+        CARRIER.ID = ''
+        GOTO 150
+    END
+
+
+    *---------------------
+    * Ask if Contract or Benchmark Carrier
+    *---------------------
+
+    BCARRIER.ID = PROFILE.REC<21>
+    IF BCARRIER.ID # '' THEN
+        READ BCARRIER.REC FROM F.CARRIERS,BCARRIER.ID ELSE
+            CALL ELINE('"':BCARRIER.ID:'" is an invalid Benchark Carrier Number. Try Again.')
+            GOTO 150
+        END
+        BCARRIER.NAME = BCARRIER.REC<1>
+    END
+
+250:
+    IF BCARRIER.ID # '' THEN
+        HELP = "Select the Contract or Benchmark Carrier [1]-Contract [2]-Benchmark [X]-Back"
+        IF BACK THEN
+            BACK=0
+            MASK = 'X '
+        END ELSE
+            MASK = '1 '
+        END
+        CRT @(0,6):'1 - Contract Rates for carrier  :':CARRIER.ID:', ':CARRIER.NAME
+        CRT @(0,7):'2 - Benchmark Rates for carrier :':BCARRIER.ID:', ':BCARRIER.NAME
+        CRT @(0, 8):@(-4)
+        CRT @(0,9):'OPTION:':@(-4)
+300:
+        CALL GEN.IN(7,9,MASK,'',Q,0,20,'','',2,-2,9,1,QI,HELP,0,23)
+        QI = OCONV(QI,'MCU')
+        IF QI='' THEN QI=TRIM(MASK)
+
+        BEGIN CASE
+            CASE QI = 'EX'
+                STOP
+            CASE QI = 'X'
+                GOTO 150
+            CASE QI = '1'
+                OFFSET = 0
+                CRT @(0,6):'Contract Carrier Rates :':CARRIER.ID:', ':CARRIER.NAME:@(-4)
+                FILE.CARRIER.ID    = CARRIER.ID
+                FILE.CARRIER.NAME  = CARRIER.REC<1>
+                FILE.CARRIER.CITY  = CARRIER.REC<3>
+                FILE.CARRIER.STATE = CARRIER.REC<4>
+            CASE QI = '2'
+                OFFSET = 20
+                FILE.CARRIER.ID    = BCARRIER.ID
+                FILE.CARRIER.NAME  = BCARRIER.REC<1>
+                FILE.CARRIER.CITY  = BCARRIER.REC<3>
+                FILE.CARRIER.STATE = BCARRIER.REC<4>
+                CRT @(0,6):'Benchmark Carrier Rates:':BCARRIER.ID:', ':BCARRIER.NAME:@(-4)
+            CASE 1
+                CALL ELINE('Invalid Entry, Please Try Again.')
+                GOTO 250
+        END CASE
+    END ELSE
+        OFFSET=0
+        FILE.CARRIER.ID    = CARRIER.ID
+        FILE.CARRIER.NAME  = CARRIER.REC<1>
+        FILE.CARRIER.CITY  = CARRIER.REC<3>
+        FILE.CARRIER.STATE = CARRIER.REC<4>
+        IF BACK = 1 THEN GOTO 150
+    END
+
+    CRT @(0, 7):@(-4)
+    CRT @(0, 8):@(-4)
+    CRT @(0, 9):@(-4)
+
+
+    *------------------------------------
+    * Determine if Client has been completely setup
+    *------------------------------------
+    FAILURE=0
+    IF DCOUNT(PROFILE.REC<OFFSET+2>, @VM)=0 THEN FAILURE+=1     ;* Dates setup?
+    IF DCOUNT(PROFILE.REC<OFFSET+5>, @VM)=0 AND PROFILE.REC<OFFSET+4>='' THEN FAILURE+=1  ;* Zones?
+    IF DCOUNT(PROFILE.REC<OFFSET+7>, @VM)=0 AND PROFILE.REC<OFFSET+6>='' THEN FAILURE+=1  ;* Zones?
+    IF FAILURE THEN
+        CALL FB.DRAW.BOX(2,10,77,9,' ',' ')
+        CALL FB.PRINT.CENT(2,2+75,12,'This Carrier has not been fully setup with Carrier Audit Setup.')
+        CALL FB.PRINT.CENT(2,2+75,14,'Make sure that the "Rate Tables", "Zones", and "Modes" are setup.')
+        CALL FB.PRINT.CENT(2,2+75,16,'Press ENTER to continue.')
+
+        HELP = "Press ENTER to return back to Client/Carrier selection."
+        CALL GEN.IN(52,16,'','',Q,0,1,'','',2,52,16,0,QI,HELP,0,23)
+        CALL FB.DRAW.BOX(2,10,77,9,' ','')
+        BACK = 1
+        GOTO 250
+    END
+
+
+    *---------------------
+    * Ask for Mode
+    *---------------------
+AFM.1:
+    CRT @(0, 7):@(-4)
+    IF PROFILE.REC<OFFSET+6> THEN
+        IF BACK=1 THEN GOTO 250
+        M.DESC = '(Override Mode)'
+        MODE=PROFILE.REC<OFFSET+6>
+        GOTO AFM.3
+    END
+
+    GOSUB LIST.VALID.MODES
+    IF NUM.MODES > 0 THEN
+AFM.2:
+        HELP = 'Select which mode number. [X]-Back [EX]-Exit'
+        CRT @(50,18):'Mode # :'
+        IF BACK THEN
+            BACK=0
+            MASK = 'X '
+        END ELSE
+            MASK = '1 '
+        END
+        Q=''
+        CALL GEN.IN(59,18,MASK,'',Q,0,2,'','',2,59,18,0,QI,HELP,1,23)
+        QI = OCONV(QI,'MCU')
+        IF QI='' THEN QI=TRIM(MASK)
+
+        BEGIN CASE
+           CASE QI = 'X' OR QI = ''
+              CALL FB.DRAW.BOX(48,8,30,12,' ','')
+              BACK=1
+              GOTO 250
+           CASE QI = 'EX'
+              STOP
+           CASE NUM(QI)
+              NUM = QI'R%5'
+              IF NUM < 1 OR NUM > NUM.MODES THEN
+                  CALL ELINE('Invalid Mode Number.  Valid mode numbers are 1 - ':NUM.MODES:'. Try again.')
+                  GOTO AFM.2
+              END ELSE
+                M.DESC = '(Mode # ':NUM:')'
+                MODE = PROFILE.REC<OFFSET+7,NUM>
+              END
+           CASE 1
+              CALL ELINE('Invalid entry. Valid options are "Y","N" or "X". Please try again.')
+              GOTO AFM.2
+        END CASE
+    END ELSE
+        CRT @(56,19):'[ Press Enter ]'
+        HELP = 'No modes have been setup in the Carrier Audit Setup!':CHAR(7)
+        CALL GEN.IN(71,19,'','',Q,0,1,'','',1,71,19,1,QI,HELP,0,23)
+        CALL FB.DRAW.BOX(48,8,30,12,' ','')
+        BACK=1
+        GOTO 250
+    END
+
+    CALL FB.DRAW.BOX(48,8,30,12,' ','')
+AFM.3:
+    CRT @(0,7):'Mode : ':MODE:'   ':M.DESC:@(-4)
+
+
+    *---------------------
+    * Ask for Zone
+    *---------------------
+AFZ.1:
+    CRT @(0, 8):@(-4)
+    IF PROFILE.REC<OFFSET+4> THEN
+        IF BACK=1 THEN GOTO AFM.1
+        Z.DESC = '(Override Zone)'
+        ZONE=PROFILE.REC<OFFSET+4>
+        GOTO AFZ.3
+    END
+
+    GOSUB LIST.VALID.ZONES
+    IF NUM.ZONES > 0 THEN
+AFZ.2:
+        HELP = 'Select which Zone number. [X]-Back [EX]-Exit'
+        CRT @(50,18):'Zone # :'
+        IF BACK THEN
+            MASK = 'X '
+            BACK=0
+        END ELSE
+            MASK = '1 '
+        END
+        Q=''
+        CALL GEN.IN(59,18,MASK,'',Q,0,2,'','',2,59,18,0,QI,HELP,1,23)
+        QI = OCONV(QI,'MCU')
+        IF QI='' THEN QI=TRIM(MASK)
+
+        BEGIN CASE
+           CASE QI = 'X' OR QI = ''
+              CALL FB.DRAW.BOX(48,8,30,12,' ','')
+              BACK=1
+              GOTO AFM.1
+           CASE QI = 'EX'
+              STOP
+           CASE NUM(QI)
+              NUM = QI'R%5'
+              IF NUM < 1 OR NUM > NUM.ZONES THEN
+                  CALL ELINE('Invalid Zone Number.  Valid mode numbers are 1 - ':NUM.ZONES:'. Try again.')
+                  GOTO AFZ.2
+              END ELSE
+                Z.DESC = '(Zone # ':NUM:')'
+                ZONE = PROFILE.REC<OFFSET+5,NUM>
+              END
+           CASE 1
+              CALL ELINE('Invalid entry. Valid options are "Y","N" or "X". Please try again.')
+              GOTO AFZ.2
+        END CASE
+    END ELSE
+        CRT @(56,19):'[ Press Enter ]'
+        HELP = 'No Zones have been setup in the Carrier Audit Setup!':CHAR(7)
+        CALL GEN.IN(71,19,'','',Q,0,1,'','',1,71,19,1,QI,HELP,0,23)
+        CALL FB.DRAW.BOX(48,8,30,12,' ','')
+        BACK=1
+        GOTO AFM.1
+    END
+
+    CALL FB.DRAW.BOX(48,8,30,12,' ','')
+AFZ.3:
+    CRT @(0,8):'Zone : ':ZONE:'   ':Z.DESC:@(-4)
+
+
+    *---------------------
+    * Ask for Beginning Date
+    *---------------------
+
+AFBD.1:
+    GOSUB LIST.TABLES
+AFBD.2:
+    HELP = 'Select which table for rates. [X]-Back [EX]-Exit'
+    CRT @(50,18):'Table # :'
+    IF BACK THEN
+        MASK = 'X '
+        BACK= 0
+    END ELSE
+        MASK = '1 '
+    END
+    Q=''
+    CALL GEN.IN(60, 18, MASK,'',Q,0,2,'','',2,60,18,0,QI,HELP,1,23)
+    QI = OCONV(QI,'MCU')
+    IF QI='' THEN QI=TRIM(MASK)
+
+    BEGIN CASE
+       CASE QI = 'X' OR QI = ''
+          CALL FB.DRAW.BOX(48,8,30,12,' ','')
+          BACK=1
+          GOTO AFZ.1
+       CASE QI='EX'
+          STOP
+       CASE NUM(QI)
+          NUM = QI'R%5'
+          IF NUM < 1 OR NUM > NUM.TABLES THEN
+              CALL ELINE('Invalid Table Number.  Valid table numbers are 1 - ':NUM.TABLES:'. Try again.')
+              GOTO AFBD.2
+          END ELSE
+              OPEN.DATE=PROFILE.REC<OFFSET+2,NUM>
+          END
+       CASE 1
+          CALL ELINE('Invalid entry. Valid options are 1 - ':NUM.TABLES:'. Please try again.')
+          GOTO AFBD.2
+    END CASE
+
+
+    *--------------------------------
+    * Construct Record Name
+    *--------------------------------
+
+    REC.NAME = CLIENT.ID:'*':FILE.CARRIER.ID:'*':MODE:'*':OPEN.DATE:'*':ZONE:'*':'1'
+
+    LIST.REC=''
+    READ LIST.REC FROM F.RATES, REC.NAME THEN
+        CHANGES.MADE = 0        ;* Changes Boolean Flag
+        NUM.LINES = DCOUNT(LIST.REC<1>, @VM)
+    END ELSE
+        NUM.LINES = 0
+        CHANGES.MADE = 1
+    END
+
+    CUR.LINE = 0                ;* Current Line
+    PAGE = 1                    ;* Current Page Number
+
+
+    *---------------------
+    * Initialize variables
+    *---------------------
+
+    GOSUB DSP.EDIT.SCN
+    CUR.LINE = 0                ;* Current Line
+    PAGE = 1                    ;* Current Page Number
+    EXIT.IT = 0                 ;* Exit Boolean Flag
+*    CHANGES.MADE = 0            ;* Changes Boolean Flag
+    NUM.LINES = DCOUNT(LIST.REC<1>, @VM)
+
+UD.1:
+    *
+    * Display current position
+    *
+    GOSUB UPDATE.DISPLAY
+
+UD.2:
+    HELP = "EDIT: 'B'-Back ''-Nxt Page 'T'-Top 'L'-Last 'I'-Ins 'D'-Del '?'-Help 'EX'-Exit"
+    MASK = '####'
+    CRT @(1,22):'Enter line number please :':@(-4)
+    CALL GEN.IN(27,22,MASK,'',Q,0,5,'','',2,27,22,0,QI,HELP,1,23)
+    QI = OCONV(QI,'MCU')
+    BEGIN CASE
+        CASE QI = '?' OR QI = 'HELP'
+            *
+            * Help - List all Commands
+            *
+            CALL FB.DRAW.BOX(0,4,80,17,' ',' ')
+            CRT @(19, 6):'HELP SCREEN - List of Commands'
+
+            CRT @( 3, 8):'B  - Go Back 1 Page'
+            CRT @( 3, 9):'I  - Insert Line'
+            CRT @( 3,10):'T  - Goto Top of Table (TOP)'
+            CRT @( 3,11):'E  - Edit Line'
+            CRT @( 3,12):'?  - This help screen'
+            CRT @( 3,13):'X  - Exit current Table {Saves}'
+
+            CRT @(40, 8):'"" - Go Forward 1 Page'
+            CRT @(40, 9):'D  - Delete current Line'
+            CRT @(40,10):'L  - Goto Last Page'
+            CRT @(40,11):"## - Goto Line '##'"
+
+            CRT @(40,13):'EX - Exit Program {Asks to Save}'
+
+            CRT @(17,15):'PRINT - Prints Current Table'
+            CRT @(17,16):'LOAD  - Loads the contents of another Table'
+            CRT @(17,17):'SAVE  - Saves the contents of the Table'
+            CRT @(17,18):'NEW   - Erases the entire table'
+            CRT @(17,19):'HELP  - This help screen'
+            CALL ELINE('Viewing HELP Screen.')
+            CALL FB.DRAW.BOX(0,4,80,17,' ','')
+
+
+        CASE QI = 'X'
+            *
+            * Exit Current list
+            *
+            GOSUB ASK.ABOUT.EXITING
+
+            *
+            * Redraw the Options screen..
+            *
+            GOSUB INPUT.SCREEN
+            TEMP = CLIENT.ID:', ':CL.NAME:' (':CL.CITY:', ':CL.ST:')'
+            CRT @(0, 3):'Client # :':TEMP'L#65':@(-4)
+            TEMP = CARRIER.ID:', ':CARRIER.NAME:' (':CARRIER.CITY:', ':CARRIER.STATE:')'
+            CRT @(0, 4):'Carrier #:':TEMP'L#65':@(-4)
+            BEGIN CASE
+                CASE OFFSET = 0
+                    CRT @(0,6):'Contract Carrier Rates :':FILE.CARRIER.ID:', ':FILE.CARRIER.NAME:@(-4)
+                CASE OFFSET=20
+                    CRT @(0,6):'Benchmark Carrier Rates:':FILE.CARRIER.ID:', ':FILE.CARRIER.NAME:@(-4)
+            END CASE
+            CRT @(0,7):'Mode : ':MODE:'   ':M.DESC:@(-4)
+            CRT @(0,8):'Zone : ':ZONE:'   ':Z.DESC:@(-4)
+            BACK=1
+            GOTO AFBD.1
+
+        CASE QI = 'EX'
+            *
+            * Exit Program
+            *
+            GOSUB ASK.ABOUT.EXITING
+
+        CASE QI = 'I'
+            *
+            * Insert Line
+            *
+            GOSUB INSERT.LINE
+
+        CASE QI = 'E'
+            *
+            * Edit Line
+            *
+            IF CUR.LINE = 0 THEN
+                CALL ELINE("Can't EDIT the TOP of a list.  The 'TOP' is NOT a line!")
+                GOTO UD.2
+            END
+            GOSUB EDIT.LINE
+
+        CASE QI = 'T' OR QI='TOP'          ;* Top Page
+            *
+            * Top Page
+            *
+            IF NUM.LINES > 0 THEN
+                CUR.LINE = 0
+                PAGE = 1
+            END ELSE
+                CALL ELINE('Top of document.')
+                GOTO UD.2
+            END
+
+        CASE QI = 'L'                    ;* Last Page
+            *
+            * Last Page
+            *
+            IF NUM.LINES > 0 THEN
+                PAGE=INT(NUM.LINES/PAGE.SIZE)
+                IF REM(NUM.LINES,PAGE.SIZE) THEN PAGE+=1
+                CUR.LINE = (PAGE-1)*PAGE.SIZE+1
+            END ELSE
+                CALL ELINE('Bottom of document.')
+                GOTO UD.2
+            END
+
+        CASE QI = 'PRINT'                 ;* Print Table to printer
+            *
+            * Print
+            *
+            IF NUM.LINES > 0 THEN
+                YN.MSG = 'Print table to currently selected printer?'
+                YN.MASK = 'Y '
+                GOSUB ASK.Y.OR.N
+                IF YN.ANSWER = 'Y' THEN
+                    GOSUB PRINT.TABLE
+                END
+            END ELSE
+                CALL ELINE('Nothing to print! Unable to print.')
+                GOTO UD.2
+            END
+
+
+        CASE QI = 'LOAD'                 ;* Load a New Table
+            *
+            * Load a new Table
+            *
+            YN.MSG = 'Lose current table contents and load contents from another table? :'
+            YN.MASK = 'N '
+            GOSUB ASK.Y.OR.N
+            IF YN.ANSWER = 'Y' THEN
+                ASK.FN.MASK = REC.NAME
+                ASK.FN.MSG = 'Enter table name to load :'
+                GOSUB ASK.FOR.FNAME
+
+                IF FNAME.ANSWER = 'X' OR FNAME.ANSWER='EX' THEN GOTO UD.2
+
+                READ LIST.REC FROM F.RATES, FNAME.ANSWER THEN
+                    CUR.LINE = 0                ;* Current Line
+                    PAGE = 1                    ;* Current Page Number
+                    NUM.LINES = DCOUNT(LIST.REC<1>, @VM)
+                END ELSE
+                    CALL ELINE('Could not load table.')
+                    GOTO UD.2
+                END
+
+                *
+                * Load was successful... Clear Changes flag if RELOADED
+                * orginal file...
+                *
+                IF FNAME.ANSWER = REC.NAME THEN
+                    GOSUB CLR.CHANGES.FLG
+                END ELSE
+                    GOSUB SET.CHANGES.FLG       ;* Changes Boolean Flag
+                END
+            END
+
+        CASE QI = 'SAVE'                 ;* Saves the Table
+            *
+            * Save Table Contents
+            *
+            YN.MSG = 'Save table contents? :'
+            YN.MASK = 'Y '
+            GOSUB ASK.Y.OR.N
+            IF YN.ANSWER = 'Y' THEN
+                ASK.FN.MASK = REC.NAME
+                ASK.FN.MSG = 'Enter table name to save the table under :'
+                GOSUB ASK.FOR.FNAME
+
+                IF FNAME.ANSWER = 'X' OR FNAME.ANSWER='EX' THEN GOTO UD.2
+                IF FNAME.ANSWER = REC.NAME THEN
+                    GOSUB CLR.CHANGES.FLG
+                END
+                WRITE LIST.REC ON F.RATES, FNAME.ANSWER THEN
+                END ELSE
+                    CALL ELINE('Could not save table.')
+                    GOTO UD.2
+                END
+            END
+
+        CASE QI = 'NEW'
+            *
+            * NEW file - Clears All
+            *
+            YN.MSG = 'Delete entire table?  Are you sure? :'
+            YN.MASK = 'N '
+            GOSUB ASK.Y.OR.N
+            IF YN.ANSWER = 'Y' THEN
+                PAGE = 1
+                IF NUM.LINES THEN
+                    GOSUB SET.CHANGES.FLG     ;* sET Changes Flag
+                END
+                NUM.LINES = 0
+                CUR.LINE = 0
+                LIST.REC = ''
+             END ELSE
+                GOTO UD.2
+             END
+
+        CASE QI = 'B'
+            *
+            * Go Back 1 Page
+            *
+            IF PAGE > 1 THEN
+                PAGE-=1
+                CUR.LINE=(PAGE-1)*PAGE.SIZE+1
+            END ELSE
+                CALL ELINE('Top of document.')
+                GOTO UD.2
+            END
+
+        CASE QI = ''
+            *
+            * Go forward 1 Page
+            *
+            IF NUM.LINES>PAGE*PAGE.SIZE THEN
+                PAGE+=1
+                CUR.LINE=(PAGE-1)*PAGE.SIZE+1
+                IF CUR.LINE > NUM.LINES THEN CUR.LINE = NUM.LINES
+            END ELSE
+                CALL ELINE('Bottom of document.')
+                GOTO UD.2
+            END
+
+        CASE QI = 'D'
+            *
+            * Delete Current Line
+            *
+            IF CUR.LINE = 0 THEN
+                CALL ELINE("Can't delete the TOP of a list.  The 'TOP' is NOT a line!")
+                GOTO UD.2
+            END
+            IF NUM.LINES > 0 THEN
+                YN.MSG = 'Delete this line?  Are you sure? :'
+                YN.MASK = 'Y '
+                GOSUB ASK.Y.OR.N
+                IF YN.ANSWER # 'Y' THEN GOTO UD.2
+                GOSUB SET.CHANGES.FLG           ;* Set flag that file has been chngd
+                DEL LIST.REC<1,CUR.LINE>
+                DEL LIST.REC<2,CUR.LINE>
+                NUM.LINES -= 1
+                IF CUR.LINE > NUM.LINES THEN
+                    IF NUM.LINES = 0 THEN
+                        CUR.LINE = 0
+                        PAGE = 1
+                    END ELSE
+                        CUR.LINE = NUM.LINES
+                        PAGE=INT(NUM.LINES/PAGE.SIZE)
+                        IF REM(NUM.LINES,PAGE.SIZE) THEN PAGE+=1
+                    END
+                END
+             END ELSE
+                CALL ELINE("Can't delete lines on an empty list!")
+                GOTO UD.2
+             END
+
+        CASE NUM(QI)
+            *
+            * Goto the selected line
+            *
+            Q = QI'R%5'
+            IF Q > NUM.LINES OR Q < 1 THEN
+                CALL ELINE('Line number entered is invalid - Please try again.')
+                GOTO UD.2
+            END ELSE
+                CUR.LINE = Q
+                PAGE=INT(CUR.LINE/PAGE.SIZE)
+                IF REM(CUR.LINE,PAGE.SIZE) THEN PAGE+=1
+            END
+
+       CASE 1
+          CALL ELINE('Invalid entry.')
+          GOTO UD.2
+    END CASE
+
+    IF NOT (EXIT.IT) THEN GOTO UD.1
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* LIST.VALID.MODES
+*----------------------------------------------------------------------
+LIST.VALID.MODES:***
+
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+
+    NUM.MODES = DCOUNT(PROFILE.REC<OFFSET+7>, @VM)
+    IF NUM.MODES > 0 THEN
+        CRT @(50,9):'##  MODE NAME'
+        FOR Y = 1 TO NUM.MODES
+            CRT @(50,9+Y):Y'R%2':'  ':PROFILE.REC<OFFSET+7,Y>
+        NEXT
+    END ELSE
+        CALL FB.PRINT.CENT(48,48+30,8+6,'* No Modes *')
+    END
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* LIST.VALID.ZONES
+*----------------------------------------------------------------------
+LIST.VALID.ZONES:***
+
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+
+    NUM.ZONES = DCOUNT(PROFILE.REC<OFFSET+5>, @VM)
+    IF NUM.ZONES > 0 THEN
+        CRT @(50,9):'##  ZONE NAME'
+        FOR Y = 1 TO NUM.ZONES
+            CRT @(50,9+Y):Y'R%2':'  ':PROFILE.REC<OFFSET+5,Y>
+        NEXT
+    END ELSE
+        CALL FB.PRINT.CENT(48,48+30,8+6,'* No Zones *')
+    END
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* LIST.TABLES
+*----------------------------------------------------------------------
+LIST.TABLES:***
+
+    CALL FB.DRAW.BOX(48,8,30,12,' ',' ')
+    NUM.TABLES = DCOUNT(PROFILE.REC<OFFSET+2>, @VM)
+    IF NUM.TABLES > 0 THEN
+        CRT @(50,9):'##  BEG DATE - END DATE'
+        FOR Y = 1 TO NUM.TABLES
+            CRT @(50,9+Y):Y'R%2':'  ':PROFILE.REC<OFFSET+2,Y>'D2/':' - ':PROFILE.REC<OFFSET+3,Y>'D2/'
+        NEXT
+    END ELSE
+        CALL FB.PRINT.CENT(48,48+30,8+6,'* No Tables *')
+    END
+
+RETURN
+
+
+
+
+*----------------------------------------------------------------------
+* SAVE.LIST.REC
+*----------------------------------------------------------------------
+SAVE.LIST.REC:***
+
+    *
+    * Save List
+    *
+    WRITE LIST.REC ON F.RATES, REC.NAME
+
+RETURN
+
+
+*----------------------------------------------------------------------
+* UPDATE.DISPLAY
+*----------------------------------------------------------------------
+UPDATE.DISPLAY:***
+
+    *
+    * Initialize Variables
+    *
+    GOSUB UPDATE.HEADER
+
+    Y = 1
+    LINE = (PAGE-1)*PAGE.SIZE
+    IF CUR.LINE > 0 THEN LINE+=1
+
+    LOOP
+    UNTIL (Y>PAGE.SIZE)
+
+        BEGIN CASE
+            CASE LINE=0
+                *
+                * Print TOP of document indicator
+                *
+                DESC = '>>>':'TOP'
+                LINE = 1
+
+            CASE LINE>NUM.LINES
+                *
+                * Print nothing - (Actually clears line)
+                *
+                DESC = ''
+
+            CASE 1
+                *
+                * Check for Current Line
+                *
+                BEGIN CASE
+                    CASE LINE=CUR.LINE
+                        *
+                        * Indicate current line
+                        *
+                        DESC = '>>>'             ;* Current Line (not top)
+
+                    CASE 1
+                        *
+                        * Not on current line - Clear any line indicators
+                        *
+                        DESC = SPACE(3)          ;* 'Space' Over
+                END CASE
+
+                DESC:= LINE'R#3':SPACE(5)               ;* Line Number
+                DESC:= LIST.REC<1,LINE>'R#6':SPACE(5)   ;* Weight
+                DESC:= LIST.REC<2,LINE>'R26#9'          ;* Ammount
+                LINE+=1
+        END CASE
+
+        CRT @(0,5+Y):DESC:@(-4)         ;* Draw screen line
+        Y+=1                            ;* Inc Y screen position
+    REPEAT
+
+RETURN
+
+
+*----------------------------------------------------------------------
+* INSERT.LINE
+*----------------------------------------------------------------------
+INSERT.LINE:***
+
+
+    CRT @(0,22):@(-4)
+    EXIT.INSERT = 0
+    GOSUB UPDATE.HEADER
+
+INSERT.LOOP:
+        *
+        * Init temp storage for Data Entry items.
+        *
+        ENTERED.WEIGHT = ''
+        ENTERED.AMOUNT = ''
+
+        *
+        * Redraw the screen with an inserted line.
+        *
+
+        Y = 1
+
+        *
+        * Do a quick check and initalize the page we will be entering
+        * data for (incase the inserted line is going to the next page).
+        *
+        IF CUR.LINE>=PAGE*PAGE.SIZE THEN
+            T.PAGE=PAGE+1
+        END ELSE
+            T.PAGE = PAGE
+        END
+
+        *
+        * Initalize Line/Index into our table and the Display line counter
+        *
+        LINE = (T.PAGE-1)*PAGE.SIZE+1   ;* Real Line (or Index) of data
+        DISP = LINE                     ;* Displayed Line Number
+
+        *
+        * DRAW INSERT-MODE SCREEN CONTENTS
+        *
+        LOOP
+        UNTIL (Y>PAGE.SIZE)
+            BEGIN CASE
+                CASE DISP=CUR.LINE+1
+                    *
+                    * Display Current Position for Inserting...Also
+                    * add 1 to the displayed line number
+                    *
+                    DESC = '>>>'
+                    DESC:= DISP'R#3'    ;* Draw Insert Symbl
+                    DISP+=1             ;* Dsp Line Number
+                    INPUT.Y = 5+Y       ;* Input Y Position
+
+                CASE LINE<=NUM.LINES
+                    *
+                    * Draw a line of data on the screen
+                    *
+                    DESC = SPACE(3)
+                    DESC:= DISP'R#3':SPACE(5)               ;* Dsp Line Number
+                    DESC:= LIST.REC<1,LINE>'R#6':SPACE(5)   ;* Weight
+                    DESC:= LIST.REC<2,LINE>'R26#9'          ;* Ammount
+                    LINE+=1             ;* Inc Data Index
+                    DISP+=1             ;* Inc Dsp Line Cntr
+
+                CASE 1
+                    *
+                    * Draw A Blank Line
+                    *
+                    DESC = ''
+            END CASE
+
+            *
+            * Draw constructed string for current line and clear to
+            * end of line.
+            *
+            CRT @(0,5+Y):DESC:@(-4)     ;* Draw screen line
+            Y+=1                        ;* Inc Y screen position
+        REPEAT
+
+
+ENTER.WEIGHT:
+        *
+        * PROMPT FOR WEIGHT ENTRY
+        *
+        HELP = "Entry Options: [X]-Exit Insert Mode [EX]-Exit Program"
+        CRT @(11, INPUT.Y):@(-4)
+        CRT @(1,22):'Enter New Weight or Name In Table':@(-4)
+        MASK = '######'
+        Q=''
+        CALL GEN.IN(11,INPUT.Y,MASK,'',Q,0,6,'','',2,11,INPUT.Y,0,QI,HELP,1,23)
+        QI = OCONV(QI,'MCU')
+        BEGIN CASE
+           CASE QI = 'X' OR QI=''
+                *
+                * Exit insert mode
+                *
+                GOTO EX.INSERT
+
+           CASE QI = 'EX'
+                *
+                * Terminate Program
+                *
+                GOSUB ASK.ABOUT.EXITING
+                IF EXIT.IT THEN
+                    RETURN
+                END ELSE
+                    GOTO EDIT.AMOUNT
+                END
+
+
+           CASE QI # ''
+              ENTERED.WEIGHT = QI
+              CRT @(11, INPUT.Y):ENTERED.WEIGHT'R#6'
+
+           CASE 1
+              CALL ELINE('Invalid entry.')
+              GOTO ENTER.WEIGHT
+        END CASE
+
+        *
+        * Check to see if this weight has already been entered.
+        *
+        LOCATE ENTERED.WEIGHT IN LIST.REC<1> SETTING WHERE THEN
+            CALL ELINE('The entered weight is already on line #':WHERE+1:'!')
+            GOTO ENTER.WEIGHT
+        END
+
+
+ENTER.AMOUNT:
+        *
+        * PROMPT FOR AMOUNT ENTRY
+        *
+        HELP = "Entry Options: [X]-Back [EX]-Exit Program"
+        CRT @(1,22):'Enter the chargable amount for entered weight or name.':@(-4)
+        MASK = '########'
+        Q=''
+        CALL GEN.IN(22,INPUT.Y,MASK,'AMT2',Q,1,8,'','',2,22,INPUT.Y,0,QI,HELP,1,23)
+        QI = OCONV(QI,'MCU')
+        BEGIN CASE
+           CASE QI = 'X'
+              GOTO ENTER.WEIGHT
+
+           CASE QI = 'EX'
+              GOSUB ASK.ABOUT.EXITING
+              IF EXIT.IT THEN
+                 RETURN
+              END ELSE
+                 GOTO EDIT.AMOUNT
+              END
+
+           CASE NUM(QI)
+              ENTERED.AMOUNT = Q'R0'
+              CRT @(22, INPUT.Y):ENTERED.AMOUNT'R26#9'
+
+           CASE 1
+              CALL ELINE('Invalid entry.')
+              GOTO ENTER.AMOUNT
+        END CASE
+
+
+        *
+        * STORE ENTERED DATA
+        *
+        GOSUB SET.CHANGES.FLG         ;* Set flag that file has been chngd
+
+        *
+        * Store Entered Values
+        *
+        IF NUM.LINES THEN
+            INS ENTERED.WEIGHT BEFORE LIST.REC<1,CUR.LINE+1>
+            INS ENTERED.AMOUNT BEFORE LIST.REC<2,CUR.LINE+1>
+        END ELSE
+            LIST.REC<1,1> = ENTERED.WEIGHT
+            LIST.REC<2,1> = ENTERED.AMOUNT
+        END
+        *
+        * Update line position, number of lines and pages
+        *
+        CUR.LINE+=1
+        NUM.LINES+=1
+        IF CUR.LINE>PAGE*PAGE.SIZE THEN PAGE+=1
+
+    GOTO INSERT.LOOP
+
+EX.INSERT:***
+
+    CRT @(0,22):@(-4)
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* EDIT.LINE
+*----------------------------------------------------------------------
+EDIT.LINE:***
+
+    CRT @(0,22):@(-4)
+    EXIT.EDIT = 0
+    GOSUB UPDATE.HEADER
+
+EDIT.LOOP:
+        *
+        * Init temp storage for Data Entry items.
+        *
+        ENTERED.WEIGHT = ''
+        ENTERED.AMOUNT = ''
+
+        *
+        * Redraw the screen with an inserted line.
+        *
+        Y = 1
+
+        *
+        * Do a quick check and initalize the page we will be entering
+        * data for (incase the inserted line is going to the next page).
+        *
+*        IF CUR.LINE>PAGE*PAGE.SIZE THEN
+*            T.PAGE=PAGE+1
+*        END ELSE
+            T.PAGE = PAGE
+*        END
+
+        *
+        * Initalize Line/Index into our table and the Display line counter
+        *
+        LINE = (T.PAGE-1)*PAGE.SIZE+1   ;* Real Line (or Index) of data
+
+        *
+        * DRAW INSERT-MODE SCREEN CONTENTS
+        *
+        LOOP
+        UNTIL (Y>PAGE.SIZE)
+            BEGIN CASE
+                CASE LINE<=NUM.LINES
+                    *
+                    * Draw a line of data on the screen
+                    *
+                    IF LINE=CUR.LINE THEN
+                        DESC = '>>>'
+                        INPUT.Y = 5+Y       ;* Input Y Position
+                    END ELSE
+                        DESC = '   '
+                    END
+
+                    DESC:= LINE'R#3':SPACE(5)               ;* Dsp Line Number
+                    DESC:= LIST.REC<1,LINE>'R#6':SPACE(5)   ;* Weight
+                    DESC:= LIST.REC<2,LINE>'R26#9'          ;* Ammount
+                    LINE+=1             ;* Inc Data Index
+
+                CASE 1
+                    *
+                    * Draw A Blank Line
+                    *
+                    DESC = ''
+            END CASE
+
+            *
+            * Draw constructed string for current line and clear to
+            * end of line.
+            *
+            CRT @(0,5+Y):DESC:@(-4)     ;* Draw screen line
+            Y+=1                        ;* Inc Y screen position
+        REPEAT
+
+
+EDIT.WEIGHT:
+        *
+        * PROMPT FOR WEIGHT ENTRY
+        *
+        HELP = "Edit Entry Options: [X]-Exit Edit Mode [EX]-Exit Program"
+        CRT @(11, INPUT.Y):@(-4)
+        CRT @(1,22):'Enter New Weight or Name In Table':@(-4)
+        MASK = LIST.REC<1,CUR.LINE>:' '
+        Q=''
+        CALL GEN.IN(11,INPUT.Y,MASK,'',Q,0,6,'','',2,11,INPUT.Y,0,QI,HELP,1,23)
+        QI = OCONV(QI,'MCU')
+        IF TRIM(QI)='' THEN QI=TRIM(MASK)
+        BEGIN CASE
+           CASE QI = 'X' OR QI=''
+                *
+                * Exit insert mode
+                *
+                GOTO EX.EDIT
+
+           CASE QI = 'EX'
+                *
+                * Terminate Program
+                *
+                GOSUB ASK.ABOUT.EXITING
+                IF EXIT.IT THEN
+                    RETURN
+                END ELSE
+                    GOTO EDIT.AMOUNT
+                END
+
+           CASE QI # ''
+              ENTERED.WEIGHT = QI
+              CRT @(11, INPUT.Y):ENTERED.WEIGHT'R#6'
+
+           CASE 1
+              CALL ELINE('Invalid entry.')
+              GOTO EDIT.WEIGHT
+        END CASE
+
+
+EDIT.AMOUNT:
+        *
+        * PROMPT FOR AMOUNT ENTRY
+        *
+        HELP = "Edit Entry Options: [X]-Back [EX]-Exit Program"
+        CRT @(1,22):'Enter the chargable amount for entered weight or name.':@(-4)
+        MASK = LIST.REC<2,CUR.LINE>:' '
+        Q=''
+        CALL GEN.IN(22,INPUT.Y,MASK,'AMT2',Q,0,8,'','',2,22,INPUT.Y,0,QI,HELP,1,23)
+        QI = OCONV(QI,'MCU')
+        IF TRIM(QI)='' THEN QI=TRIM(MASK)
+        BEGIN CASE
+           CASE QI = 'X'
+              GOTO EDIT.WEIGHT
+
+           CASE QI = 'EX'
+              GOSUB ASK.ABOUT.EXITING
+              IF EXIT.IT THEN
+                 RETURN
+              END ELSE
+                 GOTO EDIT.AMOUNT
+              END
+
+           CASE QI # ''
+              ENTERED.AMOUNT = QI'R0'
+              CRT @(22, INPUT.Y):ENTERED.AMOUNT'R26#9'
+
+           CASE 1
+              CALL ELINE('Invalid entry.')
+              GOTO EDIT.AMOUNT
+        END CASE
+
+        *
+        * STORE ENTERED DATA
+        *
+        GOSUB SET.CHANGES.FLG         ;* Set flag that file has been chngd
+
+        *
+        * Store Entered Values
+        *
+        LIST.REC<1,CUR.LINE> = ENTERED.WEIGHT
+        LIST.REC<2,CUR.LINE> = ENTERED.AMOUNT
+
+        *
+        * Update line position, number of lines and pages
+        *
+        IF CUR.LINE < NUM.LINES THEN
+            CUR.LINE+=1
+            IF CUR.LINE>PAGE*PAGE.SIZE THEN PAGE+=1
+            GOTO EDIT.LOOP
+        END
+
+EX.EDIT:***
+
+    CRT @(0,22):@(-4)
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* ASK.Y.OR.N
+*
+* A General Yes No prompt routine.
+*
+*----------------------------------------------------------------------
+ASK.Y.OR.N:***
+
+    YN.ANSWER = ''
+
+Y.OR.N:
+
+    HELP = CHAR(7):"Entry Options: [Y]-Yes [N]-No [X]-Back"
+    CRT @(1,22):YN.MSG:@(-4)
+    MASK = YN.MASK'L#1'
+    Q=''
+    CALL GEN.IN(LEN(YN.MSG)+1,22,MASK,'',Q,0,1,'','',2,LEN(YN.MSG)+1,22,0,QI,HELP,1,23)
+    QI = OCONV(QI,'MCU')
+
+    IF QI='' THEN QI=MASK
+
+    BEGIN CASE
+       CASE QI = 'Y'
+       CASE QI = 'N'
+       CASE QI = 'X'
+       CASE 1
+          CALL ELINE('Invalid entry.')
+          GOTO Y.OR.N
+    END CASE
+
+    CRT @(1,22):@(-4):
+    CRT @(1,23):@(-4):
+    YN.ANSWER = QI
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* ASK.FOR.FNAME
+*
+*  RETURNS:  FNAME.ANSWER - FILE NAME ENTERED.
+*
+*  NOTE: This actually returns what was entered . So watch for 'EX' and '
+*
+*----------------------------------------------------------------------
+ASK.FOR.FNAME:***
+
+    FNAME.ANSWER = ''
+
+ASK.NAME:
+
+    HELP = "Entry Options:  [X] = Exit"
+    CRT @(1,22):ASK.FN.MSG:@(-4)
+    MASK = ASK.FN.MASK
+    Q = ''
+    CALL GEN.IN(LEN(ASK.FN.MSG)+1,22,MASK,'',Q,0,40,'','',2,LEN(ASK.FN.MSG)+1,22,1,QI,HELP,0,23)
+
+    IF QI='' THEN
+        IF MASK='' THEN GOTO ASK.NAME
+        QI=MASK
+    END ELSE
+        QI = OCONV(QI,'MCU')
+    END
+
+    CRT @(1,22):@(-4):
+    CRT @(1,23):@(-4):
+    FNAME.ANSWER = QI
+
+RETURN
+
+
+*----------------------------------------------------------------------
+* Set Changes Flag
+*----------------------------------------------------------------------
+SET.CHANGES.FLG:**
+
+    IF CHANGES.MADE # 1 THEN
+        CHANGES.MADE = 1                ;* Set flag that file has been chngd
+        GOSUB DSP.CHANGED.FLG           ;* Display Changes Flag
+    END
+
+RETURN
+
+
+*----------------------------------------------------------------------
+* Clear Changes Flag
+*----------------------------------------------------------------------
+CLR.CHANGES.FLG:**
+
+    IF CHANGES.MADE # 0 THEN
+        CHANGES.MADE = 0                ;* Set flag that file has been chngd
+        GOSUB DSP.CHANGED.FLG           ;* Display Changes Flag
+    END
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* PROCEDURE:  Initialize Screen
+*----------------------------------------------------------------------
+INIT.SCREEN:***
+
+    CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+    CRT @(0,2):STR('-',79);
+
+RETURN
+
+
+*----------------------------------------------------------------------
+* Client Screen
+*----------------------------------------------------------------------
+INPUT.SCREEN:***
+
+    GOSUB INIT.SCREEN
+    CRT @(0, 3):'Client # :':@(-4)
+    CRT @(0, 4):'Carrier #:':@(-4)
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* Display Edit Screen
+*----------------------------------------------------------------------
+DSP.EDIT.SCN:***
+
+    CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+    CRT @(0,2):'List Name: ':REC.NAME:
+    GOSUB DSP.CHANGED.FLG
+    CRT @( 0,3):STR('-',79);
+    CRT @( 0,21):STR('-',79);
+
+RETURN
+
+
+*----------------------------------------------------------------------
+* Update Changed Flag
+*----------------------------------------------------------------------
+DSP.CHANGED.FLG:***
+
+    IF CHANGES.MADE THEN
+        CHANGED.DESC = '{ CHANGED }'
+    END ELSE
+        CHANGED.DESC = ''
+    END
+    CRT @(67,2):CHANGED.DESC:@(-4):
+
+RETURN
+
+
+
+*----------------------------------------------------------------------
+* ASK.ABOUT.EXITING
+*----------------------------------------------------------------------
+ASK.ABOUT.EXITING:***
+
+    IF CHANGES.MADE THEN
+        YN.MSG = 'Changes were made! Save changes before exiting? :'
+        YN.MASK = 'Y '
+        GOSUB ASK.Y.OR.N
+        IF YN.ANSWER = 'Y' THEN
+            GOSUB SAVE.LIST.REC
+        END
+        IF YN.ANSWER # 'X' THEN
+            EXIT.IT = 1                 ;* Exit Application
+        END
+    END ELSE
+        EXIT.IT = 1                     ;* Exit Application
+    END
+
+RETURN
+
+
+*----------------------------------------------------------------------
+* LIST.CARRIERS
+*----------------------------------------------------------------------
+LIST.CARRIERS:***
+
+    CALL FB.DRAW.BOX(0,5,80,17,' ',' ')
+
+    PREC='SSELECT FB.AUDIT,':CLIENT.ID
+    EXECUTE PREC PASSLIST CAPTURING OUTPUT
+    IF SYSTEM(11) ELSE
+        CRT @(30,13):'No Carriers have been setup for this client!'
+        GOTO LC.EXIT
+    END
+    NUM.ITEMS = @SELECTED
+    COUNT.ITEMS = 0
+    KEEP.READING = 1
+    Y = 1
+    LOOP
+        READNEXT C.NAME ELSE KEEP.READING=0
+    WHILE KEEP.READING DO
+        *
+        * Read CARRIER Rec from FB.AUDIT,CLIENT#
+        *
+        READ C.REC FROM F.AUDIT, C.NAME ELSE
+          CALL ELINE("ERROR - Unable to read ":C.NAME)
+          STOP
+        END
+
+        *
+        * Get some Info on the listed Carrier
+        *
+        READ CAR.REC FROM F.CARRIERS,C.NAME ELSE
+            CALL ELINE('Unable to read "':CARRIER.ID:'" from CARRIERs file.')
+            STOP
+        END
+
+        CAR.NAME  = CAR.REC<1>
+        CAR.CITY  = CAR.REC<3>
+        CAR.STATE = CAR.REC<4>
+        TEMP = 'Carrier :':C.NAME:', ':CAR.NAME:' (':CAR.CITY:', ':CAR.STATE:')'
+        CRT @(4, 6+Y):TEMP'L#70'
+
+        *
+        * Move down the screen and check to end of window...
+        *
+        Y+=1
+        IF Y=15 THEN
+            CALL ELINE("PRESS ENTER TO CONTINUE")
+            Y = 1
+            CALL FB.DRAW.BOX(0,5,80,17,' ',' ')
+        END
+
+     REPEAT
+
+
+LC.EXIT:
+
+    CALL ELINE("PRESS ENTER TO CONTINUE")
+    CALL FB.DRAW.BOX(0,5,80,17,' ','')
+
+RETURN
+
+
+
+
+
+*----------------------------------------------------------------------
+* UPDATE.HEADER
+*----------------------------------------------------------------------
+UPDATE.HEADER:***
+
+    LINE = '###''R#3':SPACE(5)      ;* Item Number
+    LINE:= 'WEIGHT''R#6':SPACE(5)   ;* Weight
+    LINE:= 'AMOUNT''R26#9'          ;* Amount
+    CRT @(3,4):LINE
+
+    LINE = '===':SPACE(5)           ;* Item Number
+    LINE:= '======':SPACE(5)        ;* Weight
+    LINE:= '========='              ;* Amount
+    CRT @(3,5):LINE
+
+RETURN
+
+
+*----------------------------------------------------------------------
+* PRINT.TABLE
+*----------------------------------------------------------------------
+PRINT.TABLE:
+
+      PRINTER ON
+      PAGE 1
+
+      L.TAB=CTR-(LEN(PROG.DESC)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):PROG.DESC
+      R.TAB=WIDTH-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE())
+      HEAD1=PROG.NAME:SPACE(L.TAB):PROG.DESC:SPACE(R.TAB):TIMEDATE():"'L'"
+*
+      TITLE='Carrier Rate Table for Client ':CLIENT.ID
+      L.TAB=CTR-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+*     R.TAB=(WIDTH-LEN(TEMP))-9
+*     HEAD2=TEMP:SPACE(R.TAB):"PAGE 'PL'"
+      R.TAB=(WIDTH-LEN(TEMP))-20
+      HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )':"PAGE 'PL'"
+*
+      HEAD3 = STR('-',WIDTH):"'L'"
+*
+      TEMP = 'Client :':CLIENT.ID:', ':CL.NAME:' (':CL.CITY:', ':CL.ST:')'
+      HEAD4 = TEMP:"'L'"
+*
+      TEMP = 'Carrier:':FILE.CARRIER.ID:', ':FILE.CARRIER.NAME:'  Mode:':MODE:'  Beg Date:':OCONV(OPEN.DATE,'D2/'):'  Zone:':ZONE
+      HEAD5 = TEMP:"'L'"
+*
+      HEAD6 = STR('-',WIDTH):"'L'"
+*
+      HEAD7 = SPACE(5):'Line''R#4'          ;* Item Number
+      HEAD8 = SPACE(5):'===='               ;* Item Number
+*
+      HEAD7:= SPACE(5):'Weight''R#6'        ;* Weight
+      HEAD8:= SPACE(5):'======'             ;* Weight
+*
+      HEAD7:= SPACE(5):'Amount''R26#9'      ;* Amount
+      HEAD8:= SPACE(5):'========='          ;* Amount
+*
+      HEAD7:="'L'"
+      HEAD8:="'L'"
+*
+      HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6:HEAD7:HEAD8
+      PAGE 0
+      HEADING HED
+
+      FOR LINE=1 TO NUM.LINES
+        DESC = SPACE(5):LINE'R#4'               ;* Line Number
+        DESC:= SPACE(5):LIST.REC<1,LINE>'R#6'   ;* Weight
+        DESC:= SPACE(5):LIST.REC<2,LINE>'R26#9' ;* Ammount
+        PRINT DESC
+      NEXT
+
+      CALL ELINE("Table printed.")
+
+      PRINTER OFF
+
+RETURN
+
+
+*
+*
+*

@@ -1,0 +1,391 @@
+      SUBROUTINE SENDMAIL.NEW(VIN,VOUT)
+*---------------------------------------------------------------------
+ UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'SENDMAIL.NEW' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+ CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+* SUBROUTINE: SENDMAIL.NEW - Subroutine to connect to a COMMAND PROMPT program
+*                            on the DEC Alpha to send email using blat.exe
+*
+* PROGRAMMER: Jim Row
+*
+* PARAMETERS:
+*
+*   Passed In:
+*   VIN<1> = TO.ADDR - A MV listing of email addresses for the message
+*                      to be sent to.
+*            * Multiple addresses should be seperated by a VM
+*            * If an email address does not contain an "@" then
+*              @AFS.NET is appended to the email address
+*
+*   VIN<2> = CC.ADDR - A MV listing of email addresses for a "carbon
+*                      copy" of the message to be sent to.
+*            * Multiple addresses should be seperated by a VM
+*            * If an email address does not contain an "@" then
+*              @AFS.NET is appended to the email address
+*
+*   VIN<3> = BCC.ADDR - A MV listing of email addresses for a "blind
+*                       carbon copy" of the message to be sent to.
+*            * Multiple addresses should be seperated by a VM
+*            * If an email address does not contain an "@" then
+*              @AFS.NET is appended to the email address
+*
+*   VIN<4> = FROM.ADDR - A email addresses to be shown as the
+*                        "FROM" on the email.
+*            * Recommended to use AFS, DataProc, or EmailDispatch.
+*            * IF BLANK then afs@afs.net is used...
+*
+*   VIN<5> = SUBJECT - The subject of the email message.
+*            ** THE ACTUAL TEXT FOR THE SUBJECT - NO COMMAND LINE
+*               PARAMETERS!
+*
+*   VIN<6> = MESSAGE - The body of the message. (Multi Valued)
+*
+*   VIN<7> = AUTO FORMAT - This will force each multivalued entry
+*                          of the message to have a linefeed
+*                          at the end of each line.
+*                 1 = Append Linefeed to each line
+*                 0 = Do not add linefeeds.
+*
+*   VIN<8> = OPTIONS - This contains option parameters for enhanced ; * JMK01
+*                      email processing.  This is multivaled and ; * JMK01
+*                      has option switches for processing ; * JMK01
+*
+*            LOG  = Maintain a log file for review of usage and results ; * JMK01
+*            MIME = MIME Quoted-Printable Content-Transfer-Encoding ; * JMK01
+*            RICH = Enriched text message ; * JMK01
+*            HTML = Send in HTML format ; * JMK01
+*            UU   = Send binary file UUEncoded ; * JMK01
+*            B64  = Send Binary file using Base64 ; * JMK01
+*
+*
+*   Passed Back:
+*   VOUT - The capture output of the email processor.
+*
+* NOTES:
+*
+*   * Do not include Quotes on passed parameters!
+*
+*   * This routine requires an Alpha Executable on the Alpha NT server
+*     to perform email via SMTP.
+*
+*   * Outlook and other email clients format text on their own.  The
+*     AUTO FORMAT option is sometimes needed to add additional linefeeds.
+*     In most cases you will NOT need to use the AUTO FORMATTING,
+*     your passed values will be on seperate lines in the body of text.
+*
+*   * IF FROM EMAIL ADDR is BLANK then afs@afs.net is used...
+*
+*   * THERE IS NO WAY OF THIS PROGRAM DETERMINING IF THE EMAIL WAS
+*     DELIVERED OR READ SUCCESSFULLY!  USE YOUR EMAIL ADDRESS
+*     TO VERIFY...
+*
+*   * LOOK AT "BP TESTMAIL" FOR EXAMPLE OF USE....
+*
+*
+* EDIT HISTORY:
+*
+*    NAME :   DATE   : DESCRIPTION
+*  --------------------------------------------------------------
+*     JTR : 06/04/98 : Basic subroutine started.
+*     JTR : 06/05/98 : Added BCC and CC
+*     JTR : 06/15/98 : Change imput parameters to use VIN/VOUT
+*     JTR : 07/08/98 : Changed it so that names are auto appended
+*         :          : with @afs.net if necessary.
+*     JTR : 07/08/98 : Added the AUTO FORMAT (add line feeds or not)
+*     JMB : 02/04/02 : Using error returned in VOUT to check for email failure
+* 032906 - JMK01 - ADD OPTIONS FOR LOGGING AND CUSTOM EMAIL PROCESSING
+* 033006 - JMK02 - UPDATE NEW ERROR MESSAGES FOR FAILURES
+* 120806 - JMK03 - ADD REASON FOR FAILURE FOR DISPLAY
+* 012208 - NPR01 - ADDED CODE TO REMOVE NULL EMAIL ADDRESSES
+*---------------------------------------------------------------------
+
+*-----------------------------------------------------------
+* EMAIL.SENT & EMAIL.HIST RECORD LAYOUT
+*
+*  ATTR  DESCRIPTION
+*    1 <mv> TO EMAIL ADDRESS(ES)
+*    2      FROM EMAIL ADDRESS
+*    3 <mv> CC EMAIL ADDRESS(ES)
+*    4 <mv> BCC EMAIL ADDRESS(ES)
+*    5      USER THAT INVOKED THE EMAIL
+*    6      SUBJECT
+*    7 <mv> MESSAGE
+*    8      DATE SENT
+*    9      TIME SENT
+*   10 <MV> RESPONSE FROM EMAIL HANDLER
+*   11 <MV> ** RESERVED FOR FILE ATTACHEMENTS **
+*-----------------------------------------------------------
+
+*
+* SETUP LOCAL VALUES
+*
+      DEBUG = 0
+
+      PROG.NAME = 'SUBROUTINE SENDMAIL'
+      CALL CHANNEL(CH.NUM)
+      CALL GET.USER(USER.NAME)
+      USER.NAME=OCONV(USER.NAME,'MCU')
+
+      IF USER.NAME = 'DAVID' THEN CALL ELINE('SENDING MAIL')
+      DATE = DATE() ; DATE.STR = OCONV(DATE,"D2/")
+      TIME = TIME() ; TIME.STR = OCONV(TIME,"MTHS")
+      TIME = FIELD(TIME,".",1)
+
+*
+* OPEN EMAIL RECORD FILES...
+*
+      OPEN '','EMAIL.NEW' TO F.NEW ELSE CALL OPEN.ABORT('EMAIL.NEW', PROG.NAME)
+      OPEN '','EMAIL.HIST' TO F.HIST ELSE CALL OPEN.ABORT('EMAIL.HIST', PROG.NAME)
+      OPEN '','EMAIL.SENT' TO F.SENT ELSE CALL OPEN.ABORT('EMAIL.SENT', PROG.NAME)
+      OPEN '','EMAIL.LOG' TO F.LOG ELSE CALL OPEN.ABORT('EMAIL.LOG', PROG.NAME)  ; * JMK01
+
+*
+* START WORKING...
+*
+* NPR01      TO.ADDR =VIN<1>
+* NPR01      CC.ADDR =VIN<2>
+* NPR01      BCC.ADDR =VIN<3>
+*
+* Start changes NPR01
+*
+      TO.ADDR =VIN<1>
+      ADDRESSES=TO.ADDR
+      GOSUB REMOVE.NULLS.FROM.ADDRESSES
+      TO.ADDR=ADDRESSES
+
+      CC.ADDR =VIN<2>
+      ADDRESSES=CC.ADDR
+      GOSUB REMOVE.NULLS.FROM.ADDRESSES
+      CC.ADDR=ADDRESSES
+
+      BCC.ADDR =VIN<3>
+      ADDRESSES=BCC.ADDR
+      GOSUB REMOVE.NULLS.FROM.ADDRESSES
+      BCC.ADDR=ADDRESSES
+* End changes NPR01
+*  
+      FROM.ADDR =VIN<4>
+      SUBJECT =VIN<5>
+      MESSAGE =VIN<6>
+      AUTO.FORMAT =VIN<7>
+      OPTIONS =OCONV(VIN<8>,'MCU')       ; * JMK01
+      ATTACHMENTS =VIN<11>
+      LOG=0                              ; * JMK01
+      MIME=0                             ; * JMK01
+      RICH=0                             ; * JMK01
+      HTML=0                             ; * JMK01
+      UU=0                               ; * JMK01
+      B64=0                              ; * JMK01
+      LOCATE 'LOG' IN OPTIONS<1> SETTING OPOS THEN LOG=1     ; * JMK01
+      LOCATE 'MIME' IN OPTIONS<1> SETTING OPOS THEN MIME=1   ; * JMK01
+      LOCATE 'RICH' IN OPTIONS<1> SETTING OPOS THEN RICH=1   ; * JMK01
+      LOCATE 'HTML' IN OPTIONS<1> SETTING OPOS THEN HTML=1   ; * JMK01
+      LOCATE 'UU' IN OPTIONS<1> SETTING OPOS THEN UU=1       ; * JMK01
+      LOCATE 'B64' IN OPTIONS<1> SETTING OPOS THEN B64=1     ; * JMK01
+
+      OUTPUT=''
+
+      IF TO.ADDR='' THEN
+         OUTPUT='ERROR'
+         MSG = 'NO "TO:" EMAIL ADDRESS PROVIDED - MAIL NOT SENT'
+         CALL ELINE('SENDMAIL.NEW() - ':MSG)
+         OUTPUT<2> = MSG
+         GOTO EXIT.MAIL
+      END
+
+      IF SUBJECT='' THEN SUBJECT='-no subject specified-'
+      SUBJECT='"':CHANGE(SUBJECT,'"',''):'"'
+
+      IF FROM.ADDR='' THEN FROM.ADDR = 'AFS@AFS.NET'
+
+      ADDR = TO.ADDR ; GOSUB FORMAT.ADDR ; TO.ADDR = ADDR
+      ADDR = CC.ADDR ; GOSUB FORMAT.ADDR ; CC.ADDR = ADDR
+      ADDR = BCC.ADDR ; GOSUB FORMAT.ADDR ; BCC.ADDR = ADDR
+
+      NEW.ID = CH.NUM:'-':TIME:'.TXT'
+      GOSUB CREATE.SENTID
+      SENT.REC= ''
+      SENT.REC<1>=TO.ADDR
+      SENT.REC<2>=FROM.ADDR
+      SENT.REC<3>=CC.ADDR
+      SENT.REC<4>=BCC.ADDR
+      SENT.REC<5>=USER.NAME
+      SENT.REC<6>=SUBJECT
+      SENT.REC<7>=CHANGE(MESSAGE,@AM,@VM)
+      SENT.REC<8>=DATE
+      SENT.REC<9>=TIME
+      SENT.REC<11>=ATTACHMENTS
+      SENT.REC<12>=OPTIONS               ; * JMK01
+
+
+      LINE.TERMS = CHAR(13)              ; * Carrage returns
+      IF AUTO.FORMAT THEN LINE.TERMS:=CHAR(10)     ; * Line Feeds
+      MESSAGE = CHANGE(MESSAGE,@VM,LINE.TERMS)
+      MESSAGE = CHANGE(MESSAGE,@AM,LINE.TERMS)     ; * Just incase...
+
+      MAIL.FILE = "E:\ARDENT\PUBLIC\EMAILDISPATCH\NEW\":NEW.ID
+      WRITE MESSAGE ON F.NEW,NEW.ID ELSE
+         CALL ELINE('SUB SENDMAIL - UNABLE TO WRITE TO EMAIL.NEW - MAIL NOT SENT')
+         SENT.REC<10>='UNABLE TO WRITE TO EMAIL.NEW':@VM:MAIL.FILE
+         OUTPUT = 'ERROR'
+         OUTPUT<2> = 'FAILED TO WRITE TO EMAIL.NEW - MAIL NOT SENT'
+         GOTO EXIT.MAIL
+      END
+
+      IF DEBUG THEN
+         PRINT 'TO     :':TO.ADDR
+         PRINT 'CC     :':CC.ADDR
+         PRINT 'BCC    :':BCC.ADDR
+         PRINT 'FROM   :':FROM.ADDR
+         PRINT 'SUBJECT:':SUBJECT
+         PRINT 'MESSAGE:':CHANGE(MESSAGE,@VM,CHAR(13):CHAR(10))
+         PRINT 'OPTIONS:':CHANGE(OPTIONS,@VM,CHAR(13):CHAR(10))        ; * JMK01
+         PRINT 'ATTACHMENT:':CHANGE(ATTACHMENTS,@VM,CHAR(13):CHAR(10))
+      END
+
+      STMT = 'dos /c blat ':MAIL.FILE:' -to ':TO.ADDR:' -subject ':SUBJECT:' -f ':FROM.ADDR
+      STMT:= ' -try 5'                   ; * JMK01 - JUST IN CASE FIRST TIME DOES NOT MAKE IT
+      IF MIME THEN                       ; * JMK01
+         STMT:= ' -mime'                 ; * JMK01
+      END                                ; * JMK01
+      IF RICH THEN                       ; * JMK01
+         STMT:= ' -enriched'             ; * JMK01
+      END                                ; * JMK01
+      IF HTML THEN                       ; * JMK01
+         STMT:= ' -html'                 ; * JMK01
+      END                                ; * JMK01
+      IF UU THEN                         ; * JMK01
+         STMT:= ' -uuencode'             ; * JMK01
+      END                                ; * JMK01
+      IF B64 THEN                        ; * JMK01
+         STMT:= ' -base64'               ; * JMK01
+      END                                ; * JMK01
+      IF BCC.ADDR#'' THEN STMT:= ' -bcc ':BCC.ADDR
+      IF CC.ADDR#'' THEN STMT:= ' -cc ':CC.ADDR
+      IF ATTACHMENTS # '' THEN
+         NUM.ATTACH = DCOUNT(ATTACHMENTS,@VM)
+         FOR X = 1 TO NUM.ATTACH
+            STMT := ' -attach ':ATTACHMENTS<1,X>
+         NEXT X
+      END
+
+*IF USER.NAME='OWEN' THEN
+*OPEN 'VOC' TO F.VOC ELSE ABORT
+*WRITE STMT ON F.VOC,'OWENMAIL'
+* CALL ELINE('PRESS BREAK')
+*END
+      EXECUTE STMT CAPTURING RESULTS
+
+      SENT.REC<10> = CHANGE(RESULTS,@AM,@VM)
+      DELETE F.NEW,NEW.ID
+
+      FAIL.REASON=''                     ; * JMK03
+      FAILURE = NOT(INDEX(RESULTS,"Sending",1))
+      IF FAILURE THEN FAIL.REASON<1,-1>='Problem initiating sending of email.'   ; * jmk03
+      TEST=FAILURE                       ; * JMK03
+      FAILURE+= NOT(INDEX(RESULTS,"Login name is",1))
+      IF FAILURE#TEST THEN               ; * JMK03
+         FAIL.REASON<1,-1>='Invalid login to mail server.'   ; * JMK03
+         TEST=FAILURE                    ; * JMK03
+      END                                ; * JMK03
+      FAILURE+= INDEX(RESULTS,"The mail server doesn't like the name",1)
+      IF FAILURE#TEST THEN               ; * JMK03
+         FAIL.REASON<1,-1>='Invalid recipient name.'         ; * JMK03
+         TEST=FAILURE                    ; * JMK03
+      END                                ; * JMK03
+      FAILURE+= INDEX(RESULTS,"Message not accepted by server",1)      ; * JMK02
+      IF FAILURE#TEST THEN               ; * JMK03
+         FAIL.REASON<1,-1>='Message not accepted by server.'           ; * JMK03
+         TEST=FAILURE                    ; * JMK03
+      END                                ; * JMK03
+      FAILURE+= INDEX(RESULTS,"Error: Connection to mailserver was dropped.",1)  ; * JMK02
+      IF FAILURE#TEST THEN               ; * JMK03
+         FAIL.REASON<1,-1>='Error: Connection to mailserver was dropped.'        ; * JMK03
+         TEST=FAILURE                    ; * JMK03
+      END                                ; * JMK03
+      FAILURE+= INDEX(RESULTS,"connection::put_data() unexpected error from send(): 10053",1)        ; * JMK02
+      IF FAILURE#TEST THEN               ; * JMK03
+         FAIL.REASON<1,-1>='Unexpected error when sending.'  ; * JMK03
+         TEST=FAILURE                    ; * JMK03
+      END                                ; * JMK03
+      FAILURE+= INDEX(RESULTS,"Error: Not a socket.",1)      ; * JMK02
+      IF FAILURE#TEST THEN               ; * JMK03
+         FAIL.REASON<1,-1>='Error: Not a socket.'  ; * JMK03
+         TEST=FAILURE                    ; * JMK03
+      END                                ; * JMK03
+      FAILURE+= INDEX(RESULTS,"unexpected error 10060 from winsock",1)           ; * JMK02
+      IF FAILURE#TEST THEN               ; * JMK03
+         FAIL.REASON<1,-1>='Unexpected winsock error 10060.'           ; * JMK03
+         TEST=FAILURE                    ; * JMK03
+      END                                ; * JMK03
+      IF FAILURE THEN OUTPUT = 'ERROR'
+      OUTPUT<2> = RESULTS
+      OUTPUT<3> = FAIL.REASON            ; * JMK03
+      WRITE SENT.REC ON F.SENT,SENT.ID
+      WRITE SENT.REC ON F.HIST,SENT.ID
+
+      IF LOG THEN                        ; * JMK01 - THIS IS USED TO TRACK WEEKLY REPORTING EMAILS
+         LOG.REC=SENT.REC                ; * JMK01
+         LOG.REC<13>=STMT                ; * JMK01
+         LOG.REC<14>=RESULTS             ; * JMK01
+         CLIENT=OCONV(FIELD(SUBJECT,' ',1),'MCN')  ; * JMK01
+         LOG.SEQ=0                       ; * JMK01
+         LOOP                            ; * JMK01
+            LOG.SEQ=LOG.SEQ+1            ; * JMK01
+            LOG.ID=CLIENT:'_':DATE:'_':LOG.SEQ     ; * JMK01
+            READ TEST FROM F.LOG,LOG.ID ELSE TEST=''         ; * JMK01
+         UNTIL TEST='' DO                ; * JMK01
+         REPEAT                          ; * JMK01
+         WRITE LOG.REC ON F.LOG,LOG.ID ELSE        ; * JMK01
+            CALL ELINE('SUB SENDMAIL - UNABLE TO WRITE TO EMAIL.LOG - MAIL NOT SENT')
+            SENT.REC<10>='UNABLE TO WRITE TO EMAIL.LOG':@VM:LOG.ID
+            OUTPUT = 'ERROR'
+            OUTPUT<2> = 'FAILED TO WRITE TO EMAIL.LOG - MAIL NOT SENT'
+            GOTO EXIT.MAIL
+         END                             ; * JMK01
+      END                                ; * JMK01
+
+EXIT.MAIL:***
+      VOUT=''
+      VOUT=OUTPUT
+      RETURN
+
+*----------------------------------------------------------------------
+* FORMAT.ADDR
+*----------------------------------------------------------------------
+FORMAT.ADDR:***
+      ADDR = CHANGE(ADDR,'"','')
+      IF ADDR # '' THEN
+         NUM.ADDR = DCOUNT(ADDR,@VM)
+         FOR X = 1 TO NUM.ADDR
+            IF INDEX(ADDR<1,X>,'@',1) ELSE ADDR<1,X>:='@AFS.NET'
+         NEXT
+         ADDR='"':CHANGE(ADDR,@VM,","):'"'
+      END
+      RETURN
+
+*----------------------------------------------------------------------
+* CREATE.SENTID
+*----------------------------------------------------------------------
+CREATE.SENTID:***
+      FILE.VERSION = 0
+      FILE.PREFIX = DATE:'*':TIME
+
+CSI.LOOP:***
+      SENT.ID = TRIM(FILE.PREFIX:'*':FILE.VERSION)
+      READU TEMP FROM F.SENT, SENT.ID THEN
+         FILE.VERSION+=1
+         RELEASE F.SENT, SENT.ID
+         GOTO CSI.LOOP
+      END
+      RETURN
+*
+REMOVE.NULLS.FROM.ADDRESSES:*** * Added this from Old SENDMAIL program NPR01
+      TIMES=DCOUNT(ADDRESSES<1>,@VM)
+      TEMP.ADDR=''
+      FOR X = 1 TO TIMES
+         IF ADDRESSES<1,X>#'' THEN
+            TEMP.ADDR<1,-1>=ADDRESSES<1,X>
+         END
+      NEXT X
+      ADDRESSES=TEMP.ADDR
+      RETURN

@@ -1,0 +1,474 @@
+*******************************************************************************
+*******************************************************************************
+* 042012 - JMK01 - SysAid#2475 - UFM accounts / AR to OFB rec
+      PROG.NAME='FB.5.17'
+      PROG.DESC='OPEN FREIGHT BILL TO AR RECONCILIATION'
+      PACK.NAME='FREIGHT BILLING'
+      EQU TB TO CHAR(9)
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.5.17' ; UPL.VOUT = ''        ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+
+      CALL GET.USER(USER)
+      CALL CHANNEL(CH.NUM)
+
+      OPEN '','AR.CUST.1000.1' TO F.CUST ELSE
+         CALL OPEN.ABORT('AR.CUST.1000.1',PROG.NAME)
+      END
+      OPEN '','AR.TRANS.1000.1' TO F.TRANS ELSE
+         CALL OPEN.ABORT('AR.TRANS.1000.1',PROG.NAME)
+      END
+      OPEN '','AR.SALES.CODE.1000.1' TO F.SCODE ELSE
+         CALL OPEN.ABORT('AR.SALES.CODE.1000.1',PROG.NAME)
+      END
+      OPEN '','FB.OPEN.BILLS' TO F.OPEN ELSE
+         CALL OPEN.ABORT('FB.OPEN.BILLS',PROG.NAME)
+      END
+      OPEN '','FB.PAY' TO F.PAY ELSE
+         CALL OPEN.ABORT('FB.PAY',PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENT ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','AR-BRIDGE' TO F.BRIDGE ELSE
+         CALL OPEN.ABORT('AR-BRIDGE',PROG.NAME)
+      END
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+      END
+      OPEN 'DICT','FBWORK':CH.NUM TO D.WORK ELSE
+         CALL OPEN.ABORT('DICT FBWORK':CH.NUM,PROG.NAME)
+      END
+      OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE
+         CALL OPEN.ABORT('BILLDATA.':USER,PROG.NAME)
+      END
+
+      CMD=@SENTENCE
+      IF FIELD(CMD,' ',2)='BATCH' THEN
+         RPT.TYPE='B'
+         GO 55
+      END
+
+10:   CALL AFS.SCR.HEAD('','','',PROG.NAME,PROG.DESC,PACK.NAME,"AFS Logistics, LLC",TIME.DATE,1)
+      CRT @(0,10):'This should NOT be done until Freight Payment Processing has finished!!!'
+      CRT @(0,11):'This should NOT be done until Account Receivable posting has finished!!!'
+      CRT @(0,12):'This should NOT be done until Freight Payment Unprocessing has finished!!!'
+      CRT @(0,13):'This should NOT be done until Super-User FB Adjustments are finished!!!'
+      CRT @(0,20):'Any of the conditions above may produce incorrect results!!!'
+50:   HELP='Enter Y for Balancing, Date (MM/DD/YY) for review, N to stop. EX=Exit.'
+      CALL GEN.IN(0,22,'Do you want to continue? Y ','',ACK,0,10,'','',1,-2,22,0,QI,HELP,0,23)
+      ACK=OCONV(ACK,'MCU')
+      BEGIN CASE
+         CASE ACK='N' ; STOP
+         CASE ACK='EX' ; STOP
+         CASE ACK='X' ; STOP
+         CASE ACK='Y' ; RPT.TYPE='B'
+         CASE ACK='' ; RPT.TYPE='B'
+         CASE ACK MATCHES '2N/2N/2N' ; RPT.TYPE='D'
+         CASE 1 ; GOTO 50
+      END CASE
+55:   * BATCH ENTRY POINT
+      CLEARFILE F.WORK
+      CLEARFILE D.WORK
+      TODAY=DATE()
+      OTODAY=TODAY'D4/'
+
+100:  * START WITH THE INVOICE RECORDS
+
+      CRT @(0,10):@(-3):'Processing Invoices...'
+      STMT='SSELECT AR.CUST.1000.1'
+      EXECUTE STMT RTNLIST CUST.LIST CAPTURING CUST.RESULTS
+      CUST.NUM=@SELECTED
+      IF CUST.NUM>0 THEN
+         EOF=0
+         CUST.CNT=0
+         LOOP
+            READNEXT CUST.ID FROM CUST.LIST ELSE EOF=1
+         UNTIL EOF DO
+            CUST.CNT+=1
+            CALL PROG.BAR(12,CUST.CNT,CUST.NUM,CUST.PER)
+            READ CUST.REC FROM F.CUST,CUST.ID THEN
+               CLIENT.ID=CUST.ID[8,5]
+               IF CLIENT.ID[1,2]='99' THEN GO SKIP.CUST
+               NVAL1=DCOUNT(CUST.REC<30>,@VM)
+               FOR VAL1=1 TO NVAL1
+                  TRANS.ID=CUST.REC<30,VAL1>
+                  READ TRANS.REC FROM F.TRANS,TRANS.ID THEN
+                     INV.DT=TRANS.REC<4>
+                     WORK.ID=CLIENT.ID:'*':INV.DT
+                     READ WORK.REC FROM F.WORK,WORK.ID ELSE
+                        WORK.REC=''
+                        FOR ATT=2 TO 9
+                           WORK.REC<ATT>=0
+                        NEXT ATT
+                     END
+                     WORK.REC<1>=TRANS.ID
+                     WORK.REC<2>=TRANS.REC<8>
+                     WORK.REC<3>=TRANS.REC<9>
+                     NVAL2=DCOUNT(TRANS.REC<6>,@VM)
+                     FOR VAL2=1 TO NVAL2
+                        SCODE=TRANS.REC<6,VAL2>
+                        READ SCODE.REC FROM F.SCODE,SCODE ELSE SCODE.REC=''      ; * JMK01
+                        BEGIN CASE
+                           CASE SCODE.REC<8>='CC' ; CCHG=1   ; * JMK01
+*                          CASE SCODE=1 ; CCHG=1   ; * JMK01
+*                          CASE SCODE=21 ; CCHG=1  ; * JMK01
+*                          CASE SCODE=22 ; CCHG=1  ; * JMK01
+*                          CASE SCODE=201 ; CCHG=1           ; * JMK01
+*                          CASE SCODE=221 ; CCHG=1           ; * JMK01
+*                          CASE SCODE=222 ; CCHG=1           ; * JMK01
+*                          CASE SCODE=1001 ; CCHG=1          ; * JMK01
+*                          CASE SCODE=1021 ; CCHG=1          ; * JMK01
+*                          CASE SCODE=1022 ; CCHG=1          ; * JMK01
+*                          CASE SCODE=1201 ; CCHG=1          ; * JMK01
+*                          CASE SCODE=1221 ; CCHG=1          ; * JMK01
+*                          CASE SCODE=1222 ; CCHG=1          ; * JMK01
+*                          CASE SCODE=3001 ; CCHG=1          ; * JMK01
+*                          CASE SCODE=3021 ; CCHG=1          ; * JMK01
+*                          CASE SCODE=3022 ; CCHG=1          ; * JMK01
+*                          CASE SCODE=3201 ; CCHG=1          ; * JMK01
+*                          CASE SCODE=3221 ; CCHG=1          ; * JMK01
+*                          CASE SCODE=3222 ; CCHG=1          ; * JMK01
+                           CASE 1 ; CCHG=0
+                        END CASE
+                        IF CCHG THEN
+                           SAMT=TRANS.REC<5,VAL2>
+                           PAMT=0
+                           AAMT=0
+                           NVAL3=DCOUNT(TRANS.REC<10>,@VM)
+                           FOR VAL3=1 TO NVAL3
+                              PTYPE=TRANS.REC<10,VAL3>[1,2]
+                              AMT=TRANS.REC<11,VAL3,VAL2>
+                              BEGIN CASE
+                                 CASE PTYPE='CR' ; PAMT+=AMT
+                                 CASE PTYPE='CA' ; PAMT+=AMT
+                                 CASE PTYPE='CM' ; AAMT+=AMT
+                                 CASE PTYPE='CI' AND TRANS.REC<3>='PAYMENT' ; PAMT+=AMT
+                                 CASE PTYPE='CI' AND TRANS.REC<3>#'PAYMENT' ; AAMT+=AMT
+                              END CASE
+                           NEXT VAL3
+                           WORK.REC<4>+=SAMT
+                           WORK.REC<5>+=PAMT
+                           WORK.REC<6>+=AAMT
+                        END
+                     NEXT VAL2
+                     WRITE WORK.REC ON F.WORK,WORK.ID
+                  END
+               NEXT VAL
+            END
+SKIP.CUST:  *
+         REPEAT
+      END
+      GO 300
+
+200:  * THEN GET THE AR-BRIDGE RECORDS
+
+      CRT @(0,12):@(-3):'Processing Pending Invoices...'
+      STMT='SSELECT AR-BRIDGE'
+      EXECUTE STMT RTNLIST BRIDGE.LIST CAPTURING BRIDGE.RESULTS
+      BRIDGE.NUM=@SELECTED
+      IF CUST.NUM>0 THEN
+         EOF=0
+         BRIDGE.CNT=0
+         LOOP
+            READNEXT CLIENT.ID FROM BRIDGE.LIST ELSE EOF=1
+         UNTIL EOF DO
+            BRIDGE.CNT+=1
+            CALL PROG.BAR(14,BRIDGE.CNT,BRIDGE.NUM,BRIDGE.PER)
+            IF FIELD(CLIENT.ID,'-',2)#'TEST' THEN
+               READ BRIDGE.REC FROM F.BRIDGE,CLIENT.ID THEN
+                  PROC.DT=BRIDGE.REC<4>
+                  NVAL1=DCOUNT(BRIDGE.REC<1>,@VM)
+                  FOR VAL1=1 TO NVAL1
+                     SCODE=BRIDGE.REC<1,VAL1>
+                     READ SCODE.REC FROM F.SCODE,SCODE ELSE SCODE.REC=''         ; * JMK01
+                     BEGIN CASE
+                        CASE SCODE.REC<8>='CC' ; CCHG=1      ; * JMK01
+*                       CASE SCODE=1 ; CCHG=1      ; * JMK01
+*                       CASE SCODE=21 ; CCHG=1     ; * JMK01
+*                       CASE SCODE=22 ; CCHG=1     ; * JMK01
+*                       CASE SCODE=201 ; CCHG=1    ; * JMK01
+*                       CASE SCODE=221 ; CCHG=1    ; * JMK01
+*                       CASE SCODE=222 ; CCHG=1    ; * JMK01
+*                       CASE SCODE=1001 ; CCHG=1   ; * JMK01
+*                       CASE SCODE=1021 ; CCHG=1   ; * JMK01
+*                       CASE SCODE=1022 ; CCHG=1   ; * JMK01
+*                       CASE SCODE=1201 ; CCHG=1   ; * JMK01
+*                       CASE SCODE=1221 ; CCHG=1   ; * JMK01
+*                       CASE SCODE=1222 ; CCHG=1   ; * JMK01
+*                       CASE SCODE=3001 ; CCHG=1   ; * JMK01
+*                       CASE SCODE=3021 ; CCHG=1   ; * JMK01
+*                       CASE SCODE=3022 ; CCHG=1   ; * JMK01
+*                       CASE SCODE=3201 ; CCHG=1   ; * JMK01
+*                       CASE SCODE=3221 ; CCHG=1   ; * JMK01
+*                       CASE SCODE=3222 ; CCHG=1   ; * JMK01
+                        CASE 1 ; CCHG=0
+                     END CASE
+                     IF CCHG THEN
+                        SAMT=BRIDGE.REC<3,VAL2>
+                        WORK.ID=CLIENT.ID:'*':PROC.DT
+                        READ WORK.REC FROM F.WORK,WORK.ID ELSE
+                           WORK.REC=''
+                           FOR ATT=2 TO 9
+                              WORK.REC<ATT>=0
+                           NEXT ATT
+                        END
+                        WORK.REC<7>+=SAMT
+                        WRITE WORK.REC ON F.WORK,WORK.ID
+                     END
+                  NEXT VAL2
+               END
+            END
+         REPEAT
+      END
+
+300:  * THEN GET THE OPEN FREIGHT BILLS
+
+      CRT @(0,14):@(-3):'Processing Open Bills...'
+      STMT='SSELECT FB.OPEN.BILLS WITH POST.CC.AR = "Y" AND WITH BANK.FB.TYPE = "F" BY CLIENT# BY 37'
+      EXECUTE STMT RTNLIST OPEN.LIST CAPTURING OPEN.RESULTS
+      OPEN.NUM=@SELECTED
+      IF OPEN.NUM>0 THEN
+         EOF=0
+         OPEN.CNT=0
+         PRV.BREAK=''
+         PRV.AMT=0
+         LOOP
+            READNEXT OPEN.ID FROM OPEN.LIST ELSE EOF=1
+         UNTIL EOF DO
+            OPEN.CNT+=1
+            CALL PROG.BAR(16,OPEN.CNT,OPEN.NUM,OPEN.PER)
+            CLIENT.ID=FIELD(OPEN.ID,'*',1)
+            READ OPEN.REC FROM F.OPEN,OPEN.ID THEN
+               PROC.DT=OPEN.REC<37>
+               BREAK=CLIENT.ID:'*':PROC.DT
+               IF BREAK#PRV.BREAK THEN
+                  IF PRV.BREAK#'' THEN
+                     WORK.ID=PRV.BREAK
+                     READ WORK.REC FROM F.WORK,WORK.ID ELSE
+                        WORK.REC=''
+                        FOR ATT=2 TO 9
+                           WORK.REC<ATT>=0
+                        NEXT ATT
+                     END
+                     WORK.REC<8>+=PRV.AMT
+                     WRITE WORK.REC ON F.WORK,WORK.ID
+                     PRV.AMT=0
+                  END
+                  PRV.BREAK=BREAK
+               END
+               PRV.AMT+=OPEN.REC<8>
+            END
+         REPEAT
+         WORK.ID=PRV.BREAK
+         READ WORK.REC FROM F.WORK,WORK.ID ELSE
+            WORK.REC=''
+            FOR ATT=2 TO 9
+               WORK.REC<ATT>=0
+            NEXT ATT
+         END
+         WORK.REC<8>+=PRV.AMT
+         WRITE WORK.REC ON F.WORK,WORK.ID
+      END
+
+400:  * FINISH WITH THE ACCRUAL FREIGHT BILLS (FB.PAY)
+
+      CRT @(0,16):@(-3):'Processing Accrual Bills...'
+      STMT='SSELECT FB.PAY WITH POST.CC.AR = "Y" AND WITH BANK.FB.TYPE = "F" BY CLIENT# BY 37'
+      EXECUTE STMT RTNLIST PAY.LIST CAPTURING PAY.RESULTS
+      PAY.NUM=@SELECTED
+      IF PAY.NUM>0 THEN
+         EOF=0
+         PAY.CNT=0
+         PRV.BREAK=''
+         PRV.AMT=0
+         LOOP
+            READNEXT PAY.ID FROM PAY.LIST ELSE EOF=1
+         UNTIL EOF DO
+            PAY.CNT+=1
+            CALL PROG.BAR(18,PAY.CNT,PAY.NUM,PAY.PER)
+            CLIENT.ID=FIELD(PAY.ID,'*',1)
+            READ PAY.REC FROM F.PAY,PAY.ID THEN
+               PROC.DT=PAY.REC<37>
+               BREAK=CLIENT.ID:'*':PROC.DT
+               IF BREAK#PRV.BREAK THEN
+                  IF PRV.BREAK#'' THEN
+                     WORK.ID=PRV.BREAK
+                     READ WORK.REC FROM F.WORK,WORK.ID ELSE
+                        WORK.REC=''
+                        FOR ATT=2 TO 9
+                           WORK.REC<ATT>=0
+                        NEXT ATT
+                     END
+                     WORK.REC<9>+=PRV.AMT
+                     WRITE WORK.REC ON F.WORK,WORK.ID
+                     PRV.AMT=0
+                  END
+                  PRV.BREAK=BREAK
+               END
+               PRV.AMT+=PAY.REC<8>
+            END
+         REPEAT
+         WORK.ID=PRV.BREAK
+         READ WORK.REC FROM F.WORK,WORK.ID ELSE
+            WORK.REC=''
+            FOR ATT=2 TO 9
+               WORK.REC<ATT>=0
+            NEXT ATT
+         END
+         WORK.REC<9>+=PRV.AMT
+         WRITE WORK.REC ON F.WORK,WORK.ID
+      END
+
+500:  * WRITE WORK FILE OUT TO BILLDATA FOR REVIEW
+
+      CRT @(0,18):@(-3):'Preparing Download File...'
+      DICT.REC=''
+      DICT.REC<1>='S'
+      DICT.REC<2>='0'
+      DICT.REC<3>='Client#'
+      DICT.REC<8>='G*1'
+      DICT.REC<9>='R'
+      DICT.REC<10>='7'
+      WRITE DICT.REC ON D.WORK,'CLIENT#'
+      DICT.REC<3>='Client Name'
+      DICT.REC<8>='G*1'
+      DICT.REC<8,2>='(TCLIENTS;X;;2)'
+      DICT.REC<9>='L'
+      DICT.REC<10>='35'
+      WRITE DICT.REC ON D.WORK,'CLIENT.NAME'
+      DICT.REC<3>='Process Date'
+      DICT.REC<7>='D2/'
+      DICT.REC<8>='G1*1'
+      DICT.REC<9>='R'
+      DICT.REC<10>='12'
+      WRITE DICT.REC ON D.WORK,'PROC.DATE'
+      DICT.REC<2>='1'
+      DICT.REC<3>='Invoice#'
+      DICT.REC<7>=''
+      DICT.REC<8>=''
+      DICT.REC<9>='L'
+      DICT.REC<10>='10'
+      WRITE DICT.REC ON D.WORK,'INV.NO'
+      DICT.REC<2>='2'
+      DICT.REC<3>='AR Inv Amt'
+      DICT.REC<7>='MR2,'
+      DICT.REC<9>='R'
+      DICT.REC<10>='10'
+      WRITE DICT.REC ON D.WORK,'AR.INV.AMT'
+      DICT.REC<2>='3'
+      DICT.REC<3>='AR Bal Amt'
+      DICT.REC<7>='MR2,'
+      DICT.REC<9>='R'
+      DICT.REC<10>='10'
+      WRITE DICT.REC ON D.WORK,'AR.BAL.AMT'
+      DICT.REC<2>='4'
+      DICT.REC<3>='AR CC Amt'
+      DICT.REC<7>='MR2,'
+      DICT.REC<9>='R'
+      DICT.REC<10>='10'
+      WRITE DICT.REC ON D.WORK,'AR.CC.AMT'
+      DICT.REC<2>='5'
+      DICT.REC<3>='AR CC Pymt'
+      DICT.REC<7>='MR2,'
+      DICT.REC<9>='R'
+      DICT.REC<10>='10'
+      WRITE DICT.REC ON D.WORK,'AR.CC.PYMT'
+      DICT.REC<2>='6'
+      DICT.REC<3>='AR CC Adj'
+      DICT.REC<7>='MR2,'
+      DICT.REC<9>='R'
+      DICT.REC<10>='10'
+      WRITE DICT.REC ON D.WORK,'AR.CC.ADJ'
+      DICT.REC<2>='0'
+      DICT.REC<3>='AR CC Bal'
+      DICT.REC<7>='MR2,'
+      DICT.REC<8>='F;4;5;-;6;-'
+      DICT.REC<9>='R'
+      DICT.REC<10>='10'
+      WRITE DICT.REC ON D.WORK,'AR.CC.BAL'
+      DICT.REC<2>='7'
+      DICT.REC<3>='AR CC UnPost'
+      DICT.REC<8>=''
+      WRITE DICT.REC ON D.WORK,'AR.CC.PEND'
+      DICT.REC<2>='8'
+      DICT.REC<3>='FB CC Open'
+      WRITE DICT.REC ON D.WORK,'FB.CC.OPEN'
+      DICT.REC<2>='9'
+      DICT.REC<3>='FB CC Acc'
+      WRITE DICT.REC ON D.WORK,'FB.CC.ACC'
+      STMT='SSELECT FBWORK':CH.NUM
+      IF RPT.TYPE='D' THEN
+         STMT:=' WITH PROC.DATE = "':ACK:'"'
+      END
+      EXECUTE STMT RTNLIST WORK.LIST CAPTURING WORK.RESULTS
+      WORK.NUM=@SELECTED
+      IF WORK.NUM>0 THEN
+         EXP.REC=''
+         EXP.LINE=''
+         EXP.LINE<1,1>='Client#'
+         EXP.LINE<1,2>='Client Name'
+         EXP.LINE<1,3>='Process Date'
+         EXP.LINE<1,4>='Invoice#'
+         EXP.LINE<1,5>='AR Inv Amt'
+         EXP.LINE<1,6>='AR Inv Bal'
+         EXP.LINE<1,7>='AR CC Amt'
+         EXP.LINE<1,8>='AR CC Pymt'
+         EXP.LINE<1,9>='AR CC Adj'
+         EXP.LINE<1,10>='AR CC Bal'
+         EXP.LINE<1,11>='AR CC Unposted'
+         EXP.LINE<1,12>='FB CC Open'
+         EXP.LINE<1,13>='FB CC Accrual'
+         EXP.REC<-1>=EXP.LINE
+         EOF=0
+         WORK.CNT=0
+         LOOP
+            READNEXT WORK.ID FROM WORK.LIST ELSE EOF=1
+         UNTIL EOF DO
+            WORK.CNT+=1
+            CALL PROG.BAR(20,WORK.CNT,WORK.NUM,WORK.PER)
+            READ WORK.REC FROM F.WORK,WORK.ID THEN
+               CLIENT.ID=FIELD(WORK.ID,'*',1)
+               READ CLIENT.REC FROM F.CLIENT,CLIENT.ID ELSE CLIENT.REC=''
+               CLIENT.NAME=CLIENT.REC<2>
+               PROC.DT=FIELD(WORK.ID,'*',2)
+               INV.NO=WORK.REC<1>
+               INV.AMT=WORK.REC<2>
+               INV.BAL=WORK.REC<3>
+               AR.CC.AMT=WORK.REC<4>
+               AR.CC.PYMT=WORK.REC<5>
+               AR.CC.ADJ=WORK.REC<6>
+               AR.CC.BAL=AR.CC.AMT-AR.CC.PYMT-AR.CC.ADJ
+               AR.CC.PEND=WORK.REC<7>
+               FB.CC.OPEN=WORK.REC<8>
+               FB.CC.ACC=WORK.REC<9>
+               IF AR.CC.BAL+0=0 AND FB.CC.OPEN+0=0 AND FB.CC.ACC+0=0 AND RPT.TYPE='B' THEN GO NEXT.WORK
+               EXP.LINE=''
+               EXP.LINE<1,1>=CLIENT.ID
+               EXP.LINE<1,2>=CLIENT.NAME
+               EXP.LINE<1,3>=PROC.DT'D2/'
+               EXP.LINE<1,4>=INV.NO
+               EXP.LINE<1,5>=INV.AMT'R26'
+               EXP.LINE<1,6>=INV.BAL'R26'
+               EXP.LINE<1,7>=AR.CC.AMT'R26'
+               EXP.LINE<1,8>=AR.CC.PYMT'R26'
+               EXP.LINE<1,9>=AR.CC.ADJ'R26'
+               EXP.LINE<1,10>=AR.CC.BAL'R26'
+               EXP.LINE<1,11>=AR.CC.PEND'R26'
+               EXP.LINE<1,12>=FB.CC.OPEN'R26'
+               EXP.LINE<1,13>=FB.CC.ACC'R26'
+               EXP.REC<-1>=EXP.LINE
+NEXT.WORK:     *
+            END
+         REPEAT
+         EXP.REC=CHANGE(EXP.REC,@VM,TB)
+         IF RPT.TYPE='D' THEN
+            ACK=ICONV(ACK,'D')
+            OACK=OCONV(ACK,'D4/')
+            BILLDATA.ID='OFB_AR_RVW_':OACK[1,2]:OACK[4,2]:OACK[7,4]:'.XLS'
+         END ELSE
+            BILLDATA.ID='OFB_AR_BAL_':OTODAY[1,2]:OTODAY[4,2]:OTODAY[7,4]:'.XLS'
+         END
+         WRITE EXP.REC ON F.BILLDATA,BILLDATA.ID
+         BILLDATA.TEXT='Your report is available on your "U:\" drive as "':BILLDATA.ID:'"'
+         CALL ELINE(BILLDATA.TEXT)
+      END

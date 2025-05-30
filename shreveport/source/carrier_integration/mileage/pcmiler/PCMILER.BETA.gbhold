@@ -1,0 +1,819 @@
+      SUBROUTINE PCMILER.BETA(VIN,VOUT,F.PCIN,F.PCOUT,F.MILEAGE)
+      *******************************************************************************
+      *
+      * FREIGHT BILLING PACKAGE
+      *
+      * AUTHOR:       OWEN HOLMAN
+      * DATE:        FEBRUARY 21, 1996
+      * DESCRIPTION: THIS PROGRAM WILL SUBMIT A TEXT FILE TO PCMILER V9.00
+      *                          TO DETERMINE DISTANCES BETWEEN ZIP CODES
+      *
+      * COPYRIGHT (C) 1998 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+* Last updated by AFS (gbino) at 08:34:37 on 12/16/2015.
+      * Impletemented on 04/15/03 DRF
+      * Modified to user PCMILER Version 16 on 02/14/03 DRF
+      * 093003 - JMK01 - ADDED MILEAGE ARRAY TO VOUT
+      * 033105 - JMK02 - ADDED SET MILES FOR ARTCO BELL AND CRETE CARRIERS
+      * 092906 - JMK03 - SEND EMAIL ALERTS TO U2ERRORS@AFSLOGISTICS.COM
+      * 011708 - NPR01 - ADDED CALL TO UPD.PROCESS.LOG Which monitors who uses this program. Temporary change - may be removed
+      * 012508 - NPR02 - ADDED TABLE FOR ZIP SUBSTITUTIONS TO GET AWAY FROM HARD CODING  - SEE FB.1.11.19 FOR TAB MAINT.
+      * 090808 - JMK04 - STORE ZERO MILEAGE ONLY OF ORIG=DEST OR EITHER=PR,AK,HI
+      * 101608 - JMK05 - C082319 - No mileage on Canadian shipments ; client 01148
+      * 080709 - NPR03 - PCMILER does not like a '-' in the city name when trying to get mileage for Canadian Zips.
+      * 010510 - JMK06 - ADD COUNTY/PARRISH TO CITY AND STATE FOR WEB CALL
+      * 010710 - JMK07 - CREATE THE DOS PCMILER CONFIGURATION FILE INTERNALLY
+      * 092311 - JMK08 - C111273 - URGENT!! Universe user limit has been reached (not the usual error)
+      * 011111 - JMK09 - Project #91 - PCMILER 16 to 25 Evaulation - EXTEND FIELD FOR CANDAIAN FROM 20 TO 30
+      * 011611 - JMK10 - Project #91 - PCMILER 16 to 25 Evaulation - EXTEND FIELD FOR CANDAIAN FROM 20 TO 30
+      * 061814 - JMK11 - Project 407 - Install PCMILER*27 to replace PCMILER*16
+      * 081814 - JMK12 - Install pcmiler*27
+      * 082014 - JMK13 - EXTEND DELAY FOR PCMILER DUE TO RESPONSE TIMES FROM SERVER
+      * 120314 - JMK14 - SysAid#13864 - Mileage not calculating - Disable postal code substitution
+      * 100615 - DRF01 - SysAid 19844 - Added substitute zip for 33192 to 33194
+      * 111015 - GRB01 - Sysaid 21092 Added web service call and reorganized code.
+      *******************************************************************************
+      *
+      *    VIN<1>   SEND=Submit job, READ=Get Results, BOTH=Send & Get
+      *
+$INCLUDE PROG.ADMIN INC_OPTIONS
+* Initializations
+      COMMON PROG.PARAMS(24)
+      EQU CH.NUM TO PROG.PARAMS(1)
+      EQU USER TO PROG.PARAMS(2)
+      EQU SERVER.NAME TO PROG.PARAMS(3)
+
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'PCMILER.BETA' ; UPL.VOUT = ''   ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      PROG.NAME='PCMILER.BETA'
+      CALL GET.USER(USER)
+******DEBUG
+      OPEN '','FB.TABLES' TO F.TABLES ELSE         ; * NPR02
+         ERRLINE = 'UNABLE TO OPEN FB.TABLES'      ; * NPR02
+         GOSUB ERROR.CONDITION           ; * NPR02
+      END                                ; * NPR02
+      OPEN '','CONTROL' TO F.CNTL ELSE
+         ERRLINE = 'UNABLE TO OPEN CONTROL'
+         GOSUB ERROR.CONDITION
+      END
+      OPEN '','PCMILER.LOG' TO F.PCM ELSE
+         ERRLINE = 'UNABLE TO OPEN PCMILER'
+         GOSUB ERROR.CONDITION
+      END
+      *
+      READ WS.PARAMS FROM F.CNTL,"PCMILER" THEN
+         WS.FLG = WS.PARAMS<1>           ; * use webservice
+         TEST.MODE = WS.PARAMS<2>
+      END ELSE
+         WS.FLG = @FALSE
+         TEST.MODE = @FALSE
+      END
+      *
+      * Initialize variables
+      *
+      PROMPT ''
+      SERVER.NAME=''                     ; * JMK11
+      MILEAGE.DATA=''                    ; * JMK01
+      VOUT=''
+      MODE=VIN<1>
+      CH.NUM=VIN<2>
+      ZIP.ARRAY=VIN<3>
+      SKIP.FILE.LOOKUP=VIN<4>            ; * 1 TO Skip File Lookup and go to PC
+SKIP.FILE.LOOKUP = 2
+      SOURCE.PROG=VIN<5>
+      CLIENT.STR=VIN<6>                  ; * Text String to Put on Taskman Screen
+      NO.PCMILER.ERRORS=VIN<7>
+      CLIENT.ID=VIN<8>                   ; * JMK02
+      CARRIER.ID=VIN<9>                  ; * JMK02
+      PCMILER.VER=VIN<10>                ; * JMK08
+      MILEAGE=0
+      WS = 0
+      IF PCMILER.VER='' THEN             ; * JMK08
+         GOSUB GET.PCMVERSION
+      END                                ; * JMK08
+      ZIP.ARRAY=OCONV(ZIP.ARRAY,'MCU')
+      ORG.ZIP.ARRAY=ZIP.ARRAY            ; * JMK01
+      IF MODE='READ' THEN GO 300
+      *
+      GOSUB CHECK.INVALID.ZIPS
+      PCMLOCK = 0
+      * att 1 number calls
+      * att 2 FB.MILEAGE hits
+      * att 3 WS hits
+      * att 4 old method hits
+      * att 5 errors with no hits
+      * att 6 other type error
+      READU PCMDAT FROM F.PCM,"PCMTRACK*":DATE() LOCKED
+         PCMLOCK = 1
+                                         ; * go on
+      END ELSE
+         PCMDAT = ''
+      END
+      IF NOT(PCMLOCK) THEN
+         PCMDAT<1> = PCMDAT<1> + 1
+         WRITE PCMDAT ON F.PCM,"PCMTRACK*":DATE()
+         RELEASE F.PCM,"PCMTRACK*":DATE()
+      END
+      IF SKIP.FILE.LOOKUP # 1 THEN
+         GOSUB CHECK.ON.FILE             ; * see if we already have it on file
+      END
+      ZIP.STRING=''
+      ORG.ZIP.ARRAY=ZIP.ARRAY
+      * Build P.IN PCMILER Record to submit
+      * CHECK FOR CANADIAN ZIPS TO CHANGE TO CITY PROVENCE FORMAT
+      NVAL=DCOUNT(ZIP.ARRAY,@VM)
+      PCM.FORMAT='ZipCode'
+      IF PCMILER.VER='27' THEN
+         FOR VAL=1 TO NVAL
+            ZIP.TEST=ZIP.ARRAY<1,VAL>
+            IF ZIP.TEST MATCHES '1A1N1A1N1A1N' THEN
+               ZIP.ARRAY<1,VAL>=ZIP.TEST[1,3]:' ':ZIP.TEST[4,3]
+****************************               ZIP.ARRAY<1,VAL>=ZIP.TEST[1,3]:ZIP.TEST[4,3]
+               PCM.FORMAT='Canpost'
+            END
+         NEXT VAL
+      END
+      GOSUB BUILD.P.IN.RECORD
+
+      IF WS.FLG THEN                     ; * if flag set use webservice
+         GOSUB USE.WEBSERVICE
+         IF NUM(VOUT<1>) AND VOUT<1> GT 0 THEN
+            WS = 1
+            PCMLOCK = 0
+            * WS method succesfull here
+            READU PCMDAT FROM F.PCM,"PCMTRACK*":DATE() LOCKED
+               PCMLOCK = 1
+                                         ; * go on
+            END ELSE
+               PCMDAT = ''
+            END
+            IF NOT(PCMLOCK) THEN
+               PCMDAT<3> = PCMDAT<3> + 1
+               WRITE PCMDAT ON F.PCM,"PCMTRACK*":DATE()
+               RELEASE F.PCM,"PCMTRACK*":DATE()
+            END
+            RETURN
+            ******* GOSUB UPDATE.AND.FINISH
+         END ELSE
+RETURN TO ERROR.CONDITION
+            WS = 0
+            * WS method was unsucessful fall through and we use old method
+         END
+      END
+      ***********************************
+* REMOVE THIS RETURN WHEN GOING TO PRODUCTION
+***********      RETURN
+      ****************************************
+      GOSUB CREATE.PCMCFG.REC            ; * JMK07
+
+      BEGIN CASE                         ; * JMK08
+         CASE PCMILER.VER='16' AND SERVER.NAME='AFS-FS'      ; * JMK08
+            STMT='dos /c "F:\Program Files\ALK Technologies\Pmw160\BatchPro\batchw32.exe" e:\ardent\accounts\taskman\in\':CH.NUM:'P.CFG'
+         CASE PCMILER.VER='16'           ; * JMK08
+            STMT='dos /c "E:\Program Files\ALK Technologies\Pmw160\BatchPro\batchw32.exe" e:\ardent\accounts\taskman\in\':CH.NUM:'P.CFG'
+         CASE PCMILER.VER='16_64'        ; * JMK08
+            STMT='dos /c "E:\Program Files\ALK Technologies\Pmw160\BatchPro\batchw64.exe" e:\ardent\accounts\taskman\in\':CH.NUM:'P.CFG'
+         CASE PCMILER.VER='27'           ; * JMK08
+            STMT='dos /c "\\SHVRATING\Pmw270\BatchPro\batchw32.exe \\AFS\TASKMAN\IN\':CH.NUM:'P.CFG"'          ; * JMK08 ; * JMK11
+         CASE PCMILER.VER='27_64'        ; * JMK08
+            STMT='dos /c "\\SHVRATING\Pmw270\BatchPro\batchw64.exe \\AFS\TASKMAN\IN\':CH.NUM:'P.CFG"'          ; * JMK08 ; * JMK11
+         CASE 1                          ; * JMK08
+            ERRLINE='Missing version of PCMILER.'  ; * JMK08
+      END CASE                           ; * JMK08
+
+      EXECUTE STMT CAPTURING PCM.RESULTS
+
+300:  *** Jump to Here for MODE = "READ"
+      IF MODE = "BOTH" OR MODE = "READ" THEN
+         GOSUB READ.P.LOG
+         GOSUB CHECK.P.LOG.ERRORS
+         IF ERROR = "" THEN
+            GOSUB READ.P.MIL
+            GOSUB BUILD.MILEAGE.DATA
+            GOSUB UPDATE.AND.FINISH
+         END ELSE
+            RETURN
+         END
+      END
+
+***************************************************************************
+9999: *** Exit Program
+***************************************************************************
+      IF WS = 0 THEN
+         DELETE F.PCIN,CH.NUM:'P.CFG'    ; * JMK08
+         DELETE F.PCIN,CH.NUM:'P.IN'     ; * JMK08
+         DELETE F.PCIN,CH.NUM:'P.MIL'    ; * JMK08
+         DELETE F.PCIN,CH.NUM:'P.LOG'    ; * JMK08
+      END
+      RETURN
+***************************************************************************
+BUILD.P.IN.RECORD:
+***************************************************************************
+      FILE.NAME=CH.NUM:'P.IN'
+      DELETE F.PCIN,FILE.NAME
+      FOR VAL=1 TO NVAL-1
+         BEGIN CASE
+            CASE PCMILER.VER='16'
+               ZIP.LINE=ZIP.ARRAY<1,VAL>'L#30':ZIP.ARRAY<1,VAL+1>'L#30'          ; * JMK09
+               ZIP.STRING<-1>=ZIP.LINE
+            CASE PCMILER.VER='27'
+               BEGIN CASE
+                  CASE PCM.FORMAT='ZipCode'
+                     ZIP.LINE=ZIP.ARRAY<1,VAL>'L#5 ':ZIP.ARRAY<1,VAL+1>'L#5'     ; * JMK09
+                     ZIP.STRING<-1>=ZIP.LINE
+                  CASE PCM.FORMAT='Canpost'
+                     ZIP.LINE=ZIP.ARRAY<1,VAL>'L#7 ':ZIP.ARRAY<1,VAL+1>'L#7'     ; * JMK09
+                     ZIP.STRING<-1>=ZIP.LINE
+               END CASE
+         END CASE
+      NEXT VAL
+      WRITE ZIP.STRING ON F.PCIN,FILE.NAME ELSE RETURN
+      RETURN
+*************************************************************************
+READ.P.LOG:
+*************************************************************************
+      FILE.NAME=CH.NUM:'P.LOG'
+      REREAD.LOG=0
+      FOUND = @FALSE
+      LOOP
+      UNTIL FOUND OR REREAD.LOG GE 10 DO
+         READ LOG.OUT FROM F.PCIN,FILE.NAME THEN
+            FOUND = @TRUE
+         END ELSE
+            SLEEP 1                      ; * JMK08
+            REREAD.LOG+=1
+         END
+      REPEAT
+      **** IF REREAD.LOG<10 THEN GO REREAD.LOG       ; * JMK08 ; * JMK13
+      IF NOT(FOUND) THEN
+         MVIN=''
+         SUBJ='PCMILER V':PCMILER.VER:' is unresponsive!'    ; * JMK08
+         TEXT=USER:' attempted to calculate mile for ':ZIP.ARRAY
+         TEXT<1,-1>='on Universe port ':CH.NUM:' at ':OCONV(TIME(),'MTHS'):' on ':DATE()'D4-'
+         TEXT<1,-1>='program tried to obtain a response 10 times and no response was available'      ; * JMK08 ; * JMK13
+         TEXT<1,-1>='because no LOG output file was created.'          ; * JMK08
+         MVIN=''
+         MVIN<1>='U2Errors@afs.net'      ; * JMK03
+         MVIN<4>='U2Errors@afs.net'      ; * JMK03
+         MVIN<5>=SUBJ
+         MVIN<6>=TEXT
+         CALL SENDMAIL(MVIN,MVOUT)
+         VOUT=''                         ; * JMK08
+         VOUT<1>='0'                     ; * JMK08
+         VOUT<2>='ERROR'                 ; * JMK08
+
+         * old method error here
+         PCMLOCK = 0
+         READU PCMDAT FROM F.PCM,"PCMTRACK*":DATE() LOCKED
+            PCMLOCK = 1
+                                         ; * go on
+         END ELSE
+            PCMDAT = ''
+         END
+         IF NOT(PCMLOCK) THEN
+            PCMDAT<5> = PCMDAT<5> + 1
+            WRITE PCMDAT ON F.PCM,"PCMTRACK*":DATE()
+            RELEASE F.PCM,"PCMTRACK*":DATE()
+         END
+         RETURN TO 9999
+      END
+      RETURN
+**************************************************************************
+CHECK.P.LOG.ERRORS:
+**************************************************************************
+      ERROR = ""
+      NATT=DCOUNT(LOG.OUT,@AM)
+      FOR ATT=1 TO NATT
+         IF LOG.OUT<ATT>[1,5]='Error' THEN
+            ERR.LINE=TRIM(LOG.OUT<ATT>)
+            BEGIN CASE
+               CASE INDEX(ERR.LINE,' no matches were found:',1)
+                  IF INDEX(ERR.LINE,' Orig ',1) THEN
+                     VAL=FIELD(ERR.LINE,' ',3)
+                     ERROR=ORG.ZIP.ARRAY<1,VAL>:' Invalid zip code.'
+                  END
+                  IF INDEX(ERR.LINE,' Dest ',1) THEN
+                     VAL=FIELD(ERR.LINE,' ',3)
+                     ERROR=ORG.ZIP.ARRAY<1,VAL+1>:' Invalid zip code.'
+                  END
+               CASE 1
+                  ERROR=ERR.LINE
+            END CASE
+            ERRLINE=ERROR
+            GOSUB ERROR.CONDITION
+         END
+      NEXT ATT
+      RETURN
+**************************************************************************
+READ.P.MIL:
+*************************************************************************
+      FILE.NAME=CH.NUM:'P.MIL'
+      REREAD.MIL=0
+      FOUND = @FALSE
+      LOOP
+      UNTIL FOUND OR REREAD.MIL GE 10 DO
+         READ MIL.OUT FROM F.PCIN,FILE.NAME THEN
+            FOUND = @TRUE
+         END ELSE
+            SLEEP 1                      ; * JMK08
+            REREAD.MIL+=1
+         END
+      REPEAT
+      ****    IF REREAD.LOG<10 THEN GO REREAD.MIL       ; * JMK08 ; * JMK13
+      IF NOT(FOUND) THEN
+         MVIN=''
+         SUBJ='PCMILER V':PCMILER.VER:' is unresponsive!'    ; * JMK08
+         TEXT=USER:' attempted to calculate mile for ':ZIP.ARRAY
+         TEXT<1,-1>='on Universe port ':CH.NUM:' at ':OCONV(TIME(),'MTHS'):' on ':DATE()'D4-'
+         TEXT<1,-1>='program tried to obtain a response 10 times and no response was available'      ; * JMK08 ; * JMK13
+         TEXT<1,-1>='because no Mileage output file was created.'      ; * JMK08
+         MVIN=''
+         MVIN<1>='U2Errors@afs.net'      ; * JMK03
+         MVIN<4>='U2Errors@afs.net'      ; * JMK03
+         MVIN<5>=SUBJ
+         MVIN<6>=TEXT
+         CALL SENDMAIL(MVIN,MVOUT)
+         * old method error here
+         PCMLOCK = 0
+         READU PCMDAT FROM F.PCM,"PCMTRACK*":DATE() LOCKED
+            PCMLOCK = 1
+                                         ; * go on
+         END ELSE
+            PCMDAT = ''
+         END
+         IF NOT(PCMLOCK) THEN
+            PCMDAT<5> = PCMDAT<5> + 1
+            WRITE PCMDAT ON F.PCM,"PCMTRACK*":DATE()
+            RELEASE F.PCM,"PCMTRACK*":DATE()
+         END
+         RETURN TO 9999
+      END
+
+      RETURN
+*************************************************************************
+BUILD.MILEAGE.DATA:
+*************************************************************************
+      MILEAGE.DATA=ORG.ZIP.ARRAY
+      MIL.OUT=CHANGE(MIL.OUT,CHAR(9),@VM)
+      NATT=DCOUNT(MIL.OUT,@AM)
+      FOR ATT=1 TO NATT
+         BEGIN CASE
+            CASE PCMILER.VER[1,2]='16'
+               OCS=TRIM(MIL.OUT<ATT,2>[1,40])
+               DCS=TRIM(MIL.OUT<ATT,4>[1,40])
+               MILES=TRIM(MIL.OUT<ATT,4>[41,20])
+            CASE PCMILER.VER[1,2]='27'
+               OPKG=MIL.OUT<ATT>[1,50]
+               IF OPKG[4,1]=' ' THEN
+                  OZIP=TRIM(OPKG[1,7])
+                  OCS=TRIM(OPKG[8,50])
+               END ELSE
+                  OZIP=TRIM(OPKG[1,5])
+                  OCS=TRIM(OPKG[6,50])
+               END
+               DPKG=MIL.OUT<ATT>[51,50]
+               IF DPKG[4,1]=' ' THEN
+                  DZIP=TRIM(DPKG[1,7])
+                  DCS=TRIM(DPKG[8,50])
+               END ELSE
+                  DZIP=TRIM(DPKG[1,5])
+                  DCS=TRIM(DPKG[6,50])
+               END
+               MILES=TRIM(MIL.OUT<ATT>[101,9])
+         END CASE
+         MILEAGE.DATA<2,ATT+1>=MILES
+         MILEAGE.DATA<3,ATT>=OCONV(OCS,'G,2')
+         MILEAGE.DATA<3,ATT+1>=OCONV(DCS,'G,2')
+         MILEAGE.DATA<4,ATT>=OCS         ; * JMK06
+         MILEAGE.DATA<4,ATT+1>=DCS       ; * JMK06
+      NEXT ATT
+
+      RETURN
+**************************************************************************
+UPDATE.AND.FINISH:
+***************************************************************************
+      TIMES=DCOUNT(MILEAGE.DATA<2>,@VM)
+      FOR X = 1 TO TIMES
+         MILES=TRIM(MILEAGE.DATA<2,X+1>)
+         ZIP1=MILEAGE.DATA<1,X>
+         ZIP2=MILEAGE.DATA<1,X+1>
+         TEMP.ZIP.ARRAY=ZIP1:@VM:ZIP2
+
+         IF TEMP.ZIP.ARRAY<1,1>#'' AND TEMP.ZIP.ARRAY<1,2>#'' THEN
+            MILE.ID=TEMP.ZIP.ARRAY<1,1>:"*":TEMP.ZIP.ARRAY<1,2>
+            MILE.REC=MILES
+            MILE.REC<2>=DATE()
+            MILE.REC<3>=USER
+            IF WS = 1 THEN
+               MILE.REC<4> = "V27s"
+            END
+            IF MILES > 0 THEN
+               WRITE MILE.REC ON F.MILEAGE,MILE.ID
+               IF SERVER.NAME='AFS' THEN           ; * JMK10
+                  SQLVIN=''
+                  SQLVIN<1>=USER
+                  SQLVIN<2>=MILE.ID
+                  SQLVOUT=''
+                  CALL UPD.SQL.MILEAGE.SUB(SQLVIN,SQLVOUT,MILE.REC)
+               END                       ; * JMK10
+            END
+            MILEAGE+=MILES
+         END
+      NEXT X
+
+      VOUT=''
+      VOUT<1>=MILEAGE
+      VOUT<3>=MILEAGE.DATA<3>            ; * City State info added by Owen 04/16/03
+      VOUT<4>=MILEAGE.DATA<2>            ; * JMK01
+      VOUT<5>=MILEAGE.DATA<4>            ; * JMK06
+      IF NOT(NUM(MILEAGE)) OR MILEAGE LT 1 THEN
+         * old method error here
+         PCMLOCK = 0
+         READU PCMDAT FROM F.PCM,"PCMTRACK*":DATE() LOCKED
+            PCMLOCK = 1
+                                         ; * go on
+         END ELSE
+            PCMDAT = ''
+         END
+         IF NOT(PCMLOCK) THEN
+            PCMDAT<5> = PCMDAT<5> + 1
+            WRITE PCMDAT ON F.PCM,"PCMTRACK*":DATE()
+            RELEASE F.PCM,"PCMTRACK*":DATE()
+         END
+      END ELSE
+         * old method sucessful
+         PCMLOCK = 0
+         READU PCMDAT FROM F.PCM,"PCMTRACK*":DATE() LOCKED
+            PCMLOCK = 1
+                                         ; * go on
+         END ELSE
+            PCMDAT = ''
+         END
+         IF NOT(PCMLOCK) THEN
+            PCMDAT<4> = PCMDAT<4> + 1
+            WRITE PCMDAT ON F.PCM,"PCMTRACK*":DATE()
+            RELEASE F.PCM,"PCMTRACK*":DATE()
+         END
+      END
+      RETURN TO 9999
+*************************************************************
+USE.WEBSERVICE:
+**************************************************************
+      VIN<1>= ZIP.STRING
+      MILEAGE=0
+      ZIP.STRING=CHANGE(ZIP.STRING,@AM,@VM)
+      HOP.CNT = DCOUNT(ZIP.STRING,@VM)
+      FOR H = 1 TO HOP.CNT
+         VIN<1> = ZIP.STRING<1,H>
+         VIN<2> = PCM.FORMAT
+         MILE.ID=ZIP.ARRAY<1,H>:"*":ZIP.ARRAY<1,H+1>
+         CALL PCMILERWS(VIN,VOUT ,F.TABLES,STATUS)
+         IF VOUT<1> = "ERROR" OR NOT(NUM(VOUT<1>)) THEN
+            RETURN
+         END ELSE
+            MILES = VOUT<1>
+         END
+         IF MILES GT 0 THEN
+            MILE.REC=MILES
+            MILE.REC<2>=DATE()
+            MILE.REC<3>=USER
+            MILE.REC<4> = "V27s"
+            IF MILES > 0 THEN
+               WRITE MILE.REC ON F.MILEAGE,MILE.ID
+               IF SERVER.NAME='AFS' THEN
+                  SQLVIN=''
+                  SQLVIN<1>=USER
+                  SQLVIN<2>=MILE.ID
+                  SQLVOUT=''
+                  CALL UPD.SQL.MILEAGE.SUB(SQLVIN,SQLVOUT,MILE.REC)
+               END
+            END
+            MILEAGE+=MILES
+         END
+      NEXT H
+      VOUT=''
+      VOUT<1>=MILEAGE
+      VOUT<3>=MILEAGE.DATA<3>            ; * City State
+      VOUT<4>=MILEAGE.DATA<2>            ; *
+      VOUT<5>=MILEAGE.DATA<4>            ; *
+      RETURN
+******************************************************************************
+GET.PCMVERSION:
+******************************************************************************
+      CALL GET.SERVER.INFO(SVR.VIN,SVR.VOUT)       ; * JMK08
+      SERVER.NAME=SVR.VOUT<1>            ; * JMK08
+      BEGIN CASE                         ; * JMK08
+         CASE SERVER.NAME='AFS'          ; * JMK08
+            *              PCMILER.VER='16'          ; * JMK08 ; * JMK12
+            PCMILER.VER='27'             ; * JMK08 ; * JMK12
+         CASE SERVER.NAME='AFS-FS'       ; * JMK08
+            PCMILER.VER='27'             ; * JMK08
+         CASE SERVER.NAME='STATION430'   ; * JMK08
+            PCMILER.VER='16'             ; * JMK08
+         CASE 1                          ; * JMK08
+            *              PCMILER.VER='16'          ; * JMK08 ; * JMK12
+            PCMILER.VER='27'             ; * JMK08 ; * JMK12
+      END CASE
+      RETURN
+***************************************************************************
+CHECK.INVALID.ZIPS:
+***************************************************************************
+      BEGIN CASE                         ; * JMK02
+         CASE CLIENT.ID='10337' AND CARRIER.ID='00097'       ; * JMK02
+            IF ZIP.ARRAY<1,1>='76501' THEN         ; * JMK02
+               DEST.ZIP=ZIP.ARRAY<1,2>   ; * JMK02
+               BEGIN CASE                ; * JMK02
+                  CASE DEST.ZIP='54942'  ; * JMK02
+                     VOUT='1187'         ; * JMK02
+                     VOUT<2>='ERROR'
+                     RETURN TO 9999
+                  CASE DEST.ZIP='93725'  ; * JMK02
+                     VOUT='1580'         ; * JMK02
+                     VOUT<2>='ERROR'
+                     RETURN TO 9999
+                  CASE DEST.ZIP='67402'  ; * JMK02
+                     VOUT='563'          ; * JMK02
+                     VOUT<2>='ERROR'
+                     RETURN TO 9999
+                  CASE DEST.ZIP='14489'  ; * JMK02
+                     VOUT='1556'         ; * JMK02
+                     VOUT<2>='ERROR'
+                     RETURN TO 9999
+                  CASE DEST.ZIP='27287'  ; * JMK02
+                     VOUT='1202'         ; * JMK02
+                     VOUT<2>='ERROR'
+                     RETURN TO 9999
+                  CASE DEST.ZIP='60007'  ; * JMK02
+                     VOUT='1038'         ; * JMK02
+                     VOUT<2>='ERROR'
+                     RETURN TO 9999
+                  CASE DEST.ZIP='29151'  ; * JMK02
+                     VOUT='1106'         ; * JMK02
+                     VOUT<2>='ERROR'
+                     RETURN TO 9999
+               END CASE                  ; * JMK02
+            END                          ; * JMK02
+      END CASE                           ; * JMK02
+      LOCATE '99999' IN ZIP.ARRAY<1> SETTING POS THEN
+         VOUT=0
+         VOUT<2>='ERROR'
+         PCMLOCK = 0
+         * some other type error
+         READU PCMDAT FROM F.PCM,"PCMTRACK*":DATE() LOCKED
+            PCMLOCK = 1
+                                         ; * go on
+         END ELSE
+            PCMDAT = ''
+         END
+         IF NOT(PCMLOCK) THEN
+            PCMDAT<6> = PCMDAT<6> + 1
+            WRITE PCMDAT ON F.PCM,"PCMTRACK*":DATE()
+            RELEASE F.PCM,"PCMTRACK*":DATE()
+         END
+         RETURN TO 9999
+      END
+      RETURN
+**************************************************************
+CHECK.ON.FILE:
+************************************************************
+********************* take out the skip prior to implementation
+******      SKIP.FILE.LOOKUP = 2
+      ZIP.ARRAY=CHANGE(ZIP.ARRAY,'33192','33194')  ; * DRF01
+      IF SKIP.FILE.LOOKUP # 1 THEN
+         MILEAGE=0
+         TIMES=DCOUNT(ZIP.ARRAY<1>,@VM)-1
+         FOR X = 1 TO TIMES
+            ZIP1=ZIP.ARRAY<1,X>
+            ZIP2=ZIP.ARRAY<1,X+1>
+            CANADIAN=0
+            IF ZIP1 MATCHES '1A1N1A1N1A1N' THEN CANADIAN=1
+            IF ZIP2 MATCHES '1A1N1A1N1A1N' THEN CANADIAN=1
+            IF ZIP1[1,3] GE 962 AND ZIP1[1,3] LE 968 THEN
+               VOUT=0
+               VOUT<2>='ERROR - HAWAII ZIP'
+               RETURN TO 9999
+            END
+            IF NOT(NUM(ZIP1)) AND CANADIAN=0 THEN  ; * JMK05
+               VOUT=0
+               VOUT<2>='ERROR - INTERNATIONAL'
+               RETURN TO 9999
+            END
+            IF ZIP2[1,3] GE 962 AND ZIP2[1,3] LE 968 THEN
+               VOUT=0
+               VOUT<2>='ERROR - HAWAII ZIP'
+               RETURN TO 9999
+            END
+            IF NOT(NUM(ZIP2)) AND CANADIAN=0 THEN  ; * JMK05
+               VOUT=0
+               VOUT<2>='ERROR - INTERNATIONAL'
+               RETURN TO 9999
+            END
+            TEMP.ZIP.ARRAY=ZIP1:@VM:ZIP2
+            IF TEMP.ZIP.ARRAY<1,1>#'' AND TEMP.ZIP.ARRAY<1,2>#'' THEN
+               MILE.ID=TEMP.ZIP.ARRAY<1,1>:"*":TEMP.ZIP.ARRAY<1,2>
+               READV MILES FROM F.MILEAGE,MILE.ID,1 THEN
+                  MILEAGE.DATA<2,X+1>=MILES        ; * JMK01
+                  MILEAGE+=MILES
+                  WS = 1
+               END ELSE
+                  ********   GO SKIP.FILE.LOOKUP    ; * JMK05
+                  RETURN
+150:              HELP = 'Enter the Mileage from ':ZIP1:' to ':ZIP2
+                  CALL GEN.IN(0,22,'Mileage:   ','',Q,0,4,'','',2,-2,22,1,QI,HELP,0,23)
+                  QI = OCONV(QI,'MCU')
+                  IF NOT(NUM(QI)) THEN
+                     CALL ELINE("ERROR! You must enter a mileage or 0 if you don't know the miles")
+                     GO 150
+                  END
+                  IF QI < 0 THEN
+                     CALL ELINE("ERROR! The mileage must be a positive number!")
+                     GO 150
+                  END
+                  MILES=QI
+                  MILEAGE+=MILES
+                  MILE.REC=MILES
+                  MILE.REC<2>=DATE()
+                  MILE.REC<3>=USER
+                  IF MILES > 0 THEN
+                     WRITE MILE.REC ON F.MILEAGE,MILE.ID
+                  END
+               END
+            END
+         NEXT X
+         VOUT=''
+         VOUT=MILEAGE
+         VOUT<2>='FOUNDINFILE'
+         VOUT<4>=MILEAGE.DATA<2>         ; * JMK01
+         *sucessfull pull from FB.MILEAGE
+         PCMLOCK = 0
+         READU PCMDAT FROM F.PCM,"PCMTRACK*":DATE() LOCKED
+            PCMLOCK = 1
+                                         ; * go on
+         END ELSE
+            PCMDAT = ''
+         END
+         IF NOT(PCMLOCK) THEN
+            PCMDAT<2> = PCMDAT<2> + 1
+            WRITE PCMDAT ON F.PCM,"PCMTRACK*":DATE()
+            RELEASE F.PCM,"PCMTRACK*":DATE()
+         END
+         RETURN TO 9999
+      END ELSE
+         RETURN
+      END
+      *
+20:   * NPR02   - ***** IT IS NO LONGER NECESSARY TO HARD CODE THE ZIP SUBSTITUTUIONS
+      ***** SEE FB.1.11.19 FOR MAINT OF TABLE USED - WAYNE PARDUE AND SYDNEY BIRD CAN DO THEIR OWN NOW
+*****     BEGIN CASE                         ; * JMK14 - ADD RULES HERE TO ENABLE IF NEEDED
+*****         CASE 1 ; CHECK.SUB.ZIP=0        ; * JMK14
+*****      END CASE                           ; * JMK14
+*****      IF CHECK.SUB.ZIP=1 THEN            ; * JMK14
+*****         READ ZIP.SUBST.ARRAY FROM F.TABLES, 'ZIP.SUBSTITUTIONS' THEN
+*****            N.ZIPS = DCOUNT(ZIP.ARRAY<1>,@VM)
+*****            FOR I.ZIP = 1 TO N.ZIPS
+*****               ZIP.TEST = ZIP.ARRAY<1,I.ZIP>
+*****               LOCATE ZIP.TEST IN ZIP.SUBST.ARRAY<1> SETTING ZPOS THEN
+*****                  ZIP.ARRAY<1,I.ZIP>=ZIP.SUBST.ARRAY<2,ZPOS>
+*****               END
+*****            NEXT I.ZIP
+*****            GOTO 20                      ; * Skip hard coded changes
+*****         END
+*****      END                                ; * JMK14
+      *****     IF PCMILER.VER='16' THEN           ; * JMKXXX
+      *****        FOR VAL=1 TO NVAL
+      *****           ZIP.TEST=ZIP.ARRAY<1,VAL>
+      *****           IF ZIP.TEST MATCHES '1A1N1A1N1A1N' THEN
+*****               CITY=OCONV(ZIP.TEST,'TZIPS.CODES;X;;1')       ; * JMKXXX
+      *****              CONVERT "-" TO " " IN CITY          ; * NPR03
+      *****              PRV=OCONV(ZIP.TEST,'TZIPS.CODES;X;;2')        ; * JMKXXX
+      *****              IF CITY='' THEN
+      *****                 ERRLINE='Missing postal code for ':ZIP.TEST
+      *****                 GOSUB ERROR.CONDITION
+      *****              END
+      *****              ZIP.ARRAY<1,VAL>=CITY:',':PRV
+      *****           END
+      *****        NEXT VAL
+      *****     END
+      *****    RETURN
+***************************************************************************
+CREATE.PCMCFG.REC:***                   ; * JMK07
+****************************************************************************
+      BEGIN CASE
+         CASE PCMILER.VER='16'
+            PCMCFG.REC=''
+            PCMCFG.REC<-1>='[ChunkSize]'
+            PCMCFG.REC<-1>='"ChunkSize"=5000'
+            PCMCFG.REC<-1>=''
+            PCMCFG.REC<-1>='[File]'
+            PCMCFG.REC<-1>='"Input"="e:\ardent\accounts\taskman\in\':CH.NUM:'P.IN"'
+            PCMCFG.REC<-1>=''
+            PCMCFG.REC<-1>='[Format]'
+            PCMCFG.REC<-1>='"LastFormat"="AFSBatch"'
+            PCMCFG.REC<-1>='"NumFormats"=1'
+            PCMCFG.REC<-1>=''
+            PCMCFG.REC<-1>='[Format0]'
+            PCMCFG.REC<-1>='"Format"="1,30,31,60,40"'        ; * JMK09
+            PCMCFG.REC<-1>='"Name"="AFSBatch"'
+            PCMCFG.REC<-1>=''
+            PCMCFG.REC<-1>='[Reports]'
+            PCMCFG.REC<-1>='"Mileage"=1'
+            PCMCFG.REC<-1>='"Out"=0'
+            PCMCFG.REC<-1>='"State"=0'
+            PCMCFG.REC<-1>=''
+            PCMCFG.REC<-1>='[Route Options]'
+            PCMCFG.REC<-1>='"BordersOpen"=1'
+            PCMCFG.REC<-1>='"Cost"=0'
+            PCMCFG.REC<-1>='"FerryMiles"=0'
+            PCMCFG.REC<-1>='"HazFormula"="N"'
+            PCMCFG.REC<-1>='"LightVehicle"=0'
+            PCMCFG.REC<-1>='"Miles"=1'
+            PCMCFG.REC<-1>='"OldMode"=0'
+            PCMCFG.REC<-1>='"OnRoad"=0'
+            PCMCFG.REC<-1>='"RegionID"="NA"'
+            PCMCFG.REC<-1>='"RouteFormula"="S"'
+            PCMCFG.REC<-1>='"Time"=0'
+            PCMCFG.REC<-1>=''
+            PCMCFG.REC<-1>='[Run Mode]'
+            PCMCFG.REC<-1>='"CommandLine"=1'
+         CASE PCMILER.VER='27'
+            PCMCFG.REC=''
+            PCMCFG.REC<-1>='[ChunkSize]'
+            PCMCFG.REC<-1>='"ChunkSize"=2000'
+            PCMCFG.REC<-1>='"SortChunk"=1'
+            PCMCFG.REC<-1>=''
+            PCMCFG.REC<-1>='[Default]'
+            PCMCFG.REC<-1>='"CountryAbbrevType"="FIPS"'
+            PCMCFG.REC<-1>=''
+            PCMCFG.REC<-1>='[File]'
+            PCMCFG.REC<-1>='"Input"="\\AFS\TASKMAN\IN\':CH.NUM:'P.IN"'
+            PCMCFG.REC<-1>=''
+            PCMCFG.REC<-1>='[Format]'
+            PCMCFG.REC<-1>='"LastFormat"="':PCM.FORMAT:'"'
+            PCMCFG.REC<-1>='"NumFormats"=1'
+            PCMCFG.REC<-1>=''
+            PCMCFG.REC<-1>='[Format0]'
+            BEGIN CASE
+               CASE PCM.FORMAT='Canpost'
+                  PCMCFG.REC<-1>='"Format"="1,7,9,15,40"'    ; * JMK09
+               CASE PCM.FORMAT='ZipCode'
+                  PCMCFG.REC<-1>='"Format"="1,5,7,11,40"'    ; * JMK09
+            END CASE
+            PCMCFG.REC<-1>='"Name"="':PCM.FORMAT:'"'
+            PCMCFG.REC<-1>=''
+            PCMCFG.REC<-1>='[Reports]'
+            PCMCFG.REC<-1>='"Mileage"=1'
+            PCMCFG.REC<-1>='"Out"=0'
+            PCMCFG.REC<-1>='"State"=0'
+            PCMCFG.REC<-1>='"Toll"=0'
+            PCMCFG.REC<-1>=''
+            PCMCFG.REC<-1>='[Route Options]'
+            PCMCFG.REC<-1>='"AccessRule"=0'
+            PCMCFG.REC<-1>='"BordersOpen"=1'
+            PCMCFG.REC<-1>='"Cost"=0'
+            PCMCFG.REC<-1>='"CustomRoute"=0'
+            PCMCFG.REC<-1>='"ExactnessLevel"=80'
+            PCMCFG.REC<-1>='"FerryMiles"=0'
+            PCMCFG.REC<-1>='"FiftyThree"=0'
+            PCMCFG.REC<-1>='"HazFormula"="N"'
+            PCMCFG.REC<-1>='"LightVehicle"=0'
+            PCMCFG.REC<-1>='"Miles"=1'
+            PCMCFG.REC<-1>='"National"=0'
+            PCMCFG.REC<-1>='"OldMode"=0'
+            PCMCFG.REC<-1>='"OnRoad"=0'
+            PCMCFG.REC<-1>='"RegionID"="NA"'
+            PCMCFG.REC<-1>='"RouteFormula"="S"'
+            PCMCFG.REC<-1>='"Time"=0'
+            PCMCFG.REC<-1>='"TollDiscouraged"=0'
+            PCMCFG.REC<-1>='"ZipCodeOption"=0'
+            PCMCFG.REC<-1>=''
+            PCMCFG.REC<-1>='[Run Mode]'
+            PCMCFG.REC<-1>='"CommandLine"=1'
+            PCMCFG.REC<-1>='"ErrorsInLogOnly"=0'
+      END CASE
+      WRITE PCMCFG.REC ON F.PCIN,CH.NUM:'P.CFG'
+
+      RETURN
+*********************************************************************************
+ERROR.CONDITION:
+*********************************************************************************
+9995: *** Error - Problem with data
+      IF NO.PCMILER.ERRORS ELSE
+         CALL ELINE("PCMILER Error - ":ERRLINE)
+      END
+      VOUT=''
+      VOUT<1>=0                          ; * Send 0 Miles if Error
+      VOUT<2>='ERROR'
+      * old method error here
+      PCMLOCK = 0
+      READU PCMDAT FROM F.PCM,"PCMTRACK*":DATE() LOCKED
+         PCMLOCK = 1
+                                         ; * go on
+      END ELSE
+         PCMDAT = ''
+      END
+      IF NOT(PCMLOCK) THEN
+****         PCMDAT<5> = PCMDAT<5> + 1
+         WRITE PCMDAT ON F.PCM,"PCMTRACK*":DATE()
+         RELEASE F.PCM,"PCMTRACK*":DATE()
+      END
+      RETURN TO 9999
+   END

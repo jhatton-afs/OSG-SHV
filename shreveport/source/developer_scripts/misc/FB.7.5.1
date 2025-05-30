@@ -1,0 +1,1773 @@
+*=====================================================================
+*
+*  PROGRAM   : FB.TL.BIDS.99  - Truckload Traffic Survey Bids Analysis
+*
+*  PURPOSE   : This program allows for data collection of bid entries
+*            : from various carriers for new clients.  Complex analysis
+*            : of the resulting bid rankings and various reporting
+*            : capabilities are included in the program.
+*
+*  PROGRAMMER: Angela Travis, at the direction of Owen Holman
+*              Tami Seago, 04/20/00
+*
+*
+*======================================================================
+* COPYRIGHT (C) 1995,96,97,98 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED
+*       ----------------------------------------------------
+*  This program is sole property of AFS Logistics, LLC (AUTOMATED
+*  FREIGHT SYSTEMS) and may not be used, copied, or modified without
+*  the express written consent of Brian Barker of AFS Logistics, LLC.
+*======================================================================
+* 033105 - JMK01 - ADD CLIENT AND CARRIER FOR ARTCO BELL AND CRETE
+* $INCLUDE PROG.ADMIN INC_OPTIONS
+* $INCLUDE FILE.DEFS INC_CLIENTS
+* $INCLUDE FILE.DEFS INC_FB.AUDIT
+* $INCLUDE FILE.DEFS INC_ADDS60.CODES     ;* These require specific PROCOMM settings!
+*----------------------------------------------------------------------
+*    Local Equates
+*----------------------------------------------------------------------
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+*----------------------------------------------------------------------
+*    Open Files
+*----------------------------------------------------------------------
+      **** test open file
+      OPEN '','TEMP' TO F.TEMP ELSE
+         CALL OPEN.ABORT("TEMP",PROG.NAME)
+      END
+
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN 'DICT','CLIENTS' TO F.DICT.CLIENTS ELSE
+         CALL OPEN.ABORT("DICT CLIENTS",PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN 'DICT','CARRIERS' TO F.DICT ELSE
+         CALL OPEN.ABORT("DICT CARRIERS",PROG.NAME)
+      END
+      OPEN 'FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT("FB.TABLES",PROG.NAME)
+      END
+      GOSUB GET.EQUIP.TYPES
+      READ AVAL.ACC.CHRG FROM F.TABLES,"TL.ACCESSORIAL.CHRGS" ELSE
+         AVAL.ACC.CHRG = ''
+      END
+      READ STATE FROM F.TABLES,"TL.BID.STATES" ELSE
+         STATE = ''
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+         CALL OPEN.ABORT("ZIPS.CODES",PROG.NAME)
+      END
+      OPEN 'PCIN' TO F.PCIN ELSE
+         CALL OPEN.ABORT("PCIN",PROG.NAME)
+      END
+      OPEN 'PCOUT' TO F.PCOUT ELSE
+         CALL OPEN.ABORT("PCOUT",PROG.NAME)
+      END
+      OPEN 'FB.MILEAGE' TO F.MILEAGE ELSE
+         CALL OPEN.ABORT("FB.MILEAGE", PROG.NAME)
+      END
+
+      CALL CHANNEL(CH.NUM)
+*----------------------------------------------------------------------
+*    Initialize Program Variables
+*----------------------------------------------------------------------
+
+      GOSUB INIT.VARIABLES
+
+*----------------------------------------------------------------------
+*    Start linear processing
+*----------------------------------------------------------------------
+
+*----------------------------------------------------------------------
+*    Enter client number/name
+*----------------------------------------------------------------------
+100:
+      GOSUB DSP.MAIN.SCREEN
+
+      HELP="Enter the client number or name to search.  [X]=Exit [EX]=Exit"
+      IF CLIENT.ID='' THEN MASK='#####' ELSE MASK=CLIENT.ID
+      CRT @(28,3):MASK
+      CALL GEN.IN(28,3,MASK,'',Q,0,20,'','',2,-5,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X' ! QI='EX'
+            STOP
+         CASE QI='' & CLIENT.ID = ''
+            STOP
+         CASE QI='' & CLIENT.ID NE ''
+            Q=CLIENT.ID
+         CASE ALPHA(QI)
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            IF ITEM.LIST='' ! DCOUNT(ITEM.LIST<1>,@VM) > 1 THEN GOTO 100
+            IF NOT(NUM(ITEM.LIST<1,1>)) THEN GOTO 100
+            Q=ITEM.LIST<1,1>'R%5'
+
+         CASE NUM(QI)
+            Q=QI'R%5'
+            IF CLIENT.ID#'' THEN
+               IF QI NE CLIENT.ID THEN
+                  GOSUB INIT.VARIABLES
+               END
+            END
+
+         CASE 1
+            GOTO 100
+      END CASE
+
+      READ CLIENT.REC FROM F.CLIENTS,Q ELSE
+         CALL ELINE("Cannot find client ":Q:" in the CLIENT file")
+         GOTO 100
+      END
+
+
+      CLIENT.ID=Q
+      CLIENT.NAME=CLIENT.REC<2>
+      CLIENT.LOC=CLIENT.REC<4>
+      CLIENT.INFO=CLIENT.NAME:' - ':CLIENT.LOC
+      DIVISIONS = CLIENT.REC<12>
+      IF DIVISIONS = 'Y' THEN
+         OPEN '','DIVISION.CODES,':CLIENT.ID TO F.DIVISION ELSE
+            CALL OPEN.ABORT("DIVISION.CODES,":CLIENT.ID,PROG.NAME)
+         END
+      END
+
+      IF CLIENT.ID[1,2]#99 THEN
+         CALL ELINE('Invalid entry. Client Number must begin with 99.')
+         CLIENT.ID=''
+         GO 100
+      END
+
+      TABLE.ID = "TL.BID.STATES*":CLIENT.ID
+      READ STATE FROM F.TABLES,TABLE.ID ELSE NULL
+      NUM.TL.STATES = DCOUNT(STATE<1>,@VM)
+
+
+      GOSUB DSP.MAIN.SCREEN
+      CRT @(28,3):CLIENT.ID:' - ':CLIENT.INFO'L#40'
+
+*----------------------------------------------------------------------
+*    Check to see if client exists in Bids Dataset
+*----------------------------------------------------------------------
+*** Should some type of file open routing be performed prior to this?
+*** Do the dimensions of 7/1 need to be modified?
+*** Should this program be limited to '99' series client id's?
+
+      OPEN '','FB.TL.BIDS,':CLIENT.ID TO F.BIDS ELSE
+         LINE ='"':CLIENT.ID:'" is not setup! Do you want to set it up? : ##'
+         HELP='Enter [Y]es [N]o [X]-Back [EX]it'
+         CALL GEN.IN(0,22,LINE,'',Q,0,20,'','',0,-2,22,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='' OR QI = 'X'
+               CRT @(0,22):@(-3)
+               CRT @(0,21):@(-4):
+               CRT @(24,3):SPACES(40)
+               GOTO 100
+
+            CASE QI='EX'
+               GOSUB EXIT.PROGRAM
+
+            CASE QI='N'
+               CRT @(0,22):@(-3)
+               CRT @(28,3):@(-4)
+               CLIENT.ID=''
+               GOTO 100
+
+            CASE QI='Y'
+               NEW.CLIENT=TRUE
+               CRT @(0,22):'Setting up files for client - Please wait':@(-4)
+               CRT @(0,23):@(-4):
+               EXECUTE 'CREATE-FILE DATA FB.TL.BIDS,':CLIENT.ID:' 7,1' PASSLIST CAPTURING OUTPUT
+               OPEN '','FB.TL.BIDS,':CLIENT.ID TO F.BIDS ELSE
+                  CALL OPEN.ABORT("FB.TL.BIDS,":CLIENT.ID, PROG.NAME)
+               END
+               CRT @(0,22):@(-3)
+         END CASE
+      END
+      CRT @(28,3):CLIENT.ID:' - ':CLIENT.INFO'L#40'
+
+*----------------------------------------------------------------------
+*     Get carrier number/name
+*----------------------------------------------------------------------
+*** Does the program need to access a carrier already associated with
+*** the client.id?  How?
+*** Access the last carrier and display it but leave the cursor at the
+*** entry position.  They will have to enter through it to the next
+*** menu item.
+
+200:
+      IF NEW.CLIENT THEN
+         HELP='Enter carrier number.  [X]=Back [EX]=Exit'
+         IF CARRIER.ID#'' THEN MASK=CARRIER.ID ELSE
+            MASK='#####'
+         END
+         CRT @(28,4):MASK
+      END ELSE
+
+         IF CARRIER.ID#'' THEN
+            MASK=CARRIER.ID
+            HELP='Press enter to use this carrier, ':CARRIER.ID:' or enter new carrier.'
+            GOSUB GET.CARRIER.DATA
+            CRT @(28,4):CARRIER.ID:' - ':CARRIER.NAME:' - ':CARRIER.CITY:
+         END ELSE
+            MASK='#####'
+            HELP='Enter carrier number.  [X]=Back [EX]=Exit'
+            CRT @(28,4):MASK
+         END
+      END
+
+      CALL GEN.IN(28,4,MASK,'',Q,0,20,'','',3,-5,4,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CARRIER.ID=''
+            CRT @(28,3):@(-4)
+            GOSUB DSP.MAIN.SCREEN
+            GOTO 100
+         CASE QI='EX'
+            GOSUB EXIT.PROGRAM
+         CASE QI='' & CARRIER.ID = ''
+            CALL ELINE('You must enter a carrier number to continue.')
+            GOTO 200
+         CASE QI='' & CARRIER.ID NE ''
+            Q=CARRIER.ID
+         CASE NUM(QI)
+            QI=QI'R%5'
+            READV NULL FROM F.CARRIERS,QI,1 ELSE
+               CALL ELINE('Carrier number not on file. Please try again.')
+               GOTO 200
+            END
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'CARRIERS','SDX.CARRIER,NAME',1,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 200
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 200
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOSUB DSP.MAIN.SCREEN
+                  CRT @(28,3):CLIENT.ID:' - ':CLIENT.INFO'L#40'
+                  GOTO 200
+            END CASE
+         CASE 1
+            IF QI='' & CARRIER.ID NE '' THEN Q=CARRIER.ID
+            CALL ELINE('You must enter a carrier number to continue. Please try again.')
+            GOTO 200
+      END CASE
+      CARRIER.ID=Q'R%5'
+      GOSUB GET.CARRIER.DATA
+      CRT @(28,4):CARRIER.ID:' - ':CARRIER.NAME:' - ':CARRIER.CITY:
+
+*----------------------------------------------------------------------
+*     Series of sub-routines to get misc. info from user
+*----------------------------------------------------------------------
+
+GET.DIVISION:***
+      IF DIVISIONS # 'Y' THEN
+         IF QI='X' THEN GOTO 200
+         CALL ELINE('DIVISIONS NOT SET UP, USING MAIN LOCATION')
+         DIVISION = ''
+         ROUTE.ZIP = CLIENT.REC<6>
+         ROUTE.CITY = CLIENT.REC<4>
+         ROUTE.STATE = CLIENT.REC<5>
+         CRT @(28,5):'Main Location - ':ROUTE.ZIP'R%5':' ':ROUTE.CITY:', ':ROUTE.STATE:
+         GOTO 400
+      END
+
+300:  HELP="Enter division code. ''=Exit. 'X'=Back. 'L'=List all divisions."
+      CALL GEN.IN(28,5,'','',Q,0,5,'','',2,28,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' AND DIVISION#'' THEN
+         QI=DIVISION
+         Q=QI
+      END
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='' AND DIVISION=''
+            STOP
+*DF          CASE QI='X' OR QI = '' OR QI='EX'
+         CASE QI='X'
+*DF            X.BACK = 1
+            IF DIVISION='' THEN
+               CRT @(28,5):@(-4):
+            END ELSE
+               CRT @(28,5):DIVISION'R%5':' - ': ROUTE.ZIP'R%5':' ':ROUTE.CITY:', ':ROUTE.STATE'L#25'
+            END
+            GOTO 200
+         CASE QI='L'
+            EXECUTE 'SORT DIVISION.CODES,':CLIENT.ID:' CITY.STATE HEADING "List of all division codes for ':CLIENT.ID:' - ':CLIENT.NAME:"'CL'":'"'
+            CALL ELINE('Press <ENTER> to continue.')
+            CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            GOSUB DSP.MAIN.SCREEN
+            CRT @(28,3):CLIENT.ID:' - ':CLIENT.INFO'L#40'
+            CRT @(28,4):CARRIER.ID:' - ':CARRIER.NAME:' - ':CARRIER.CITY:
+            GO GET.DIVISION
+         CASE LEN(QI) <= 5
+            DIVISION = Q'R%5'
+            READ DIV.REC FROM F.DIVISION, DIVISION ELSE
+               CALL ELINE('Invalid entry, please try again.')
+               GO 300
+            END
+            ROUTE.ZIP = DIV.REC<1>
+            READ ZIP.REC FROM F.ZIPS,ROUTE.ZIP ELSE
+               CALL ELINE("Cannot find client ":ROUTE.ZIP:" in the ZIP CODE file")
+               ROUTE.ZIP=''
+               GOTO 300
+            END
+         CASE 1
+            CALL ELINE('Invalid entry.')
+      END CASE
+      ROUTE.CITY = ZIP.REC<1>
+      ROUTE.STATE = ZIP.REC<2>
+      CRT @(28,5):DIVISION'R%5':' - ': ROUTE.ZIP'R%5':' ':ROUTE.CITY:', ':ROUTE.STATE'L#25'
+
+GET.EQUIP:***
+
+400:  HELP='Select equipment type.  [L]ist [X]=Back [EX]=Exit'
+      CRT @(28,6):
+      CRT @(0,22):TYPE.HELP
+
+      IF EQUIP.TYPE.CODE#'' THEN MASK=EQUIP.TYPE.CODE'R%1' ELSE MASK='#'
+      CALL GEN.IN(28,6,MASK,'',Q,0,1,'','',0,-1,6,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+*DF            IF EQUIP.TYPE#'' THEN CRT @(28,6):EQUIP.TYPE'R%1': ELSE
+            IF EQUIP.TYPE.CODE#'' THEN
+               CRT @(28,6):EQUIP.TYPE.CODE'R#1':' ':EQUIP.TYPE'L#4':' ':EQUIP.DESC'L#15'
+            END ELSE
+               CRT @(28,6):'#':
+            END
+            GOTO 300
+         CASE QI='EX'
+            GOSUB EXIT.PROGRAM
+         CASE QI='' & EQUIP.TYPE.CODE = ''
+            CALL ELINE('You must select equipment type.')
+            GOTO 400
+         CASE QI='L'
+            CALL LIST.EQUIP.TYPES(AVAL.EQUIP.TYPES,EQUIP.RETURNED)
+            GOSUB DSP.MAIN.SCREEN
+            CRT @(28,3):CLIENT.ID:' - ':CLIENT.INFO'L#40'
+            CRT @(28,4):CARRIER.ID:' - ':CARRIER.NAME:' - ':CARRIER.CITY:
+            IF DIVISION#'' THEN
+               CRT @(28,5):DIVISION'R%5':' - ': ROUTE.ZIP'R%5':' ':ROUTE.CITY:', ':ROUTE.STATE:
+            END ELSE
+               CRT @(28,5):'Main Location - ':ROUTE.ZIP'R%5':' ':ROUTE.CITY:', ':ROUTE.STATE:
+            END
+            IF EQUIP.RETURNED<3>='X' THEN GO 400
+            EQUIP.TYPE.CODE=EQUIP.RETURNED<3>
+            EQUIP.TYPE=EQUIP.RETURNED<1>
+            EQUIP.DESC = EQUIP.RETURNED<2>
+         CASE QI='' & EQUIP.TYPE.CODE#''
+            QI=EQUIP.TYPE.CODE
+         CASE NUM(QI) AND QI LE NUM.AVAL.TYPES AND QI GT 0
+            EQUIP.TYPE.CODE=QI
+            EQUIP.TYPE = AVAL.EQUIP.TYPES<1,QI>
+            EQUIP.DESC = AVAL.EQUIP.TYPES<2,QI>
+         CASE 1
+            GOSUB ADD.EQUIPMENT
+            GOSUB GET.EQUIP.TYPES
+            GOSUB DSP.MAIN.SCREEN
+            CRT @(28,3):CLIENT.ID:' - ':CLIENT.INFO'L#40'
+            CRT @(28,4):CARRIER.ID:' - ':CARRIER.NAME:' - ':CARRIER.CITY:
+            CRT @(28,5):ROUTE.ZIP'R%5':' - ':ROUTE.CITY:', ':ROUTE.STATE'L#25'
+            GO 400
+      END CASE
+      CRT @(28,6):EQUIP.TYPE.CODE'R#1':' ':EQUIP.TYPE'L#4':' ':EQUIP.DESC'L#15'
+      CRT @(0,22):@(-4)
+
+
+
+      GOSUB READ.RECORDS
+      GOSUB ASSIGN.DISPLAY.VALUES
+      GOSUB DSP.MAIN.DATA
+
+GET.MINIMUM:***
+
+500:  HELP='Enter Default Minimum charge.  [X]=Back [EX]=Exit'
+      CRT @(27,7):
+      IF DEFAULT.MIN #'' THEN MASK=DEFAULT.MIN'R06#4' ELSE MASK='____'
+      SET.LEN=-(LEN(MASK))
+      CALL GEN.IN(28,7,MASK,'',Q,0,5,'R','0',0,SET.LEN,7,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            IF DEFAULT.MIN#'' THEN CRT @(27,7):DEFAULT.MIN'R06#4':
+            GOTO 400
+         CASE QI='EX'
+            GOSUB EXIT.PROGRAM
+         CASE NOT(NUM(QI))
+            CALL ELINE('Enter Numeric Values Only!')
+            GOTO 500
+         CASE QI='' & DEFAULT.MIN#''
+            Q=DEFAULT.MIN
+         CASE QI+0=0
+            LINE ='You have entered ZERO as the minimum.  Is this correct? : ##'
+            HELP='Enter [Y]es [N]o [X]-Back [EX]it'
+            CALL GEN.IN(0,22,LINE,'',R,1,20,'','',0,-2,22,0,RI,HELP,0,23)
+            RI=OCONV(RI,'MCU')
+            BEGIN CASE
+               CASE RI='Y' ! RI='YES'
+                  *** CONTINUE
+                  CRT @(0,22):@(-3)
+               CASE RI='N' ! RI='NO' ! RI='X'
+                  CRT @(0,22):@(-3)
+                  CRT @(28,7):SPACES(40)
+                  DEFAULT.MIN=''
+                  GOTO 500
+               CASE RI='EX'
+                  GOSUB EXIT.PROGRAM
+            END CASE
+         CASE QI < 0
+            CALL ELINE("Error! Number must be Positive!   ":QI:'')
+            GOTO 500
+         CASE NUM(QI)
+            DEFAULT.MIN=QI*100
+
+         CASE 1
+            CALL ELINE('INVALID ENTRY. PLEASE TRY AGAIN.')
+            GOTO 500
+      END CASE
+
+      CRT @(28,7):DEFAULT.MIN'R06#4':
+*     D.BID=''
+      D.BID<1>=DEFAULT.MIN
+
+GET.SIT:***
+600:
+      FOR SIT.NUM = 1 TO 4
+         SIT.COL = (((SIT.NUM*2)*6)+16)
+         IF SIT.NUM>3 THEN SIT.COL+=1
+
+         HELP='Enter SIT/Stop off charge for [':SIT.NUM:'].  [X]=Back [EX]=Exit'
+         CRT @(27,SIT.COL):
+
+         IF SIT<1,SIT.NUM> #'' THEN MASK=SIT<1,SIT.NUM>'R06#4' ELSE MASK='____'
+         CALL GEN.IN(SIT.COL,8,MASK,'',Q,0,4,'R','',0,SIT.COL,8,0,QI,HELP,0,23)
+         *-------------------------------------------------
+         BEGIN CASE
+            CASE QI='X'
+*DF               X.BACK = TRUE
+               IF MASK='' THEN
+                  CRT @(SIT.COL,8):MASK'R#6'
+               END ELSE
+                  CRT @(SIT.COL,8):MASK'R#4'
+               END
+               GOTO 500
+            CASE QI='EX'
+               GOTO 9999
+            CASE QI=''
+               IF SIT<1,SIT.NUM>#'' THEN
+                  QI=SIT<1,SIT.NUM>
+               END
+            CASE NUM(QI)
+               SIT<1,SIT.NUM>=QI*100
+            CASE ALPHA(QI)
+               CALL ELINE('INVALID ENTRY. PLEASE TRY AGAIN.')
+               IF SIT.NUM>0 THEN SIT.NUM-=1
+            CASE 1
+               CALL ELINE('INVALID ENTRY. PLEASE TRY AGAIN.')
+               IF SIT.NUM>0 THEN SIT.NUM-=1
+         END CASE
+         *-------------------------------------------------
+         CRT @(SIT.COL,8):SIT<1,SIT.NUM>'R06#4':
+      NEXT SIT.NUM
+      D.BID<2>=SIT
+
+*----------------------------------------------------------------------
+*     This starts a 'loop until finished' procedure which controls the
+*     program from this point.
+*----------------------------------------------------------------------
+* MENU.SELECT
+*
+*
+MENU.SELECT:***
+      CRT @(0,22):'Enter Selection Number :'
+      HELP = "OPTIONS: #=Menu Option [U]pdate [X]=Exit Program"
+      MASK = '##'
+      CALL GEN.IN(24,22,MASK,'',Q,0,6,'','',2,24,22,1,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 1                     ; ***CLIENT SELECTION
+            IF D.BID # CHAR(254) THEN
+               WRITE D.BID ON F.BIDS, D.BID.ID
+            END
+            GOSUB INIT.VARIABLES
+            GOSUB DSP.MAIN.SCREEN
+            GOTO 100
+         CASE QI = 2                     ; ***CARRIER SELECTION
+            IF D.BID # CHAR(254) THEN
+               WRITE D.BID ON F.BIDS, D.BID.ID
+            END
+            GOSUB DSP.MAIN.SCREEN
+            CRT @(28,3):CLIENT.ID:' - ':CLIENT.INFO'L#40'
+            CRT @(0,22):@(-3)
+            DIVISION=''
+            EQUIP.TYPE.CODE=''
+            DEFAULT.MIN=''
+            SIT=''
+            GOTO 200
+         CASE QI = 3                     ; ***DIVISION SELECTION
+            IF D.BID # CHAR(254) THEN
+               WRITE D.BID ON F.BIDS, D.BID.ID
+            END
+            GOSUB DSP.MAIN.SCREEN
+            CRT @(28,3):CLIENT.ID:' - ':CLIENT.INFO'L#40'
+            CRT @(28,4):CARRIER.ID:' - ':CARRIER.NAME:' - ':CARRIER.CITY:
+            CRT @(0,22):@(-3)
+            DIVISION=''
+            EQUIP.TYPE.CODE=''
+            DEFAULT.MIN=''
+            SIT=''
+            GO GET.DIVISION
+         CASE QI = 4                     ; ***EQUIPMENT SELECTION
+            IF D.BID # CHAR(254) THEN
+               WRITE D.BID ON F.BIDS, D.BID.ID
+            END
+            GOSUB DSP.MAIN.SCREEN
+            CRT @(28,3):CLIENT.ID:' - ':CLIENT.INFO'L#40'
+            CRT @(28,4):CARRIER.ID:' - ':CARRIER.NAME:' - ':CARRIER.CITY:
+            CRT @(28,5):DIVISION'R%5':' - ': ROUTE.ZIP'R%5':' ':ROUTE.CITY:', ':ROUTE.STATE:
+            CRT @(0,22):@(-3)
+            EQUIP.TYPE.CODE=''
+            DEFAULT.MIN=''
+            SIT=''
+            GO GET.EQUIP
+         CASE QI = 5                     ; ***DEFAULT MINIMUM
+            CRT @(0,22):@(-3)
+            GO GET.MINIMUM
+         CASE QI = 6                     ; ***SIT/STOP OFF CHARGES
+            CRT @(0,22):@(-3)
+            GO GET.SIT
+         CASE QI = 7                     ; ***INBOUND ENTRY SCREEN
+            IOT = 'I'
+            GOSUB ASSIGN.IOT.VARIABLES
+            GOSUB GET.RATE.INFO
+            IF QI='EX' THEN GOTO 9999
+            GOSUB SAVE.IOT.VARIABLES
+            GOSUB ASSIGN.DISPLAY.VALUES
+            GOSUB DSP.MAIN.SCREEN
+            GOSUB DSP.MAIN.DATA
+         CASE QI = 8                     ; ***OUTBOUND ENTRY SCREEN
+            IOT = 'O'
+            GOSUB ASSIGN.IOT.VARIABLES
+            GOSUB GET.RATE.INFO
+            IF QI='EX' THEN GOTO 9999
+            GOSUB SAVE.IOT.VARIABLES
+            GOSUB ASSIGN.DISPLAY.VALUES
+            GOSUB DSP.MAIN.SCREEN
+            GOSUB DSP.MAIN.DATA
+         CASE QI = 9                     ; ***THIRD PARTY ENTRY SCREEN
+            IOT = 'T'
+            GOSUB ASSIGN.IOT.VARIABLES
+            GOSUB GET.RATE.INFO
+            IF QI='EX' THEN GOTO 9999
+            GOSUB SAVE.IOT.VARIABLES
+            GOSUB ASSIGN.DISPLAY.VALUES
+            GOSUB DSP.MAIN.SCREEN
+            GOSUB DSP.MAIN.DATA
+         CASE QI = 10                    ; ***POINT TO POINT ENTRY SCREEN
+            CALL ELINE('NOT IMPLEMENTED AT THIS TIME, WILL BE IN THE FUTURE')
+            GO MENU.SELECT
+            GOSUB ASSIGN.PP.VARIABLES
+            GOSUB DSP.POINT.SCREEN
+            GOSUB GET.POINT.INFO
+            IF QI = 'EX' THEN GOTO 9999
+            GOSUB SAVE.PP.VARIABLES
+            GOSUB ASSIGN.DISPLAY.VALUES
+            GOSUB DSP.MAIN.SCREEN
+            GOSUB DSP.MAIN.DATA
+         CASE QI = 11                    ; ***ACCESSORIAL CHARGES ENTRY SCREEN
+            CALL ELINE('NOT IMPLEMENTED AT THIS TIME, WILL BE IN THE FUTURE')
+            GO MENU.SELECT
+            IOT = 'A'
+            GOSUB GET.ACCESS.INFO
+            IF QI = 'EX' THEN GOTO 9999
+            GOSUB SAVE.IOT.VARIABLES
+            GOSUB ASSIGN.DISPLAY.VALUES
+            GOSUB DSP.MAIN.SCREEN
+            GOSUB DSP.MAIN.DATA
+         CASE QI = 'U' OR QI = ''        ; ***UPDATE AND SAVE CHANGES
+            ** SAVE DATA **
+            IF D.BID # CHAR(254) THEN
+               WRITE D.BID ON F.BIDS, D.BID.ID
+            END
+            GOSUB INIT.VARIABLES
+            GOSUB DSP.MAIN.SCREEN
+            GOTO 100
+         CASE QI = 'X' ! 'EX'            ; ***EXIT PROGRAM
+            *** NO CLEAN UP NEEDED?
+            *** CONFIRM EXIT?
+            GOSUB EXIT.PROGRAM
+         CASE 1                          ; ***DEFAULT
+            GOTO MENU.SELECT
+      END CASE
+
+      GOTO MENU.SELECT
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+*----------------- BEGINNING OF SUB ROUTINES --------------------------
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:ADD.EQUIPMENT
+*
+*
+ADD.EQUIPMENT:***
+      LINE ='Not a valid type! Do you want to set a new one up? : ##'
+      HELP='Enter [Y]es [N]o [X]-Back [EX]it'
+      CALL GEN.IN(0,22,LINE,'',Q,0,20,'','',0,-2,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+
+      BEGIN CASE
+         CASE QI='' OR QI = 'X'
+            CRT @(0,22):@(-3)
+            CRT @(0,21):@(-4):
+            CRT @(24,3):SPACES(40)
+            GOTO 400
+         CASE QI='EX'
+            GOSUB EXIT.PROGRAM
+         CASE QI='N'
+            CRT @(0,22):@(-3)
+            CRT @(28,3):@(-4)
+            EQUIP.TYPE.CODE=''
+            GOTO 400
+         CASE QI='Y'
+            CRT @(0,22):'Setting up new equipment type - Please wait':@(-4)
+            CRT @(0,23):@(-4):
+            CRT @(0,22):@(-3)
+            EXECUTE "UP.9.5"
+            *** NEED ROUTINE TO WRITE TO EQUIPMENT FILE
+      END CASE
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:DSP.ACCESS.SCREEN
+*
+*
+DSP.ACCESS.SCREEN:***
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:DSP.MAIN.DATA
+*
+*
+DSP.MAIN.DATA:***
+      CRT @(28,3):CLIENT.ID:' - ':CLIENT.INFO'L#40'
+      CRT @(28,4):CARRIER.ID:' - ':CARRIER.NAME:' - ':CARRIER.CITY:
+      IF DIVISION#'' THEN
+         CRT @(28,5):DIVISION'R%5':' - ': ROUTE.ZIP'R%5':' ':ROUTE.CITY:', ':ROUTE.STATE:
+      END ELSE
+         CRT @(28,5):'Main Location - ':ROUTE.ZIP'R%5':' ':ROUTE.CITY:', ':ROUTE.STATE:
+      END
+
+      IF EQUIP.TYPE.CODE#'' THEN
+         CRT @(28,6):EQUIP.TYPE.CODE'R#1':' ':EQUIP.TYPE'L#4':' ':EQUIP.DESC'L#10'
+      END ELSE
+         CRT @(28,6):'#':
+      END
+
+      IF DEFAULT.MIN#'' THEN
+         CRT @(28,7):DEFAULT.MIN'R06#4':
+      END ELSE
+         CRT @(28,7):'____':
+      END
+
+      IF SIT<1,1>#'' THEN CRT @(28,8):SIT<1,1>'R06#4': ELSE CRT @(27,8):'____'
+      IF SIT<1,2>#'' THEN CRT @(40,8):SIT<1,2>'R06#4': ELSE CRT @(39,8):'____'
+      IF SIT<1,3>#'' THEN CRT @(52,8):SIT<1,3>'R06#4': ELSE CRT @(51,8):'____'
+      IF SIT<1,4>#'' THEN CRT @(65,8):SIT<1,4>'R06#4': ELSE CRT @(64,8):'____'
+
+      CRT @(18,10):@(-4)
+      CRT @(18,10):'<<':INBOUND.DISPLAY:'>>':
+      CRT @(18,11):@(-4)
+      CRT @(18,11):'<<':OUTBOUND.DISPLAY:'>>':
+      CRT @(18,12):@(-4)
+      CRT @(18,12):'<<':THIRD.PARTY.DISPLAY:'>>':
+      CRT @(27,13):@(-4)
+      CRT @(27,13):'<<':POINT.TO.POINT.DISPLAY:'>>':
+      CRT @(27,14):@(-4)
+      CRT @(27,14):'<<':ACCESSORIAL.DISPLAY:'>>':
+
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:DSP.RATE.SCREEN
+*
+*
+DSP.RATE.SCREEN:***
+      *** redraw screen header
+      BEGIN CASE
+         CASE IOT = 'I'
+            PROG.DESC = "TRUCKLOAD / INBOUND"
+         CASE IOT = 'O'
+            PROG.DESC = "TRUCKLOAD / OUTBOUND"
+         CASE IOT = 'T'
+            PROG.DESC = "TRUCKLOAD / THIRD PARTY"
+      END CASE
+
+      *** values for screen header routine
+      PROG.NAME = "FB.TRAFFIC.INPUT.2"
+      PACK.NAME = "Traffic Survey Input"
+      CO.NAME = "AFS Logistics, LLC"
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.7.5.1' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      GOSUB INIT.SCREEN
+
+      CRT @(26,0):CLIENT.ID:'-':CLIENT.NAME'L#15'
+      CRT @(26,1):CARRIER.ID:'-':CARRIER.NAME'L#15'
+
+      CRT @(0,4):STR("=",80):
+
+      FOR STATE.POS = 1 TO NUM.TL.STATES
+         COL = INT((STATE.POS/16)+.99)
+         COL = 20*COL-6
+         HEAD.COL = COL-14
+
+         IF STATE.POS>48 THEN
+            COL+=2
+            HEAD.COL = COL-16
+         END
+
+         ROW = MOD((STATE.POS-1),16)+5
+
+         IF MOD(STATE.POS,16)=1 THEN
+            IF STATE.POS<49 THEN
+               CRT @(HEAD.COL,3):"## ST   MIN   RATE":
+            END ELSE
+               CRT @(HEAD.COL,3):"## ST    MIN   RATE":
+            END
+         END
+
+         IF STATE.MIN<1,STATE.POS>#'' THEN
+            DISPLAY.MIN='$':STATE.MIN<1,STATE.POS>'R06#4'
+         END ELSE
+            DISPLAY.MIN='$____'
+         END
+
+         *** there is code in the assign.display.rate routine that
+         *** sets the display.min if the state has been split.  it
+         *** is currently commented out.  if the state is split,
+         *** no minimum will be displayed.
+
+         GOSUB ASSIGN.DISPLAY.RATE
+
+         IF STATE.POS >48 THEN
+            CRT @(COL-16, ROW):STATE.POS'R%2':' ':STATE<1,STATE.POS>:' ':DISPLAY.MIN:
+            CRT ' ':'$':DISPLAY.RATE:DISPLAY.FLAG:
+         END ELSE
+            CRT @(COL-14, ROW):STATE.POS'R%2':' ':STATE<1,STATE.POS>:'  ':DISPLAY.MIN:
+            CRT ' ':'$':DISPLAY.RATE:DISPLAY.FLAG:
+         END
+      NEXT STATE.POS
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:DSP.MAIN.SCREEN
+*
+*
+DSP.MAIN.SCREEN:***
+      CRT @(-1):
+
+      PROG.NAME = "FB.TRAFFIC.INPUT.1"
+      PROG.DESC = "TRUCKLOAD"
+      PACK.NAME = "Traffic Survey Input"
+      CO.NAME = "AFS Logistics, LLC"
+
+      GOSUB INIT.SCREEN
+
+      CRT @(01,03):"1) Client                :":
+      CRT @(01,04):"2) Carrier               :":
+      CRT @(01,05):"3) Division or Location  :":
+      CRT @(01,06):"4) Equipment             :":
+      CRT @(01,07):"5) Default Minimum       :":
+      CRT @(01,08):"6) SIT/Stop Off Chg":@(22,8):"[1]":@(34,8):"[2]":
+      CRT @(46,08):"[3]":@(58,8):"[4+]":
+      CRT @(00,09):STR("-",80):
+      CRT @(01,10):"7) Inbound     :":
+      CRT @(01,11):'8) Outbound    :'
+      CRT @(01,12):'9) Third Party :'
+      CRT @(00,13):'10) Point-To-Point      :'
+      CRT @(00,14):'11) Accessorial Charges :'
+      CRT @(00,21):STR('-',80)
+
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:GET.ACCESS.INFO
+*
+*
+GET.ACCESS.INFO:***
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:GET.CARRIER.DATA
+*
+*
+GET.CARRIER.DATA:***
+      READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE
+         CALL ELINE("ERROR - Carrier ":CARRIER.ID:" not on file.")
+         GOTO 200                        ; * ENTER CARRIER
+      END
+      CARRIER.NAME = CARRIER.REC<1>
+      CARRIER.CITY = CARRIER.REC<3>
+      CARRIER.STATE = CARRIER.REC<4>
+      RETURN
+*----------------------------------------------------------------------
+* SUB:INIT.SCREEN
+*
+*
+INIT.SCREEN:***
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('-',80) ; 
+      CRT @(0,21):STR('-',80) ; 
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:INIT.VARIABLES
+*
+*
+INIT.VARIABLES:***
+      CLIENT.ID=''
+      NEW.CLIENT=FALSE
+      TEMP.NAME=''
+      CARRIER.ID=''
+      ROUTE.ZIP=''
+      EQUIP.TYPE.CODE=''
+      DEFAULT.MIN=''
+      SIT.NUM=0
+      SIT=''
+      ZIP.REC=''
+      DIVISION=''
+      ROUTE.CITY=''
+      ROUTE.STATE=''
+      ROUTE.ZIP=''
+      X.BACK=''
+      STATE.RATE=''
+      STATE.MIN=''
+      SET.COL = 0
+      SET.ROW = 4
+      IOT=''
+      POINT.CTR=0
+      ORIGIN.ZIP=''
+      ORIGIN.CITY=''
+      ORIGIN.STATE=''
+      DESTIN.ZIP=''
+      DESTIN.CITY=''
+      DESTIN.STATE=''
+      PP.MILES=''
+      PP.RATE=''
+      PP.CPM=''
+      DATA.ENTERED=FALSE
+      SUBNN = ''
+      PRESERVE.X = ''
+      PRESERVE.COL = ''
+      PRESERVE.ROW = ''
+      STATE.RATE=''
+      STATE.MIN=''
+      MIN.SPLIT=''
+      MIN.DISPLAY=''
+      DISPLAY.MIN=''
+      DISPLAY.RATE=''
+      STATE.DIR = ''
+      STATE.DIR<1> = "North"
+      STATE.DIR<2> = "South"
+      STATE.DIR<3> = "East"
+      STATE.DIR<4> = "West"
+      DISPLAY=''
+      INBOUND.DISPLAY=''
+      OUTBOUND.DISPLAY=''
+      THIRD.PARTY.DISPLAY=''
+      POINT.TO.POINT.DISPLAY=''
+      ACCESSORIAL.DISPLAY=''
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:SPLIT.STATE
+*
+*
+SPLIT.STATE:***
+
+DSP.SPLIT:
+      STATE.RATE<1,STATE.POS>=''
+      STATE.MIN<1,STATE.POS>=''
+      BEGIN CASE
+         CASE IOT = 'I'
+            PROG.DESC = "TRUCKLOAD / INBOUND"
+         CASE IOT = 'O'
+            PROG.DESC = "TRUCKLOAD / OUTBOUND"
+         CASE IOT = 'T'
+            PROG.DESC = "TRUCKLOAD / THIRD PARTY"
+      END CASE
+
+      PROG.NAME = "FB.TRAFFIC.INPUT.2"
+      PACK.NAME = "Traffic Survey Input"
+      CO.NAME = "AFS Logistics, LLC"
+      GOSUB INIT.SCREEN
+
+      CRT @(26,0):CLIENT.ID:'-':CLIENT.NAME'L#15'
+      CRT @(26,1):CARRIER.ID:'-':CARRIER.NAME'L#15'
+      CRT @(0,4):STR("=",80):
+
+      DIR.DISPLAY = ''
+
+      FOR DIR.CTR = 1 TO 4
+         IF STATE.SPLIT<1,STATE.POS,DIR.CTR>#'' THEN
+            DIR.DISPLAY<DIR.CTR> = STATE.SPLIT<1,STATE.POS,DIR.CTR>'R26'
+         END ELSE
+            DIR.DISPLAY<DIR.CTR> = '____'
+         END
+
+         IF MIN.SPLIT<1,STATE.POS,DIR.CTR>#'' THEN
+            MIN.DISPLAY<DIR.CTR> = MIN.SPLIT<1,STATE.POS,DIR.CTR>'R06#4'
+         END ELSE
+            MIN.DISPLAY<DIR.CTR> = '____'
+         END
+      NEXT
+
+      CRT @(06,06):STATE<1,STATE.POS>
+      CRT @(06,08):'NORTH $':MIN.DISPLAY<1>:' $':DIR.DISPLAY<1>:
+      CRT @(06,09):'SOUTH $':MIN.DISPLAY<2>:' $':DIR.DISPLAY<2>:
+      CRT @(06,10):'EAST  $':MIN.DISPLAY<3>:' $':DIR.DISPLAY<3>:
+      CRT @(06,11):'WEST  $':MIN.DISPLAY<4>:' $':DIR.DISPLAY<4>:
+
+      IF DISPLAY.FLAG = '*' THEN GOTO SPLIT2
+
+SPLIT1:
+      FOR DIR.CTR = 1 TO 4
+
+         IF MIN.SPLIT<1,STATE.POS,DIR.CTR>#'' THEN
+            ENTRY.REQUIRED = 1           ; *** RATE ENTRY REQUIRED BECAUSE MINIMUM IS ENTERED
+         END ELSE
+            ENTRY.REQUIRED = 0           ; *** RATE ENTRY OPTIONAL, MINIMUM IS NULL
+         END
+         HELP='Enter the rate for ':STATE.DIR<DIR.CTR>:' ':STATE<1,STATE.POS>:STR(" ",8):'[/]=Enter Minimum [X]=Back [EX]=Exit'
+         IF STATE.SPLIT<1,STATE.POS,DIR.CTR>#'' THEN
+            MASK = STATE.SPLIT<1,STATE.POS,DIR.CTR>'R26'
+         END ELSE
+            MASK = '____'
+         END
+
+         CALL GEN.IN(19,(DIR.CTR+7),MASK,'AMT2',Q,0,4,'','',2,19,(DIR.CTR+7),0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI = 'X'
+               CRT @(19,DIR.CTR+7):MASK
+
+               IF ENTRY.REQUIRED AND STATE.SPLIT<1,STATE.POS,DIR.CTR>='' THEN
+                  CALL ELINE("Rate entry required when minimum specified.")
+                  DIR.CTR-=1
+               END ELSE
+                  IF DIR.CTR>1 THEN
+                     DIR.CTR-=2
+                  END ELSE
+                     SAVE.POS=SAVE.POS-1
+                     GOTO END.SPLIT
+                  END
+               END
+
+            CASE QI = '' ; NULL
+               CRT @(19,DIR.CTR+7):MASK
+               IF ENTRY.REQUIRED AND STATE.SPLIT<1,STATE.POS,DIR.CTR>='' THEN
+                  CALL ELINE("Rate entry required when minimum specified.")
+                  DIR.CTR-=1
+               END
+            CASE QI = '/'
+               CRT @(19,DIR.CTR+7):MASK
+               GOSUB SPLIT.MINIMUM
+               DIR.CTR-=1
+            CASE QI = 'EX'
+               GOTO 9999
+            CASE QI = 0
+               IF ENTRY.REQUIRED THEN
+                  CALL ELINE("Rate entry required when minimum specified.")
+                  DIR.CTR-=1
+               END ELSE
+                  STATE.SPLIT<1,STATE.POS,DIR.CTR>=''
+                  CRT @(19,DIR.CTR+7):'____'
+               END
+
+            CASE NUM(QI)
+               STATE.SPLIT<1,STATE.POS,DIR.CTR>=Q
+               CRT @(19,DIR.CTR+7):STATE.SPLIT<1,STATE.POS,DIR.CTR>'R26#4'
+            CASE 1
+               CALL ELINE('INVALID ENTRY. PLEASE TRY AGAIN.')
+               DIR.CTR-=1
+
+         END CASE
+      NEXT DIR.CTR
+
+SPLIT2:
+      CRT @(0,22):'Enter Selection Number :'
+      HELP = "OPTIONS:  [R]e-enter Rates  [S]ave Changes  [C]lear Rates  [X]=Back  [EX]it"
+      MASK = '##'
+      CALL GEN.IN(24,22,MASK,'',Q,0,6,'','',2,24,22,1,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'C'
+            STATE.SPLIT<1,STATE.POS>=''
+         CASE QI='R'
+            GOTO SPLIT1
+         CASE QI='S'
+            SPLIT.ARRAY=STATE.SPLIT<1,STATE.POS>
+            CHECK.ARRAY=TRIM(CHANGE(SPLIT.ARRAY,@SVM,''))
+            IF CHECK.ARRAY='' THEN SAVE.POS=SAVE.POS-1
+
+         CASE QI='X'
+            ** CONFIRM WRITE DATA, RETURN TO PREVIOUS MENU
+         CASE QI='EX'
+            ** DUMP DATA, EXIT PROGRAM
+            GOTO 9999
+         CASE 1
+            GOTO SPLIT2
+      END CASE
+END.SPLIT:
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:READ.RECORDS
+*
+*
+READ.RECORDS:***
+
+      *** this creates the key/id to read the record from
+
+      D.BID.ID=CARRIER.ID'R%5':'*':EQUIP.TYPE:'*':DIVISION
+
+      *** this reads the specified record from the data set opened
+      *** when the client id was entered.  if no data found, it sets
+      *** the data set to null
+
+      READ D.BID FROM F.BIDS, D.BID.ID ELSE D.BID = ''
+
+
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:ASSIGN.IOT.VARIABLES
+*
+*
+ASSIGN.IOT.VARIABLES:***
+      OFFSET = ''
+      DISPLAY = ''
+
+      BEGIN CASE
+         CASE IOT = 'I'
+            OFFSET = 0
+         CASE IOT = 'O'
+            OFFSET = 5
+         CASE IOT = 'T'
+            OFFSET = 10
+         CASE 1
+            CALL ELINE('IOT IS NOT ALPHA CHARACTER. CALL THE IDIOT WHO WROTE THIS PROGRAM!')
+      END CASE
+
+      STATE.RATE=D.BID<5+OFFSET>
+      STATE.SPLIT=D.BID<6+OFFSET>
+      STATE.MIN=D.BID<7+OFFSET>
+      MIN.SPLIT=D.BID<8+OFFSET>
+
+      FOR STATE.POS=1 TO NUM.TL.STATES UNTIL LEN(DISPLAY)>50
+         IF STATE.RATE<1,STATE.POS>#'' THEN
+            DISPLAY:=STATE<1,STATE.POS>:' $':STATE.RATE<1,STATE.POS>'R26#4':' '
+         END
+      NEXT STATE.POS
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:ASSIGN.DISPLAY.VALUES
+*
+*
+ASSIGN.DISPLAY.VALUES:***
+
+      DEFAULT.MIN = D.BID<1>
+      SIT=D.BID<2>
+      ACCESS.CODE=D.BID<3>
+      ACCESS.RATE=D.BID<4>
+
+      IOT = 'I'
+      GOSUB ASSIGN.IOT.VARIABLES
+      INBOUND.DISPLAY = DISPLAY
+
+      IOT = 'O'
+      GOSUB ASSIGN.IOT.VARIABLES
+      OUTBOUND.DISPLAY = DISPLAY
+
+      IOT = 'T'
+      GOSUB ASSIGN.IOT.VARIABLES
+      THIRD.PARTY.DISPLAY = DISPLAY
+
+      IOT = 'P'
+      GOSUB ASSIGN.PP.VARIABLES
+      POINT.TO.POINT.DISPLAY = DISPLAY
+
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:SAVE.IOT.VARIABLES
+*
+*
+SAVE.IOT.VARIABLES:***
+      D.BID<5+OFFSET>=STATE.RATE
+      D.BID<6+OFFSET>=STATE.SPLIT
+      D.BID<7+OFFSET>=STATE.MIN
+      D.BID<8+OFFSET>=MIN.SPLIT
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:SAVE.PP.VARIABLES
+*
+*
+SAVE.PP.VARIABLES:***
+      D.BID<20>=PP.ZIPS
+      D.BID<21>=PP.MILES
+      D.BID<22>=PP.RATE
+      D.BID<23>=PP.CPM
+
+      IF PP.ZIPS#'' THEN
+         ORIGIN.ZIP = FIELD(PP.ZIPS,'*',1)
+         DESTIN.ZIP = FIELD(PP.ZIPS,'*',2)
+      END
+      RETURN
+
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:GET.EQUIP.TYPES
+*
+*
+GET.EQUIP.TYPES:
+      READ AVAL.EQUIP.TYPES FROM F.TABLES,"TL.EQUIPMENT.TYPES" ELSE
+         AVAL.EQUIP.TYPES = ''
+      END
+      NUM.AVAL.TYPES = DCOUNT(AVAL.EQUIP.TYPES<1>,@VM)
+      TYPE.HELP = ''
+      FOR X = 1 TO NUM.AVAL.TYPES
+         IF X # 1 THEN TYPE.HELP := ' '
+         TYPE.HELP := X:'-':AVAL.EQUIP.TYPES<2,X>
+      NEXT X
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:GET.RATE.INFO
+*
+*
+GET.RATE.INFO:***
+      *** draws rate entry screen & populates data, if any
+      GOSUB DSP.RATE.SCREEN
+      CRT @(0,22):@(-3)
+      CRT @(0,22):'Enter Selection Number :'
+      HELP = 'OPTIONS:  ##=Menu Option  [A]dd  [C]lear Values  [X]=Back  [EX]it'
+      MASK = '##'
+      CALL GEN.IN(24,22,MASK,'',Q,0,3,'R','',0,24,22,1,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+
+      BEGIN CASE
+         CASE QI=''
+            GOTO END.RATE.INFO
+         CASE QI='A'
+            FOR STATE.POS = 1 TO NUM.TL.STATES
+               GOSUB GET.RATE
+               IF QI='EX' ! QI='X' THEN GOTO END.RATE.INFO
+               IF QI='.' THEN GOTO GET.RATE.INFO
+            NEXT
+            GOTO GET.RATE.INFO
+         CASE QI='C'
+            FOR STATE.POS = 1 TO NUM.TL.STATES
+               STATE.RATE<1,STATE.POS>=''
+               STATE.MIN<1,STATE.POS>=''
+               STATE.SPLIT<1,STATE.POS>=''
+            NEXT STATE.POS
+            GOTO GET.RATE.INFO
+         CASE QI='EX'
+            GOTO 9999
+         CASE QI='X'
+            GOTO END.RATE.INFO
+         CASE NUM(QI) AND INT(QI)=QI AND QI>0 AND QI<62
+            STATE.POS = QI
+            LINE.EDIT = TRUE
+            GOSUB GET.RATE
+            IF QI='EX' ! QI='X' THEN GOTO END.RATE.INFO
+            IF QI='.' THEN GOTO GET.RATE.INFO
+            GOTO GET.RATE.INFO
+      END CASE
+END.RATE.INFO:
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:GET.RATE
+*
+*
+GET.RATE:***
+
+      COL = INT((STATE.POS/16)+.99)
+      COL = 20*COL-6
+      IF STATE.POS>48 THEN COL+=1
+      ROW = MOD((STATE.POS-1),16)+5
+
+      GOTO STATE.RATE
+STATE.MINIMUM:
+      MIN.COL = COL-6
+
+      HELP = 'Enter Minimum for ':STATE<1,STATE.POS>:' 0=Default Min ':'[X]=Back [EX]it'
+
+      IF STATE.MIN<1,STATE.POS>+0=0 THEN
+         MASK = '____'
+      END ELSE
+         MASK = STATE.MIN<1,STATE.POS>'R06#4'
+      END
+
+      CALL GEN.IN(MIN.COL,ROW,MASK,'',Q,0,4,'R','',0,MIN.COL,ROW,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            IF STATE.MIN<1,STATE.POS>#'' THEN
+               CRT @ (MIN.COL, ROW):STATE.MIN<1,STATE.POS>'R06#4':
+            END ELSE
+               CRT @ (MIN.COL, ROW):'____':
+            END
+
+         CASE QI='EX'
+            GOTO END.GET.RATE
+
+         CASE QI='0'
+            STATE.MIN<1,STATE.POS>=''
+            CRT @ (MIN.COL, ROW):'____':
+
+         CASE INDEX(QI,'.',1)
+            CALL ELINE ('Please enter whole amounts only.')
+            GOTO STATE.MINIMUM
+
+         CASE NUM(QI)
+            STATE.MIN<1,STATE.POS>=QI*100
+            CRT @ (MIN.COL, ROW):STATE.MIN<1,STATE.POS>'R06#4':
+
+         CASE NOT(NUM(QI))
+            **CALL ELINE - NOT VALID ENTRY
+            GOTO STATE.MINIMUM
+      END CASE
+
+STATE.RATE:
+      MASK=''
+      GOSUB ASSIGN.DISPLAY.RATE
+      MASK = DISPLAY.RATE:DISPLAY.FLAG
+
+      *** this is kind of loopy - need to modify the way split.state is cleared
+      IF DISPLAY.FLAG='*' THEN
+         SAVE.POS=STATE.POS
+         GOSUB SPLIT.STATE
+         GOSUB DSP.RATE.SCREEN
+         IF QI = 'C' THEN
+            STATE.POS=SAVE.POS
+         END ELSE
+            STATE.POS=SAVE.POS+1
+         END
+         GOTO GET.RATE
+      END
+
+      CRT @ (0,22):'**Enter applicable rate or select Minimum or Split option.':
+      HELP = '[/]=Minimum [*]=Split State [.]=Entry Complete [X]=Back [EX]it'
+
+      CALL GEN.IN(COL,ROW,MASK,'AMT2',Q,0,3,'R','',0,COL,ROW,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO END.GET.RATE
+         CASE QI='/'
+            GOSUB ASSIGN.DISPLAY.RATE
+            CRT @ (COL, ROW):DISPLAY.RATE:DISPLAY.FLAG:
+            GOTO STATE.MINIMUM
+         CASE QI='*'
+            SAVE.POS=STATE.POS
+            GOSUB SPLIT.STATE
+            GOSUB DSP.RATE.SCREEN
+            IF QI = 'C' THEN
+               STATE.POS=SAVE.POS
+            END ELSE
+               STATE.POS=SAVE.POS+1
+            END
+            GOTO GET.RATE
+         CASE QI='.'
+            GOSUB ASSIGN.DISPLAY.RATE
+            CRT @ (COL, ROW):DISPLAY.RATE:DISPLAY.FLAG:
+         CASE QI='0'
+            STATE.RATE<1,STATE.POS>=''
+            STATE.SPLIT<1,STATE.POS>=''
+         CASE NUM(QI)
+            STATE.RATE<1,STATE.POS>=Q
+         CASE QI='X'
+            GOSUB ASSIGN.DISPLAY.RATE
+            CRT @ (COL, ROW):DISPLAY.RATE:DISPLAY.FLAG:
+            IF STATE.POS >1 THEN STATE.POS = STATE.POS-1
+            GOTO GET.RATE
+         CASE NOT(NUM(QI))
+            QI=''
+            CALL ELINE('INVALID ENTRY. PLEASE TRY AGAIN.')
+            GOTO STATE.RATE
+      END CASE
+      GOSUB ASSIGN.DISPLAY.RATE
+      CRT @ (COL, ROW):DISPLAY.RATE:DISPLAY.FLAG:
+END.GET.RATE:
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+*SUB:ASSIGN.DISPLAY.RATE
+*
+*
+ASSIGN.DISPLAY.RATE:***
+      DISPLAY.FLAG=' '
+      DISPLAY.RATE=''
+
+      IF STATE.RATE<1,STATE.POS>+0=0 THEN
+         SPLIT.ARRAY=STATE.SPLIT<1,STATE.POS>
+         CHECK.ARRAY=TRIM(CHANGE(SPLIT.ARRAY,@SVM,''))
+
+         IF CHECK.ARRAY#'' THEN
+            FOR DIR.CTR = 1 TO 4 UNTIL DISPLAY.FLAG='*'
+               IF STATE.SPLIT<1,STATE.POS,DIR.CTR>#'' THEN
+                  DISPLAY.RATE=STATE.SPLIT<1,STATE.POS,DIR.CTR>'R26'
+                  DISPLAY.FLAG='*'
+               END
+            NEXT DIR.CTR
+         END
+
+         IF DISPLAY.FLAG=' ' THEN
+            DISPLAY.RATE = '____'
+         END
+      END ELSE
+         DISPLAY.RATE=STATE.RATE<1,STATE.POS>'R26'
+      END
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:SPLIT.MINIMUM
+*
+*
+SPLIT.MINIMUM:***
+
+      MIN.COL = 13
+
+      HELP = 'Enter Minimum for ':STATE.DIR<DIR.CTR>:' ':STATE<1,STATE.POS>:' 0=Default Min $':DEFAULT.MIN'R06#4':'[X]=Back [EX]it'
+
+      IF MIN.SPLIT<1,STATE.POS,DIR.CTR>+0=0 THEN
+         MASK = '____'
+      END ELSE
+         MASK = MIN.SPLIT<1,STATE.POS,DIR.CTR>'R06#4'
+      END
+
+      CALL GEN.IN(MIN.COL,DIR.CTR+7,MASK,'',Q,0,4,'R','',0,MIN.COL,DIR.CTR+7,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+
+         CASE QI='EX'
+            GOTO END.SPLIT.MINIMUM
+
+         CASE QI='0'
+            MIN.SPLIT<1,STATE.POS,DIR.CTR>=''
+            CRT @ (MIN.COL, DIR.CTR+7):'____':
+
+         CASE INDEX(QI,'.',1)
+            CALL ELINE ('Please enter whole amounts only.')
+            GOTO SPLIT.MINIMUM
+
+         CASE NUM(QI)
+            MIN.SPLIT<1,STATE.POS,DIR.CTR>=QI*100
+            CRT @ (MIN.COL, DIR.CTR+7):MIN.SPLIT<1,STATE.POS,DIR.CTR>'R06#4':
+
+         CASE NOT(NUM(QI))
+            **CALL ELINE - NOT VALID ENTRY
+            GOTO SPLIT.MINIMUM
+      END CASE
+END.SPLIT.MINIMUM:
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:ASSIGN.PP.VARIABLES
+*
+*
+ASSIGN.PP.VARIABLES:***
+      DISPLAY = ''
+      PP.ZIPS = D.BID<20>
+      PP.MILES= D.BID<21>
+      PP.RATE = D.BID<22>
+      PP.CPM = D.BID<23>
+
+      IF PP.ZIPS#'' THEN
+         ORIGIN.ZIP = FIELD(PP.ZIPS,'*',1)
+         DESTIN.ZIP = FIELD(PP.ZIPS,'*',2)
+      END
+
+      MAX.PP.CTR = DCOUNT(PP.ZIPS<1>,@VM)
+
+      IF MAX.PP.CTR > 0 THEN
+         FOR PP.CTR = 1 TO MAX.PP.CTR UNTIL LEN(DISPLAY)>40
+            DISPLAY:=PP.ZIPS<PP.CTR>:' $':PP.RATE<PP.CTR>'R26#6':' '
+         NEXT PP.CTR
+      END ELSE
+         DISPLAY = ''
+      END
+      PP.CTR = MAX.PP.CTR
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:GET.POINT.INFO
+*
+*
+GET.POINT.INFO:***
+
+      CRT @(0,22):@(-3)
+      CRT @(0,22):'Enter Selection Number :'
+      HELP = 'OPTIONS:  ##=Line #  [A]dd  [B]ack  [F]orward [X]=Back [EX]it'
+      MASK = '##'
+      CALL GEN.IN(24,22,MASK,'',Q,0,3,'R','',0,24,22,1,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = ''
+            CALL ELINE('INVALID ENTRY.  PLEASE TRY AGAIN.')
+            GO GET.POINT.INFO
+         CASE NUM(QI)
+*           CRT @(45,24):'PP.CTR = ':PP.CTR
+            IF Q>MAX.PP.CTR THEN
+               GO GET.POINT.INFO
+            END ELSE
+               PP.CTR = Q
+*              CRT @(45,24):'PP.CTR = ':PP.CTR
+               GOSUB EDIT.POINT
+*              CRT @(45,24):'PP.CTR = ':PP.CTR
+               GO GET.POINT.INFO
+            END
+         CASE QI = 'A'                   ; *** ADD ITEM
+*           CRT @(45,24):'PP.CTR = ':PP.CTR
+            PP.CTR = MAX.PP.CTR + 1
+            MAX.PP.CTR = PP.CTR
+*           CRT @(45,24):'PP.CTR = ':PP.CTR
+            GOSUB ADD.POINT
+*           CRT @(45,24):'PP.CTR = ':PP.CTR
+            GO GET.POINT.INFO
+         CASE QI = 'B'                   ; *** BACK
+            PP.CTR-=10
+            GOSUB DSP.POINT.SCREEN
+         CASE QI = 'F'                   ; *** FORWARD
+            PP.CTR+=10
+            GOSUB DSP.POINT.SCREEN
+         CASE QI = 'X'                   ; *** X-BACK TO MAIN MENU
+            *** FALL OUT TO CALLING ROUTINE
+         CASE QI = 'EX'                  ; *** RETURN TO CALLING ROUTINE
+            *** FALL OUT TO CALLING ROUTINE
+      END CASE
+
+      RETURN
+
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:ADD.POINT
+*
+*
+ADD.POINT:***
+
+      GOSUB DSP.POINT.SCREEN
+
+      GOSUB GET.ORIGIN.ZIP
+      GOSUB GET.DESTIN.ZIP
+      *** confirm not already on file
+      GOSUB GET.PP.MILEAGE
+      GOSUB GET.PP.RATE
+
+      *** calculate and display the pp.cpm (cost per mile)
+      *** save data to variables
+      *** drop out of routine, back to calling (GET.POINT.INFO)
+
+      PP.ZIPS = ORIGIN.ZIP<PP.CTR>:'*':DESTIN.ZIP<PP.CTR>
+
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:DSP.POINT.SCREEN
+*
+*
+DSP.POINT.SCREEN:***
+      *** CLEAR ENTIRE SCREEN
+      CRT @(-1):
+
+      *** REDRAW SCREEN HEADER
+      PROG.DESC = "TRUCKLOAD / POINT-TO-POINT"
+      PROG.NAME = "FB.TRAFFIC.INPUT.2"
+      PACK.NAME = "Traffic Survey Input"
+      CO.NAME = "AFS Logistics, LLC"
+      GOSUB INIT.SCREEN
+      CRT @(29,0):CLIENT.ID:'-':CLIENT.NAME'L#15'
+      CRT @(29,1):CARRIER.ID:'-':CARRIER.NAME'L#15'
+      *-------------------------------------------
+
+      CRT @(33,3):'POINT-TO-POINT'
+      CRT @(0,7):STR('=',80)
+      CRT @(0,6):'##'
+      CRT @(4,5):'ORIGIN'
+      CRT @(4,6):'ZIP'
+      CRT @(15,6):'CITY'
+      CRT @(28,5):'DESTIN'
+      CRT @(28,6):'ZIP'
+      CRT @(40,6):'CITY'
+      CRT @(54,6):'MILES'
+      CRT @(65,6):'RATE'
+      CRT @(74,6):'CPM'
+
+*      CRT @(45,24):'PP.CTR = ':PP.CTR
+
+      START.RANGE = ''
+      STOP.RANGE = ''
+
+      IF PP.CTR>10 THEN
+         PP.RANGE = INT((PP.CTR-.99)/10)
+         FOR CT = (PP.CTR-10) TO MAX.PP.CTR UNTIL START.RANGE = PP.RANGE
+            START.RANGE = INT((CT-.99)/10)
+            STOP.RANGE = START.RANGE + 10
+         NEXT CT
+      END ELSE
+         START.RANGE = 1
+         STOP.RANGE = MAX.PP.CTR
+      END
+
+      FOR POINT.CTR = START.RANGE TO STOP.RANGE
+*      CRT @(45,24):'POINT.CTR = ':POINT.CTR
+
+         PP.ROW = POINT.CTR + 7
+
+         CRT @(0,PP.ROW):POINT.CTR'R%2':')':
+
+         IF ORIGIN.ZIP<POINT.CTR>#'' THEN
+            CRT @(4,PP.ROW):ORIGIN.ZIP<POINT.CTR>'R%5'
+            ZIP.REC = ''
+            READ ZIP.REC FROM F.ZIPS,ORIGIN.ZIP<POINT.CTR> ELSE
+               ORIGIN.CITY<POINT.CTR> = ''
+               ORIGIN.STATE<POINT.CTR> = ''
+            END
+
+            IF ZIP.REC#'' THEN
+               ORIGIN.CITY<POINT.CTR> = ZIP.REC<1>
+               ORIGIN.STATE<POINT.CTR> = ZIP.REC<2>
+               ORIGIN.DISPLAY = ORIGIN.CITY<POINT.CTR>:', ':ORIGIN.STATE<POINT.CTR>
+               CRT @(12,PP.ROW):ORIGIN.DISPLAY'L#20'
+            END
+         END ELSE
+            CRT @(4,PP.ROW):STR('#',5)
+         END
+
+         IF DESTIN.ZIP<POINT.CTR>#'' THEN
+            CRT @(28,PP.ROW):DESTIN.ZIP<POINT.CTR>'R%5'
+            ZIP.REC = ''
+            READ ZIP.REC FROM F.ZIPS,DESTIN.ZIP<POINT.CTR> ELSE
+               DESTIN.CITY<POINT.CTR> = ''
+               DESTIN.STATE<POINT.CTR> = ''
+            END
+
+            IF ZIP.REC#'' THEN
+               DESTIN.CITY<POINT.CTR> = ZIP.REC<1>
+               DESTIN.STATE<POINT.CTR> = ZIP.REC<2>
+               DESTIN.DISPLAY = DESTIN.CITY<POINT.CTR>:', ':DESTIN.STATE<POINT.CTR>
+               CRT @(36,PP.ROW):DESTIN.DISPLAY'L#20'
+            END
+
+         END ELSE
+            CRT @(28,PP.ROW):STR('#',5)
+         END
+
+         IF PP.MILES<POINT.CTR>#'' THEN
+            CRT @(54,PP.ROW):PP.MILES<POINT.CTR>'R#5'
+         END ELSE
+            CRT @(54,PP.ROW):STR('#',5)
+         END
+
+         IF PP.RATE<POINT.CTR>#'' THEN
+            CRT @(63,PP.ROW):'$':PP.RATE<POINT.CTR>'R26#6'
+         END ELSE
+            CRT @(63,PP.ROW):'$______'
+         END
+
+         IF PP.CPM<POINT.CTR>#'' THEN
+            CRT @(73,PP.ROW):'$':PP.CPM<POINT.CTR>'R26#5'
+         END ELSE
+            CRT @(73,PP.ROW):'$_____'
+         END
+      NEXT POINT.CTR
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:GET.ORIGIN.ZIP
+*
+*
+GET.ORIGIN.ZIP:***
+      HELP='Enter Zip Code for Origin.  [DE]lete Entry [X]=Back [EX]=Exit'
+
+      IF ORIGIN.ZIP<PP.CTR>#'' THEN MASK=ORIGIN.ZIP<PP.CTR>'R%5' ELSE MASK=STR('#',5)
+      CALL GEN.IN(4,PP.CTR+7,MASK,'',Q,0,5,'R','0',0,4,PP.CTR+7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+         CASE QI='EX'
+            GOTO 9999
+         CASE QI=''
+            IF ORIGIN.ZIP<PP.CTR>#'' THEN
+               QI=ORIGIN.ZIP<PP.CTR>'R%5'
+               CRT @(4,PP.CTR+7):QI
+            END ELSE
+               GO GET.ORIGIN.ZIP
+            END
+         CASE QI='DE'
+            *** ADD CODE TO DELETE POINT.TO.POINT RECORD
+            *** HOW DOES THIS AFFECT THE ARRAY STRUCTURE?
+
+         CASE NUM(QI)
+            ORIGIN.ZIP<PP.CTR>=QI
+            READ ZIP.REC FROM F.ZIPS,ORIGIN.ZIP<PP.CTR> ELSE
+               CALL ELINE("Cannot find client ":ORIGIN.ZIP<PP.CTR>:" in the ZIP CODE file")
+               ORIGIN.ZIP<PP.CTR>=''
+               GOTO GET.ORIGIN.ZIP
+            END
+
+            ORIGIN.CITY<PP.CTR> = ZIP.REC<1>
+            ORIGIN.STATE<PP.CTR> = ZIP.REC<2>
+
+         CASE 1
+            CALL ELINE('INVALID ENTRY. PLEASE TRY AGAIN.')
+            GO GET.ORIGIN.ZIP
+      END CASE
+
+
+      CRT @(12,PP.CTR+7):ORIGIN.CITY<PP.CTR>:', ':ORIGIN.STATE<PP.CTR>
+
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:GET.DESTIN.ZIP
+*
+*
+GET.DESTIN.ZIP:***
+      HELP='Enter Zip Code for Destination.  [X]=Back [EX]=Exit'
+      IF DESTIN.ZIP<PP.CTR>#'' THEN MASK=DESTIN.ZIP<PP.CTR>'R%5' ELSE MASK=STR('#',5)
+      CALL GEN.IN(28,PP.CTR+7,MASK,'',Q,0,5,'R','0',0,28,PP.CTR+7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+         CASE QI='EX'
+            GOTO 9999
+         CASE QI=''
+            IF DESTIN.ZIP<PP.CTR>#'' THEN
+               QI=DESTIN.ZIP<PP.CTR>'R%5'
+               CRT @(28,PP.CTR+7):QI:
+            END ELSE
+               GO GET.DESTIN.ZIP
+            END
+
+         CASE NUM(QI)
+            DESTIN.ZIP<PP.CTR>=QI
+            READ ZIP.REC FROM F.ZIPS,DESTIN.ZIP<PP.CTR> ELSE
+               CALL ELINE("Cannot find client ":DESTIN.ZIP<PP.CTR>:" in the ZIP CODE file")
+               DESTIN.ZIP<PP.CTR>=''
+               GOTO GET.DESTIN.ZIP
+            END
+
+            DESTIN.CITY<PP.CTR> = ZIP.REC<1>
+            DESTIN.STATE<PP.CTR> = ZIP.REC<2>
+            DESTIN.DISPLAY = DESTIN.CITY<PP.CTR>:', ':DESTIN.STATE<PP.CTR>
+         CASE 1
+            CALL ELINE('INVALID ENTRY. PLEASE TRY AGAIN.')
+            GO GET.DESTIN.ZIP
+      END CASE
+
+      CRT @(36,PP.CTR+7):DESTIN.DISPLAY'L#20'
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:GET.PP.RATE
+*
+*
+GET.PP.RATE:***
+
+      HELP='Enter Rate for ':ORIGIN.ZIP<PP.CTR>:'*':DESTIN.ZIP<PP.CTR>:' [X]=Back [EX]=Exit'
+
+      IF PP.RATE<PP.CTR>#'' THEN MASK='$':PP.RATE<PP.CTR>'R26#6' ELSE MASK='$______'
+
+      CALL GEN.IN(63,PP.CTR+7,MASK,'AMT2',Q,0,5,'R','0',0,64,PP.CTR+7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+         CASE QI='EX'
+            GOTO 9999
+         CASE QI = ''
+         CASE NUM(QI)
+            PP.RATE<PP.CTR>=Q
+         CASE 1
+            CALL ELINE('INVALID ENTRY. PLEASE TRY AGAIN.')
+      END CASE
+
+      PP.CPM<PP.CTR>=((PP.RATE<PP.CTR>/MILEAGE))'R0'
+
+      CRT @(63,PP.CTR+7):'$':PP.RATE<PP.CTR>'R26#6'
+      CRT @(73,PP.CTR+7):'$':PP.CPM<PP.CTR>'R26#5'
+END.PP.RATE:
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:GET.PP.MILEAGE
+*
+*
+GET.PP.MILEAGE:
+
+      ORIG.ZIP=ORIGIN.ZIP<PP.CTR>
+      DEST.ZIP=DESTIN.ZIP<PP.CTR>
+
+      VIN='BOTH'
+      FORCE.PC=0
+      VIN<2>=CH.NUM
+      VIN<3>=ORIG.ZIP:@VM:DEST.ZIP
+      VIN<4>=FORCE.PC
+      VIN<5>='FB.TL.BIDS.99'
+      VIN<7>=1                           ; * Don't Report Errors
+      VIN<8>=CLIENT.ID                   ; * JMK01
+      VIN<9>=CARRIER.ID                  ; * JMK01
+      CALL PCMILER.BETA(VIN,VOUT,F.PCIN,F.PCOUT,F.MILEAGE)
+      MILEAGE=VOUT<1>
+
+      PP.MILES<PP.CTR>=MILEAGE
+      CRT @(54,PP.CTR+7):PP.MILES<PP.CTR>'R#5'
+
+      RETURN
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:EDIT.POINT
+*
+*
+EDIT.POINT:***
+
+      GOSUB DSP.POINT.SCREEN
+
+      GOSUB GET.ORIGIN.ZIP
+      GOSUB GET.DESTIN.ZIP
+      *** confirm not already on file
+      GOSUB GET.PP.MILEAGE
+      GOSUB GET.PP.RATE
+
+      *** calculate and display the pp.cpm (cost per mile)
+      *** save data to variables
+      *** drop out of routine, back to calling (GET.POINT.INFO)
+
+      PP.ZIPS = ORIGIN.ZIP<PP.CTR>:'*':DESTIN.ZIP<PP.CTR>
+
+      RETURN
+
+*----------------------------------------------------------------------
+*----------------------------------------------------------------------
+* SUB:EXIT.PROGRAM
+*
+*
+EXIT.PROGRAM:***
+9999:
+      STOP

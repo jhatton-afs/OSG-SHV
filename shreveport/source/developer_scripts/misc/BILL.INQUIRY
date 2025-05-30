@@ -1,0 +1,520 @@
+* FREIGHT BILLING PACKAGE
+*---- PROGRAM: BINQ
+* AUTHOR: NCG PRATT
+* DATE: 10/01/2007
+* DESCRIPTION: PROGRAM TO SEARCH OUT BILLS AND REPORT ON THEIR STATUS.
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_FB.AUDIT
+$INCLUDE FILE.DEFS INC_CLIENTS
+*
+      PROMPT''
+      CALL GET.USER(USER)
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='BINQ'
+      PROG.DESC='Bill Lookup'
+      PACK.NAME='Freight Payment'
+      MASK.CHAR='-'
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'BILL.INQUIRY' ; UPL.VOUT = ''   ; * NPR_UPL 04/22/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/22/2010
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+      CLIENT.ID=''
+      CARRIER.ID=''
+      USER.PWD=''
+      USER.TYPE='AFSCS'
+      USER.ID=''
+      ID.PRO = ''
+      CLIENT.MODE=0
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         CALL OPEN.ABORT("FB.BILLS.CRX",PROG.NAME)
+      END
+*
+      OPEN '','VOC' TO F.VOC ELSE
+         CALL ELINE('Unable to open VOC file - Call IS Department.')
+         GOTO ENDIT
+      END
+*
+      OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE
+         READ BILLDATA.REC FROM F.VOC,'BILLDATA' ELSE
+            CALL ELINE('Unable to open VOC BILLDATA.')
+            GOTO ENDIT
+         END
+         BILLDATA.REC<2>:='\':USER
+         WRITE BILLDATA.REC ON F.VOC,'BILLDATA.':USER ELSE
+            CALL ELINE('Your user name ':USER:' is not in the BILLDATA folder - Call IS Department.')
+            GOTO ENDIT
+         END
+         OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE
+            CALL ELINE('Unable to open BILLDATA.':USER:'.')
+            GOTO ENDIT
+         END
+      END
+*
+      OPEN '','FB.NOTES' TO F.NOTES ELSE
+         CALL OPEN.ABORT("FB.NOTES",PROG.NAME)
+      END
+*
+*----
+* MAIN PROCESSING
+*
+*---- Enter client number
+*
+50:
+*
+      CLIENT.ID = ''
+      CARRIER.ID = ''
+      PRO.NOS = ''
+*
+      GOSUB GET.SCREEN.DSP
+
+      PRINT SCREEN.DSP:
+*
+      IF CLIENT.MODE THEN GOTO 55
+      SEQ.FLAG = 0
+      HELP = "Enter the client number [X] = Exit [EX] = Exit, RETURN to search ALL clients"
+      IF CLIENT.ID = '' THEN MASK = '#####' ELSE MASK = CLIENT.ID
+*
+      CALL GEN.IN(9,2,MASK,'',Q,0,20,'','',2,-5,2,1,QI,HELP,0,23)
+*
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'EX' ! QI = 'X'
+            GOTO ENDIT
+         CASE QI = '' & CLIENT.ID = ''
+*            GOTO ENDIT
+            GOTO 200
+         CASE QI = ''
+            Q = CLIENT.ID
+         CASE NOT(QI MATCHES "0N")
+            VIN=0                        ; * Starting Chars In
+            VOUT=''
+            CALL SOUNDEX.DISPLAY.NEW(VIN,VOUT,QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            PRINT SCREEN.DSP:
+            BEGIN CASE
+               CASE ITEM.LIST = ''
+                  IF CLIENT.MODE THEN GOTO ENDIT ELSE GOTO 50
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  IF CLIENT.MODE THEN GOTO ENDIT ELSE GOTO 50
+               CASE 1
+                  DATA ITEM.LIST<1>
+                  IF CLIENT.MODE THEN GOTO ENDIT ELSE GOTO 50
+            END CASE
+         CASE NUM(QI)
+            Q = QI'R%5'
+         CASE 1
+            IF CLIENT.MODE THEN GOTO ENDIT ELSE GOTO 50
+      END CASE
+
+*---- Get client name
+
+      IF CLIENT.ID # Q THEN CLIENT.ID = Q'R%5'
+55:   ***
+      MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         CALL ELINE("ERROR - Client ":CLIENT.ID:" not on file.")
+         CLIENT.ID = ''
+         IF CLIENT.MODE THEN GOTO ENDIT ELSE GOTO 50
+      END
+
+      CLIENT.NAME = CL.NAME
+      CLIENT.CITY = CL.CITY
+      CLIENT.STATE = CL.ST
+      ZIP.LEN = CL.ZIP.FLAG
+*
+      CRT @(9,2):CLIENT.ID:' ':CLIENT.NAME:@(-4):
+      IF CL.AUDITOR='' THEN
+         AUDITOR.TEXT='None-Assigned'
+      END ELSE
+         AUDITOR.TEXT=CL.AUDITOR
+      END
+      CRT @(38,0):AUDITOR.TEXT'L#25'
+*
+*---- Enter carrier
+*
+200:  ***
+      IF CARRIER.ID # '' THEN MASK = CARRIER.ID'R%5' ELSE MASK = '#####'
+      HELP = "Enter the carrier number. [X]=Back [EX]=Exit, ENTER to Search ALL Carriers"
+      CALL GEN.IN(9,3,MASK,'',Q,0,20,'','',3,-5,3,0,QI,HELP,0,23)      ; *NPR07
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'X'
+            GOTO 50
+         CASE QI = 'EX'
+            GOTO ENDIT
+         CASE NOT(QI MATCHES "0N")
+            VIN=0                        ; * Starting Chars In
+            VOUT=''
+            CALL SOUNDEX.DISPLAY.NEW(VIN,VOUT,QI,'CARRIERS','SDX.CARRIER,NAME','1,2,3,4',ITEM.LIST)
+            GOSUB GET.SCREEN.DSP
+            PRINT SCREEN.DSP:
+            BEGIN CASE
+               CASE ITEM.LIST = ''
+                  GOTO 200               ; * ENTER CARRIER
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 200               ; * ENTER CARRIER
+               CASE ITEM.LIST # ''
+                  IF NUM(ITEM.LIST<1,1>) THEN SND.DATA=ITEM.LIST<1,1> ; DATA SND.DATA
+                  GOTO 200               ; * ENTER CARRIER
+            END CASE
+         CASE QI = '' & CARRIER.ID = ''
+*            GOTO ENDIT
+            GOTO 300
+         CASE QI = ''
+            Q = CARRIER.ID
+         CASE NUM(QI)
+            Q = QI'R%5'
+         CASE 1
+            GOTO 200                     ; * ENTER CARRIER
+      END CASE
+*
+      CARRIER.ID = Q
+      CALL CLR.CONTROL(CARRIER.ID)
+
+*---- Get carrier data
+
+      READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE
+         CALL ELINE("ERROR - Carrier ":CARRIER.ID:" not on file.")
+         GOTO 200                        ; * ENTER CARRIER
+      END
+*
+      CRT @(9,3):CARRIER.ID:' ':CARRIER.REC<1>
+*
+      CRT @(9,6):SPACE(30)
+*
+300:*
+*
+      MASK = STR(".",60)
+      HELP = "Enter the Pro Number/s seperated by comma's [X]=Back [EX]=Exit"
+      CALL GEN.IN(9,6,MASK,'',Q,0,60,'','',2,9,6,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+*
+      BEGIN CASE
+         CASE QI = 'X'
+            GOTO 200
+         CASE QI = 'EX'
+            GOTO ENDIT
+         CASE QI = ''
+            CALL ELINE("Enter at least one PRO Number to search for")
+            GOTO 300
+      END CASE
+*
+      PRO.NOS = TRIM(QI)
+      N.PROS = DCOUNT(PRO.NOS,",")
+*
+      IF CLIENT.ID NE '' THEN
+         OPEN 'FB.BILLS.HIST,':CLIENT.ID TO F.BHIST THEN
+            IF CARRIER.ID NE '' THEN
+               FND.LIST = ""
+               FND.CNT = 0
+               FOR XX = 1 TO N.PROS
+                  PRO.NO = FIELD(PRO.NOS,",",XX)
+                  PRO.REC = ""
+                  PRO.ID = CARRIER.ID:"*":PRO.NO:"*0"
+                  READ PRO.REC FROM F.BHIST,PRO.ID THEN
+                     NULL
+                     IN.NOTE = PRO.REC<213>
+                     GOSUB CHECK.FOR.NOTES
+                  END
+                  READ CRX.REC FROM F.CRX, PRO.ID THEN
+                     CRX.CLIENT = CRX.REC<1>
+                     FND.CNT += 1
+                     FND.LIST<FND.CNT,1> = CRX.CLIENT
+                     FND.LIST<FND.CNT,2> = CARRIER.ID
+                     FND.LIST<FND.CNT,3> = PRO.NO
+                     FND.LIST<FND.CNT,4> = CLIENT.ID         ; * Entered Client
+                  END
+               NEXT XX
+               IF FND.LIST NE "" THEN
+                  GOSUB GET.STATUS
+                  GOTO 50
+               END ELSE
+                  IN.NOTE = ""
+                  GOSUB CHECK.FOR.NOTES
+                  CALL ELINE("No Bills found - RETURN to continue")
+                  GOTO 50
+               END
+            END
+            CLOSE F.BHIST
+         END
+      END
+
+*
+      IF CARRIER.ID = '' AND CLIENT.ID = '' THEN
+         CALL ELINE("Enter either a Client or a Carrier")
+         GOTO 50
+      END
+*
+      IF CARRIER.ID = '' THEN
+         GOSUB SEARCH.CARRIERS
+      END
+*
+      IF CLIENT.ID = '' THEN
+         GOSUB SEARCH.CLIENTS
+      END
+*
+
+*
+      CALL ELINE("")
+*
+      GOTO ENDIT
+*
+SEARCH.CARRIERS:*
+*
+      ST.TIME = TIME()
+*
+      EXECUTE \SSELECT CARRIERS WITH 89 = "A"\ CAPTURING OUTPUT
+*ZZ  EXECUTE \SSELECT CARRIERS WITH @ID LE "00100"\ CAPTURING OUTPUT
+*
+      NO.CARRIERS = @SELECTED
+*
+      CARR.CNT = 0
+      EOF = "N"
+      FND.LIST = ''
+      FND.CNT = 0
+*
+      CRT @(0,FND.CNT+5):@(-3):"PRO Number " "L#15" : " " :
+      CRT "Carrier" "L#7": " " : SPACE(25) :
+      CRT "Client"
+      CRT @(0,FND.CNT+6):STR("-",79)
+*
+      LOOP
+         READNEXT TST.CARRIER ELSE EOF = "Y"
+         IF MOD(CARR.CNT,100) = 0 OR EOF = "Y" THEN
+            ELAPSED.TIME = TIME() - ST.TIME
+            CRT @(50,2):CARR.CNT :" of ":NO.CARRIERS :
+            IF FND.CNT GT "0" THEN
+               CRT "  Found ":FND.CNT:" Bills"
+            END ELSE CRT
+            CRT @(50,3):"Running for ":OCONV(ELAPSED.TIME,"MTS"):" Secs."
+         END
+*
+      UNTIL EOF = "Y" DO
+         CARR.CNT += 1
+         FOR XX = 1 TO N.PROS
+            PRO.NO = FIELD(PRO.NOS,",",XX)
+            PRO.REC = ""
+            PRO.ID = TST.CARRIER:"*":PRO.NO:"*0"
+            READ CRX.REC FROM F.CRX, PRO.ID THEN
+               CRX.CLIENT = CRX.REC<1>
+*         CRT @(0,22):" CLIENT ":CRX.CLIENT:"    CARRIER  ":TST.CARRIER :"  ": PRO.ID
+               FND.CNT += 1
+               FND.LIST<FND.CNT,1> = CRX.CLIENT
+               FND.LIST<FND.CNT,2> = TST.CARRIER
+               FND.LIST<FND.CNT,3> = FIELD(PRO.ID,"*",2)
+               FND.LIST<FND.CNT,4> = CLIENT.ID     ; * Entered Client
+               TST.CARRIER = TST.CARRIER "R%5"
+               READ CLREC FROM F.CLIENTS, CRX.REC<1> ELSE CLREC = ""
+               READ CAR.REC FROM F.CARRIERS, TST.CARRIER ELSE CAR.REC = ""
+               CL.NAME = CLREC<2>
+               CAR.NAME = CAR.REC<1>
+               CRT @(0,FND.CNT+7):@(-3):PRO.NO "L#15":" ":
+               CRT TST.CARRIER "L#5": " " :CAR.NAME[1,25] "L#25" :"  ":
+               CRT CRX.REC<1> "L#6": " " : CL.NAME[1,24] "L#24"
+            END
+         NEXT XX
+      REPEAT
+*
+      IF FND.LIST NE "" THEN
+         GOSUB GET.STATUS
+         GOTO 50
+      END ELSE
+         CALL ELINE("No Bills found - RETURN to continue")
+         GOTO 50
+      END
+*
+      RETURN
+*
+SEARCH.CLIENTS:
+*
+      FND.LIST = ''
+      FND.CNT = 0
+*
+*
+      CRT @(0,FND.CNT+5):@(-3):"PRO Number " "L#15" : " " :
+      CRT "Carrier" "L#7": " " : SPACE(25) :
+      CRT "Client"
+      CRT @(0,FND.CNT+6):STR("-",79)
+*
+      FOR XX = 1 TO N.PROS
+         PRO.NO = FIELD(PRO.NOS,",",XX)
+         PRO.REC = ""
+         PRO.ID = CARRIER.ID:"*":PRO.NO:"*0"
+         READ CRX.REC FROM F.CRX, PRO.ID THEN
+            CRX.CLIENT = CRX.REC<1>
+            FND.CNT += 1
+            FND.LIST<FND.CNT,1> = CRX.CLIENT
+            FND.LIST<FND.CNT,2> = CARRIER.ID
+            FND.LIST<FND.CNT,3> = FIELD(PRO.ID,"*",2)
+            FND.LIST<FND.CNT,4> = ""     ; * Entered Client
+***
+            TST.CARRIER = CARRIER.ID "R%5"
+            READ CLREC FROM F.CLIENTS, CRX.CLIENT ELSE CLREC = ""
+            READ CAR.REC FROM F.CARRIERS, TST.CARRIER ELSE CAR.REC = ""
+            CL.NAME = CLREC<2>
+            CAR.NAME = CAR.REC<1>
+            CRT @(0,FND.CNT+7):@(-3):PRO.NO "L#15":" ":
+            CRT TST.CARRIER "L#5": " " :CAR.NAME[1,25] "L#25" :"  ":
+            CRT CRX.REC<1> "L#6": " " : CL.NAME[1,24] "L#24"
+***
+         END
+      NEXT XX
+*
+      GOTO SKIP.CLIENT.SELECT
+*
+      ST.TIME = TIME()
+*
+      EXECUTE \SSELECT CLIENTS WITH @ID NE "9]"\ CAPTURING OUTPUT
+*
+      NO.CLIENTS = @SELECTED
+*
+      CLIENT.CNT = 0
+      EOF = "N"
+      FND.LIST = ''
+      FND.CNT = 0
+      TST.CARRIER = CARRIER.ID
+*
+* DEBUG
+*
+      LOOP
+         READNEXT TST.CLIENT ELSE EOF = "Y"
+         IF MOD(CLIENT.CNT,100) = 0 OR EOF = "Y" THEN
+            ELAPSED.TIME = TIME() - ST.TIME
+            CRT @(10,12):CLIENT.CNT :" of ":NO.CLIENTS :
+            IF FND.CNT GT "0" THEN
+               CRT "  Found ":FND.CNT:" Bills"
+            END ELSE CRT
+            CRT @(50,20):"Running for ":OCONV(ELAPSED.TIME,"MTS"):" Seconds"
+         END
+      UNTIL EOF = "Y" DO
+         CLIENT.CNT += 1
+         OPEN 'FB.BILLS.HIST,':TST.CLIENT TO F.BHIST THEN
+            FOR XX = 1 TO N.PROS
+               PRO.NO = FIELD(PRO.NOS,",",XX)
+               PRO.REC = ""
+               PRO.ID = CARRIER.ID:"*":PRO.NO:"*0"
+               READ CRX.REC FROM F.CRX, PRO.ID THEN
+                  CRX.CLIENT = CRX.REC<1>
+               END
+               READ PRO.REC FROM F.BHIST,PRO.ID THEN
+                  FND.CNT += 1
+                  FND.LIST<FND.CNT,1> = TST.CLIENT
+                  FND.LIST<FND.CNT,2> = CARRIER.ID
+                  FND.LIST<FND.CNT,3> = FIELD(PRO.ID,"*",2)
+                  FND.LIST<FND.CNT,4> = TST.CLIENT           ; * Entered Client
+                  IF CRX.CLIENT NE TST.CLIENT THEN
+                     FND.CNT += 1
+                     FND.LIST<FND.CNT,1> = CRX.CLIENT
+                     FND.LIST<FND.CNT,2> = CARRIER.ID
+                     FND.LIST<FND.CNT,3> = FIELD(PRO.ID,"*",2)
+                     FND.LIST<FND.CNT,4> = TST.CLIENT        ; * Entered Client
+                  END
+               END
+            NEXT XX
+            CLOSE F.BHIST
+         END
+      REPEAT
+*
+SKIP.CLIENT.SELECT:
+*
+      IF FND.LIST NE "" THEN
+         CALL ELINE("Return to review Bill Status")
+         GOSUB GET.STATUS
+         CALL ELINE("RETURN to continue")
+         GOTO 50
+      END ELSE
+         CALL ELINE("No Bills found - RETURN to continue")
+         GOTO 50
+      END
+*
+      RETURN
+*
+GET.SCREEN.DSP:***
+*
+*---- Display screen to send to subroutine
+*
+
+      SCREEN.DSP = @(-1)
+      SCREEN.DSP := @( 0, 0):PROG.DESC
+      SCREEN.DSP := @(29, 0):'Auditor:'
+      CL=80-LEN(PACK.NAME[1,25])
+      SCREEN.DSP := @(CL, 0):PACK.NAME[1,25]
+      SCREEN.DSP := @(0 , 2):'Client : '
+      SCREEN.DSP := @(0 , 3):'Carrier: '
+      SCREEN.DSP := @(0 , 4):STR('-',79)
+      SCREEN.DSP := @(0 , 6):'Pro #  : '
+*
+      RETURN
+*
+GET.STATUS:
+*
+      CRT @(-1)
+      CRT @(10,10):"Checking Status of selected bills"
+*
+      FBS.EXPORT = ''
+*
+      NATT=DCOUNT(FND.LIST,@AM)
+      FOR ATT=1 TO NATT
+         CRT @(0,9):ATT'R#21'
+         CALL PROG.BAR(11,ATT,NATT,PERC)
+         FBS.LINE=TRIM(FND.LIST<1>)
+         DEL FND.LIST<1>
+         CRX.CLIENT = FBS.LINE<1,1>
+         TST.CARRIER = FBS.LINE<1,2>
+         FBS.PRO = FBS.LINE<1,3>
+         INP.CLIENT = FBS.LINE<1,1>      ; * Entered Client
+*
+         DATA TST.CARRIER,FBS.PRO,USER,USER.PWD,USER.TYPE,USER.ID
+         EXECUTE 'INET.FB.STATUS' CAPTURING FBS.RESULTS
+         IF ATT=1 THEN
+            FBS.EXPORT<-1>="Client":@VM:"Carrier":@VM:FBS.RESULTS<1>
+            FBS.EXPORT<-1>=INP.CLIENT:@VM:TST.CARRIER:@VM:FBS.RESULTS<2>
+         END ELSE
+            FBS.EXPORT<-1>=INP.CLIENT:@VM:TST.CARRIER:@VM:FBS.RESULTS<2>
+         END
+*
+      NEXT ATT
+*
+WANT.DLOAD:
+*
+      QI = ""
+      MASK = "Create Download XLS file of Bill status"
+      HELP = "Create Download XLS file of Bill status, [Y]es --- RETURN or [EX] to Exit"
+      CALL GEN.IN(0,22,MASK,'',Q,0,60,'','',2,LEN(MASK)+1,22,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+*
+      IF QI NE "Y" THEN RETURN
+*
+      IF NATT GT 0 THEN
+         FBS.EXPORT=CHANGE(FBS.EXPORT,@VM,TAB)
+         BILLDATA.OUT.ID = "BILL_STATUS.XLS"
+         WRITE FBS.EXPORT ON F.BILLDATA,BILLDATA.OUT.ID THEN
+            CALL ELINE('Record ':BILLDATA.OUT.ID:' written to your U: drive')
+         END ELSE
+            CALL ELINE('Could not write ':BILLDATA.OUT.ID:' ENTER to try again')
+            GOTO WANT.DLOAD
+         END
+      END
+*
+      RETURN
+*
+CHECK.FOR.NOTES:* Check for and allow entry of notes
+*
+      N.LINES = DCOUNT(IN.NOTE,@VM)
+      ID.NOTES = CLIENT.ID:"*":PRO.ID
+      VIN = ID.NOTES
+      CRT @(60,2) : "Pro : " : PRO.NO
+      CALL FB.CC.NOTES(IN.NOTE,VIN,VOUT)
+*
+      RETURN
+*
+ENDIT:*
+*
+      CHAIN "AFS"
+      STOP

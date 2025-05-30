@@ -1,0 +1,468 @@
+***********************************************************************
+*
+*
+* PROGRAM TO PROCESS REVENUE FOR TRANSPORTATION MODE
+*
+*
+* AUTHOR: David Friend
+*
+*                           EDIT HISTORY
+*                           ------------
+*    DATE  : NAME : DESCRIPTION
+*  ---------------------------------------------------
+*  04/27/06  JCW01  Add FB.PROC.DATE.XREF for performance
+*  05/08/06  JCW02  CHANGES TO '@SELECTED', 'CLEARSELECT', AND 'STMT<X>'
+* 031208 - JMK01 - T080799 - Remove duplicates in FB History Reporting
+*
+***********************************************************************
+*
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Initialize variables
+*
+      PROMPT''
+      CALL CHANNEL(CH.NUM)
+      CALL GET.USER(USER.NAME)
+      OLD.CARRIER.NUM='*****'
+      STATUS=''
+      PROG.NAME='FB.6.10'
+      PROG.DESC='Revenue Analysis by Transportation Mode'
+      PACK.NAME='Freight Billing'
+      TEMP.NAME=''
+      ORIG.CLIENT.ID=''
+*
+* Open files
+*
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+        EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+        OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+          CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+        END
+      END
+      OPEN 'DICT','FBWORK':CH.NUM TO F.DICT.WORK ELSE
+        CALL OPEN.ABORT('DICT FBWORK':CH.NUM,PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+        CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+        CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','AR.CUST' TO A.CUST ELSE
+        CALL OPEN.ABORT('AR.CUST',PROG.NAME)
+      END
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+        CALL OPEN.ABORT('FB.TRANSPORT',PROG.NAME)
+      END
+*
+* Create work file dictionary items
+*
+      TEMP=''
+      TEMP<1>='S'
+      TEMP<2>=0
+      TEMP<8>='G0*1'
+      TEMP<9>='R'
+      TEMP<10>=10
+      WRITE TEMP ON F.DICT.WORK,'CLIENT.NUMBER'
+      TEMP<8>='G1*1' 
+      WRITE TEMP ON F.DICT.WORK,'SALESMAN.NUMBER'
+      TEMP<8>='F;0(G*1);(TCLIENTS;X;;2)'
+      TEMP<9>='L'
+      TEMP<10>='30'
+      WRITE TEMP ON F.DICT.WORK,'CLIENT.NAME'
+*
+*  WORK FILE CONSISTS OF ITEMS WITH THE FOLLOWING DETAIL
+*  Variable Attribute Description.....................................
+*               ID
+*                1    Overcharge amount (Overchg Var)
+*                2    Logistics Amount - Consulting Variance
+*
+* Display screen heading
+*
+30    CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+
+*
+* Get client number to process or all
+*
+ENTER.CLIENT:***
+      HELP='Enter the client number to report or <RETRUN> for All clients.'
+      CALL GEN.IN(0,3,'Enter client number.  #####','',Q,0,8,'','',1,-5,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      ALL.ONE=''
+      BEGIN CASE
+        CASE QI='X'!QI='EX'
+          GOTO EXIT.PROGRAM
+        CASE QI=''
+          ALL.ONE='ALL'
+        CASE NOT(QI MATCHES "0N")
+          CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+          CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+          BEGIN CASE
+             CASE ITEM.LIST = ''
+                GOTO ENTER.CLIENT                    ;* START OVER
+             CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                GOTO ENTER.CLIENT                    ;* START OVER
+             CASE 1
+                IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                GOTO ENTER.CLIENT                    ;* START OVER
+          END CASE
+        CASE NUM(QI)
+        CASE 1
+           GO ENTER.CLIENT                           ;* START OVER
+      END CASE
+      QI=QI'R%5'
+      IF ALL.ONE#'ALL' THEN
+        READ CLIENT.REC FROM F.CLIENTS,QI ELSE
+          CALL ELINE('Client ':QI:' is not on file.')
+          GOTO ENTER.CLIENT
+        END
+        TEMP.NAME=CLIENT.REC<2>
+      END ELSE
+        QI='ALL'
+        TEMP.NAME='All clients.'
+      END
+      CRT@(22,3):QI:' - ':TEMP.NAME
+      IF QI#'ALL' THEN CLIENT.ID=QI ELSE CLIENT.ID=''
+      ORIG.CLIENT.ID=QI'R%5'
+*DF75   HELP="Printers: 4=Freight Payment. 6=Logistics. 'X'=Back 'EX'=Exit"
+*DF      CALL GEN.IN(0,5,'Enter printer number: ':MASK:' ':PRT.DESC,'',Q,0,2,'','',2,22,5,0,QI,HELP,0,23)
+*DF      QI=OCONV(QI,'MCU')
+*DF      BEGIN CASE
+*DF        CASE QI='X'
+*DF          GOTO ENTER.CLIENT
+*DF        CASE QI='EX'
+*DF          GOTO EXIT.PROGRAM
+*DF      END CASE
+*DF      MASK=QI
+*DF      LAS.PRT=Q
+*DF      CRT@(22,5):QI
+*DF      CRT@(24,5):PRT.DESC:@(-3)
+*
+* Get current period beginning and ending dates
+*
+ENTER.BEG.DATE:***
+      HELP='Enter the data processed beginning date.'
+      CALL GEN.IN(0,7,'Data processed beginning date.  ':DATE()'D2/','DATE',BEG.DATE,0,8,'','',1,-8,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN GOTO ENTER.CLIENT
+      IF QI='EX' THEN GOTO EXIT.PROGRAM
+      IF QI='' THEN BEG.DATE=DATE()
+      CRT @(32,7):BEG.DATE'D2/'
+*
+* Get current period ending date
+*
+ENTER.END.DATE:***
+      HELP='Enter the data processed ending date.'
+      CALL GEN.IN(0,9,'Data processed ending date.     ':DATE()'D2/','DATE',END.DATE,0,8,'','',1,-8,9,0,QI,HELP,0,23)
+      IF QI='X' THEN GOTO ENTER.BEG.DATE
+      IF QI='EX' THEN GOTO EXIT.PROGRAM
+      IF QI='' THEN END.DATE=DATE()
+      IF END.DATE LT BEG.DATE THEN
+        CALL ELINE('Invalid ending date.')
+        GOTO ENTER.END.DATE
+      END
+      CRT @(32,9):END.DATE'D2/'
+*
+*  Verify date entry range
+*
+ENTER.VERIFICATION:***
+      HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            GO ENTER.END.DATE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO ENTER.VERIFICATION
+      END CASE
+*
+* Start processing
+*
+400:  TEXT="Processing Date Range - Please Wait ... May Take Several Hours."
+      CALL CENTER(TEXT,80)
+*DF      CRT @(0,13):@(-3):TEXT
+*
+* Clear work file
+*
+*     GOTO JIM
+
+      CLEARFILE F.WORK
+*
+* Select data for current client
+*
+
+*************************************************************************
+*
+* SELECT CLIENT FILE
+*
+      TEXT='Selecting Clients.'
+      CALL CENTER(TEXT,80)
+      CRT @(0,10):TEXT
+*
+      EXECUTE "SELECT VOC 'FB.BILLS.HIST' *A7" RTNLIST CLIENT.LIST CAPTURING OUTPUT
+*
+      ITEMS = @SELECTED
+      IF @SELECTED < 1 THEN ; * JCW02
+        CALL ELINE('ERROR - No clients on file.')
+        GOTO EXIT.PROGRAM
+      END
+      COUNTER.1=0
+      PER=0
+      LOOP
+        READNEXT CLIENT.ID FROM CLIENT.LIST ELSE CLIENT.ID='DONE'
+        IF CLIENT.ID='DONE' ELSE
+          IF ORIG.CLIENT.ID='00ALL' ELSE
+            IF CLIENT.ID#ORIG.CLIENT.ID THEN GOTO SKIP.CLIENT
+          END
+        END
+      UNTIL CLIENT.ID='DONE' DO
+        COUNTER.1=COUNTER.1+1
+        IF CLIENT.ID='FB.BILLS.HIST' OR CLIENT.ID[1,2]='99' THEN GO SKIP.CLIENT
+        READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE CLIENT.REC=''
+        IF CLIENT.REC<2>='' THEN 
+          CLIENT.NAME='*** Not On File ***'
+        END ELSE
+          CLIENT.NAME=CLIENT.REC<2>
+        END
+          CRT @(0,17):CLIENT.ID:" ":CLIENT.NAME:" - Now selecting freight bills":@(-4):
+        CALL PROG.BAR(20,COUNTER.1,ITEMS,PER.1)
+        OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS THEN
+          STMT='SSELECT FB.PROC.DATE.XREF,':CLIENT.ID:' WITH DATE >= "':OCONV(BEG.DATE,'D2/'):'"' ; * JCW01
+          STMT = STMT:' AND WITH DATE <= "':OCONV(END.DATE,'D2/'):'"'   ; * JCW01
+          EXECUTE STMT RTNLIST CAPTURING MSG ; * JCW01
+          IF @SELECTED > 0 THEN ; * JCW01
+             STMT='QSELECT FB.PROC.DATE.XREF,':CLIENT.ID         ; * JCW01
+             EXECUTE STMT PASSLIST RTNLIST CAPTURING RESULTS  ; * JCW01
+          END ELSE ; * JCW01
+             GOTO SKIP.CLIENT ; * JCW01
+          END ; * JCW01
+          STMT='SSELECT FB.BILLS.HIST,':CLIENT.ID
+          STMT:=' WITH VERSION = "0"'
+          STMT:=' AND WITH LOG.AND.OVRCHRG # "0"'
+*         STMT:=' SAVING UNIQUE @ID'     ; * JMK01
+          EXECUTE STMT PASSLIST RTNLIST BILLS.LIST CAPTURING OUTPUT
+          NUM.BILLS = @SELECTED
+          CRT @(0,17):CLIENT.ID:" ":CLIENT.NAME:" - Now processing ":NUM.BILLS:" Freight Bills":@(-4):
+          COUNTER.2=0
+          LOOP
+            DONE=0
+            READNEXT PRO.ID FROM BILLS.LIST ELSE DONE=1
+          UNTIL DONE=1 DO
+            COUNTER.2=COUNTER.2+1
+*           CRT @(0,17):CLIENT.ID:' ':PRO.ID:@(-4):
+            IF NUM.BILLS>0 THEN CALL PROG.BAR(22,COUNTER.2,NUM.BILLS,PER.2)
+            READ AR.CUST.REC FROM A.CUST,CLIENT.ID'R%12' ELSE AR.CUST.REC=''
+            AR.CUST.REC<20,-1>='ALL'
+            READ DBILL FROM F.BILLS,PRO.ID THEN
+              CARRIER.NUM=FIELD(PRO.ID,'*',1)
+              IF OLD.CARRIER.NUM#CARRIER.NUM THEN
+                 READ CARRIER.REC FROM F.CARRIERS,CARRIER.NUM ELSE
+                    CALL ELINE(CARRIER.NUM:' Not Found in Carrier File - Bill being skipped')
+                    GOTO SKIP.BILL
+                 END
+                 OLD.CARRIER.NUM=CARRIER.NUM
+              END
+              COMM.CODE=''
+              LOCATE DBILL<37> IN CLIENT.REC<84> BY 'AR' SETTING POS ELSE POS=POS-1
+              IF POS=0 THEN POS=1
+*DF              IF DBILL<11>+0#0 THEN COMM.CODE<-1>='O'
+*DF              IF DBILL<12>+0#0 THEN COMM.CODE<-1>='L'
+*DF              COMM.CODE<-1>='ALL'
+              FOR I = 1 TO 2
+                IF I = 1 THEN
+                   CLIENT.NUM=CLIENT.ID
+                END ELSE
+                   CLIENT.NUM='ALL'
+                END
+                NUM.OF.SALESMEN=DCOUNT(AR.CUST.REC<20>,@VM)
+                FOR J = 1 TO NUM.OF.SALESMEN
+                   CLIENT.SLSMAN.NUM=CLIENT.NUM:'*':AR.CUST.REC<20,J>
+*DF                   NUM.OF.COMM=DCOUNT(COMM.CODE,@AM)
+*DF                   FOR K=1 TO NUM.OF.COMM
+*DF                      CLIENT.SLSMAN.COMM.NUM=CLIENT.SLSMAN.NUM:'*':COMM.CODE<K>
+                      FOR L = 1 TO 2
+                         IF L = 1 THEN
+                            WORK.ID=CLIENT.SLSMAN.NUM:'*':CARRIER.REC<44>
+                         END ELSE
+                            WORK.ID=CLIENT.SLSMAN.NUM:'*ALL'
+                         END
+                         READ WORK.REC FROM F.WORK,WORK.ID ELSE WORK.REC=''
+*DF                         BEGIN CASE
+*DF                            CASE COMM.CODE<K>='O' 
+*DF                               WORK.REC<1>=WORK.REC<1>+DBILL<11>
+*DF                            CASE COMM.CODE<K>='L' 
+*DF                               WORK.REC<1>=WORK.REC<1>+DBILL<12>
+*DF                            CASE COMM.CODE<K>='ALL'
+*DF                               WORK.REC<1>=WORK.REC<1>+DBILL<11>+DBILL<12>
+*DF                            CASE 1
+*DF                               CALL ELINE('Invalid Commission Code Found: ':COMM.CODE<K>)
+*DF                               GOTO SKIP.BILL
+*DF                         END CASE
+                         OVERCHARGE=(DBILL<11>*(-CLIENT.REC<33,POS>/10000))
+                         WORK.REC<1>=WORK.REC<1>+OVERCHARGE
+                         LOGISTIC=(DBILL<12>*(-CLIENT.REC<85,POS>/10000))
+                         WORK.REC<2>=WORK.REC<2>+LOGISTIC
+                         WRITE WORK.REC ON F.WORK,WORK.ID
+                      NEXT L
+*DF                   NEXT K
+                NEXT J
+              NEXT I
+            END
+SKIP.BILL:***
+          REPEAT
+        END
+SKIP.CLIENT:***
+      REPEAT
+*************************************************************************
+
+JIM:
+
+*
+* Print report
+*
+* Set-up printer
+*
+      WIDTH=132
+      CTR=INT(WIDTH/2)
+**************************************************************
+      VIN=''
+      VIN<3>='R'
+      CALL LASER.CODE(VIN,VOUT)
+      IF VOUT<1>#'' THEN 
+        CALL ELINE(VOUT<1>)
+        STOP
+      END
+      IF VOUT<3>#'' THEN EXECUTE VOUT<3>
+      PRINTER ON
+      IF VOUT<2>#'' THEN PRINT VOUT<2>:
+*
+*
+*
+      L.TAB=CTR-(LEN(PROG.DESC)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):PROG.DESC
+      R.TAB=WIDTH-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE())
+      HEAD1=PROG.NAME:SPACE(L.TAB):PROG.DESC:SPACE(R.TAB):TIMEDATE():"'L'"
+*
+      TITLE='Bills processed from ':BEG.DATE'D2/':' to ':END.DATE'D2/'
+      L.TAB=CTR-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+*     R.TAB=(WIDTH-LEN(TEMP))-9
+*     HEAD2=TEMP:SPACE(R.TAB):"PAGE 'PL'"
+      R.TAB=(WIDTH-LEN(TEMP))-20
+      HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )':"PAGE 'PL'"
+      HEAD3="'L'"
+*
+      HEAD4=""
+      HEAD5=STR('-',WIDTH):"'L'"
+*
+      HEAD6='    '
+      HEAD6:=SPACE(9):'Transportation Mode''L#42'
+      HEAD6:=SPACE(6):'Overcharge''L#15'
+      HEAD6:=SPACE(2):'Logistics ''L#15'
+      HEAD6:="'L'"
+*
+      HEAD7=STR('-',WIDTH):"'L'"
+      HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6:HEAD7
+      HEADING HED
+*
+** Select data
+*
+      COUNTER=0
+      PREC='SSELECT FBWORK':CH.NUM
+      IF ORIG.CLIENT.ID='00ALL' THEN
+         PREC:=' WITH CLIENT.NUMBER # "ALL" AND'
+      END ELSE
+         PREC:=' WITH CLIENT.NUMBER = ':ORIG.CLIENT.ID:' AND'
+      END
+      PREC := ' WITH SALESMAN.NUMBER = "ALL"'
+      PREC := ' BY CLIENT.NAME'
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+*
+      DONE = 0
+      OLD.CLIENT.ID='*****'
+      LOOP
+        READNEXT ID ELSE DONE = 1
+      UNTIL DONE = 1 DO
+        GOSUB BUILD.DET.LINE
+      REPEAT
+      IF ORIG.CLIENT.ID='00ALL' THEN
+        PREC='SSELECT FBWORK':CH.NUM
+        PREC:=' WITH CLIENT.NUMBER = "ALL" AND'
+        PREC := ' WITH SALESMAN.NUMBER = "ALL"'
+        EXECUTE PREC PASSLIST CAPTURING OUTPUT
+        PAGE
+        PRINT
+        PRINT 'Totals'
+        DONE = 0
+        OLD.CLIENT.ID='*****'
+        LOOP
+          READNEXT ID ELSE DONE = 1
+        UNTIL DONE = 1 DO
+          GOSUB BUILD.DET.LINE
+        REPEAT
+      END
+*      LINE=SPACE(56):'=============== ==============='
+      LINE=STR('=',87)
+      PRINT LINE
+      PRINTER OFF
+      PRINTER CLOSE
+
+*
+EXIT.PROGRAM:*
+*
+      STOP
+
+
+BUILD.DET.LINE:***
+      MODE=FIELD(ID,'*',3)
+      IF MODE='ALL' THEN
+*        LINE=SPACE(56):'--------------- ---------------'
+        LINE=STR('-',87)
+        PRINT LINE
+        CLIENT.ID=FIELD(ID,'*',1)
+        IF OLD.CLIENT.ID='*****' THEN OLD.CLIENT.ID=CLIENT.ID
+        IF OLD.CLIENT.ID#CLIENT.ID THEN
+          PRINT 
+          OLD.CLIENT.ID=CLIENT.ID
+        END
+        IF CLIENT.ID='ALL' THEN
+          TRANS.MODE='Grand Total'
+        END ELSE
+          READV CLIENT.NAME FROM F.CLIENTS,CLIENT.ID,2 THEN
+            TRANS.MODE=CLIENT.ID:" ":CLIENT.NAME
+          END ELSE
+            TRANS.MODE="'":CLIENT.ID:"' ** Not On File **"
+          END
+        END
+      END ELSE
+        CLIENT.ID=FIELD(ID,'*',1)
+        IF OLD.CLIENT.ID='*****' THEN OLD.CLIENT.ID=CLIENT.ID
+        IF OLD.CLIENT.ID#CLIENT.ID THEN
+          PRINT 
+          OLD.CLIENT.ID=CLIENT.ID
+        END
+        READV TRANSPORT FROM F.TRANSPORT,MODE,1 ELSE
+           TRANSPORT='** Not On File **'
+        END
+        TRANS.MODE=SPACE(13):MODE'R#2':" ":TRANSPORT
+      END
+      READ REC FROM F.WORK,ID THEN
+        LINE=''
+        LINE:=TRANS.MODE'L#55'
+        REC<1>=REC<1>'R0'
+        REC<2>=REC<2>'R0'
+        LINE:=REC<1>'R26,#16'
+        LINE:=REC<2>'R26,#16'
+        PRINT LINE
+      END
+      RETURN

@@ -1,0 +1,671 @@
+* FREIGHT BILLING PACKAGE
+
+*---- PROGRAM: FIX.VEND.CUST
+* AUTHOR: JAY WEBERT
+* DATE: DECEMBER 18, 2006
+* DESCRIPTION: FIX/CLEAN-UP VENDOR/CUSTOMER DESCRIPTIONS
+*              SELECTS A GROUP OF DESCRIPTIONS TO CHANGE THEM ALL
+*              TO A SINGLE, PROPERLY-SPELLED DESCRIPTION
+
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE EXPRESS
+* WRITTEN CONSENT OF SAME.
+*-----------------------------------------------------------------------
+$INCLUDE FILE.DEFS INC_CLIENTS
+*---- Initialize variables
+      GOSUB INITIALIZE.GENERAL.VARIABLES
+      GOSUB OPEN.FILES
+
+*----
+* MAIN PROCESSING
+*----
+      GOSUB GET.SCREEN.DSP
+      GOSUB 8100
+*---- Restrict program usage
+      BEGIN CASE
+        CASE USER='OWEN'
+        CASE USER='JWEBERT'
+        CASE USER='MARY'
+        CASE USER='MYRA'
+        CASE 1
+          TEMP='**  This is a restricted access application - Access Denied  **'
+          CALL CENTER(TEMP,80)
+          CRT @(0,12):TEMP
+          CALL ELINE('')
+          STOP
+      END CASE
+
+*---- Enter client number
+100:***
+      GOSUB 8100
+      ONSCREEN.ID=USER:'.TXT'
+      HELP = "Enter the client number. [X]=Exit [EX]=Exit"
+      IF CLIENT.ID = '' THEN MASK = '#####' ELSE MASK = CLIENT.ID
+      CALL GEN.IN(12,3,MASK,'',Q,0,20,'','',2,-5,3,1,QI,HELP,0,23)
+      CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'EX' ! QI = 'X'
+            STOP
+         CASE QI = '' & CLIENT.ID = ''
+            STOP
+         CASE QI = ''
+            Q = CLIENT.ID
+         CASE NOT(QI MATCHES "0N")
+            VIN=0
+            VOUT=''
+            CALL SOUNDEX.DISPLAY.NEW(VIN,VOUT,QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CC+=VOUT<1> ; GOSUB PRINT.CC
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            BEGIN CASE
+               CASE ITEM.LIST = ''
+                  GOTO 100
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 100
+               CASE 1
+                  IF NUM(ITEM.LIST<1,1>) THEN SND.DATA=ITEM.LIST<1,1> ; GOSUB SEND.DATA
+                  GOTO 100
+            END CASE
+         CASE NUM(QI)
+            Q = QI'R%5'
+         CASE 1
+            GOTO 100
+      END CASE
+*---- Read client name
+      IF CLIENT.ID # Q THEN CLIENT.ID = Q'R%5'
+      MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         CALL ELINE("ERROR - Client ":CLIENT.ID:" not on file.")
+         CC+=1 ; GOSUB PRINT.CC
+         GOTO 100
+      END
+      CLIENT.NAME = CL.NAME
+      CRT @(12,3):CLIENT.ID:' ':CLIENT.NAME:@(-4)
+      START.OVER = 0
+      GOSUB OPEN.CLIENT.FILES
+      IF START.OVER THEN GOTO 100
+
+*---- Enter Vendor/Customer Description
+200:***
+      HELP = "Enter a vendor/customer description. [L]ist [H]elp [X]=Back [EX]=Exit"
+      IF LIST.COM = 'L' THEN DESC = ''
+      IF DESC = '' THEN MASK = '' ELSE MASK = DESC
+      CALL GEN.IN(12,4,MASK,'',Q,0,20,'','',2,12,4,0,QI,HELP,0,23)
+      CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+      BEGIN CASE
+        CASE QI = 'X' OR QI = 'x'
+          GOTO 100
+        CASE QI = 'EX' OR QI = 'ex'
+          STOP
+        CASE QI = 'H' OR QI = 'h'
+          GOSUB DISPLAY.HELP
+          GOTO 200
+        CASE QI = '' & DESC = ''
+          GOTO 200
+        CASE QI = ''
+          Q = DESC
+        CASE 1
+          DESC = QI
+      END CASE
+      CRT @(12,4):DESC
+*---- Retrieve and Display SOUNDEX or SELECT results
+      LIST.COM = OCONV(FIELD(DESC,' ',1),'MCU')
+      LIST.PARM = FIELD(DESC,' ',2)
+      BEGIN CASE
+        CASE LIST.COM = 'L' AND LIST.PARM = ''
+          STMT = 'SSELECT VEND.CUST.NAMES,':CLIENT.ID:' BY 1'
+          EXECUTE STMT RTNLIST VCN.LIST CAPTURING MSG
+          IF @SELECTED < 1 THEN
+            CALL ELINE('No VEND.CUST.NAMES records returned; please try again.')
+            GOTO 200
+          END
+          HDR1 = 'All Descriptions for Client ':CLIENT.ID:'; Choose the Correct Spelling.'
+          CRT @(12,6):'Please Wait...'
+        CASE LIST.COM = 'L' AND LIST.PARM # ''
+          STMT = 'SSELECT VEND.CUST.NAMES,':CLIENT.ID:' WITH 1 = "':LIST.PARM:']" BY 1'
+          EXECUTE STMT RTNLIST VCN.LIST CAPTURING MSG
+          IF @SELECTED < 1 THEN
+            CALL ELINE('No VEND.CUST.NAMES records returned; please try again.')
+            GOTO 200
+          END
+          HDR1 = 'Search Results for "':LIST.PARM:']"; Choose the Correct Spelling.'
+        CASE 1
+          *** GET SOUNDEX RESULTS
+          INSTR = DESC
+          RESULTS = ''
+          CALL GET.LIST.SDX('SDX.VCN,':CLIENT.ID,INSTR,RESULTS)
+          *** SAVE, RETRIEVE, AND SORT RESULTS
+          LIST.NAME = 'FIX.VEND.CUST':CH.NUM
+          WRITELIST RESULTS ON LIST.NAME
+          STMT = 'GET-LIST ':LIST.NAME
+          EXECUTE STMT RTNLIST FIRST.LIST CAPTURING MSG
+          IF @SELECTED < 1 THEN
+            CALL ELINE('No SOUNDEX results returned for the given description ':DESC:'.')
+            GOTO 200
+          END
+          STMT = 'SSELECT VEND.CUST.NAMES,':CLIENT.ID:' BY 1'
+          EXECUTE STMT PASSLIST FIRST.LIST RTNLIST VCN.LIST CAPTURING MSG
+          IF @SELECTED < 1 THEN
+            CALL ELINE('No VEND.CUST.NAMES records returned; please try again.')
+            GOTO 200
+          END
+          HDR1 = 'SOUNDEX Results for "':DESC:'"; Choose the Correct Spelling.'
+      END CASE
+      *** LOAD RESULTS INTO ARRAY
+      VCN.ARRAY = ''
+      DONE = 0
+      LOOP UNTIL DONE DO
+        READNEXT VCN.ID FROM VCN.LIST THEN
+          READ VCN.REC FROM F.VCN, VCN.ID THEN
+            IF TRIM(VCN.REC<1>) # '' THEN ; * OMIT BLANK DESCRIPTIONS
+              VCN.ARRAY<1,-1> = VCN.ID  
+              VCN.ARRAY<2,-1> = VCN.REC<1>
+              VCN.ARRAY<4,-1> = DCOUNT(VCN.REC<2>,CHAR(253))
+            END
+          END
+        END ELSE
+          DONE =1 
+        END
+      REPEAT
+      IF LIST.COM # 'L' THEN
+        VCN.ARRAY<1,-1> = 'ADD'
+        VCN.ARRAY<2,-1> = '<ADD "':DESC:'">'
+      END
+      NUM.VC.ITEMS = DCOUNT(VCN.ARRAY<1>,CHAR(253))
+      GOSUB DISPLAY.HEADER
+      VC.PAGE = 1
+      VC.ID = ''
+      LAST.PAGE=INT(NUM.VC.ITEMS/9)
+      IF MOD(NUM.VC.ITEMS,9) # 0 THEN LAST.PAGE += 1
+      PAGE=1
+      GOSUB DISPLAY.VC.PAGE
+
+*---- Select the correct description
+DESC.SEL:***
+      NEW.VCN = 0
+      MASK = 'Enter line number. '
+      HELP="Enter LN# [N]ext [P]revious [T]op [B]ottom [F]irst letter(s) [X]Back [EX]it"
+      CALL GEN.IN(5,19,MASK,'',Q,0,5,'','',0,24,19,0,QI,HELP,0,23)
+      CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI='P' OR QI='-'
+          PAGE -= 1
+          IF PAGE=0 THEN PAGE=1
+          GOSUB DISPLAY.VC.PAGE
+          GOTO DESC.SEL
+        CASE QI='' OR QI='N' OR QI='+'
+          IF PAGE < LAST.PAGE THEN PAGE += 1
+          GOSUB DISPLAY.VC.PAGE
+          GOTO DESC.SEL
+        CASE QI='X'
+          GOSUB CLEAR.WINDOW
+          GOTO 200
+        CASE QI = 'T'
+          PAGE=1
+          GOSUB DISPLAY.VC.PAGE
+          GOTO DESC.SEL
+        CASE QI = 'B'
+          PAGE = LAST.PAGE
+          GOSUB DISPLAY.VC.PAGE
+          GOTO DESC.SEL
+        CASE QI = 'F'
+          GOSUB FIND.FIRST
+          GOSUB DISPLAY.VC.PAGE
+          GOTO DESC.SEL
+        CASE QI='EX'
+          STOP
+        CASE NUM(QI)
+          IF QI > NUM.VC.ITEMS OR QI < 1 THEN
+            CALL ELINE('Invalid line #, please try again')
+            GOTO DESC.SEL
+          END
+          IF VCN.ARRAY<1,QI> = 'ADD' THEN
+            *** VERIFY THAT SELECTION DOES NOT EXIST ELSEWHERE IN VCN.ARRAY
+            TEST.DESC = VCN.ARRAY<2,QI>
+            TEST.DESC = FIELD(TEST.DESC,'"',2)
+            LOCATE TEST.DESC IN VCN.ARRAY<2> SETTING POS THEN
+              THE.DESC = VCN.ARRAY<2,POS>
+            END ELSE
+              NEW.VCN=1
+              THE.DESC = DESC
+            END
+          END ELSE
+            THE.DESC = VCN.ARRAY<2,QI>
+          END
+        CASE 1
+          GOTO DESC.SEL
+      END CASE
+      IF NUM(QI) OR QI = 'ADD' ELSE GOTO DESC.SEL
+      *** REFRESH THE DESCRIPTION DISPLAY
+      TAG = ' <--Change Other Descriptions To This!'
+      CRT @(12,4):@(-4)
+      IF THE.DESC # DESC THEN
+        DISP.DESC = THE.DESC:TAG
+      END ELSE
+        DISP.DESC = DESC:TAG
+      END
+      DISP.DESC = DISP.DESC[1,67]
+      CRT @(12,4):DISP.DESC
+      *** REMOVE 'ADD' ELEMENTS OF VCN.ARRAY
+      IF LIST.COM # 'L' THEN
+        VCN.ARRAY = DELETE(VCN.ARRAY,1,NUM.VC.ITEMS)
+        VCN.ARRAY = DELETE(VCN.ARRAY,2,NUM.VC.ITEMS)
+       NUM.VC.ITEMS -= 1
+      END
+      *** RESET SCREEN
+      GOSUB CLEAR.WINDOW
+      HDR1 = 'Select Descriptions to Change to "':THE.DESC:'"'
+      GOSUB DISPLAY.HEADER
+      PAGE = 1
+      GOSUB DISPLAY.VC.PAGE
+
+*---- Select descriptions to change
+400:
+      PREV.LN = 0
+CHANGE.SEL:***
+      MASK = 'Enter line number. '
+      HELP="Enter LN# [N]ext [P]revious [T]op [B]ottom [F]irst [X]Back [EX]it [U]pdate"
+      CALL GEN.IN(5,19,MASK,'',Q,0,5,'','',0,24,19,0,QI,HELP,0,23)
+      CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI='P' OR QI='-'
+          PAGE -= 1
+          IF PAGE=0 THEN PAGE=1
+          GOSUB DISPLAY.VC.PAGE
+          GOTO CHANGE.SEL
+        CASE QI='' OR QI='N' OR QI='+'
+          IF PAGE < LAST.PAGE THEN PAGE += 1
+          GOSUB DISPLAY.VC.PAGE
+          GOTO CHANGE.SEL
+        CASE QI='X'
+          *** REMOVE ALL "X" FLAGS
+          FOR I = 1 TO NUM.VC.ITEMS
+            VCN.ARRAY<3,I> = ''
+          NEXT I
+          *** PUT 'ADD' FEATURE BACK INTO VCN.ARRAY
+          IF LIST.COM # 'L' THEN
+            VCN.ARRAY<1,-1> = 'ADD'
+            VCN.ARRAY<2,-1> = '<ADD "':DESC:'">'
+            NUM.VC.ITEMS = DCOUNT(VCN.ARRAY<1>,CHAR(253))
+          END
+          GOSUB CLEAR.WINDOW
+          PAGE = 1
+          *** REFRESH UPPER DESCRIPTION DISPLAY
+          CRT @(12,4):@(-4)
+          CRT @(12,4):DESC
+          *** REFRESH WINDOW HEADING
+          BEGIN CASE
+            CASE LIST.COM = 'L' AND LIST.PARM = ''
+              HDR1 = 'All Descriptions for Client ':CLIENT.ID:'; Choose the Correct Spelling.'
+            CASE LIST.COM = 'L' AND LIST.PARM # ''
+              HDR1 = 'Search Results for "':LIST.PARM:']"; Choose the Correct Spelling.'
+            CASE 1
+              HDR1 = 'SOUNDEX Results for "':DESC:'"; Choose the Correct Spelling.'
+          END CASE
+          GOSUB DISPLAY.HEADER
+          GOSUB DISPLAY.VC.PAGE
+          GOTO DESC.SEL
+        CASE QI = 'T'
+          PAGE=1
+          GOSUB DISPLAY.VC.PAGE
+          GOTO CHANGE.SEL
+        CASE QI = 'B'
+          PAGE = LAST.PAGE
+          GOSUB DISPLAY.VC.PAGE
+          GOTO CHANGE.SEL
+        CASE QI = 'F'
+          GOSUB FIND.FIRST
+          GOSUB DISPLAY.VC.PAGE
+          GOTO CHANGE.SEL
+        CASE QI='EX'
+          STOP
+        CASE INDEX(QI,'-',1)
+          RANGE.ERR = 0
+          NUM1 = FIELD(QI,'-',1)
+          NUM2 = FIELD(QI,'-',2)
+          NUM3 = FIELD(QI,'-',3)
+          IF NUM1 = '' THEN RANGE.ERR = 1
+          IF NOT(NUM(NUM1)) THEN RANGE.ERR = 1
+          IF NOT(NUM(NUM2)) THEN RANGE.ERR = 1
+          IF NUM3 # '' THEN RANGE.ERR = 1
+          IF INDEX(QI,'-',2) THEN RANGE.ERR = 1
+          IF INDEX(QI,'-',3) THEN RANGE.ERR = 1
+          IF RANGE.ERR THEN
+            CALL ELINE('Invalid entry of "':QI:'"; valid range entry looks like "1-10". Please try again.')
+            GOTO CHANGE.SEL
+          END
+          IF NUM1 <= NUM2 THEN
+            START.NUM = NUM1
+            STOP.NUM = NUM2
+          END ELSE
+            START.NUM = NUM2
+            STOP.NUM = NUM1
+          END
+          FOR I = START.NUM TO STOP.NUM
+            IF VCN.ARRAY<2,I> # THE.DESC THEN
+              IF VCN.ARRAY<3,I> = '' THEN VCN.ARRAY<3,I> = 'X' ELSE VCN.ARRAY<3,I> = ''
+            END
+          NEXT I
+          GOSUB DISPLAY.VC.PAGE
+          GOTO CHANGE.SEL
+        CASE NUM(QI)
+          *** CURRENT LINE NUMBER IS INVALID
+          IF QI > NUM.VC.ITEMS OR QI < 1 THEN
+            CALL ELINE('Invalid line #, please try again')
+            GOTO DESC.SEL
+          END
+          *** IF CURRENT DESCRITPION DOES NOT MATCH "THE" DESCRIPTION, THEN TOGGLE THE MARK
+          IF VCN.ARRAY<2,QI> # THE.DESC THEN
+            IF VCN.ARRAY<3,QI> = '' THEN VCN.ARRAY<3,QI> = 'X' ELSE VCN.ARRAY<3,QI> = ''
+          END
+          GOSUB DISPLAY.VC.PAGE
+          GOTO CHANGE.SEL
+        CASE QI = 'U'
+          *** UPDATE!
+          UPDATE = ''
+          FOR I = 1 TO NUM.VC.ITEMS
+            IF VCN.ARRAY<3,I> = 'X' THEN 
+              VCN.ID = VCN.ARRAY<1,I>
+              READV VC.IDS FROM F.VCN, VCN.ID, 2 THEN
+                ID.CNT = DCOUNT(VC.IDS,CHAR(253))
+                FOR J = 1 TO ID.CNT
+                  UPDATE<-1> = VC.IDS<1,J>
+                NEXT J
+              END
+            END
+          NEXT I
+          UCNT = DCOUNT(UPDATE,CHAR(254))
+          IF UCNT >= 1 THEN GOSUB UPDATE.FILES
+          GOSUB CLEAR.WINDOW
+          GOTO 100
+        CASE 1
+          GOTO CHANGE.SEL
+      END CASE
+      STOP
+
+
+INITIALIZE.GENERAL.VARIABLES:***
+      PROG.NAME='FIX.VEND.CUST'
+      PROG.DESC='MASS CORRECTIONS TO VENDOR/CUSTOMER DESCRIPTIONS'
+      PACK.NAME='FREIGHT BILLING'
+      CALL CHANNEL(CH.NUM)
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FIX.VEND.CUST' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      CALL GET.USER(USER)
+      CO.NAME='AFS Logistics, LLC'
+      MAT CLIENT.REC = ''
+      CLIENT.ID=''
+      CLIENT.NAME=''
+      DESC = ''
+      LIST.COM = ''
+      CC=0                 ; * Initalize Character Count to Zero
+      CHR.START.TIME=TIME()
+      RETURN
+
+
+OPEN.FILES:***
+      OPEN 'CLIENTS' TO F.CLIENTS ELSE
+        CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN 'FB.TABLES' TO F.TABLES ELSE
+        CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      RETURN
+
+
+OPEN.CLIENT.FILES:***
+      OPEN 'VEND.CUST,':CLIENT.ID TO F.VC ELSE
+        CALL ELINE("ERROR - Cannot open VEND.CUST for client ":CLIENT.ID)
+        CC+=1 ; GOSUB PRINT.CC
+        START.OVER=1
+        RETURN
+      END
+      OPEN 'VEND.CUST.NAMES,':CLIENT.ID TO F.VCN ELSE
+        CALL ELINE("ERROR - Cannot open VEND.CUST.NAMES for client ":CLIENT.ID)
+        CC+=1 ; GOSUB PRINT.CC
+        START.OVER=1
+        RETURN
+      END
+      OPEN 'VEND.CUST.XREF,':CLIENT.ID TO F.VC.XREF ELSE
+        CALL ELINE("ERROR - Cannot open VEND.CUST.XREF for client ":CLIENT.ID)
+        CC+=1 ; GOSUB PRINT.CC
+        START.OVER=1
+        RETURN
+      END
+      OPEN 'VEND.CUST.EDI.XREF,':CLIENT.ID TO F.VC.EDI.XREF ELSE
+        CALL ELINE("ERROR - Cannot open VEND.CUST.EDI.XREF for client ":CLIENT.ID)
+        CC+=1 ; GOSUB PRINT.CC
+        START.OVER=1
+        RETURN
+      END
+      RETURN
+
+
+GET.SCREEN.DSP:***
+      SCREEN.DSP =@(0, 3):'Client     : '
+      SCREEN.DSP:=@(0, 4):'Description: '
+      SCREEN.DSP:=@(0, 5):STR('-',79)
+      RETURN
+
+
+8100:***
+      CALL AFS.SCR.REFRESH(PROG.NAME, PROG.DESC, PACK.NAME, CO.NAME,TIME.DATE, 1)
+      CRT SCREEN.DSP
+      RETURN
+
+
+SEND.DATA:****
+      CC-=(LEN(SND.DATA)+1)
+      DATA SND.DATA
+      RETURN
+
+
+PRINT.CC:***
+      IF USER#'OWEN' THEN RETURN
+      PRINT @(0,0):@(-4):'Characters: ':CC'R#4':
+      RETURN
+
+
+DISPLAY.HEADER:***
+      CRT @(0,6):@(-4)
+      CRT @(0,6):HDR1
+      CRT @(0,7):'Number             Description              Count'
+      CRT @(0,8):'------ ------------------------------------ -----'
+      RETURN
+
+
+DISPLAY.VC.PAGE:***
+      START=(PAGE*9)-8
+      IF START > NUM.VC.ITEMS THEN RETURN
+      STOP=START+8
+      FOR SEL=START TO STOP
+        GOSUB CALCULATE.LINE
+        IF VCN.ARRAY<1,SEL>='' THEN
+          CRT @(0,LINE):@(-4):
+        END ELSE
+          CRT @(0,LINE):SEL'R#6':' ':VCN.ARRAY<2,SEL>'L#36':' ':VCN.ARRAY<4,SEL>'R#5'
+          CRT @(0,LINE):VCN.ARRAY<3,SEL>
+        END
+      NEXT SEL
+      RETURN
+
+
+FIND.FIRST:***
+      HELP="Enter the first letter(s) of the name you are seaching for"
+      CALL GEN.IN(0,22,'Enter first letter(s) -------------------------','',Q,0,15,'','',0,-25,22,1,QI,HELP,0,23)
+      CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+      LOOK=OCONV(QI,'MCU')
+      POS=INDEX(@VM:OCONV(VCN.ARRAY<2>,'MCU'),@VM:LOOK,1)
+      IF POS=0 THEN                      ; * Not Found
+         CALL ELINE("A name starting with the letter(s) '":QI:"' was not found")
+         GO DISPLAY.VC.PAGE
+      END
+      VAL=COUNT((@VM:VCN.ARRAY<2>)[1,POS],@VM)
+      PAGE=INT(VAL/9)
+      IF REM(VAL,9)>0 THEN PAGE+=1
+      RETURN
+
+
+UPDATE.FILES:***
+*---- VEND.CUST.NAMES
+      *** GET PRE-EXISTING VCN ID AND RECORD
+      IF NOT(NEW.VCN) THEN
+        STMT = 'SELECT VEND.CUST.NAMES,':CLIENT.ID:' WITH 1 = "':THE.DESC:'"'
+        EXECUTE STMT CAPTURING MSG
+        BEGIN CASE
+          *** SINGLE VEND.CUST.NAMES RECORD FOUND
+          CASE @SELECTED = 1
+            READNEXT VCN.ID THEN NULL
+            READ VCN.REC FROM F.VCN, VCN.ID ELSE
+              NEW.VCN = 1
+            END
+          *** MULTIPLE VEND.CUST.NAMES FOUND
+          CASE @SELECTED > 1
+            GOSUB CHOOSE.VCN.REC
+          *** VEND.CUST.NAMES RECORD NOT FOUND
+          CASE @SELECTED < 1
+            NEW.VCN = 1
+        END CASE
+      END
+      *** GET NEW VCN.ID AND RECORD
+      IF NEW.VCN THEN
+        TABLE.ID = 'VCN*':CLIENT.ID
+        READ TABLE.REC FROM F.TABLES, TABLE.ID ELSE
+          TABLE.REC = ''
+          TABLE.REC<1> = 0
+        END
+        DONE = 0
+        LOOP UNTIL DONE DO
+          VCN.ID = TABLE.REC<1>'R%5'
+          TABLE.REC<1> += 1
+          READ TEST FROM F.VCN, VCN.ID ELSE
+            WRITE TABLE.REC ON F.TABLES, TABLE.ID
+            DONE = 1
+          END
+        REPEAT
+        VCN.REC = ''
+        VCN.REC<1> = THE.DESC
+        CALL SOUNDEX.EDIT('',THE.DESC,VCN.ID,'SDX.VCN,':CLIENT.ID)  ; * ADD NEW SOUNDEX ENTRY
+      END
+      *** PROCESS MARKED VEND.CUST RECORDS
+      FOR I = 1 TO UCNT
+*---- VEND.CUST
+        VC.ID = UPDATE<I>
+        READ VC.REC FROM F.VC, VC.ID THEN
+          IF VC.REC<44> = '' THEN VC.REC<44> = VC.REC<1>  ; * FILL 44 IF EMPTY (ORIGINAL DESCRIPTION)
+          OLD.DESC = VC.REC<1>  ; * HOLD OLD DESCIPTION
+          VC.REC<1> = THE.DESC  ; * NEW DESCRIPTION FOR VEND.CUST
+          *** UPDATE ATTRIBUTE 43
+          DESC2 = THE.DESC
+          CALL REMOVE.PUNC(DESC2)
+          CONVERT ' ' TO '' IN DESC2
+          DESC2 = OCONV(DESC2,'MCU')
+          VC.REC<43> = DESC2
+          OLD.VCN.ID = VC.REC<42> ; * HOLD OLD VEND.CUST.NAMES POINTER
+          VC.REC<42> = VCN.ID ; * NEW VEND.CUST.NAMES POINTER FOR VEND.CUST
+          WRITE VC.REC ON F.VC, VC.ID
+          *** NEW VEND.CUST POINTER FOR VEND.CUST.NAMES
+          LOCATE VC.ID IN VCN.REC<2> SETTING POS ELSE
+            VCN.REC<2,-1> = VC.ID
+            WRITE VCN.REC ON F.VCN, VCN.ID
+          END
+          *** UPDATE OLD VEND.CUST.NAMES RECORD
+          READ OLD.VCN.REC FROM F.VCN, OLD.VCN.ID THEN
+            LOCATE VC.ID IN OLD.VCN.REC<2> SETTING POS THEN
+              OLD.VCN.REC = DELETE(OLD.VCN.REC,2,POS)
+             IF OLD.VCN.REC<2> = '' THEN 
+                DELETE F.VCN, OLD.VCN.ID
+                CALL SOUNDEX.EDIT(OLD.DESC,'',OLD.VCN.ID,'SDX.VCN,':CLIENT.ID)  ; * REMOVE OLD SOUNDEX ENTRY
+              END ELSE
+                WRITE OLD.VCN.REC ON F.VCN, OLD.VCN.ID
+              END
+            END
+          END
+        END
+*---- SDX.VEND.CUST
+        CALL SOUNDEX.EDIT(OLD.DESC,THE.DESC,VC.ID,'SDX.VEND.CUST,':CLIENT.ID)
+*---- VEND.CUST.XREF
+        ZIP = VC.REC<7>
+        IF NUM(ZIP[1,5]) THEN ZIP = ZIP[1,5]
+        UP.OLD.DESC = OCONV(OLD.DESC,'MCU')
+        OLD.XREF.ID = UP.OLD.DESC:'*':ZIP
+        READ XREF.REC FROM F.VC.XREF, OLD.XREF.ID THEN
+          DELETE F.VC.XREF, OLD.XREF.ID
+        END
+        UP.THE.DESC = OCONV(THE.DESC,'MCU')
+        NEW.XREF.ID = UP.THE.DESC:'*':ZIP
+        READ XREF.REC FROM F.VC.XREF, NEW.XREF.ID ELSE XREF.REC = ''
+        XREF.REC<1> = VC.ID
+        WRITE XREF.REC TO F.VC.XREF, NEW.XREF.ID
+*---- VEND.CUST.EDI.XREF
+        IF OLD.XREF.ID # NEW.XREF.ID THEN
+          READ EDI.XREF.REC FROM F.VC.EDI.XREF, OLD.XREF.ID THEN
+            IF EDI.XREF.REC<1> = VC.ID THEN
+              DELETE F.VC.EDI.XREF, OLD.XREF.ID
+              WRITE EDI.XREF.REC TO F.VC.EDI.XREF, NEW.XREF.ID
+            END
+          END
+        END
+      NEXT I
+      RETURN
+
+
+CHOOSE.VCN.REC:***
+      VCN.ID = ''
+      VCN.REC = ''
+      MAX.CNT = -999
+      DONE = 0
+      LOOP UNTIL DONE DO
+        READNEXT TEST.VCN.ID THEN
+          READ TEST.VCN.REC FROM F.VCN, TEST.VCN.ID THEN
+            ID.CNT = DCOUNT(TEST.VCN.REC<2>,CHAR(253))
+            IF ID.CNT > MAX.CNT THEN
+              MAX.CNT = ID.CNT
+              VCN.ID = TEST.VCN.ID
+              VCN.REC = TEST.VCN.REC
+            END
+          END
+        END ELSE
+          DONE = 1
+        END
+      REPEAT
+      IF VCN.ID = '' OR VCN.REC = '' THEN NEW.VCN = 1
+      RETURN
+
+
+DISPLAY.HELP:***
+      HELP.ARRAY = ''
+      HELP.ARRAY<-1> = '[L]ist Options:'
+      HELP.ARRAY<-1> = ' '
+      HELP.ARRAY<-1> = 'Enter "L" to view a sorted list of ALL of the vendor/customer descriptions for'
+      HELP.ARRAY<-1> = 'the client. This may take a while to load.'
+      HELP.ARRAY<-1> = ' '
+      HELP.ARRAY<-1> = 'Enter "L" followed by one or more letters for a partial list of descriptions'
+      HELP.ARRAY<-1> = 'for the client. For example, "L Hi" will return all descriptions that start'
+      HELP.ARRAY<-1> = 'with the letters "Hi".  NOTE: This is a CASE-SENSITIVE search.'
+      HELP.ARRAY<-1> = ' '
+      HELP.ARRAY<-1> = 'Without the "L" option, enter all or part of a description to perform a SOUNDEX'
+      HELP.ARRAY<-1> = 'search. This is not a case-sensitive search.'
+      HELP.CNT = DCOUNT(HELP.ARRAY,CHAR(254))
+      CRT @(0,6):
+      FOR I = 1 TO HELP.CNT
+        CRT HELP.ARRAY<I>
+      NEXT I
+      CALL ELINE('')
+      GOSUB CLEAR.WINDOW
+      RETURN
+
+
+CALCULATE.LINE:***
+      X=REM(SEL,9)
+      IF X=0 THEN X=9
+      LINE=8+X
+      RETURN
+
+
+CLEAR.WINDOW:***
+      FOR I=6 TO 21
+        CRT @(0,I):@(-4)
+      NEXT I
+      RETURN

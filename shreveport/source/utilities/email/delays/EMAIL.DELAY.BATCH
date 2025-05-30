@@ -1,0 +1,240 @@
+      PROGRAM EMAIL.DELAY.BATCH
+*----------------------------------------------------------------------
+* PROGRAM: EMAIL.DELAY.BATCH - Program to select and process emails that
+*                              were delayed in sending by the AP Check
+*                              process. This program is intended to be
+*                              run automatically at regular intervals.
+*
+* PROGRAMMER: Steve Barbee
+*
+*----------------------------------------------------------------------
+*
+*---------------------------------------------------------------------
+* PARAMETERS
+*---------------------------------------------------------------------
+*
+* EDIT HISTORY:
+*
+*    NAME :   DATE:    : DESCRIPTION
+*     SWB : 11/30/11   : Started new program
+*   SWB01 : 05/24/12   : Added info to email body for unpredictable
+*                        errors.
+*---------------------------------------------------------------------
+*---------------------------------------------------------------------
+*
+      PROG.NAME = 'EMAIL.DELAY.BATCH'
+      VIN=''
+      VOUT=''
+      ERR.MSG.GENERAL=''
+      ERROR.MESSAGES=''
+      OPEN '','EMAIL.DELAY' TO F.EMAIL.DELAY ELSE
+         ERR.SUBJECT='Program EMAIL.DELAY.BATCH did not run due to errors.'
+         ERR.MSG.GENERAL='Cannot open the EMAIL.DELAY file. Program aborted.'
+         GOSUB BUILD.AND.SEND.ERROR.EMAIL
+         STOP
+      END
+      OPEN '','EMAIL.DELAY,HIST' TO F.EMAIL.DELAY.HIST ELSE
+         ERR.SUBJECT='Program EMAIL.DELAY.BATCH did not run due to errors.'
+         ERR.MSG.GENERAL='Cannot open the EMAIL.DELAY,HIST file. Program aborted.'
+         GOSUB BUILD.AND.SEND.ERROR.EMAIL
+         STOP
+      END
+      OPEN '','EMAILDATA.DELAY' TO F.EMAILDATA.DELAY ELSE
+         ERR.SUBJECT='Program EMAIL.DELAY.BATCH did not run due to errors.'
+         ERR.MSG.GENERAL='Cannot open the EMAILDATA.DELAY file. Program aborted.'
+         GOSUB BUILD.AND.SEND.ERROR.EMAIL
+         STOP
+      END
+      OPEN '','EMAILDATA' TO F.EMAILDATA ELSE
+         ERR.SUBJECT='Program EMAIL.DELAY.BATCH did not run due to errors.'
+         ERR.MSG.GENERAL='Cannot open the EMAILDATA file. Program aborted.'
+         GOSUB BUILD.AND.SEND.ERROR.EMAIL
+         STOP
+      END
+      OPEN '','EREMIT' TO F.EREMIT ELSE
+         ERR.SUBJECT='Program EMAIL.DELAY.BATCH did not run due to errors.'
+         ERR.MSG.GENERAL='Cannot open the EREMIT file. Program aborted.'
+         GOSUB BUILD.AND.SEND.ERROR.EMAIL
+         STOP
+      END
+
+*Do the necessary Initialization
+      DATE=DATE()
+      TIME=TIME()
+      OCONV.CUR.DATE=OCONV(DATE, 'D2/')
+      OCONV.CUR.TIME=OCONV(TIME, 'MTH')
+      EOR = 0
+      VIN=''
+      VOUT=''
+      ERROR.VIN=''
+      ERROR.VOUT=''
+      ATTACHMENT=''
+      ERR.SUBJECT='Delayed Email not sent due to errors'
+      ERR.MSG.GENERAL='Program ':PROG.NAME:' did not send a Delayed Email due to '
+      ERR.MSG.GENERAL:='errors which are listed below: '
+      ERR.MSG.GENERAL<1, -1>=' '
+
+*Start the processing
+*Select all records with a DELAY.TO.DATE up to and including todays date
+      STMT = 'SELECT EMAIL.DELAY WITH DELAY.TO.DATE <= "':OCONV.CUR.DATE:'" '
+      EXECUTE STMT
+      LOOP
+         READNEXT FULL.EMAIL.DELAY.ID ELSE EOR = 1
+      UNTIL EOR DO
+
+
+*Validate that the id's are in the expected format for delayed emails....
+*   source system and application _ transaction id (such as Check number and Carrier)
+         EMAIL.DELAY.ID=FIELD(FULL.EMAIL.DELAY.ID, '|', 1)
+         EMAIL.DELAY.ID.CTR=FIELD(FULL.EMAIL.DELAY.ID, '|', 2)
+         EMAIL.DELAY.SUBSYS=FIELD(EMAIL.DELAY.ID, '_', 1)
+         EMAIL.DELAY.TRANS=FIELD(EMAIL.DELAY.ID, '_', 2)
+         ID.ERROR=''
+         ERROR.MESSAGES=''
+         ERRORS.NEED.DETAILS = 0         ; *SWB01
+*
+         READ EMAIL.DELAY.ITEM FROM F.EMAIL.DELAY, FULL.EMAIL.DELAY.ID THEN
+*In case you are wondering why we read the record before we check to see if the id is bad,
+*it is so we can update the record with the resulting Error Message
+            BEGIN CASE
+               CASE EMAIL.DELAY.SUBSYS # 'FPCR'
+                  ERROR.MESSAGES='File EMAIL.DELAY has a bad record id of "':FULL.EMAIL.DELAY.ID:'". The email will not be sent to the Carrier until the problem is fixed. '
+                  ERROR.MESSAGES:='The ID should start with an indicator of what system and '
+                  ERROR.MESSAGES:='application generated the email (i.e. FPCR for '
+                  ERROR.MESSAGES:='Freight Payment Carrier Remittance '
+                  ERROR.MESSAGES:='followed by an "_" and then a user defined '
+                  ERROR.MESSAGES:='ID based on the application. '
+                  EMAIL.DELAY.ITEM<15>=ERROR.MESSAGES
+                  WRITE EMAIL.DELAY.ITEM ON F.EMAIL.DELAY,FULL.EMAIL.DELAY.ID
+                  GOSUB BUILD.AND.SEND.ERROR.EMAIL
+                  GOTO SKIP.EMAIL
+               CASE EMAIL.DELAY.TRANS = ""
+                  ERROR.MESSAGES='The EMAIL.DELAY file has a bad record id of "':FULL.EMAIL.DELAY.ID:'". The email will not be sent to the Carrier until the problem is fixed. '
+                  ERROR.MESSAGES:='The ID for EMAIL.DELAY should be the system and application (ie. "FPCR" for Freight Payment Carrier Remittances)'
+                  ERROR.MESSAGES:='followed by an "_" followed by the ID determined for and in the application that generated the email. '
+                  EMAIL.DELAY.ITEM<15>=ERROR.MESSAGES
+                  WRITE EMAIL.DELAY.ITEM ON F.EMAIL.DELAY,FULL.EMAIL.DELAY.ID
+                  GOSUB BUILD.AND.SEND.ERROR.EMAIL
+                  GOTO SKIP.EMAIL
+               CASE NOT(NUM(EMAIL.DELAY.ID.CTR))
+                  ERROR.MESSAGES='Bad record id in the EMAIL.DELAY file of "':FULL.EMAIL.DELAY.ID:'". The email will not be sent to the Carrier until the problem is fixed. '
+                  ERROR.MESSAGES:='The ID for EMAIL.DELAY should be the system and application (ie. "FPCR" for Freight Payment Carrier Remittances)'
+                  ERROR.MESSAGES:='followed by an "_" followed by the ID determined for and in the application that generated the email. '
+               CASE 1
+*No predicatble errors have occurred. Set a flag so that if an
+*unpredictable error occurs, some detail will be displayed in the
+*email.
+                  ERRORS.NEED.DETAILS = 1          ; *SWB01
+            END CASE
+
+*
+*Now eliminate any records that are to be delayed until later 'today'.
+            DELAY.TO.DATE=EMAIL.DELAY.ITEM<12>
+            IF DELAY.TO.DATE = DATE THEN
+               DELAY.TO.TIME=EMAIL.DELAY.ITEM<13>
+               IF DELAY.TO.TIME > TIME THEN
+*This email is not ready to be sent yet
+                  GOTO SKIP.EMAIL
+               END
+            END
+*
+*Attachments can be either in the EMAILDATA or EREMIT file. Determine which file
+*the attachment(s) came from and put them back. The attachments will remain in
+*the EMAILDATA.DELAY file until the email is sent with no errors.
+            ATTACHMENT.IDS=EMAIL.DELAY.ITEM<11>
+            NUM.ATTACH = DCOUNT(ATTACHMENT.IDS,@VM)
+            FOR X=1 TO NUM.ATTACH
+               GOSUB DETERMINE.ATTACH.ID.AND.FILE
+               READ ATTACH.REC FROM F.EMAILDATA.DELAY,ATTACH.ID THEN
+                  WRITE ATTACH.REC ON F.ATTACH.FILE.NAME,ATTACH.ID
+               END ELSE
+*SEND ERROR EMAIL
+                  TEMP.VIN=''
+                  TEMP.VOUT=''
+                  TEMP.VIN='EmailDelayAlerts@afs.net'
+                  TEMP.VIN<5>='Missing attachment for delayed email'
+                  TEMP.VIN<6>='Program SENDMAIL reports EMAIL.DELAY record ':FULL.EMAIL.DELAY.ID:' missing attachment ':ATTACH.ID:' from file ':ATTACH.FILE.NAME
+                  CALL SENDMAIL(TEMP.VIN,TEMP.VOUT)
+                  GOTO SKIP.EMAIL
+               END
+            NEXT X
+            VIN = ''
+            VIN = EMAIL.DELAY.ITEM
+            VIN<15>=''                   ; *Erase errors from previous attempt at sending, if any
+*               CALL SENDMAIL(VIN,VOUT)
+            CALL SENDMAIL(VIN,VOUT)
+            BEGIN CASE
+               CASE VOUT<1>#'ERROR'
+*Email was apparently sent without errors. Clean up EMAILDATA.DELAY,
+*  move the EMAIL.DELAY record to the HIST sub-file and then proceed.
+                  FOR X=1 TO NUM.ATTACH
+                     GOSUB DETERMINE.ATTACH.ID.AND.FILE
+                     DELETE F.EMAILDATA.DELAY,ATTACH.ID
+                  NEXT X
+                  VIN<15>=''
+                  WRITE VIN ON F.EMAIL.DELAY.HIST,FULL.EMAIL.DELAY.ID
+                  DELETE F.EMAIL.DELAY,FULL.EMAIL.DELAY.ID
+               CASE 1
+*Email did not send due to errors
+*Attachments are (should be) still in EMAILDATA.DELAY. Leave them and delete them out of EMAILDATA.
+                  FOR X=1 TO NUM.ATTACH
+                     GOSUB DETERMINE.ATTACH.ID.AND.FILE
+                     DELETE F.ATTACH.FILE.NAME,ATTACH.ID
+                  NEXT X
+*Store the errors that occurred
+                  ERROR.MESSAGES=VOUT<3>
+                  VIN<15>=ERROR.MESSAGES
+                  ERROR.MESSAGES=CHANGE(ERROR.MESSAGES,@VM,@FM)
+                  WRITE VIN ON F.EMAIL.DELAY,FULL.EMAIL.DELAY.ID
+                  GOSUB BUILD.AND.SEND.ERROR.EMAIL
+                  GOTO SKIP.EMAIL
+            END CASE
+         END
+***********
+SKIP.EMAIL:
+***********
+      REPEAT
+      STOP
+*
+*****************************
+DETERMINE.ATTACH.ID.AND.FILE:
+*****************************
+*Attachments can be in EREMIT (most common) or EMAILDATA. If attachments
+*can be in additional files, this logic will have to be changed.
+
+      ATTACH.FULL.PATH = ATTACHMENT.IDS<1,X>
+      ID.POS=DCOUNT(ATTACH.FULL.PATH,'\')
+      ATTACH.ID=FIELD(ATTACH.FULL.PATH,'\',ID.POS)
+
+      IF INDEX(UPCASE(ATTACH.FULL.PATH),'EMAILDATA','1') THEN
+         F.ATTACH.FILE.NAME=F.EMAILDATA
+         ATTACH.FILE.NAME='EMAILDATA'
+      END ELSE
+*IF we can't figure out which file to try, try EREMIT because most
+*of the attachments are done in FB.5.4.LASER and it uses (mostly)
+*EREMIT
+         F.ATTACH.FILE.NAME=F.EREMIT
+         ATTACH.FILE.NAME='EREMIT'
+      END
+
+      RETURN
+*
+***************************
+BUILD.AND.SEND.ERROR.EMAIL:
+***************************
+      ERROR.VIN=''
+      ERROR.VOUT=''
+      ERROR.VIN<1>='EmailDelayAlerts@afs.net'
+      ERROR.VIN<4>='EMAIL.DELAY.BATCH'
+      ERROR.VIN<5>=ERR.SUBJECT
+      ERROR.VIN<6>=ERR.MSG.GENERAL:@VM:ERROR.MESSAGES
+      IF ERRORS.NEED.DETAILS THEN        ; * SWB01
+         ERROR.MESSAGES := @VM:@VM       ; * SWB01
+         ERROR.MESSAGES := ' EMAIL.DELAY ID is ':FULL.EMAIL.DELAY.ID   ; * SWB01
+         ERROR.MESSAGES := ' Email Subject: ':EMAIL.DELAY.ITEM<5>      ; * SWB01
+         ERROR.MESSAGES := ' Email text: ':EMAIL.DELAY.ITEM<6>         ; * SWB01
+      END                                ; * SWB01
+      ERROR.VIN<7>=1
+      CALL SENDMAIL(ERROR.VIN,ERROR.VOUT)
+      RETURN
+   END

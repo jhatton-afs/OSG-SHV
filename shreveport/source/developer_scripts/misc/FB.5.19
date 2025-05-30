@@ -1,0 +1,356 @@
+      $OPTIONS HEADER.EJECT
+      ERRMSG=''
+      $OPTIONS EXEC.EQ.PERF
+      $OPTIONS INFO.ABORT
+* PROGRAM: FB.5.19
+* PROGRAM TO PRINT 1099'S
+*
+* ACCOUNTS PAYABLE PACKAGE
+*
+* AUTHOR: BRIAN M. QUEEN
+* DATE: DECEMBER 17, 1991
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF:
+*
+* VARSITY COMPUTING, INC.
+* 6060 NORTH CENTRAL EXPRESSWAY, SUITE 130
+* DALLAS, TX 75206
+* (214)692-8484
+*
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE
+* EXPRESS WRITTEN CONSENT OF SAME.
+*
+* 011606 - JMK01 - CHANGE TO CREATE DOWNLOAD FILE FOR MAILMERGE FORMS
+* 052406 - JCW01 - CHANGES TO @SELECTED, CLEARSELECT, AND STMT<X>
+* 093009 - NPR01 - T091175 - Added 1099 Alternate Name if applicable/entered on field 123.
+* 012513 - JMK02 - ADJUST TOTAL FORMAT FOR COMPLETE NUMBER
+*
+* INITIALIZE VARIABLES
+*
+*ULT+ $COMPATIBILITY R83PC
+      INCLUDE GEN.PROGS ENVIR
+*     PRT.OPT='D'
+      PRT.OPT=2
+      EQU TB TO CHAR(9)
+*
+      PROMPT''
+      PROG.NAME='FB.5.19'
+      PROG.DESC="PROCESS 1099'S"
+      PACK.NAME='FREIGHT PAYMENT'
+      CALL SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.5.19' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      CALL GET.USER(USER)
+*
+* Open files
+*
+      OPEN '','CARRIERS' TO F.VEND ELSE CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      OPEN '','FB.CHECKS.HDR' TO F.CHECKS ELSE CALL OPEN.ABORT("FB.CHECKS.HDR",PROG.NAME)
+      OPEN 'VOC' TO F.VOC THEN
+         READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE
+            CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')
+            STOP
+         END
+         BILLDATA.REC<2>:='\':USER
+         WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER ELSE
+            CALL ELINE("YOUR USER NAME '":USER:"' IS NOT IN THE BILLDATA FOLDER - PLEASE SEE IT DEPT")
+            STOP
+         END
+         OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE
+            CALL ELINE('UNABLE TO OPEN "BILLDATA.":USER')
+            STOP
+         END
+      END
+*
+* Get company name
+*
+      CO.HEAD=''
+      CO.HEAD<1>='72-1130766'
+      IF CO.HEAD<1>='' THEN
+         CALL ELINE("Can not process 1099's, no taxpayer ID on file.")
+         STOP
+      END
+      CO.HEAD<2>='AFS Logistics, LLC'
+      CO.HEAD<3>=''
+      CO.HEAD<4>='P.O. Drawer 18170'
+      CO.HEAD<5>=''
+      CO.HEAD<6>='Shreveport, LA 71138'
+      IF CO.HEAD<6>[1,1]=',' THEN CO.HEAD<6>=''
+      FOR I=6 TO 2 STEP -1
+         IF CO.HEAD<I>='' THEN CO.HEAD=DELETE(CO.HEAD,I)
+      NEXT I
+11.01: ***
+      CALL SCR.HEAD(CO.ID,FILE.ID,'','FB.5.19',"PROCESS 1099'S",PACK.NAME,CO.NAME,TIME.DATE,1)
+      HELP="Enter year to process. ''=Exit."
+      CALL GEN.IN(0,3,'Enter 1099 year ####','',Q,0,4,'','',1,-4,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI = '' THEN
+         STOP
+      END ELSE
+         YEAR=QI
+      END
+11.02: ***
+      HELP="Enter [Y]es [N]o [X]=Back [E]=Exit."
+      CALL GEN.IN(0,4,'Include only 1099 carriers (Y/N) #','',Q,0,1,'','',1,33,4,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'X'
+            CRT @(33,4):' '
+            GOTO 11.01
+         CASE QI = 'E'
+            STOP
+         CASE QI # 'Y' AND QI # 'N'
+            CALL ELINE('Invalid response; please try again.')
+            GOTO 11.02
+         CASE 1
+            OPT.1099 = QI
+      END CASE
+      IF PRT.OPT='D' THEN
+         EXP.REC=''
+         HDR=''
+         HDR<1,1>='PayerID'
+         HDR<1,2>='PayerName'
+         HDR<1,3>='PayerAddr1'
+         HDR<1,4>='PayerAddr2'
+         HDR<1,5>='PayerCity'
+         HDR<1,6>='PayerState'
+         HDR<1,7>='PayerZip'
+         HDR<1,8>='RecipientID'
+         HDR<1,9>='RecipientName'
+         HDR<1,10>='RecipientAddr1'
+         HDR<1,11>='RecipientAddr2'
+         HDR<1,12>='RecipientCity'
+         HDR<1,13>='RecipientState'
+         HDR<1,14>='RecipientZip'
+         HDR<1,15>='Process1099'
+         HDR<1,16>='AmtFunded'
+         HDR<1,17>='Account ID'
+         EXP.REC<-1>=HDR
+      END
+*
+* Select printer option
+*
+      REMOTE.PRT.TYPE=1
+
+*
+* Select Vendors
+*
+      TEXT="Selecting carriers over $600.00 - please wait."
+      CALL CENTER(TEXT,80)
+      CRT @(0,3):@(-3)
+      CRT @(0,12):TEXT
+*
+      CARRIER.ARRAY=''
+      CK.STMT1='SELECT FB.CHECK.DATE.XREF WITH YEAR = "':YEAR:'" AND WITH @ID # "[*V"'
+      EXECUTE CK.STMT1 RTNLIST NDX.LIST CAPTURING CK.RESULTS
+      IF @SELECTED > 0 THEN
+         CK.STMT2='QSELECT FB.CHECK.DATE.XREF'
+         EXECUTE CK.STMT2 PASSLIST NDX.LIST RTNLIST CK.LIST CAPTURING CK.RESULTS
+         CK.STMT3='SSELECT FB.CHECKS.HDR WITH BANK.ID = "F" BY CARRIER#'
+         EXECUTE CK.STMT3 PASSLIST CK.LIST RTNLIST CK.LIST CAPTURING CK.RESULTS
+         CK.STMT4='SAVE-LIST CK.1099'
+         EXECUTE CK.STMT4 PASSLIST CK.LIST CAPTURING CK.RESULTS
+         EXECUTE 'GET-LIST CK.1099' RTNLIST CK.LIST CAPTURING RESULTS
+         CK.EOF=0
+         CK.CNT=0
+         LOOP
+            READNEXT CK.ID FROM CK.LIST ELSE CK.EOF=1
+         UNTIL CK.EOF DO
+            READ CK.REC FROM F.CHECKS,CK.ID THEN
+               CK.DATE=CK.REC<2>
+               CARRIER.ID=CK.REC<3>
+               CK.AMT=CK.REC<4>
+               LOCATE CARRIER.ID IN CARRIER.ARRAY<1> BY 'AR' SETTING CPOS THEN
+                  CARRIER.ARRAY<2,CPOS>+=CK.AMT
+               END ELSE
+                  INS CARRIER.ID BEFORE CARRIER.ARRAY<1,CPOS>
+                  INS CK.AMT BEFORE CARRIER.ARRAY<2,CPOS>
+               END
+            END
+         REPEAT
+      END
+
+      EX.REC='SSELECT CARRIERS BY 1'
+      IF OPT.1099 = 'Y' THEN EX.REC:=' WITH 101 = "Y"'
+      EXECUTE EX.REC RTNLIST VEND.LIST CAPTURING OUTPUT
+      IF @SELECTED < 1 THEN
+         CALL ELINE('No carriers for 1099 processing.')
+         STOP
+      END
+*
+* Start printing 1099's
+*
+      IF PRT.OPT=1 THEN
+         CRT @(0,3):@(-3)
+         TEXT="Put 1099's in slave printer."
+         CALL CENTER(TEXT,80)
+         CRT @(0,10):TEXT
+         TEXT='Align paper to top of form.'
+         CALL CENTER(TEXT,80)
+         CRT @(0,11):TEXT
+         HELP='When printer is ready, press any key.'
+         CALL GEN.IN(0,22,'Printer ready? Y','',Q,0,1,'','',1,-1,22,1,QI,HELP,0,23)
+*       CALL REMOTE.FONTS(51,'ON',REMOTE.PRT.TYPE)
+      END
+*
+      IF PRT.OPT=2 THEN
+         CRT @(0,3):@(-3)
+         TEXT="Put 1099's in system printer."
+         CALL CENTER(TEXT,80)
+         CRT @(0,10):TEXT
+         TEXT='Align paper to top of form.'
+         CALL CENTER(TEXT,80)
+         CRT @(0,11):TEXT
+         HELP='When printer is ready, press any key.'
+         CALL GEN.IN(0,22,'Printer ready? Y','',Q,0,1,'','',1,-1,22,1,QI,HELP,0,23)
+         VIN=''
+         VIN<3>='N'
+         CALL LASER.CODE(VIN,VOUT)
+         IF VOUT<1>#'' THEN
+            CALL ELINE(VOUT<1>)
+            STOP
+         END
+         IF VOUT<3>#'' THEN EXECUTE VOUT<3>
+         PRINTER ON
+         IF VOUT<2>#'' THEN PRINT VOUT<2>:
+         PRINT
+      END
+      FORM.CNT=0
+*
+* Process report
+*
+      GRAND.TOTAL=0
+      LOOP
+         READNEXT VEND.ID FROM VEND.LIST ELSE VEND.ID=''
+      UNTIL VEND.ID='' DO
+*
+* Set up vendor name, address and Federal ID
+*
+         READ VEND.REC FROM F.VEND,VEND.ID THEN
+
+            VEND.HEAD=''
+            VEND.HEAD<1>=VEND.REC<1>
+
+            IF VEND.REC<123> NE "" THEN VEND.HEAD<1>=VEND.REC<123>   ;* NPR01
+
+            VEND.HEAD<2>=VEND.REC<2,1>:' ':VEND.REC<2,2>
+            VEND.HEAD<3>=VEND.REC<3>:', ':VEND.REC<4>:'  ':VEND.REC<5>
+            IF VEND.HEAD<3>[1,1]=',' THEN VEND.HEAD<3>=''
+            VEND.TAX.ID=VEND.REC<96>
+
+            TOTAL=0
+            LOCATE VEND.ID IN CARRIER.ARRAY<1> SETTING CPOS THEN
+               TOTAL=CARRIER.ARRAY<2,CPOS>
+            END
+*
+            IF TOTAL GE 60000 THEN
+               IF PRT.OPT='D' THEN
+                  DTL=''
+                  DTL<1,1>='72-1130766'
+                  DTL<1,2>='AFS Logistics, LLC'
+                  DTL<1,3>='P.O. Drawer 18170'
+                  DTL<1,4>=''
+                  DTL<1,5>='Shreveport'
+                  DTL<1,6>='LA'
+                  DTL<1,7>='71138'
+                  DTL<1,8>=VEND.TAX.ID
+                  IF VEND.REC<123> = "" THEN   ;* NPR01
+                     DTL<1,9>=VEND.REC<1>      ;* NPR01
+                  END ELSE                     ;* NPR01
+                     DTL<1,9>=VEND.REC<123>    ;* NPR01
+                  END
+                  DTL<1,10>=VEND.REC<2,1>
+                  DTL<1,11>=VEND.REC<2,2>
+                  DTL<1,12>=VEND.REC<3>
+                  DTL<1,13>=VEND.REC<4>
+                  DTL<1,14>=VEND.REC<5>
+                  DTL<1,15>=VEND.REC<101>
+                  DTL<1,16>=TOTAL'R26,'
+                  DTL<1,17>=VEND.ID
+                  EXP.REC<-1>=DTL
+               END ELSE
+                  FORM.CNT+=1
+                  PRINT
+                  PRINT
+                  FOR I=2 TO 5
+                     PRINT SPACE(6):CO.HEAD<I>'L#30'
+                     PRINT
+                  NEXT I
+*                 PRINT
+                  PRINT SPACE(6):CO.HEAD<1>'L#17':VEND.TAX.ID'L#15'
+                  PRINT
+                  PRINT
+                  PRINT
+*DF            PRINT SPACE(4):VEND.HEAD<1>'L#30':SPACE(19):TOTAL'R26,#11'
+*                 PRINT SPACE(6):VEND.HEAD<1>'L#30':SPACE(3):TOTAL'R26,#11'      ; * JMK02
+*                 PRINT                  ; * JMK02
+                  PRINT SPACE(6):VEND.HEAD<1>'L#30'          ; * JMK02
+                  PRINT SPACE(37):TOTAL'R26,#13'   ; * JMK02
+                  PRINT
+                  PRINT SPACE(6):VEND.REC<2,1>
+                  PRINT SPACE(6):VEND.REC<2,2>
+                  PRINT
+                  PRINT SPACE(6):VEND.HEAD<3>
+                  PRINT
+                  PRINT
+                  PRINT SPACE(6):VEND.ID
+                  PRINT
+                  IF REM(FORM.CNT,2)=0 THEN
+                     PRINT CHAR(12):
+                     PRINT
+                  END ELSE
+                     PRINT
+                     PRINT
+                     PRINT
+                     FOR X = 1 TO 5
+                        PRINT
+                     NEXT X
+                  END
+               END
+               GRAND.TOTAL=GRAND.TOTAL+TOTAL
+            END
+         END
+      REPEAT
+*
+* Print grand total
+*
+      IF PRT.OPT='D' THEN
+         EXP.REC=CHANGE(EXP.REC,@VM,TB)
+         WRITE EXP.REC ON F.BILLDATA,'FP.1099.RPT-':YEAR:'.XLS'
+         CALL ELINE('Your download file,"FP.1099-RPT-':YEAR:'.XLS" has been sent to your U: drive.')
+      END ELSE
+         IF REM(FORM.CNT,2)=0 ELSE
+            PRINT CHAR(12):
+            PRINT
+         END
+         VEND.HEAD=''
+         VEND.HEAD<1>='GRAND TOTAL'
+         FOR X = 1 TO 2
+            PRINT
+         NEXT X
+*     PRINT SPACE(33):'X'
+         FOR I=2 TO 6
+            PRINT SPACE(6):CO.HEAD<I>'L#30'
+            PRINT
+         NEXT I
+         FOR X = 1 TO 11
+            PRINT
+         NEXT X
+         PRINT SPACE(2):CO.HEAD<1>'L#31':FORM.CNT'L#24':GRAND.TOTAL'R26,#15'
+         PRINT
+         PRINT
+         PRINT
+         PRINT
+         PRINT SPACE(44):"XX"
+         PRINT CHAR(12):
+      END
+*
+* Terminate printer and stop
+*
+*     IF PRT.OPT=1 THEN CALL REMOTE.FONTS(51,'OFF',1)
+      IF PRT.OPT = 2 THEN
+         PRINTER OFF
+         PRINTER CLOSE
+      END
+      EXECUTE 'TERM 79,23' PASSLIST CAPTURING OUTPUT
+      STOP

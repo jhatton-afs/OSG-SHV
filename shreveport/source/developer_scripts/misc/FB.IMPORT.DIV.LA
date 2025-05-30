@@ -1,0 +1,342 @@
+*************************************************************************
+* Program : FB.IMPORT.DIV.LA
+*           Import BOL data from Leisure Arts
+* Author  :
+* Date    : March 2002
+*
+* Copyright (c) 2002 by AFS Logistics, LLC. - All Rights Reserved
+*************************************************************************
+* Format of LA Text file                     Format of FB.BOL.CRX,00761
+* Tab delimiter with two fields              ITEM ID = PO Number
+* ----------------------------------------------------------------------
+* (1) PO Number                              H< 1> Division Code
+* (2) Division Code                          H< 2> Previous Division Codes
+*                                            H< 3> Previous Application Date
+*                                            H< 4> Previous Application
+*************************************************************************
+* 112806 - JMK01 - ADD DIRECTION FIELD TO FILE
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+* Initialize general variables
+      PROMPT''
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='FB.IMPORT.DIV.LA'
+      PROG.DESC='Import Leisure Arts PO Division Data'
+      PACK.NAME='Freight Payment'
+      MASK.CHAR='-'
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.IMPORT.DIV.LA' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+      EMAIL.SENT=0
+
+* Restrict program usage
+      VALID.USER=1
+      BEGIN CASE
+         CASE USER.NAME='OLEDBAFS'
+         CASE USER.NAME='OWEN'
+         CASE USER.NAME='DAVID'
+         CASE USER.NAME='MKERBOW'
+         CASE 1
+            VALID.USER=0
+      END CASE
+
+      IF NOT(VALID.USER) THEN
+         IF CMD THEN
+            ERROR.ARRAY<-1>='**  This is a restricted access application  **'
+         END ELSE
+            TEMP='**  This is a restricted access application  **'
+            CALL CENTER(TEMP,80)
+            CRT @(0,12):TEMP
+         END
+         GOTO THE.END
+      END
+
+      IF USER.NAME='OLEDBAFS' THEN
+         CMD=1
+      END ELSE
+         CMD=0
+      END
+
+
+* Write screen header
+      IF CMD ELSE
+         CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+         CRT @(0,2):STR('=',79)
+      END
+
+* Open client file and read record for client
+      CLIENT.NUMBER='00761'
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot Open CLIENTS File!'
+            GOTO THE.END
+         END ELSE
+            CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+         END
+      END
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.NUMBER ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Could not read client information.'
+            GOTO THE.END
+         END ELSE
+            CALL ELINE('Could not read client file.')
+         END
+         GOTO THE.END
+      END
+
+100:***
+      IF CMD THEN
+         QI='Y'
+      END ELSE
+         LN='Are you ready to import PO Division codes from ':CLIENT.NUMBER:' ':CLIENT.REC<2>:'? '
+         MASK='N-'
+         HELP='[Y]=Yes [N]=No [EX]=Exit'
+         CALL GEN.IN(0,5,LN:MASK,'',Q,0,2,'','',2,-2,5,1,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+      END
+      BEGIN CASE
+         CASE QI='EX' OR QI='N' OR QI=''
+            GOTO THE.END
+         CASE QI='Y'
+            NULL
+         CASE 1
+            GOTO 100
+      END CASE
+
+* Open other files
+      OPEN '','FTP.LEISUREARTS.HISTORY' TO F.FTP.HIST ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot Open FTP.LEISUREARTS.HISTORY File!'
+            GOTO THE.END
+         END ELSE
+            CALL OPEN.ABORT('FTP.LEISUREARTS.HISTORY',PROG.NAME)
+         END
+      END
+      OPEN '','DIV.CODE.XREF,':CLIENT.NUMBER TO F.DIV ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot Open DIVISION.CODE.XREF,':CLIENT.NUMBER:' File!'
+            GOTO THE.END
+         END ELSE
+            CALL OPEN.ABORT('FB.BOL.CRX,':CLIENT.NUMBER,PROG.NAME)
+         END
+      END
+      OPEN '','FTP.LEISUREARTS' TO F.FTP ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot Open FTP.LEISUREARTS File!'
+            GOTO THE.END
+         END ELSE
+            CALL OPEN.ABORT('FTP.LEISUREARTS',PROG.NAME)
+         END
+      END
+
+
+* Start processing any files
+      CMND='SSELECT FTP.LEISUREARTS = "LA]"'
+      EXECUTE CMND RTNLIST CAPTURING RESULTS
+      NITMS=@SELECTED
+      IF NITMS=0 THEN
+         IF CMD THEN
+            ERROR.ARRAY<-1>='No file to process for Leisure Arts.'
+         END ELSE
+            CALL ELINE('No file to process for Leisure Arts.')
+         END
+         GOTO THE.END
+      END
+      EOF=0
+      LOOP
+         READNEXT FTPID ELSE EOF=1
+      UNTIL EOF DO
+         READ LA.IMPORT FROM F.FTP,FTPID ELSE
+            IF CMD THEN
+               ERROR.ARRAY<-1>='Cannot read ':FTPID:'. Aborting process.'
+            END ELSE
+               CALL ELINE('Cannot read ':FTPID:'. Aborting process.')
+            END
+            GOTO THE.END
+         END
+
+* Read in the existing Leisure Arts text file
+         LA.LAST.IMPORT=LA.IMPORT        ; * Save file for writing as "last"
+         LA.IMPORT=CHANGE(LA.IMPORT,CHAR(9),@VM)
+
+* Status lines
+         NATT=DCOUNT(LA.IMPORT,@AM)
+         IF CMD ELSE
+            CRT @(0,5):'Total items in import file = ':NATT:@(-4)
+            CRT @(0,7):'Total Items processed'
+            CRT @(0,8):'---------------------'
+         END
+
+* Set counters for processing
+         NOT.THERE=0
+         ALREADY.THERE=0
+         ALREADY.THERE.CHANGED=0
+         ALREADY.THERE.UNCHANGED=0
+
+         RESULTS.ARRAY=''
+         ERROR.ARRAY=''
+         PERC=0
+
+* Prepare the file for processing
+         FOR ATT=1 TO NATT
+            IF CMD ELSE
+               CRT @(0,9):ATT'R#21'
+               CALL PROG.BAR(11,ATT,NATT,PERC)
+            END
+            LA.LINE=LA.IMPORT<ATT>
+            LA.AMOUNT=0
+            LA.SORDR=LA.LINE<1,1>
+            LA.DIVCD=LA.LINE<1,2>'R%5'
+            LA.DIR=LA.LINE<1,3>          ; * JMK01
+
+            IF LA.SORDR#'' THEN
+               READ DIV.ITEM FROM F.DIV,LA.SORDR THEN
+                  ALREADY.THERE+=1
+                  BEGIN CASE
+*                    CASE LA.DIVCD=DIV.ITEM<1> ; * JMK01
+                     CASE LA.DIVCD=DIV.ITEM<1> AND LA.DIR=DIV.ITEM<2> ; * JMK01
+                        * Numbers match, and division codes match
+                        ALREADY.THERE.UNCHANGED+=1
+
+                     CASE 1
+                        * Numbers match, and division codes do not match
+                        ALREADY.THERE.CHANGED+=1
+                        DIV.ITEM<1>=LA.DIVCD
+                        DIV.ITEM<2>=LA.DIR         ; * JMK01
+*                       DIV.ITEM<2,-1>=LA.DIVCD    ; * JMK01
+*                       DIV.ITEM<3,-1>=DATE()      ; * JMK01
+*                       DIV.ITEM<4,-1>=FTPID       ; * JMK01
+                        
+
+                  END CASE
+
+               END ELSE
+                  NOT.THERE+=1
+                  DIV.ITEM=''
+                  DIV.ITEM<1>=LA.DIVCD
+                  DIV.ITEM<2>=LA.DIR               ; * JMK01
+*                 DIV.ITEM<2,-1>=LA.DIVCD          ; * JMK01
+*                 DIV.ITEM<3,-1>=DATE()            ; * JMK01
+*                 DIV.ITEM<4,-1>=FTPID             ; * JMK01
+               END
+               NVAL=DCOUNT(DIV.ITEM<6>,@VM)        ; * JMK01
+               DIV.ITEM<6,NVAL+1>=LA.DIVCD   ; * JMK01
+               DIV.ITEM<7,NVAL+1>=LA.DIR     ; * JMK01
+               DIV.ITEM<11,NVAL+1>=DATE()    ; * JMK01
+               DIV.ITEM<12,NVAL+1>=FTPID     ; * JMK01
+               WRITE DIV.ITEM ON F.DIV,LA.SORDR
+            END
+         NEXT ATT
+
+* Update files
+         FTP.YR=FTPID[3,4]
+         FTP.MO=FTPID[7,2]
+         FTP.DA=FTPID[9,2]
+         WRITE LA.LAST.IMPORT ON F.FTP.HIST,'LA-LAST.TXT' THEN
+            WRITE LA.LAST.IMPORT ON F.FTP.HIST,'LA-':FTP.MO:FTP.DA:FTP.YR:'.TXT'
+            DELETE F.FTP,FTPID
+         END ELSE
+            IF CMD THEN
+               ERROR.ARRAY<-1>='Could not write LA-LAST.TXT. Not deleting ':FTPID:'.'
+            END ELSE
+               CALL ELINE('Could not write LA-LAST.TXT. Not deleting ':FTPID:'. Call Mike.')
+            END
+         END
+
+* Screen output of results
+         IF CMD THEN
+         END ELSE
+            CRT @(0,12):'Items already existing in the Division Code cross reference file:'
+            CRT @(0,13):'   1 Same Order Numbers, Same Division Codes       (not changed) = ':ALREADY.THERE.UNCHANGED'R#8'
+            CRT @(0,14):'   2 Same Order Numbers, Different Division Codes      (changed) = ':ALREADY.THERE.CHANGED'R#8'
+            CRT @(0,15):'---- Total items already in the file                             = ':ALREADY.THERE'R#8'
+            CRT @(0,16):'---- Total items not in the file                       (written) = ':NOT.THERE'R#8'
+         END
+
+* Email output of results
+         RESULTS.ARRAY<-1>='Items already existing in the Division Code cross reference file:'
+         RESULTS.ARRAY<-1>='   1 Same Order Numbers, Same Division Codes       (not changed) = ':ALREADY.THERE.UNCHANGED'R#8'
+         RESULTS.ARRAY<-1>='   2 Same Order Numbers, Different Division Codes      (changed) = ':ALREADY.THERE.CHANGED'R#8'
+         RESULTS.ARRAY<-1>='---- Total items already in the file                             = ':ALREADY.THERE'R#8'
+         RESULTS.ARRAY<-1>='---- Total items not in the file                       (written) = ':NOT.THERE'R#8'
+
+         EMAIL.OUT=''
+         EMAIL.OUT<1,1>='hector_fernandez@leisurearts.com'           ; * To: Email addresses
+*        EMAIL.OUT<1,1>='MKerbow@afs.net'           ; * To: Email addresses
+         EMAIL.OUT<2>=''                 ; * CC: Email addresses
+         EMAIL.OUT<3,1>='MKerbow@afs.net'           ; * BCC: Email addresses
+         EMAIL.OUT<3,2>='OHolman@afs.net'           ; * BCC: Email addresses
+         EMAIL.OUT<4>='Imports@afs.net'   ; * From Email address
+         EMAIL.OUT<5>='Results From Running ':PROG.NAME:' - Import Of New PO Division Code Data For ':CLIENT.NUMBER:' ':CLIENT.REC<2>        ; * Subject of Email
+
+         * Email body
+         EMAIL.OUT<6,-1>=USER.NAME:' ran ':PROG.NAME:' (':PROG.DESC:') on ':DATE()'D2/':' at ':OCONV(TIME(),'MTHS'):' with the following results:'
+         EMAIL.OUT<6,-1>=' '
+         NUM=DCOUNT(RESULTS.ARRAY,@AM)
+         FOR X=1 TO NUM
+            EMAIL.OUT<6,-1>='   ':RESULTS.ARRAY<X>
+         NEXT X
+
+         IF ERROR.ARRAY#'' THEN
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>='The following conflicts occurred between existing data and new data:'
+            EMAIL.OUT<6,-1>=' '
+            NUM=DCOUNT(ERROR.ARRAY,@AM)
+            FOR X=1 TO NUM
+               EMAIL.OUT<6,-1>='   ':ERROR.ARRAY<X>
+            NEXT X
+         END
+
+         EMAIL.OUT<7>=1                  ; * Auto format (add carriage returns to end of text)
+
+         VIN=EMAIL.OUT
+         VOUT=''
+         CALL SENDMAIL(VIN,VOUT)
+         EMAIL.SENT=1
+
+      REPEAT
+
+      CALL ELINE('')
+
+*************************************************************************
+
+THE.END:***
+* End of program
+      IF CMD THEN
+         IF EMAIL.SENT=0 AND ERROR.ARRAY#'' THEN
+            EMAIL.OUT=''
+            EMAIL.OUT<1,1>='hector_fernandez@leisurearts.com'        ; * To: Email addresses
+*           EMAIL.OUT<1,1>='MKerbow@afs.net'        ; * BCC: Email addresses
+            EMAIL.OUT<2>=''              ; * CC: Email addresses
+            EMAIL.OUT<3,1>='MKerbow@afs.net'        ; * BCC: Email addresses
+            EMAIL.OUT<3,2>='OHolman@afs.net'        ; * BCC: Email addresses
+            EMAIL.OUT<4>='Imports@afs.net'          ; * From Email address
+            EMAIL.OUT<5>='Warnings/Errors From Running ':PROG.NAME:' - Import Of New PO Division Code Data For ':CLIENT.NUMBER:' ':CLIENT.REC<2>       ; * Subject of Email
+
+* Email body
+            EMAIL.OUT<6,-1>=USER.NAME:' ran ':PROG.NAME:' (':PROG.DESC:') on ':DATE()'D2/':' at ':OCONV(TIME(),'MTHS'):' with the following results:'
+            EMAIL.OUT<6,-1>=' '
+
+            EMAIL.OUT<6,-1>='The following conflicts occurred between existing data and new data:'
+            EMAIL.OUT<6,-1>=' '
+            NUM=DCOUNT(ERROR.ARRAY,@AM)
+            FOR X=1 TO NUM
+               EMAIL.OUT<6,-1>='   ':ERROR.ARRAY<X>
+            NEXT X
+
+            EMAIL.OUT<7>=1               ; * Auto format (add carriage returns to end of text)
+
+            VIN=EMAIL.OUT
+            VOUT=''
+            CALL SENDMAIL(VIN,VOUT)
+            EMAIL.SENT=1
+         END
+      END ELSE
+         CRT @(0,23):
+      END
+   END

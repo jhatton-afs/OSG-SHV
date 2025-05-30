@@ -1,0 +1,300 @@
+*******************************************************
+* Program name : CHECK.VEND.CUST
+* Author       : JAY WEBERT
+* Date written : JANUARY 26, 2007
+* Library      : FBBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* CHECKS ALL SUBFILES OF THE VEND.CUST FILE FOR RECORDS WITH NULL IN THE
+* FIRST ATTRIBUTE. TO FIX, LOOK FOR A DESCRIPTION IN VEND.CUST.NAMES<1>,
+* THEN VEND.CUST<43>, THEN VEND.CUST<44>. IF NOTHING IS FOUND, THEN USE 
+* THE STRING "no name".
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 09:22:51 on 03/22/2019.
+*
+* Start modification history
+* 03/22/19 : NKH01 : ACCU-316 Modified CREATE-FILE file sizes
+* End modification history
+*
+*******************************************************
+      DONE = 0
+      LOOP UNTIL DONE DO
+        CRT 'This program searches for VEND.CUST records with a null description.'
+        CRT 'You have the option to repair them or just count them.'
+        CRT 'Which do you want to do; [R]epair or [C]ount':
+        INPUT ANS
+        ANS = OCONV(ANS,'MCU')
+        IF ANS = 'R' OR ANS = 'C' THEN DONE = 1
+      REPEAT
+      REPAIR = (ANS = 'R')
+
+      PROG.NAME = 'CHECK.VEND.CUST'
+      OPEN 'FB.TABLES' TO F.TABLES ELSE CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+
+      STMT = 'SELECT VOC "VEND.CUST" *A7'
+      CRT STMT
+      EXECUTE STMT RTNLIST CLIENT.LIST CAPTURING MSG
+      IF @SELECTED < 1 THEN
+        CRT 'NO CLIENTS SELECTED; PROGRAM STOPPED.'
+        STOP
+      END
+      LOOP
+        READNEXT CLIENT.ID FROM CLIENT.LIST ELSE CLIENT.ID = 'DONE'
+      UNTIL CLIENT.ID = 'DONE' DO
+        STMT = 'SELECT VEND.CUST,':CLIENT.ID:' WITH 1 = ""'
+        CRT STMT
+        EXECUTE STMT RTNLIST VC.LIST CAPTURING MSG
+        IF @SELECTED < 1 THEN GOTO SKIP.CLIENT
+        IF NOT(REPAIR) THEN
+          CRT 'NULL COUNT = ':@SELECTED
+          GOTO SKIP.CLIENT
+        END
+        OPEN 'VEND.CUST,':CLIENT.ID TO F.VC ELSE GOTO SKIP.CLIENT
+        OPEN 'VEND.CUST.NAMES,':CLIENT.ID TO F.VCN ELSE
+          EXECUTE 'CREATE-FILE DATA VEND.CUST.NAMES,':CLIENT.ID:' 601,2' CAPTURING MSG    ; * NKH01
+          OPEN 'VEND.CUST.NAMES,':CLIENT.ID TO F.VCN ELSE
+            CRT 'COULD NOT OPEN VEND.CUST.NAMES,':CLIENT.ID
+            GOTO SKIP.CLIENT
+          END
+        END
+        OPEN 'VEND.CUST.ZIPS,':CLIENT.ID TO F.VCZ ELSE
+          EXECUTE 'CREATE-FILE DATA VEND.CUST.ZIPS,':CLIENT.ID:' 131,2' CAPTURING MSG     ; * NKH01
+          OPEN 'VEND.CUST.ZIPS,':CLIENT.ID TO F.VCZ ELSE
+            CRT 'COULD NOT OPEN VEND.CUST.ZIPS,':CLIENT.ID
+            GOTO SKIP.CLIENT
+          END
+        END
+        OPEN 'VEND.CUST.XREF,':CLIENT.ID TO F.VCX ELSE
+          EXECUTE 'CREATE-FILE DATA VEND.CUST.XREF,':CLIENT.ID:' 401,2' CAPTURING MSG     ; * NKH01
+          OPEN 'VEND.CUST.XREF,':CLIENT.ID TO F.VCX ELSE
+            CRT 'COULD NOT OPEN VEND.CUST.XREF,':CLIENT.ID
+            GOTO SKIP.CLIENT
+          END
+        END
+        OPEN 'VEND.CUST.EDI.XREF,':CLIENT.ID TO F.VCEX ELSE
+          EXECUTE 'CREATE-FILE DATA VEND.CUST.EDI.XREF,':CLIENT.ID:' 131,2' CAPTURING MSG ; * NKH01
+          OPEN 'VEND.CUST.EDI.XREF,':CLIENT.ID TO F.VCEX ELSE
+            CRT 'COULD NOT OPEN VEND.CUST.EDI.XREF,':CLIENT.ID
+            GOTO SKIP.CLIENT
+          END
+        END
+        LOOP
+          READNEXT VC.ID FROM VC.LIST ELSE VC.ID = 'DONE'
+        UNTIL VC.ID = 'DONE' DO
+          READ VC.REC FROM F.VC, VC.ID THEN
+            VC.DESC = VC.REC<1>
+            VCN.ID = VC.REC<42>
+            VC.STR = VC.REC<43>
+            VC.ORIG.DESC = VC.REC<44>
+            ***  Use VEND.CUST.NAMES Description
+            VCN.REC = ''
+            IF VCN.ID # '' THEN
+              READ VCN.DESC FROM F.VCN, VCN.ID THEN
+                VCN.DESC = VCN.REC<1>
+                VC.DESC = TRIM(VCN.DESC)
+              END
+            END
+            *** Use original description
+            IF VC.DESC = '' AND TRIM(VC.ORIG.DESC) # '' THEN VC.DESC = TRIM(VC.ORIG.DESC)
+            *** Use "all caps" description string
+            IF VC.DESC = '' AND TRIM(VC.STR) # '' THEN VC.DESC = TRIM(VC.STR)
+            IF VC.DESC = '' THEN VC.DESC = 'no name'
+*
+* Delete or Fix?
+*
+            IF VC.DESC = 'no name' THEN
+              CRT 'CLIENT.ID = ':CLIENT.ID
+              CRT 'VC.ID = ':VC.ID
+              CRT 'VC.REC = ':VC.REC
+              CRT 'VCN.ID = ':VCN.ID
+              CRT 'VCN.REC = ':VCN.REC
+              DONE = 0
+              LOOP UNTIL DONE DO
+                CRT 'DELETE RECORD?':
+                INPUT ANS
+                ANS = OCONV(ANS,'MCU')
+                IF ANS = 'Y' OR ANS = 'N' THEN DONE = 1
+              REPEAT
+              IF ANS = 'Y' THEN
+                GOSUB DELETE.VC
+                GOTO NEXT.REC
+              END
+            END
+*
+* Update vend/cust description and all cross-references
+*
+            *** New VEND.CUST.NAMES record
+            IF VCN.REC = '' THEN
+              VCN.REC<1> = VC.DESC
+              VCN.REC<2> = VC.ID
+              GOSUB GET.NEW.VCN.ID
+CRT 'NEW VCN: ':VCN.ID
+CRT VCN.REC
+INPUT X
+*              WRITE VCN.REC TO F.VCN, NEW.VCN.ID
+*              CALL SOUNDEX.EDIT('',VC.DESC,NEW.VCN.ID,'SDX.VCN,':CLIENT.ID)
+              VC.REC<42> = NEW.VCN.ID
+            END ELSE
+              *** Update old, create new VEND.CUST.NAMES records
+CRT 'OLD VCN: ':VCN.ID
+CRT VCN.REC
+INPUT X
+              IF VCN.REC<1> # VC.DESC THEN
+                *** Update old VEND.CUST.NAMES record
+                LOCATE VC.ID IN VCN.REC<2> SETTING POS THEN
+                  VCN.REC = DELETE(VCN.REC,2,POS)
+                  IF VCN.REC<2> = '' THEN
+CRT 'DELETING VCN ':VCN.ID
+INPUT X
+*                    DELETE F.VCN, VCN.ID
+*                    CALL SOUNDEX.EDIT(VC.DESC,'',VCN.ID,'SDX.VCN,':CLIENT.ID)
+                  END ELSE
+CRT 'OLD VCN AFTER:'
+CRT VCN.REC
+INPUT X
+*                    WRITE VCN.REC TO F.VCN, VCN.ID
+                  END
+                END
+                *** Add new VEND.CUST.NAMES record
+                VCN.REC = ''
+                VCN.REC<1> = VC.DESC
+                VCN.REC<2> = VC.ID
+                GOSUB GET.NEW.VCN.ID
+CRT 'NEW VCN: ':VCN.ID
+CRT VCN.REC
+INPUT X
+*                WRITE VCN.REC TO F.VCN, NEW.VCN.ID
+*                CALL SOUNDEX('',VC.DESC,NEW.VCN.ID,'SDX.VCN,':CLIENT.ID)
+              END
+            END
+            *** Update VEND.CUST
+CRT 'VC.REC BEFORE: ':VC.REC
+            VC.REC<1> = VC.DESC
+CRT 'VC.REC AFTER: ':VC.REC
+INPUT X
+*            WRITE VC.REC TO F.VC, VC.ID
+            *** Update SDX.VEND.CUST
+*            CALL SOUNDEX.EDIT('',VC.DESC,VC.ID,'SDX.VEND.CUST,':CLIENT.ID)
+            *** Update VEND.CUST.XREF file
+            ZIP = VC.REC<7>
+            IF NUM(ZIP[1,5]) THEN ZIP = ZIP[1,5]
+            OLD.XREF.ID = '*':ZIP
+            READ OLD.XREF.REC FROM F.VCX, OLD.XREF.ID THEN
+CRT 'DELETING VEND.CUST.XREF ':OLD.XREF.ID
+CRT OLD.XREF.REC
+INPUT X
+*              DELETE F.VCX, OLD.XREF.ID
+            END
+            NEW.XREF.ID = OCONV(VC.DESC,'MCU'):'*':ZIP
+            XREF.REC = ''
+            XREF.REC<1> = VC.ID
+CRT 'NEW XREF REC ':NEW.XREF.ID
+CRT XREF.REC
+INPUT X
+*            WRITE XREF.REC TO F.VCX, NEW.XREF.ID
+            *** Update VEND.CUST.EDI.XREF
+            READ OLD.XREF.REC FROM F.VCEX, OLD.XREF.ID THEN
+CRT 'DELETING EDI XREF ': OLD.XREF.ID
+CRT OLD.XREF.REC
+INPUT X
+*              DELETE F.VCEX, OLD.XREF.ID
+              XREF.REC = ''
+              XREF.REC<1> = VC.ID
+CRT 'NEW EDI XREF ':NEW.XREF.ID
+CRT XREF.REC
+*              WRITE XREF.REC TO F.VCEX, NEW.XREF.ID
+            END
+          END
+NEXT.REC:
+        REPEAT
+SKIP.CLIENT:
+      REPEAT
+      STOP
+
+
+GET.NEW.VCN.ID:
+      *** Get new VEND.CUST.NAMES ID
+      TABLE.ID = 'VCN*':CLIENT.ID
+      READ TABLE.REC FROM F.TABLES, TABLE.ID ELSE
+        TABLE.REC = ''
+        TABLE.REC<1> = 0
+      END
+      DONE = 0
+      LOOP UNTIL DONE DO
+        NEW.VCN.ID = TABLE.REC<1>'R%5'
+        TABLE.REC<1> += 1
+        READ TEST FROM F.VCN, NEW.VCN.ID ELSE
+*          WRITE TABLE.REC ON F.TABLES, TABLE.ID
+          DONE = 1
+        END
+      REPEAT
+      RETURN
+
+
+DELETE.VC:
+      *** VEND.CUST
+CRT 'DELETING VC ':VC.ID
+CRT VC.REC
+INPUT X
+*      DELETE F.VC, VC.ID
+      *** VEND.CUST.NAMES
+      IF VCN.REC # '' THEN
+        LOCATE VC.ID IN VCN.REC<2> SETTING POS THEN
+CRT 'VCN.REC ':VCN.ID:' BEFORE: ':VCN.REC
+INPUT X
+          VCN.REC = DELETE(VCN.REC,2,POS)
+          IF VCN.REC<2> = '' THEN
+CRT 'DELETING VCN ':VCN.ID
+CRT VCN.REC
+INPUT X
+*            DELETE F.VCN, VCN.ID
+          END ELSE
+CRT 'NEW VCN ':VCN.ID
+CRT VCN.REC
+INPUT X
+*            WRITE VCN.REC TO F.VCN, VCN.ID
+          END
+        END
+      END
+      *** VEND.CUST.ZIPS
+      ZIP = VC.REC<7>
+      IF NUM(ZIP[1,5]) THEN ZIP = ZIP[1,5]
+      READ VCZ.REC FROM F.VCZ, ZIP THEN
+        LOCATE VC.ID IN VCZ.REC<1> SETTING POS THEN
+CRT 'VC.ZIP ':ZIP
+CRT 'VCZ.REC'
+INPUT X
+          VCZ.REC = DELETE(VCZ.REC,1,POS)
+          IF VCZ.REC<1> = '' THEN
+CRT 'DELETING VC.ZIP ':ZIP
+INPUT X
+*            DELETE F.VCZ, ZIP
+          END ELSE
+CRT 'VC.ZIP REC ':ZIP:' AFTER'
+CRT VCZ.REC
+INPUT X
+*            WRITE VCZ.REC TO F.VCZ, ZIP
+          END
+        END
+      END
+      *** VEND.CUST.XREF
+      XREF.ID = '*':ZIP
+      READ XREF.REC FROM F.VCX, XREF.ID THEN
+        IF XREF.REC<1> = VC.ID THEN
+CRT 'DELETING VC.XREF ':XREF.ID
+CRT XREF.REC
+INPUT X
+*          DELETE F.VCX, XREF.ID
+        END
+      END
+      *** VEND.CUST.EDI.XREF
+      READ EDI.REC FROM F.VCEX, XREF.ID THEN
+        IF EDI.REC<1> = VC.ID THEN
+CRT 'DELETING VC.EDE.XREF ':XREF.ID
+CRT EDI.REC
+INPUT X
+*          DELETE F.VCEX, XREF.ID
+        END
+      END
+      RETURN
+

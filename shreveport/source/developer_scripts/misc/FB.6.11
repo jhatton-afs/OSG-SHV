@@ -1,0 +1,363 @@
+***********************************************************************
+*
+*
+* PROGRAM TO PRINT CUT BACK CODES BY CLIENT NAME
+*
+*
+* AUTHOR: David Friend
+*
+*                           EDIT HISTORY
+*                           ------------
+*    DATE  : NAME : DESCRIPTION
+*  ---------------------------------------------------
+*   050806 - JCW01  CHANGES TO '@SELECTED', 'CLEARSELECT', AND 'STMT<X>'
+***********************************************************************
+*
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Initialize variables
+*
+      PROMPT''
+      CALL CHANNEL(CH.NUM)
+      CALL GET.USER(USER.NAME)
+      OLD.CARRIER.NUM='*****'
+      PROG.NAME='FB.6.11'
+      PROG.DESC='Cut Back Codes by Client Name'
+      PACK.NAME='Freight Billing'
+      TEMP.NAME=''
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.6.11' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      ORIG.CLIENT.ID=''
+      CLIENT.CODE='Y'
+      CLIENT=''
+*
+* Open files
+*
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+        EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+        OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+          CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+        END
+      END
+      OPEN 'DICT','FBWORK':CH.NUM TO F.DICT.WORK ELSE
+        CALL OPEN.ABORT('DICT FBWORK':CH.NUM,PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+        CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','FB.CUT.BACKS' TO F.CUT.BACKS ELSE
+        CALL OPEN.ABORT('FB.CUT.BACKS',PROG.NAME)
+      END
+*
+* Create work file dictionary items
+*
+      TEMP=''
+      TEMP<1>='S'
+      TEMP<2>=0
+      TEMP<8>='G0*1'
+      TEMP<9>='R'
+      TEMP<10>=10
+      WRITE TEMP ON F.DICT.WORK,'CLIENT.NUMBER'
+      TEMP<8>='G1*1' 
+      WRITE TEMP ON F.DICT.WORK,'CUT.BACK.CODE'
+      TEMP<8>='F;0(G*1);(TCLIENTS;X;;2)'
+      TEMP<9>='L'
+      TEMP<10>='30'
+      WRITE TEMP ON F.DICT.WORK,'CLIENT.NAME'
+      TEMP<8>='F;0(G1*1);(TFB.CUT.BACKS;X;;1)'
+      TEMP<9>='L'
+      TEMP<10>='40'
+      WRITE TEMP ON F.DICT.WORK,'CUT.BACK.DESC'
+*
+*  WORK FILE CONSISTS OF ITEMS WITH THE FOLLOWING DETAIL
+*  Variable Attribute Description.....................................
+*               ID
+*                1    Overcharge amount (Overchg Var)
+*                2    Logistics Amount - Consulting Variance
+*
+* Display screen heading
+*
+30    CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+
+*
+* Get client number to process or all
+*
+ENTER.CLIENT:***
+      HELP='Enter the client number to report or <RETRUN> for All clients.'
+      IF ORIG.CLIENT.ID='' THEN
+        MASK='#####'
+      END ELSE
+        IF ALL.ONE='ALL' THEN
+          MASK='ALL  '
+        END ELSE
+          MASK=ORIG.CLIENT.ID'R%5'
+        END
+      END
+      CALL GEN.IN(0,3,'Enter client number.  ':MASK,'',Q,0,8,'','',1,-5,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      ALL.ONE=''
+      IF QI='' THEN QI=ORIG.CLIENT.ID
+      IF QI=' ' THEN QI=''
+      BEGIN CASE
+        CASE QI='X'!QI='EX'
+          GOTO EXIT.PROGRAM
+        CASE QI='' OR QI='ALL'
+          ALL.ONE='ALL'
+        CASE NOT(QI MATCHES "0N")
+          CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+          CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+          BEGIN CASE
+             CASE ITEM.LIST = ''
+                GOTO ENTER.CLIENT                    ;* START OVER
+             CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                GOTO ENTER.CLIENT                    ;* START OVER
+             CASE 1
+                IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                GOTO ENTER.CLIENT                    ;* START OVER
+          END CASE
+        CASE NUM(QI)
+        CASE 1
+           GO ENTER.CLIENT                           ;* START OVER
+      END CASE
+      QI=QI'R%5'
+      IF ALL.ONE#'ALL' THEN
+        READ CLIENT.REC FROM F.CLIENTS,QI ELSE
+          CALL ELINE('Client ':QI:' is not on file.')
+          GOTO ENTER.CLIENT
+        END
+        TEMP.NAME=CLIENT.REC<2>
+      END ELSE
+        QI='ALL'
+        TEMP.NAME='ALL Clients'
+      END
+      CRT@(22,3):QI:' - ':TEMP.NAME:@(-4)
+      IF QI#'ALL' THEN CLIENT.ID=QI ELSE CLIENT.ID=''
+      IF QI#'ALL' THEN ORIG.CLIENT.ID=QI'R%5' ELSE ORIG.CLIENT.ID='ALL'
+*
+*  Specify Cut Back Code For Clients
+*
+ENTER.CLIENT.CODES:***
+      IF ALL.ONE='ALL' THEN
+        HELP="Y=Yes. N=No. X=Back. EX=Exit."
+        MASK=CLIENT.CODE'L#2'
+        CALL GEN.IN(0,6,'Include codes that are client specific. ':MASK,'',Q,0,2,'','',0,-2,6,0,QI,HELP,0,23)
+        QI=OCONV(QI,'MCU')
+        IF QI='' THEN QI=CLIENT.CODE
+        BEGIN CASE
+           CASE QI='X'
+              CRT @(0,6):@(-3):
+              GOTO ENTER.CLIENT
+           CASE QI='EX'
+              GOTO EXIT.PROGRAM
+           CASE QI='Y' OR QI='N'
+              NULL
+           CASE 1
+              CALL ELINE('Invalid entry. Must be Y, N, X, or EX.')
+              GOTO ENTER.CLIENT.CODES
+        END CASE
+        CLIENT.CODE=QI
+        CRT @(40,6):CLIENT.CODE'L#2'
+     END ELSE
+       CRT @(0,6):@(-3)
+     END
+*
+*  Verify date entry 
+*
+ENTER.VERIFICATION:***
+      HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            IF ALL.ONE='ALL' THEN
+              GOTO ENTER.CLIENT.CODES
+            END ELSE
+              GOTO ENTER.CLIENT
+            END
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO ENTER.VERIFICATION
+      END CASE
+*
+* Start processing
+*
+*
+* Clear work file
+*
+*     GOTO JIM
+
+      CLEARFILE F.WORK
+      STMT='SELECT FB.CUT.BACKS'
+      IF ALL.ONE#'ALL' THEN
+         STMT=STMT:' WITH 2 = "':CLIENT.ID:'"'
+      END ELSE
+        IF CLIENT.CODE='N' THEN
+          STMT=STMT:' WITH 2 = ""'
+        END
+      END
+      EXECUTE STMT RTNLIST CODE.LIST CAPTURING OUTPUT
+      ITEMS = @SELECTED
+      IF @SELECTED < 1 THEN ; * JCW01
+        CALL ELINE('ERROR - No clients on file.')
+        GOTO EXIT.PROGRAM
+      END
+      COUNTER=0
+      LOOP
+        DONE=0
+        READNEXT CUT.BACK.ID FROM CODE.LIST ELSE DONE=1
+      UNTIL DONE=1 DO
+        COUNTER=COUNTER+1
+        CALL PROG.BAR(22,COUNTER,ITEMS,PER)
+        READ CUT.BACK.REC FROM F.CUT.BACKS,CUT.BACK.ID ELSE GOSUB SKIP.CODE
+        IF ALL.ONE='ALL' THEN
+           IF CUT.BACK.REC<2>#'' THEN
+              NUM.OF.CLIENTS=DCOUNT(CUT.BACK.REC<2>,@VM)
+              FOR I = 1 TO NUM.OF.CLIENTS
+                WORK.ID=CUT.BACK.REC<2,I>:'*':CUT.BACK.ID
+                WRITE '' ON F.WORK,WORK.ID
+              NEXT I
+           END ELSE
+              WORK.ID='ALL*':CUT.BACK.ID
+              WRITE '' ON F.WORK,WORK.ID
+           END
+        END ELSE
+          IF CUT.BACK.REC<2>#'' THEN
+             WORK.ID=CLIENT.ID:'*':CUT.BACK.ID
+          END ELSE
+             WORK.ID='ALL*':CUT.BACK.ID
+          END
+          WRITE '' ON F.WORK,WORK.ID
+        END
+SKIP.CODE:***
+      REPEAT
+*************************************************************************
+
+JIM:
+
+*
+* Print report
+*
+* Set-up printer
+*
+      WIDTH=80
+      CTR=INT(WIDTH/2)
+**************************************************************
+      VIN=''
+      VIN<3>='N'
+      CALL LASER.CODE(VIN,VOUT)
+      IF VOUT<1>#'' THEN 
+        CALL ELINE(VOUT<1>)
+        STOP
+      END
+      IF VOUT<3>#'' THEN EXECUTE VOUT<3>
+      PRINTER ON
+      IF VOUT<2>#'' THEN PRINT VOUT<2>:
+*
+*
+*
+      L.TAB=CTR-(LEN(PROG.DESC)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):PROG.DESC
+      R.TAB=WIDTH-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE())
+      HEAD1=PROG.NAME:SPACE(L.TAB):PROG.DESC:SPACE(R.TAB):TIMEDATE():"'L'"
+*
+      TITLE='For '
+      IF ALL.ONE#'ALL' THEN
+         TITLE=TITLE:ORIG.CLIENT.ID'R%5':" "
+      END 
+      TITLE=TITLE:TEMP.NAME
+      IF LEN(TITLE) > 37 THEN TITLE=TITLE'L#37'
+      L.TAB=CTR-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+      R.TAB=(WIDTH-LEN(TEMP))-20
+      HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )':"PAGE 'PL'"
+      HEAD3="'L'"
+*
+      HEAD4=""
+      HEAD5=STR('-',WIDTH):"'L'"
+*
+      HEAD6='  Client':SPACE(27):'Code  Cut Back Description'
+      HEAD6:="'L'"
+*
+      HEAD7=STR('-',WIDTH):"'L'"
+      HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6:HEAD7
+      HEADING HED
+*
+** Select data
+*
+      COUNTER=0
+      PREC='SSELECT FBWORK':CH.NUM
+      IF ORIG.CLIENT.ID='ALL' THEN
+         PREC:=' WITH CLIENT.NUMBER # "ALL" '
+      END ELSE
+         PREC:=' WITH CLIENT.NUMBER = "':ORIG.CLIENT.ID:'" '
+      END
+      PREC := ' BY CLIENT.NAME'
+      PREC := ' BY CUT.BACK.DESC'
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+*
+      DONE = 0
+      OLD.CLIENT.ID='*****'
+      LOOP
+        READNEXT ID ELSE DONE = 1
+      UNTIL DONE = 1 DO
+        GOSUB BUILD.DET.LINE
+      REPEAT
+      IF ORIG.CLIENT.ID='ALL' THEN
+        PREC='SSELECT FBWORK':CH.NUM
+        PREC:=' WITH CLIENT.NUMBER = "ALL" '
+        PREC:=' BY CUT.BACK.DESC'
+        EXECUTE PREC PASSLIST CAPTURING OUTPUT
+        PRINT
+        DONE = 0
+        OLD.CLIENT.ID='*****'
+        LOOP
+          READNEXT ID ELSE DONE = 1
+        UNTIL DONE = 1 DO
+          GOSUB BUILD.DET.LINE
+        REPEAT
+      END
+      PRINTER OFF
+      PRINTER CLOSE
+
+*
+EXIT.PROGRAM:*
+*
+      STOP
+
+
+BUILD.DET.LINE:***
+     CLIENT.ID=FIELD(ID,'*',1)
+     IF OLD.CLIENT.ID='*****' THEN OLD.CLIENT.ID=CLIENT.ID
+     IF OLD.CLIENT.ID#CLIENT.ID THEN
+       PRINT 
+       OLD.CLIENT.ID=CLIENT.ID
+     END
+     IF CLIENT.ID='ALL' THEN
+       CLIENT.TEXT='ALL Clients'
+     END ELSE
+       READV CLIENT.NAME FROM F.CLIENTS,CLIENT.ID,2 THEN
+         CLIENT.TEXT=CLIENT.ID:" ":CLIENT.NAME
+       END ELSE
+         CLIENT.TEXT="'":CLIENT.ID:"' ** Not On File **"
+       END
+     END
+     CUT.BACK.CODE=FIELD(ID,'*',2)
+     READV CUT.BACK.DESC FROM F.CUT.BACKS,CUT.BACK.CODE,1 THEN
+       CUT.BACK.TEXT=CUT.BACK.CODE'R#3':" ":CUT.BACK.DESC
+     END ELSE
+       CUT.BACK.TEXT="'":CUT.BACK.CODE'R#3':"' ** Not On File **"
+     END
+     LINE=''
+     LINE:=CLIENT.TEXT'L#35':" "
+     LINE:=CUT.BACK.TEXT'L#44'
+     PRINT LINE
+     RETURN

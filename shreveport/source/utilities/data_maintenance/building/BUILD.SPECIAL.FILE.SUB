@@ -1,0 +1,497 @@
+      SUBROUTINE BUILD.SPECIAL.FILE.SUB(F.CLIENTS,F.CARRIERS,F.FILE,VIN,VOUT)
+
+ UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'BUILD.SPECIAL.FILE.SUB' ; UPL.VOUT = ''                    ;* NPR_UPL 04/22/2010
+ CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/22/2010
+********************************************************************************
+* PROGRAM: BUILD.SPECIAL.FILE.SUB
+* SUBROUTINE TO BUILD A TEXT FILE
+********************************************************************************
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS.
+*
+* AUTHOR       : David R. Friend
+* DATE CREATED : 01/28/05
+* DESCRIPTION  : This program build one or more client special file
+*                 for all the bills processed during a specified dates
+*                This program was copied from BUILD.DF.SUB
+* 060305 - JMK01 - PASSLIST FROM UNPROCESS SELECT FOR PERFORMANCE
+* 032114 - DRF01 - ADDED A NEW REPORT FOR 01288 MORMON KEYSTONE
+********************************************************************************
+* VIN<1>=CLIENT               CLIENT NUMBER
+*
+* VIN<5>=FILE.SEL             FILE SELECTION
+*                             VALID SELECTIONS ARE 1 - TEMP
+*                                                  2 - HISTORY
+*                                                  3 - LAST PROCESSED
+*
+* VIN<6>=BEG.DATE             BEGINNING DATE - IF CLIENT IS SPECIFIED
+*                             AND YOU HAVE SELECTED 3 FOR FILE.SEL (LAST PROCESSED)
+*                             THEN BEG.DATE AND END.DATE=NULL
+*
+* VIN<7>=END.DATE             ENDING DATE - IF CLIENT IS SPECIFIED
+*                             AND YOU HAVE SELECTED 3 FOR FILE.SEL (LAST PROCESSED)
+*                             THEN BEG.DATE AND END.DATE NEED TO BE NULL
+*
+* VIN<21>=USER                 USER ID
+*
+* VIN<22>=CH.NUM               CHANNEL NUMBER
+*
+* VIN<23>=AUTO                 LAST PROCESSING DATES
+*
+* VIN<25>=FROM.FB.3.1.NEW      THIS IS SET TO THE LITERAL 'FROM FB.3.1.NEW' IF
+*                              THE CALLING PROGRAM IS FB.3.1.NEW OR 'FROM FB.2.3.NW'
+*                              IF THE CALLING PROGRAM IS FB.2.3.NW.
+********************************************************************************
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+*
+* Assign parameters
+*
+      PROG.NAME='BUILD.SPECIAL.FILE.SUB'
+      CLIENT=VIN<1>
+      FILE.SEL=VIN<5>
+      BEG.DATE=VIN<6>
+      END.DATE=VIN<7>
+      USER=VIN<21>
+      CH.NUM=VIN<22>
+      AUTO=VIN<23>
+      WHERE.FROM=VIN<25>
+
+
+      IF FILE.SEL=1 OR FILE.SEL=4 THEN
+         FILE='FB.BILLS,':CLIENT
+      END ELSE
+         FILE='FB.BILLS.HIST,':CLIENT
+      END
+      BEGIN CASE
+         CASE CLIENT='01288'
+         CASE CLIENT='01312'
+         CASE CLIENT='01347'
+         CASE 1
+*
+* If client is not in the list then do not perform the select just return
+*
+            RETURN
+      END CASE
+
+*
+* Initialize variables
+*
+      VOUT=''
+      DARRAY=''
+      DARRAY.3=''     ; *DRF01
+      TAB=CHAR(9)
+*
+* Open general files
+*
+
+      CLIENT.ID=CLIENT
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT ELSE
+         CALL ELINE('ERROR - BUILD.SPECIAL.FILE did not complete CLIENT.REC read.')
+         GOTO EXIT.PROGRAM
+      END
+      CLIENT.NAME=CLIENT.REC<2>
+      OPEN '',FILE TO FB.BILLS ELSE
+         CALL OPEN.ABORT(FILE:CLIENT,PROG.NAME)
+      END
+      OPEN '','CLIENT.SCAC' TO F.CSCAC ELSE
+         CALL OPEN.ABORT("CLIENT.SCAC",PROG.NAME)
+      END
+      VEND=CLIENT.REC<20>
+      CUST=CLIENT.REC<21>
+
+      IF VEND='Y' OR CUST='Y' THEN
+         OPEN '','VEND.CUST,':CLIENT.ID TO F.VC ELSE
+            F.VC=''
+         END
+      END ELSE
+         F.VC = ''
+      END
+      DIVISION=CLIENT.REC<12>
+      IF DIVISION='Y' THEN
+         OPEN '','DIVISION.CODES,':CLIENT TO F.DIVISION ELSE
+            CALL OPEN.ABORT("DIVISION.CODES,":CLIENT,PROG.NAME)
+         END
+      END
+
+
+START.BUILD:***
+
+*
+* Select data for current client
+*
+*************************************************************************
+*
+* SELECT CLIENT FILE
+*
+
+      GOSUB SELECT.BILLS
+
+EXIT.PROGRAM:*** End
+      RETURN
+
+*
+* Select bills for the clients
+*
+SELECT.BILLS:***
+      IF AUTO THEN
+*        EXECUTE 'SELECT FB.UNPROCESS,':CLIENT.ID:' WITH FILE.NAME = "FB.BILLS,':CLIENT:'" ITEM.NAME' CAPTURING OUTPUT             ; * JMK01
+         EXECUTE 'SELECT FB.UNPROCESS,':CLIENT.ID:' WITH FILE.NAME = "FB.BILLS,':CLIENT:'" ITEM.NAME' PASSLIST CAPTURING OUTPUT    ; * JMK01
+      END
+      IF FILE = 'FB.BILLS,':CLIENT.ID THEN
+
+
+         STMT='SSELECT ':FILE:' WITH 30 GE "':OCONV(BEG.DATE,'D2/')
+         STMT=STMT:'" AND WITH 30 LE "':OCONV(END.DATE,'D2/'):'"'
+         IF CLIENT.ID[1,2]#'99' THEN
+            IF FILE.SEL=1 THEN
+               STMT=STMT:' AND WITH 39 = "O"'
+            END
+            STMT=STMT:' AND WITH 39 # "R"'
+         END ELSE
+            STMT=STMT:' AND WITH 39 # "R"'
+         END
+      END ELSE
+         STMT='SSELECT ':FILE:' WITH 37 GE "':OCONV(BEG.DATE,'D2/')
+         STMT=STMT:'" AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'
+         STMT=STMT:' AND WITH 39 # "R"'
+      END
+      STMT=STMT:' AND WITH VERSION = "0" '
+      IF FILE.SEL='4' THEN
+         STMT='SSELECT ':FILE:' WITH 39 = "O" AND WITH 14 = "" AND WITH VERSION = "0"'
+      END
+      STMT=STMT:' BY CARRIER BY CARRIER# BY 2 BY 1 BY PRO'
+      EXECUTE STMT PASSLIST RTNLIST BILLS.LIST CAPTURING OUTPUT
+      IF @SELECTED ELSE
+         CALL ELINE('No transaction on file')
+         GOTO EXIT.PROGRAM
+      END
+      NUM.BILLS = @SELECTED
+
+      COUNTER.2=0
+      PER = 0
+      DONE=0
+
+*
+* Get next item to process
+*
+
+      BEGIN CASE
+         CASE CLIENT='01288'
+            EXP.SUM.ARRAY=''
+            LOOP
+               READNEXT PRO.ID FROM BILLS.LIST ELSE DONE = 1
+            UNTIL DONE DO
+               LINE=''
+               READ PRO.REC FROM FB.BILLS,PRO.ID THEN
+                  CARRIER.ID=OCONV(PRO.ID,'G0*1')
+                  IF CARRIER.ID='00041' OR CARRIER.ID='14768' THEN
+                     BEGIN CASE
+                        CASE CARRIER.ID='00041' AND PRO.REC<5>='W88'
+                           SHIP.FILE='UPS'
+                        CASE CARRIER.ID='00041'
+                           SHIP.FILE='OB'
+                        CASE 1
+                           SHIP.FILE=''
+                     END CASE
+                  END ELSE
+                     COUNTER.2=COUNTER.2+1
+                     LINE=SPACE(22)
+                     READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE CARRIER.REC=''
+                     READ VC.REC FROM F.VC,PRO.REC<17> ELSE VC.REC=''
+                     PRO.NUM=OCONV(PRO.ID,'G1*1')
+                     LINE=LINE:PRO.NUM'L#12'
+                     LINE=LINE:'0039  '
+                     LINE=LINE:'     '
+                     SHIP.DATE=OCONV(PRO.REC<1>,'D4/')
+                     TEMP.SHIP.DATE=SHIP.DATE[1,2]:SHIP.DATE[4,2]:SHIP.DATE[9,2]
+                     LINE=LINE:TEMP.SHIP.DATE'R#6'
+                     LINE=LINE:PRO.REC<6>'R0#8'
+                     LINE=LINE:PRO.REC<16>'R#12'
+                     BEGIN CASE
+                        CASE PRO.REC<2>='T'
+                           LINE=LINE:'C'
+                           VEND.CODE=PRO.REC<3>[1,3]
+                           COST.CODE='5'
+                           SHIP.FILE='MI'
+                        CASE PRO.REC<2>='I'
+                           LINE=LINE:'C'
+                           BEGIN CASE
+                              CASE VC.REC<2>[1,1]='V'
+                                 VEND.CODE=VC.REC<2>[1,3]
+                                 COST.CODE='4'
+                                 SHIP.FILE='V'
+                              CASE VC.REC<2>[1,1]='W'
+                                 VEND.CODE=VC.REC<2>[1,3]
+                                 COST.CODE='2'
+                                 SHIP.FILE='WW'
+                                 IF PRO.REC<3>[1,5]='44820' THEN SHIP.FILE='BU'
+                              CASE 1
+                                 VEND.CODE=PRO.REC<3>[1,3]
+                                 COST.CODE='5'
+                                 SHIP.FILE='MI'
+                           END CASE
+                        CASE PRO.REC<2>='O'
+                           LINE=LINE:'P'
+                           VEND.CODE=PRO.REC<4>[1,3]
+                           COST.CODE='3'
+                           SHIP.FILE='OB'
+                     END CASE
+                     LINE=LINE:PRO.REC<5>'L#3'
+                     LINE=LINE:VEND.CODE'L#3'
+                     LINE=LINE:COST.CODE'L#1'
+                     LINE=LINE:PRO.REC<8>'R26#10'
+                     LINE=LINE:PRO.REC<6>'R0#8'
+                     LINE=LINE:CARRIER.REC<1>'L#25'
+                     RUN.MONTH=OCONV(PRO.REC<37>,'DMB')
+                     LINE=LINE:RUN.MONTH'L#3'
+                     LINE=LINE:' '
+                     PROC.DATE=OCONV(PRO.REC<37>,'D4/')
+                     TEMP.PROC.DATE=PROC.DATE[1,2]:PROC.DATE[4,2]:PROC.DATE[9,2]
+                     LINE=LINE:TEMP.PROC.DATE'R#6'
+                     LINE=LINE:'      '
+                     SHIP.DATE=OCONV(PRO.REC<1>,'D4/')
+                     TEMP.SHIP.DATE=SHIP.DATE[7,4]:SHIP.DATE[1,2]:SHIP.DATE[4,2]
+                     LINE=LINE:TEMP.SHIP.DATE'R#8'
+                     LINE=LINE:' '
+                     PROC.DATE=OCONV(PRO.REC<37>,'D4/')
+                     TEMP.PROC.DATE=PROC.DATE[7,4]:PROC.DATE[1,2]:PROC.DATE[4,2]
+                     LINE=LINE:TEMP.PROC.DATE'R#8'
+                     DARRAY<-1>=LINE
+                     LINE=LINE:' ':PRO.REC<27>'L#20'     ; *DRF01
+                     LINE=LINE:' ':PRO.REC<25>'L#2'     ; *DRF01
+                     LINE=LINE:' ':PRO.REC<28>'L#20'     ; *DRF01
+                     LINE=LINE:' ':PRO.REC<26>'L#2'     ; *DRF01
+                     LINE=LINE:' ':VC.REC<1>'L#35'     ; *DRF01
+                     DARRAY.3<-1>=LINE     ; *DRF01
+                  END
+                  IF PRO.REC<8>#'0' THEN
+                     CHECK.ID=PRO.REC<5>:'*':SHIP.FILE
+                     LOCATE CHECK.ID IN EXP.SUM.ARRAY<1> BY 'AL' SETTING POS THEN
+                        EXP.SUM.ARRAY<2,POS>=EXP.SUM.ARRAY<2,POS>+PRO.REC<8>
+                     END ELSE
+                        INS CHECK.ID BEFORE EXP.SUM.ARRAY<1,POS>
+                        INS PRO.REC<8> BEFORE EXP.SUM.ARRAY<2,POS>
+                     END
+                  END
+               END
+            REPEAT
+            DARRAY.2='Acct Number':TAB:'Ship File':TAB:'Total Net Amount'
+            GRAND.TOTAL=0
+            NUM.OF.ITEMS=DCOUNT(EXP.SUM.ARRAY<1>,@VM)
+            FOR I = 1 TO NUM.OF.ITEMS
+               DARRAY.2<-1>=FIELD(EXP.SUM.ARRAY<1,I>,'*',1):TAB:FIELD(EXP.SUM.ARRAY<1,I>,'*',2):TAB:OCONV(EXP.SUM.ARRAY<2,I>,'MR2')
+               GRAND.TOTAL=GRAND.TOTAL+EXP.SUM.ARRAY<2,I>
+            NEXT I
+            DARRAY.2<-1>='Total':TAB:TAB:OCONV(GRAND.TOTAL,'MR2')
+            SPECIAL.REC.NAME = CLIENT'R%5'
+            SPECIAL.REC.NAME:='-'
+            D=BEG.DATE'D2/'
+            SPECIAL.REC.NAME := D[7,2]:D[1,2]:D[4,2]
+            SPECIAL.REC.NAME:='-'
+            D=END.DATE'D2/'
+            SPECIAL.REC.NAME := D[7,2]:D[1,2]:D[4,2]
+            SPECIAL.REC.NAME.2=SPECIAL.REC.NAME
+            SPECIAL.REC.NAME:='-SPC'
+            SPECIAL.REC.NAME.3=SPECIAL.REC.NAME:'-NEW.TXT'     ; *DRF01
+            SPECIAL.REC.NAME := '.TXT'
+
+            SPECIAL.REC.NAME.2:='-ESS.XLS'
+            IF WHERE.FROM='FROM FB.3.1.NEW' OR WHERE.FROM='FROM FB.2.3.NW' THEN
+               WRITE DARRAY ON F.FILE,SPECIAL.REC.NAME
+               WRITE DARRAY.2 ON F.FILE,SPECIAL.REC.NAME.2
+               WRITE DARRAY.3 ON F.FILE,SPECIAL.REC.NAME.3     ; *DRF01
+               VOUT=''
+*DF               VOUT<1>=SPECIAL.REC.NAME:@VM:SPECIAL.REC.NAME.2     ; *DRF01
+               VOUT<1>=SPECIAL.REC.NAME:@VM:SPECIAL.REC.NAME.2:@VM:SPECIAL.REC.NAME.3     ; *DRF01
+*DF               VOUT<2>='Upload File':@VM:'Expense Summary File'     ; *DRF01
+               VOUT<2>='Upload File':@VM:'Expense Summary File':@VM:'New Upload File'     ; *DRF01
+               RETURN
+            END
+
+            WRITE DARRAY ON F.FILE,SPECIAL.REC.NAME
+            WRITE DARRAY.2 ON F.FILE,SPECIAL.REC.NAME.2
+            WRITE DARRAY.3 ON F.FILE,SPECIAL.REC.NAME.3     ; *DRF01
+            RETURN
+         CASE CLIENT='01312'
+            LOOP
+               READNEXT PRO.ID FROM BILLS.LIST ELSE DONE = 1
+            UNTIL DONE DO
+               LINE=''
+               READ PRO.REC FROM FB.BILLS,PRO.ID THEN
+                  COUNTER.2=COUNTER.2+1
+                  LINE=''
+*DF              IF AUTO.EMAIL=0 THEN CALL PROG.BAR(22,COUNTER.2,NUM.BILLS,PER)
+                  CARRIER.ID=OCONV(PRO.ID,'G0*1')
+                  READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE CARRIER.REC=''
+                  READ VC.REC FROM F.VC,PRO.REC<17> ELSE VC.REC=''
+                  PRO.NUM=OCONV(PRO.ID,'G1*1')
+                  LINE=PRO.REC<37>'R#5'
+                  LINE=LINE:COUNTER.2'R#5'
+*DF              LINE=LINE:CARRIER.REC<12>'L#6'
+                  CSCAC.ID=CLIENT.ID:'*':CARRIER.ID          ; * JMK14
+                  READ CSCAC.REC FROM F.CSCAC,CSCAC.ID ELSE CSCAC.REC=''         ; * JMK14
+                  ITEM=CSCAC.REC<1>      ; * JMK14
+                  LINE=LINE:ITEM'L#6'
+                  LINE=LINE:PRO.NUM'L#15'
+                  LINE=LINE:PRO.REC<16>'L#15'
+                  LINE=LINE:CARRIER.REC<1>'L#10'
+                  LINE=LINE:PRO.REC<7>'R26#10'
+                  LINE=LINE:PRO.REC<8>'R26#10'
+                  LINE=LINE:(PRO.REC<7>-PRO.REC<8>)'R26#10'
+                  LINE=LINE:'  0'
+                  LINE=LINE:' '
+                  SHIP.DATE=OCONV(PRO.REC<1>,'D4/')
+                  TEMP.SHIP.DATE=SHIP.DATE[7,4]:SHIP.DATE[1,2]:SHIP.DATE[4,2]
+                  LINE=LINE:TEMP.SHIP.DATE'R#8'
+                  LINE=LINE:OCONV(PRO.REC<14>,'G0*1')'L#7'
+                  LINE=LINE:' '
+                  PROC.DATE=OCONV(PRO.REC<37>,'D4/')
+                  TEMP.PROC.DATE=PROC.DATE[7,4]:PROC.DATE[1,2]:PROC.DATE[4,2]
+                  LINE=LINE:TEMP.PROC.DATE'R#8'
+                  LINE=LINE:'  0'
+                  LINE=LINE:' '
+                  LINE=LINE:TEMP.SHIP.DATE'R#8'
+                  LINE=LINE:PRO.REC<21>'R#3'
+                  IF PRO.REC<2>='O' THEN
+                     LINE=LINE:PRO.REC<9>'L#6'
+                  END ELSE
+                     LINE=LINE:'      '
+                  END
+                  LINE=LINE:PRO.REC<27>'L#10'
+                  LINE=LINE:PRO.REC<25>'L#2'
+                  LINE=LINE:PRO.REC<3>'L#9'
+                  IF PRO.REC<2>='I' THEN
+                     LINE=LINE:PRO.REC<9>'L#6'
+                  END ELSE
+                     LINE=LINE:'      '
+                  END
+                  LINE=LINE:PRO.REC<28>'L#10'
+                  LINE=LINE:PRO.REC<26>'L#2'
+                  LINE=LINE:PRO.REC<4>'L#9'
+                  LINE=LINE:PRO.REC<6>'R0#9'
+                  LINE=LINE:'      0'
+                  LINE=LINE:VC.REC<1>'L#20'
+                  LINE=LINE:' '
+                  DUE.DATE=OCONV(PRO.REC<38>,'D4/')
+                  TEMP.DUE.DATE=DUE.DATE[7,4]:DUE.DATE[1,2]:DUE.DATE[4,2]
+                  LINE=LINE:TEMP.DUE.DATE'R#8'
+                  LINE=LINE:PRO.REC<2>
+                  BEGIN CASE
+                     CASE PRO.REC<2>='I'
+                        LINE=LINE:'C'
+                     CASE PRO.REC<2>='O'
+                        LINE=LINE:'P'
+                     CASE PRO.REC<2>='T'
+                        LINE=LINE:'3'
+                     CASE 1
+                        LINE=LINE:' '
+                  END CASE
+                  LINE=LINE:PRO.REC<183>'L#10'
+                  LINE=LINE:PRO.REC<5>'L#18'
+                  DARRAY<-1>=LINE
+               END
+            REPEAT
+            SPECIAL.REC.NAME = CLIENT'R%5'
+            SPECIAL.REC.NAME:='-'
+            D=BEG.DATE'D2/'
+            SPECIAL.REC.NAME := D[7,2]:D[1,2]:D[4,2]
+            SPECIAL.REC.NAME:='-'
+            D=END.DATE'D2/'
+            SPECIAL.REC.NAME := D[7,2]:D[1,2]:D[4,2]
+            SPECIAL.REC.NAME:='-SPC'
+            SPECIAL.REC.NAME := '.TXT'
+
+            IF WHERE.FROM='FROM FB.3.1.NEW' OR WHERE.FROM='FROM FB.2.3.NW' THEN
+               WRITE DARRAY ON F.FILE,SPECIAL.REC.NAME
+               VOUT=''
+               VOUT<1>=SPECIAL.REC.NAME
+               VOUT<2>='Upload File'
+               RETURN
+            END
+
+            WRITE DARRAY ON F.FILE,SPECIAL.REC.NAME
+            RETURN
+         CASE CLIENT='01347'
+            TOTAL.AMT=0
+            LOOP
+               READNEXT PRO.ID FROM BILLS.LIST ELSE DONE = 1
+            UNTIL DONE DO
+               LINE=''
+               READ PRO.REC FROM FB.BILLS,PRO.ID THEN
+                  COUNTER.2=COUNTER.2+1
+                  TOTAL.AMT=TOTAL.AMT+PRO.REC<8>
+                  TOTAL.PROCESS.DATE=PRO.REC<37>
+                  LINE=''
+                  CARRIER.ID=OCONV(PRO.ID,'G0*1')
+                  READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE CARRIER.REC=''
+                  READ VC.REC FROM F.VC,PRO.REC<17> ELSE VC.REC=''
+                  PRO.NUM=OCONV(PRO.ID,'G1*1')
+                  LINE=PRO.NUM'L#16'
+*DF              LINE=LINE:CARRIER.REC<12>'L#5'
+                  CSCAC.ID=CLIENT.ID:'*':CARRIER.ID          ; * JMK14
+                  READ CSCAC.REC FROM F.CSCAC,CSCAC.ID ELSE CSCAC.REC=''         ; * JMK14
+                  ITEM=CSCAC.REC<1>      ; * JMK14
+                  LINE=LINE:ITEM'L#5'
+                  LINE=LINE:CARRIER.REC<1>'L#30'
+                  LINE=LINE:PRO.REC<8>'R26#11'
+                  LINE=LINE:' '
+                  SHIP.DATE=OCONV(PRO.REC<1>,'D4/')
+                  TEMP.SHIP.DATE=SHIP.DATE[9,2]:SHIP.DATE[1,2]:SHIP.DATE[4,2]
+                  TEMP.SHIP.DATE=TEMP.SHIP.DATE+0
+                  LINE=LINE:TEMP.SHIP.DATE'R#6'
+                  LINE=LINE:' '
+                  PROC.DATE=OCONV(PRO.REC<37>,'D4/')
+                  TEMP.PROC.DATE=PROC.DATE[9,2]:PROC.DATE[1,2]:PROC.DATE[4,2]
+                  TEMP.PROC.DATE=TEMP.PROC.DATE+0
+                  LINE=LINE:TEMP.PROC.DATE'R#6'
+                  LINE=LINE:' '
+                  LINE=LINE:'  0'
+                  LINE=LINE:PRO.REC<16>'L#14'
+                  IF PRO.REC<2>='I' THEN
+                     LINE=LINE:'3'
+                  END ELSE
+                     LINE=LINE:'6'
+                  END
+                  LINE=LINE:'       '
+                  LINE=LINE:' '
+                  SHIP.DATE=OCONV(PRO.REC<1>,'D4/')
+                  TEMP.SHIP.DATE=SHIP.DATE[7,4]:SHIP.DATE[1,2]:SHIP.DATE[4,2]
+                  LINE=LINE:TEMP.SHIP.DATE'R#8'
+                  LINE=LINE:' '
+                  PROC.DATE=OCONV(PRO.REC<37>,'D4/')
+                  TEMP.PROC.DATE=PROC.DATE[7,4]:PROC.DATE[1,2]:PROC.DATE[4,2]
+                  LINE=LINE:TEMP.PROC.DATE'R#8'
+                  DARRAY<-1>=LINE
+               END
+            REPEAT
+            LINE='0'
+            LINE=LINE:COUNTER.2'R#9'
+            LINE=LINE:TOTAL.AMT'R26#14'
+            LINE=LINE:' '
+            PROC.DATE=OCONV(TOTAL.PROCESS.DATE,'D4/')
+            TEMP.PROC.DATE=PROC.DATE[7,4]:PROC.DATE[1,2]:PROC.DATE[4,2]
+            LINE=LINE:TEMP.PROC.DATE'R#8'
+            DARRAY<-1>=LINE
+            SPECIAL.REC.NAME = CLIENT'R%5'
+            SPECIAL.REC.NAME:='-'
+            D=BEG.DATE'D2/'
+            SPECIAL.REC.NAME := D[7,2]:D[1,2]:D[4,2]
+            SPECIAL.REC.NAME:='-'
+            D=END.DATE'D2/'
+            SPECIAL.REC.NAME := D[7,2]:D[1,2]:D[4,2]
+            SPECIAL.REC.NAME:='-SPC'
+            SPECIAL.REC.NAME := '.TXT'
+
+            IF WHERE.FROM='FROM FB.3.1.NEW' OR WHERE.FROM='FROM FB.2.3.NW' THEN
+               WRITE DARRAY ON F.FILE,SPECIAL.REC.NAME
+               VOUT=''
+               VOUT<1>=SPECIAL.REC.NAME
+               VOUT<2>='Upload File'
+               RETURN
+            END
+
+            WRITE DARRAY ON F.FILE,SPECIAL.REC.NAME
+            RETURN
+      END CASE
+      RETURN

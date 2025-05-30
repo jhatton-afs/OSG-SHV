@@ -1,0 +1,525 @@
+* PROGRAM NIB.GL.EXPORT
+* PROGRAM TO EXPORT GL TRANSACTION FILE FOR NIBCO (30028)
+*
+* AUTHOR: BRIAN M. QUEEN
+* DATE: OCTOBER 8, 1991
+*
+* PACKAGE: FREIGHT BILLING
+*
+**********************************************************************
+* 101911 - JMK01 - SysAid#113 - Remove Processing Fee from Nibco FTP File
+*
+*
+      $INCLUDE PROG.ADMIN INC_OPTIONS
+      $INCLUDE FILE.DEFS INC_DIVISION.CODES
+*
+* Initialize variables
+*
+      CALL GET.USER(USER)
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='NIB.GL.EXPORT'
+      PROG.DESC='Nibco GL Export File'
+      PACK.NAME='FREIGHT BILLING'
+      HDG=0
+      ERRMSG=''
+      FIRST=1
+      TESTING=0
+*
+* Open files
+*
+      OPEN '','CLIENTS' TO F.CLIENT ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+         CALL OPEN.ABORT("ZIPS",PROG.NAME)
+      END
+      OPEN '','FBWORK':CH.NUM TO F.FBWORK ELSE
+         CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+      END
+      OPEN '','BILLDATA.EBILL.HIST' TO F.EBILL ELSE
+         CALL OPEN.ABORT('BILLDATA.EBILL.HIST',PROG.NAME)
+      END
+      OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE
+         CALL OPEN.ABORT('BILLDATA.':USER,PROG.NAME)
+      END
+      OPEN '','FTPNIBCO' TO F.FTPNIBCO ELSE
+         CALL OPEN.ABORT("FTPNIBCO",PROG.NAME)
+      END
+      OPEN '','FTPNIBCO.HISTORY' TO F.FTPNIBCO.HIST ELSE
+         CALL OPEN.ABORT("FTPNIBCO.HISTORY",PROG.NAME)
+      END
+      OPEN '','AR-BRIDGE' TO F.BRIDGE ELSE
+         CALL OPEN.ABORT("AR.BRIDGE.LAST",PROG.NAME)
+      END
+      OPEN '','AR.BRIDGE.LAST' TO F.BRIDGE.LAST ELSE
+         CALL OPEN.ABORT("AR.BRIDGE.LAST",PROG.NAME)
+      END
+      OPEN '','AR.SALES.CODE.1000.1' TO F.SCODE ELSE
+         CALL OPEN.ABORT("AR.SALES.CODE.1000.1",PROG.NAME)
+      END
+*
+* Display screen heading
+*
+30:   CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+* Get client number to process
+*
+50:   HELP="Enter the client number you want to process. 'X'=Exit."
+      CALL GEN.IN(0,3,'Enter Client Number #####','',Q,0,20,'','',2,-5,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX' ! QI='X'
+            STOP
+         CASE QI=''
+            STOP
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 50
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 100
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO 50
+            END CASE
+         CASE NUM(QI)
+            Q=QI'R%5'
+         CASE 1
+            GOTO 100
+      END CASE
+      CLIENT.ID=Q
+*
+      READ CLIENT.REC FROM F.CLIENT,CLIENT.ID ELSE
+         CALL ELINE("ERROR - Client ":CLIENT.ID:" not on file.")
+         GOTO 50
+      END
+      CLIENT.NAME=CLIENT.REC<2>
+      FYBD=CLIENT.REC<29>
+*
+* Get current period beginning date
+*
+100:  HELP='Enter the current period beginning date.'
+      CALL GEN.IN(0,5,'Current period beginning date.  ':DATE()'D2/','DATE',BEG.DATE,1,8,'','',1,-8,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN GOTO 50
+      IF QI='EX' THEN STOP
+      CRT @(32,5):BEG.DATE'D2/'
+*
+* Get current period ending date
+*
+200:  DM=FIELD(BEG.DATE'D2/','/',1)
+      DD=31
+      DY=FIELD(BEG.DATE'D2/','/',3)
+      LOOP
+         VAR=DM:'/':DD:'/':DY
+         END.DATE=ICONV(VAR,'DI')
+      UNTIL END.DATE NE '' DO
+         DD=DD-1
+      REPEAT
+*
+      HELP='Enter the current period ending date.'
+      CALL GEN.IN(0,7,'Current period ending date.     ':END.DATE'D2/','DATE',Q,0,8,'','',1,-8,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI=''
+            Q=END.DATE
+         CASE QI='X'
+            GOTO 100
+         CASE QI='EX'
+            STOP
+      END CASE
+      END.DATE=Q
+      IF END.DATE LT BEG.DATE THEN
+         CALL ELINE('Invalid ending date.')
+         GOTO 200
+      END
+      CRT @(32,7):END.DATE'D2/'
+*
+* Send to NIBCO (Y/N)
+*
+300:  HELP='Send to NIBCO (Y/N) '
+      CALL GEN.IN(0,9,'Send to Nibco.                  ':'N','',Q,0,8,'','',1,-1,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI='N'
+      IF QI='N' THEN TESTING=1
+      IF QI='X' THEN GOTO 200
+      IF QI='EX' THEN STOP
+      SEND.NIBCO=QI
+      CRT @(32,9):SEND.NIBCO
+*
+* Ask if data correct
+*
+      HELP="Enter Y if information correct or N if incorrect."
+      CALL GEN.IN(0,22,'Is the information correct? Y','',Q,0,1,'','',2,-1,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='Y' ! QI='' ELSE GOTO 30
+*
+* Create beginning of year and monthly descriptions
+*
+      IF SEND.NIBCO='N' THEN TESTING=1
+      BEG.MO=OCONV(BEG.DATE,'DM')
+      BEG.YR=OCONV(BEG.DATE,'DY')
+      FISCAL.MO=FIELD(FYBD,'.',1)
+      IF BEG.MO LT FISCAL.MO THEN FISCAL.YR=BEG.YR-1 ELSE FISCAL.YR=BEG.YR
+      F.DATE=FISCAL.MO'R%2':'/01/':FISCAL.YR
+      F.DATE=ICONV(F.DATE,'D2/')
+      OBEG.DATE=OCONV(BEG.DATE,'D4/':@VM:'MCN')
+      OEND.DATE=OCONV(END.DATE,'D4/':@VM:'MCN')
+*
+      CRT @(0,2):@(-3)
+      LINE='Processing Client ':CLIENT.ID:' ':CLIENT.NAME
+      CALL CENTER(LINE,80)
+      CRT @(0,10):LINE
+      CRT
+*
+* Open clients files
+*
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS ELSE
+         CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,PROG.NAME)
+      END
+      OPEN '','UPSDTL,':CLIENT.ID TO F.UPSDTL ELSE
+         CALL OPEN.ABORT("UPSDTL,":CLIENT.ID,PROG.NAME)
+      END
+*
+* Initialize variables
+*
+
+*
+* Process Report
+*
+      TEXT="Selecting data - Please wait"
+      CALL CENTER(TEXT,80)
+      CRT @(0,12):TEXT
+*
+      FPX.STMT='SELECT FB.PROC.DATE.XREF,':CLIENT.ID
+      FPX.STMT:=' WITH DATE GE "':OCONV(BEG.DATE,'D2/'):'"'
+      FPX.STMT:=' AND WITH DATE LE "':OCONV(END.DATE,'D2/'):'"'
+      FPX.STMT<-1>='QSELECT FB.PROC.DATE.XREF,':CLIENT.ID
+*
+      EXECUTE FPX.STMT RTNLIST FPX.LIST CAPTURING FPX.OUTPUT
+
+      FB.STMT='SSELECT FB.BILLS.HIST,':CLIENT.ID
+      FB.STMT:=' WITH 37 GE "':OCONV(BEG.DATE,'D2/'):'"'
+      FB.STMT:=' AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'
+      FB.STMT:=' AND WITH VERSION = "0" '
+*
+      EXECUTE FB.STMT PASSLIST FPX.LIST RTNLIST FB.LIST CAPTURING FB.OUTPUT
+
+      FB.TCNT = @SELECTED
+      IF FB.TCNT<1 THEN
+         CALL ELINE(FB.OUTPUT)
+         STOP
+      END
+      CLEARFILE F.FBWORK
+      FB.CNT=0
+      FB.EOF=0
+      EBILL.DATES=''
+      TEXT='Processing Freight Bills...'
+      CALL CENTER(TEXT,80)
+      CRT @(0,14):@(-3):TEXT
+*
+* Process FB items and report
+*
+      FBWORK.ID=0
+      LOOP
+         READNEXT FB.ID FROM FB.LIST ELSE FB.EOF=1
+      UNTIL FB.EOF DO
+         FB.CNT+=1
+         CALL PROG.BAR(22,FB.CNT,FB.TCNT,PER)
+         CARRIER.ID=FIELD(FB.ID,'*',1)
+         PRO=FIELD(FB.ID,'*',2)
+         READ FB.REC FROM F.BILLS,FB.ID THEN
+            BILL.DT=FB.REC<1>'D4/'
+            EBILL.DT=BILL.DT[7,4]:BILL.DT[1,2]:BILL.DT[4,2]
+            IF FB.REC<53>='EBILL.IMPORT.NEW' THEN
+               LOCATE EBILL.DT IN EBILL.DATES<1> SETTING EPOS ELSE
+                  EBILL.DATES<1,-1>=EBILL.DT
+               END
+            END ELSE
+               NVAL=DCOUNT(FB.REC<31>,@VM)
+               FOR VAL=1 TO NVAL
+                  FBWORK.REC=''
+                  FBWORK.REC<1>='JL'
+                  FBWORK.REC<2>=FB.REC<236,VAL>
+                  FBWORK.REC<3>=FB.REC<31,VAL>
+                  FBWORK.REC<4>=FB.REC<237,VAL>
+                  FBWORK.REC<5>='D'
+                  IF VAL=1 THEN
+                     FBWORK.REC<6>=FB.REC<6,VAL>
+                  END ELSE
+                     FBWORK.REC<6>='0'
+                  END
+                  FBWORK.REC<7>=FB.REC<1>
+                  FBWORK.REC<8>=FB.REC<33,VAL>
+                  FBWORK.REC<9>='FB'
+                  FBWORK.REC<10>=FB.ID
+                  FBWORK.REC<11>=VAL
+                  FBWORK.REC<12>=FB.REC<37>
+                  FBWORK.ID+=1
+                  WRITE FBWORK.REC ON F.FBWORK,FBWORK.ID
+               NEXT VAL
+            END
+         END
+      REPEAT
+      TEXT='Processing UPS Electronic Bills...'
+      CALL CENTER(TEXT,80)
+      CRT @(0,14):@(-3):TEXT
+      EB.CNT=0
+      EB.EOF=0
+*
+* Process EB items and report
+*
+      UPSDTL.STMT='SELECT UPSDTL,':CLIENT.ID:' WITH CLI.NUM = "':CLIENT.ID'R%5':'" AND WITH DIV.NUM = "" AND WITH PROC.DT >= "':BEG.DATE'D2/':' " AND WITH PROC.DT <= "':END.DATE'D2/':'"'
+*
+      EXECUTE UPSDTL.STMT RTNLIST UPSDTL.LIST CAPTURING UPSDTL.OUTPUT
+
+      UPSDTL.TCNT = @SELECTED
+      IF UPSDTL.TCNT<1 THEN
+         CALL ELINE(UPSDTL.OUTPUT)
+         STOP
+      END
+      UPSDTL.EOF=0
+      UPSDTL.CNT=0
+      UPSDTL.PER=''
+      LOOP
+         READNEXT UPSDTL.ID FROM UPSDTL.LIST ELSE UPSDTL.EOF=1
+      UNTIL UPSDTL.EOF DO
+         UPSDTL.CNT+=1
+         CALL PROG.BAR(20,UPSDTL.CNT,UPSDTL.TCNT,UPSDTL.PER)
+         READ UPSDTL.REC FROM F.UPSDTL,UPSDTL.ID THEN
+            FILE.DATE=FIELD(UPSDTL.ID,'*',2)
+            NATT=DCOUNT(UPSDTL.REC,@AM)
+            FOR ATT=1 TO NATT
+               CALL PROG.BAR(22,ATT,NATT,'')
+               IF ATT>1 THEN
+*                 IF USER='MKERBOW' THEN DEBUG
+                  UPSDTL.LINE=UPSDTL.REC<ATT>
+                  SHIPPER.NUMBER=UPSDTL.LINE<1,3>'R#6'
+                  PRO.NUMBER=SHIPPER.NUMBER[1,3]:'-':SHIPPER.NUMBER[4,3]:FILE.DATE[5,2]:FILE.DATE[7,2]:FILE.DATE[3,2]
+                  BEGIN CASE
+                     CASE UPSDTL.LINE<1,22>='1' OR UPSDTL.LINE<1,22>='4'
+                        IOT='O'
+                     CASE UPSDTL.LINE<1,22>='2'
+                        IOT='I'
+                     CASE UPSDTL.LINE<1,22>='3'
+                        IOT='T'
+                     CASE UPSDTL.LINE<1,22>=''
+                        IOT='O'
+                  END CASE
+                  BILL.ID='00041*':PRO.NUMBER:'-':IOT:'*0'
+                  READ BILL.REC FROM F.BILLS,BILL.ID ELSE BILL.REC=''
+                  IF BILL.REC<8>+0#0  AND BILL.REC<37> >= BEG.DATE AND BILL.REC<37> <= END.DATE THEN
+                     FBWORK.REC=''
+                     FBWORK.REC<1>='JL'
+                     FBWORK.REC<2>=UPSDTL.LINE<1,90>
+                     FBWORK.REC<3>=UPSDTL.LINE<1,89>
+                     FBWORK.REC<4>=UPSDTL.LINE<1,91>
+                     FBWORK.REC<5>='D'
+                     FBWORK.REC<6>=UPSDTL.LINE<1,13>
+                     FBWORK.REC<7>=ICONV(UPSDTL.LINE<1,23>[1,2]:'/':UPSDTL.LINE<1,23>[3,2]:'/':UPSDTL.LINE<1,23>[5,4],'D')
+                     FBWORK.REC<8>=ICONV(UPSDTL.LINE<1,37>,'MR2')
+                     FBWORK.REC<9>='EB'
+                     FBWORK.REC<10>='00041*':UPSDTL.ID
+                     FBWORK.REC<11>=ATT
+                     FBWORK.REC<12>=BILL.REC<37>
+                     FBWORK.REC<13>=SHIPPER.NUMBER
+                     FBWORK.ID+=1
+                     WRITE FBWORK.REC ON F.FBWORK,FBWORK.ID
+                  END
+               END
+            NEXT ATT
+         END
+      REPEAT
+
+*
+* Process AFS items and report
+*
+      FEE.STMT='SELECT AR.BRIDGE.LAST WITH CLIENT# = "':CLIENT.ID'R%5':'" AND WITH PROC.DATE >= "':BEG.DATE'D2/':' " AND WITH PROC.DATE <= "':END.DATE'D2/':'"'
+*
+      EXECUTE FEE.STMT RTNLIST FEE.LIST CAPTURING FEE.OUTPUT
+
+      FEE.TCNT = @SELECTED
+      IF FEE.TCNT<1 THEN
+         CALL ELINE(FEE.OUTPUT)
+         STOP
+      END
+      FEE.EOF=0
+      FEE.CNT=0
+      FEE.PER=''
+      LOOP
+         READNEXT FEE.ID FROM FEE.LIST ELSE FEE.EOF=1
+      UNTIL FEE.EOF DO
+         FEE.CNT+=1
+         CALL PROG.BAR(20,FEE.CNT,FEE.TCNT,FEE.PER)
+         READ FEE.REC FROM F.BRIDGE.LAST,FEE.ID THEN
+            CLIENT.ID=FIELD(FEE.ID,'*',1)
+            PROC.DATE=FEE.REC<4>
+            NVAL=DCOUNT(FEE.REC<1>,@VM)
+            FOR VAL=1 TO NVAL
+               CALL PROG.BAR(22,VAL,NVAL,'')
+               SCODE.ID=FEE.REC<1,VAL>
+               READ SCODE.REC FROM F.SCODE,SCODE.ID ELSE SCODE.REC=''
+*              IF SCODE.REC<8>#'CC' THEN           ; * JMK01
+               IF SCODE.REC<8>#'CC' AND SCODE.ID#'3002' THEN           ; * JMK01
+                  FBWORK.REC=''
+                  FBWORK.REC<1>='JL'
+                  FBWORK.REC<2>='020001'
+                  FBWORK.REC<3>='700400'
+                  FBWORK.REC<4>=''
+                  FBWORK.REC<5>='D'
+                  FBWORK.REC<6>=''
+                  FBWORK.REC<7>=PROC.DATE
+                  FBWORK.REC<8>=FEE.REC<3,VAL>
+                  FBWORK.REC<9>='FEES'
+                  FBWORK.REC<10>=SCODE.ID:'-':SCODE.REC<10>
+                  FBWORK.REC<11>=VAL
+                  FBWORK.REC<12>=PROC.DATE
+                  FBWORK.REC<13>=''
+                  FBWORK.ID+=1
+                  WRITE FBWORK.REC ON F.FBWORK,FBWORK.ID
+               END
+            NEXT VAL
+         END
+      REPEAT
+
+*
+* Process AFS items and report
+*
+      FEE.STMT='SELECT AR-BRIDGE WITH @ID = "':CLIENT.ID'R%5':'" AND WITH 4 >= "':BEG.DATE'D2/':' " AND WITH 4 <= "':END.DATE'D2/':'"'
+*
+      EXECUTE FEE.STMT RTNLIST FEE.LIST CAPTURING FEE.OUTPUT
+
+      FEE.TCNT = @SELECTED
+      IF FEE.TCNT>0 THEN
+         FEE.EOF=0
+         FEE.CNT=0
+         FEE.PER=''
+         LOOP
+            READNEXT FEE.ID FROM FEE.LIST ELSE FEE.EOF=1
+         UNTIL FEE.EOF DO
+            FEE.CNT+=1
+            CALL PROG.BAR(20,FEE.CNT,FEE.TCNT,FEE.PER)
+            READ FEE.REC FROM F.BRIDGE,FEE.ID THEN
+               CLIENT.ID=FIELD(FEE.ID,'*',1)
+               PROC.DATE=FEE.REC<4>
+               NVAL=DCOUNT(FEE.REC<1>,@VM)
+               FOR VAL=1 TO NVAL
+                  CALL PROG.BAR(22,VAL,NVAL,'')
+                  SCODE.ID=FEE.REC<1,VAL>
+                  READ SCODE.REC FROM F.SCODE,SCODE.ID ELSE SCODE.REC=''
+*                 IF SCODE.REC<8>#'CC' THEN        ; * JMK01
+                  IF SCODE.REC<8>#'CC' AND SCODE.ID#'3002' THEN        ; * JMK01
+                     FBWORK.REC=''
+                     FBWORK.REC<1>='JL'
+                     FBWORK.REC<2>='020001'
+                     FBWORK.REC<3>='700400'
+                     FBWORK.REC<4>=''
+                     FBWORK.REC<5>='D'
+                     FBWORK.REC<6>=''
+                     FBWORK.REC<7>=PROC.DATE
+                     FBWORK.REC<8>=FEE.REC<3,VAL>
+                     FBWORK.REC<9>='FEES'
+                     FBWORK.REC<10>=SCODE.ID:'-':SCODE.REC<10>
+                     FBWORK.REC<11>=VAL
+                     FBWORK.REC<12>=PROC.DATE
+                     FBWORK.REC<13>=''
+                     FBWORK.ID+=1
+                     WRITE FBWORK.REC ON F.FBWORK,FBWORK.ID
+                  END
+               NEXT VAL
+            END
+         REPEAT
+      END
+
+*
+* Process work items into export document
+*
+      TEXT='Creating Export File...'
+      CALL CENTER(TEXT,80)
+      CRT @(0,14):@(-3):TEXT
+      WK.STMT='SSELECT FBWORK':CH.NUM:' BY F7'     ; * SELECT BY SHIP DATE
+      EXECUTE WK.STMT RTNLIST WK.LIST CAPTURING WK.OUTPUT
+      WK.TCNT=@SELECTED
+      WK.EOF=0
+      WK.CNT=0
+      EXP.REC=''
+      EXP.DTL=''
+      EXP.DTL<1,1>='SRC'
+      EXP.DTL<1,2>='CC'
+      EXP.DTL<1,3>='EXP'
+      EXP.DTL<1,4>='PRJ'
+      EXP.DTL<1,5>='D'
+      EXP.DTL<1,6>='WT'
+      EXP.DTL<1,7>='DATE'
+      EXP.DTL<1,8>='COST'
+      EXP.DTL<1,9>='DOC'
+      EXP.DTL<1,10>='DOC ID'
+      EXP.DTL<1,11>='DOC LINE'
+      EXP.DTL<1,12>='PROC DT'
+      EXP.DTL<1,13>='UPS ACCT'
+      LOOP
+         READNEXT WK.ID FROM WK.LIST ELSE WK.EOF=1
+      UNTIL WK.EOF DO
+         WK.CNT+=1
+         CALL PROG.BAR(22,WK.CNT,WK.TCNT,WK.PER)
+         READ WK.REC FROM F.FBWORK,WK.ID THEN
+            OSHIP.DT=WK.REC<7>'D4/'
+            SHIPDT=OSHIP.DT[9,2]:OSHIP.DT[1,2]:OSHIP.DT[4,2]
+            WGT=WK.REC<6>
+            IF WGT='LTR' THEN WGT=1
+            IF INDEX(WGT,'.',1) THEN
+               LBS=FIELD(WGT,'.',1)
+               OZS=FIELD(WGT,'.',2)
+               IF OZS+0#0 THEN
+                  LBS+=1
+               END
+               WGT=LBS
+            END
+            EXP.LINE=SPACE(65)
+            EXP.LINE[01,02]=WK.REC<1>
+            EXP.LINE[03,10]=WK.REC<2>'L#10'
+            EXP.LINE[13,10]=WK.REC<3>'L#10'
+            EXP.LINE[23,10]=WK.REC<4>'L#10'
+            EXP.LINE[33,03]=WK.REC<5>'R#3'
+            EXP.LINE[36,11]=WGT'R%11'
+            EXP.LINE[47,06]=SHIPDT'L#6'
+            EXP.LINE[53,12]=WK.REC<8>'R26M%12'
+            EXP.REC<-1>=EXP.LINE
+            EXP.DTL.LINE=''
+            EXP.DTL.LINE<1,1>=WK.REC<1>
+            EXP.DTL.LINE<1,2>=QUOTE(WK.REC<2>)
+            EXP.DTL.LINE<1,3>=QUOTE(WK.REC<3>)
+            EXP.DTL.LINE<1,4>=QUOTE(WK.REC<4>)
+            EXP.DTL.LINE<1,5>=WK.REC<5>
+            EXP.DTL.LINE<1,6>=WGT
+            EXP.DTL.LINE<1,7>=WK.REC<7>'D4/'
+            EXP.DTL.LINE<1,8>=WK.REC<8>'R26'
+            EXP.DTL.LINE<1,9>=WK.REC<9>
+            EXP.DTL.LINE<1,10>=WK.REC<10>
+            EXP.DTL.LINE<1,11>=WK.REC<11>
+            EXP.DTL.LINE<1,12>=WK.REC<12>'D4/'
+            EXP.DTL.LINE<1,13>=QUOTE(WK.REC<13>)
+            EXP.DTL<-1>=EXP.DTL.LINE
+         END
+      REPEAT
+      EXP.DTL=CHANGE(EXP.DTL,@VM,CHAR(9))
+      EXP.ID='gl5846.txt'
+      EXP.DTL.ID='NIBCO_GL_DTL_':OBEG.DATE:'_':OEND.DATE:'.XLS'
+      IF NOT(TESTING) THEN
+         WRITE EXP.REC ON F.FTPNIBCO,EXP.ID
+      END
+      WRITE EXP.REC ON F.FTPNIBCO.HIST,'GL5846_':OBEG.DATE:'_':OEND.DATE:'.TXT'
+      WRITE EXP.REC ON F.BILLDATA,EXP.ID
+      WRITE EXP.DTL ON F.BILLDATA,EXP.DTL.ID
+      CALL ELINE('This file is stored on your "U:\':USER:'" drive as "':EXP.ID:'"')
+      END
+*----------------------------------------------------------------------
+*
+* INTERNAL SUBROUTINES
+*
+*----------------------------------------------------------------------

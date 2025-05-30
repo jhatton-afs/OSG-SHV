@@ -1,0 +1,276 @@
+      SUBROUTINE UPD.SQL.UPSHIST.SUB(VIN,VOUT)
+***********************************************************************
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'UPD.SQL.UPSHIST.SUB' ; UPL.VOUT = ''      ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+* Analyze bills acted upon by auditors
+* Copyright (c) AFS Logistics, LLC., 2002
+*
+* AUTHOR : Owen Holman
+* Date   : January 2002
+***********************************************************************
+* 061912 - JMK01 - Choose development SQL server if not production server AFS
+*************************************************************************
+!
+* Include the ODBC definitions
+!
+$INCLUDE UNIVERSE.INCLUDE ODBC.H
+      CALL GET.SERVER.INFO(SVR.VIN,SVR.VOUT)       ; * JMK01
+      SVR.NAME=SVR.VOUT<1>               ; * JMK01
+
+      USER=VIN<1>
+      EBILL.ID=VIN<2>
+      ACTION=VIN<3>
+      SHIPPER=FIELD(EBILL.ID,'*',2)
+
+      form = "T##########"
+      dash = "----------"
+      Expect = ""
+      NULL=""
+      EOL=CHAR(13):CHAR(10)
+      ERROR.CNT=0
+10:   ERRORS=''
+
+      GOSUB SETUP.SQL
+
+* DEFINE FIELDS TO UPDATE FROM EBILL.REC HERE
+
+      SQL.RECIPIENTNUM=SHIPPER
+
+      IF ACTION='U' THEN
+         Fn = "SQLExecute"
+         STATUS = SQLExecute(UPDUPSHISTENV)
+         STMTENV=UPDUPSHISTENV
+         GOSUB CKSTMTENV
+      END
+      IF ACTION='D' THEN
+         Fn = "SQLExecute"
+         STATUS = SQLExecute(DELUPSHISTENV)
+         STMTENV=DELUPSHISTENV
+         GOSUB CKSTMTENV
+      END
+
+
+
+THE.END:***
+*     End of program
+*
+* Now just clean up the environment and leave
+*
+      Fn = "SQLFreeStmt"
+      STATUS = SQLFreeStmt(UPDUPSHISTENV, SQL.DROP)
+      STMTMENV=UPDUPSHISTENV
+      GOSUB CKSTMTENV
+
+      Fn = "SQLFreeStmt"
+      STATUS = SQLFreeStmt(DELUPSHISTENV, SQL.DROP)
+      STMTMENV=DELUPSHISTENV
+      GOSUB CKSTMTENV
+
+      Fn = "SQLDisconnect"
+      STATUS = SQLDisconnect(CONENV)
+      GOSUB CKCONENV
+
+      Fn = "SQLFreeConnect"
+      STATUS = SQLFreeConnect(CONENV)
+      GOSUB CKCONENV
+
+      Fn = "SQLFreeEnv"
+      STATUS = SQLFreeEnv(DBCENV)
+      IF STATUS <> SQL.SUCCESS THEN
+         ERRORS<1,-1>="Failed to release ODBC environment"
+      END
+
+      IF ERRORS#'' THEN
+         ERROR.CNT+=1
+         IF ERROR.CNT>3 THEN
+            MVIN=''
+            MVIN<1>='UPD.SQL.Group@afs.net'
+            MVIN<4>='AFS_UPD.SQL.UPSHIST.SUB'
+            MVIN<5>='SQL EBILL Update Errors'
+            TEXT='On ':DATE()'D2/':' ':OCONV(TIME(),'MTHS'):', ':USER:' updated '
+            TEXT<1,-1>='UPS History Only for UPS account ':EBILL.ID:' but did not succeed in updating SQL due to:'
+            TEXT<1,-1>=' '
+            TEXT<1,-1>=ERRORS
+            MVIN<6>=TEXT
+            MVIN<7>=1
+            CALL SENDMAIL(MVIN,MVOUT)
+         END ELSE
+            GO 10
+         END
+      END
+
+      RETURN
+
+      STOP
+
+SETUP.SQL:*
+!
+* Create an ODBC environment & a connection environment. Use the
+* SSQLSetConnectOption to specify the Operating system user ID and
+* password.
+
+      STATUS = SQLAllocEnv(DBCENV)
+      IF STATUS <> SQL.SUCCESS THEN
+         ERRORS<1,-1>="Failed to allocate an ODBC environment"
+         RETURN TO THE.END
+      END
+
+      STATUS = SQLAllocConnect(DBCENV,CONENV)
+      IF STATUS <> SQL.SUCCESS THEN
+         ERRORS<1,-1>="Failed to allocate a CONNECT environment"
+         RETURN TO THE.END
+      END
+
+*
+* Gather the data source name, userid and password for the server O/S and
+* information for the DBMS at the server. The DBMS info is often also
+* a user name and password, but not in all cases.
+*
+*     SQLSVR.INFO=OCONV('SQLSVR','TFB.TABLES;X;;1')          ; * JMK01
+*     SOURCE=FIELD(SQLSVR.INFO<1>,' ',1)           ; * JMK01
+*     UID=FIELD(SQLSVR.INFO<1>,' ',2)    ; * JMK01
+*     PWD=FIELD(SQLSVR.INFO<1>,' ',3)    ; * JMK01
+      BEGIN CASE                         ; * JMK01
+         CASE SVR.NAME='AFS'             ; * JMK01
+            SOURCE='PRODODS'             ; * JMK01
+            UID="uv_sql"                 ; * JMK01
+            PWD="4@gAbreg"               ; * JMK01
+         CASE 1                          ; * JMK01
+            SOURCE='DEVODS'              ; * JMK01
+            UID="uv_sql"                 ; * JMK01
+            PWD="4@gAbreg"               ; * JMK01
+      END CASE                           ; * JMK01
+*
+* Establish a session to the specified data source
+*
+*     PRINT "Connecting to data source: ": SOURCE
+      Fn = "SQLConnect"
+      STATUS = SQLConnect(CONENV,SOURCE,UID,PWD)
+      GOSUB CKCONENV
+*
+* Now allocate an SQL statement environment
+* to be used for executing SQL statements
+*
+      Fn = "SQLAllocStmt"
+      STATUS = SQLAllocStmt(CONENV,UPDUPSHISTENV)
+      GOSUB CKCONENV
+
+*
+* Note that we are using parameter markers in the SQL statement to facilitate
+* loading multiple rows of data efficiently
+*
+      OPT.STR = STR(' ?,',1)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_InsUPSHistoryOnly (":OPT.STR:")}"    ; * 24 PLACEHOLDERS
+
+      ROWNUM = 0
+      Fn = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*     STATUS = SQLSETPARAM(STMTENV, COL, SQL.B.BASIC, SQL.DATA.TYPE, PREC, SCALE, VAR.NAME) ; GOSUB CKSTMTENV
+*
+      STATUS = SQLSETPARAM(UPDUPSHISTENV, 1, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.RECIPIENTNUM) ; STMTENV=UPDUPSHISTENV ; GOSUB CKSTMTENV
+
+      Fn = "SQLPrepare"
+      STATUS = SQLPrepare(UPDUPSHISTENV, INST1)
+      STMTENV=UPDUPSHISTENV
+      GOSUB CKSTMTENV
+
+*
+* Now allocate an SQL statement environment
+* to be used for executing SQL statements
+*
+      Fn = "SQLAllocStmt"
+      STATUS = SQLAllocStmt(CONENV,DELUPSHISTENV)
+      GOSUB CKCONENV
+
+*
+* Note that we are using parameter markers in the SQL statement to facilitate
+* loading multiple rows of data efficiently
+*
+      OPT.STR = STR(' ?,',1)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_DelUPSHistoryOnly (":OPT.STR:")}"    ; * 24 PLACEHOLDERS
+
+      ROWNUM = 0
+      Fn = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*     STATUS = SQLSETPARAM(STMTENV, COL, SQL.B.BASIC, SQL.DATA.TYPE, PREC, SCALE, VAR.NAME) ; GOSUB CKSTMTENV
+*
+      STATUS = SQLSETPARAM(DELUPSHISTENV, 1, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.RECIPIENTNUM) ; STMTENV=DELUPSHISTENV ; GOSUB CKSTMTENV
+
+      Fn = "SQLPrepare"
+      STATUS = SQLPrepare(DELUPSHISTENV, INST1)
+      STMTENV=DELUPSHISTENV
+      GOSUB CKSTMTENV
+
+      RETURN
+
+CKCONENV:
+
+      COUNT = -1
+      IF STATUS EQ -2 THEN
+         ERRORS<1,-1>="INVALID CONNECTION HANDLE"
+         STMT='BBSEND MIKE UPD.SQL.UPSHIST.SUB INVALID CONNECTION HANDLE ABORT'
+         EXECUTE STMT CAPTURING RESULTS
+         ABORT
+      END
+      IF STATUS NE 0 THEN
+201:     *
+         ST = SQLERROR(-1,CONENV,-1,STATE,NATCODE,ERRTXT)
+         IF ST <> SQL.NO.DATA.FOUND
+         THEN
+            COUNT = 1
+            IF Expect NE 0 AND STATE = Expect AND ST <> SQL.NO.DATA.FOUND THEN
+               ERRORS<1,-1>="Allowed error of ":STATE:" returned for func ":Fn
+               GOTO 299
+            END ELSE
+               ERRORS<1,-1>="Status for ":Fn:" call is: ":STATUS
+               ERRORS<1,-1>="SQLSTATE,NATCOD are:" : STATE:"  ":NATCODE
+               ERRORS<1,-1>="Error text is"
+               ERRORS<1,-1>="    " : ERRTXT
+            END
+            IF ST = SQL.SUCCESS THEN GOTO 201
+         END
+         IF STATUS = -1 AND COUNT = 1 THEN
+            ERRORS<1,-1>="EXITING CKCONENV"
+            RETURN TO THE.END
+         END
+      END
+299:  *
+      RETURN
+
+CKSTMTENV:
+      IF STATUS EQ -2 THEN
+         ERRORS<1,-1>="INVALID STATEMENT HANDLE"
+         STMT='BBSEND MIKE UPD.SQL.UPSHIST.SUB INVALID STATEMENT HANDLE ABORT'
+         EXECUTE STMT CAPTURING RESULTS
+         ABORT
+      END
+
+      IF STATUS EQ 100 THEN RETURN
+      IF STATUS NE 0 THEN
+301:     *
+         ST = SQLERROR(-1,-1,STMTENV,STATE,NATCODE,ERRTXT)
+         IF ST <> SQL.NO.DATA.FOUND
+         THEN
+            COUNT = 1
+            IF Expect NE 0 AND STATE = Expect AND ST <> SQL.NO.DATA.FOUND THEN
+               ERRORS<1,-1>="Allowed error of ":STATE:" returned for func ":Fn
+               GOTO 399
+            END ELSE
+               ERRORS<1,-1>="Status for ":Fn:" call is: ":STATUS
+               ERRORS<1,-1>="SQLSTATE,NATCOD are:" : STATE:"  ":NATCODE
+               ERRORS<1,-1>="Error text is"
+               ERRORS<1,-1>="    " : ERRTXT
+            END
+            IF ST = 0 THEN GOTO 301
+         END
+         IF STATUS = -1 AND COUNT = 1 THEN
+            ERRORS<1,-1>="EXITING CKSTMTENV"
+            RETURN TO THE.END
+         END
+      END
+399:  *
+      RETURN

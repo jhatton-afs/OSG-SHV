@@ -1,0 +1,3501 @@
+*======================================================================
+* PROGRAM: FB.NFSC.SETUP - New Fuel Surcharge Setup
+*
+* PROGRAMMER : Tami Seago - 10/02/00
+*
+*======================================================================
+*  COPYRIGHT (C) 1995,96,97,98,99,2000 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED
+*       ----------------------------------------------------
+*  This program is sole property of AFS Logistics, LLC (AUTOMATED
+*  FREIGHT SYSTEMS) and may not be used, copied, or modified without
+*  the express written consent of Brian Barker of AFS Logistics, LLC.
+*======================================================================
+* 100405 - JMK01 - CORRECT FORMULA STORAGE TO LINE UP WITH EFFECTIVE DATES
+* 122807 - JMK02 - C071349 - New AFS Fuel
+* 021908 - JMK03 - New AFS FSC on the WEB
+* 050708 - JMK04 - T081123 - Rawlings / fuel surcharge
+* 012609 - NPR01 - T090105 - Allow addition of Percentage adjustments per state and allow setting of caps.
+* 093009 - NPR02 - T091132 - Allow addition of a note or description per line.
+* 122909 - NPR03 - T091529 - FSC notes not removed when changes are made (Particularly when changing too!! table AFN)
+* 111111 - JMK05 - Adjust video attributes for Accuterm and future use
+
+*
+      $INCLUDE PROG.ADMIN INC_OPTIONS
+      $INCLUDE FILE.DEFS INC_CLIENTS
+      $INCLUDE FILE.DEFS INC_ADDS60.CODES     ;* These require specific PROCOMM settings!
+*
+* Equates
+*
+      TERM.TYPE=SYSTEM(7)                ; * JMK05
+      BEGIN CASE                         ; * JMK05
+         CASE TERM.TYPE='REGENT60'       ; * JMK05
+            REV.RED.ON = TERM.ESC.SEQ:CHAR(TERM.REV+TERM.BLINK)
+            REV.GRN.ON = TERM.ESC.SEQ:CHAR(TERM.REV)
+            TERM.NORM = TERM.ESC.SEQ:CHAR(TERM.NORMAL)
+         CASE 1                          ; * JMK05
+            REV.RED.ON = @(-13):@(-5)    ; * JMK05
+            REV.GRN.ON = @(-13)          ; * JMK05
+            TERM.NORM = @(-14):@(-6)     ; * JMK05
+      END CASE                           ; * JMK05
+      EQU REV.ON TO REV.GRN.ON           ; * Reverse Text ON
+      EQU REV.OFF TO TERM.NORM           ; * Reverse Text OFF
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+      EQU ENABLE.STR TO "ENABLE"
+      EQU DISABLE.STR TO "DISABLE"
+      EQU PAGE.SIZE.1 TO 12
+      EQU START.Y.1 TO 8
+*NPR01      EQU PAGE.SIZE.2 TO 12
+      EQU PAGE.SIZE.2 TO 10               ;*NPR01
+      EQU PAGE.SIZE.3 TO 10               ;*NPR01
+      EQU START.Y.2 TO 9
+      EQU START.Y.3 TO 8                  ;*NPR01
+      EQU WRITE.DATA TO TRUE              ;* SET TO FALSE FOR TESTING...
+
+*
+* Initialize GENERAL APPLICATION variables
+*
+      PROMPT''
+      PORT.NUM = SYSTEM(19)              ; * Port user is sitting on
+      CALL GET.USER(USER.NAME)
+      BEGIN CASE
+         CASE USER.NAME='SSHAFER'
+         CASE USER.NAME='WPARDUE'
+         CASE USER.NAME='DAVID'
+         CASE USER.NAME='OWEN'
+         CASE USER.NAME='MKERBOW'
+         CASE USER.NAME='NPRATT'
+         CASE USER.NAME='AHICKS' ; * TICKET 3092 - DRF 07/06/12
+         CASE 1
+            CALL ELINE("You are not setup to change FSC... Please call Owen")
+      END CASE
+
+      PROG.NAME='FB.NFSC.SETUP'
+      PROG.DESC='New Carrier Fuel Surcharge Setup'
+      PACK.NAME='USER :':USER.NAME       ; * Might want to change this.
+      CO.NAME='AFS Logistics, LLC'
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.NFSC.SETUP' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      DEBUG.MSG = ''
+
+      WIDTH = 80
+      CTR = INT(WIDTH/2)
+      REVON = REV.ON
+      REVOFF = REV.OFF
+      PAGE.NUM = 1
+      ADD.MODE = FALSE
+      EDIT.MODE = FALSE
+      LAST.EDIT.MASK = "1"
+      EDIT.NUMBER = 1
+      DSP.NUM.LINES = 10
+      DSP.NUM.LINES.2 = 10
+      DSP.NUM.LINES.3 = 10                 ;*NPR01
+      CARRIER.NAME='' ; CARRIER.ID = '' ; CARRIER.CITY='' ; CARRIER.STATE=''
+      CLIENT.NAME='' ; CLIENT.ID = '' ; CLIENT.CITY='' ; CLIENT.STATE=''
+      NFSC.TABLES=''
+      STMT= 'SSELECT FB.TABLES'
+      STMT:=' WITH TYPE = "FSC" AND WITH @ID NE "[CARRIERS]" AND @ID NE "[*FSC"' ;* NPR99
+      EXECUTE STMT CAPTURING OUTPUT
+      COUNTER = 1
+      DONE=0
+      LOOP
+         READNEXT TABLE.ID ELSE DONE = 1
+      UNTIL DONE DO
+         TABLE.NAME=FIELD(TABLE.ID,'*',2)
+         NFSC.TABLES<1,COUNTER> = TABLE.NAME
+         COUNTER += 1
+      REPEAT
+      NUM.TABLES = DCOUNT(NFSC.TABLES<1>,@VM)
+      TABLE.HELP = ''
+      FOR X = 1 TO NUM.TABLES
+         IF X # 1 THEN TABLE.HELP := ' '
+         TABLE.HELP := X:'-':NFSC.TABLES<1,X>
+      NEXT X
+
+      STATS=''
+      STATS<1>=ENABLE.STR
+      STATS<2>=DISABLE.STR
+      NUM.STATS = 2
+
+      EDIT.HELP.LINE = 1
+      EDIT.HELP = "[A]dd [D]el [E]dit [B]ack [F]wd [X]-Back [T]op [L]ast [EX]it"
+*NPR02      EDIT.HELP.2 = "[A]dd [D]el [E]dit [B]ack [F]wd [X]-Back [T]op [L]ast [CAP] [ST]ate Adj" ;*NPR01
+      EDIT.HELP.2 = "[A]dd [D]el [E]dit [B]ack [F]wd [X]-Back [T]op [L]ast [CAP] [ST]ate Adj [N]ote" ;*NPR02
+      EDIT.HELP.3 = "[A]dd [D]el [E]dit [B]ack [F]wd [X]-Back [T]op [L]ast [EX]it"            ;*NPR01
+
+
+
+*
+* Open Files
+*
+      OPEN '','FB.NFSC' TO F.NFSC ELSE
+         CALL OPEN.ABORT('FB.NFSC',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN 'DICT','CARRIERS' TO F.DICT ELSE
+         CALL OPEN.ABORT("DICT CARRIERS",PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN 'DICT','CLIENTS' TO F.DICT.CLIENTS ELSE
+         CALL OPEN.ABORT("DICT CLIENTS",PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE         ; * JMK01
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)    ; * JMK01
+      END                                ; * JMK01
+*
+* NPR01
+*
+      READ LEGAL.STATES FROM F.TABLES,'LEGAL.STATES' ELSE
+         CALL ELINE("Unable to read LEGAL.STATES from file TABLES")
+         ABORT
+      END
+*
+* NPR01
+
+CHOOSE.CARRIER:
+*
+* Ask for a carrier Name
+*
+      GOSUB GET.CLIENT.CARRIER
+      GOSUB DSP.EDIT.SCN
+
+MAIN.START:
+
+*---------------------
+* Initialize variables
+*---------------------
+      PAGE = 1                           ; * Current Page Number
+
+UD.1:
+      GOSUB UPDATE.DISPLAY
+
+UD.2:
+      MASK = '########'
+      HELP = EDIT.HELP<EDIT.HELP.LINE>
+      CRT @(0,22):'Option :':@(-4):
+      CALL GEN.IN(8,22,MASK,'',Q,0,15,'','',2,8,22,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+
+         CASE QI='X' OR QI=''
+            GOSUB SAVE.IT.ALL
+            GOTO CHOOSE.CARRIER
+
+         CASE QI='T' OR QI='TOP'         ; * Top Page
+            IF NUM.LINES > 0 THEN
+               PAGE = 1
+            END ELSE
+               CALL ELINE('*** Top ***')
+               GOTO UD.2
+            END
+
+         CASE QI='L' OR QI='LAST'        ; * Last Page
+            IF NUM.LINES > 0 THEN
+               PAGE=INT(NUM.LINES/PAGE.SIZE.1)
+               IF REM(NUM.LINES,PAGE.SIZE.1) THEN PAGE+=1
+            END ELSE
+               CALL ELINE('*** Bottom ***')
+               GOTO UD.2
+            END
+
+         CASE QI='B' OR QI='-'
+            IF PAGE > 1 THEN
+               PAGE-=1
+            END ELSE
+               CALL ELINE('*** Top ***')
+               GOTO UD.2
+            END
+         CASE QI='F' OR QI='+'
+            IF NUM.LINES>PAGE*PAGE.SIZE.1 THEN
+               PAGE+=1
+            END ELSE
+               CALL ELINE('*** Bottom ***')
+               GOTO UD.2
+            END
+
+         CASE QI='?' OR QI='HELP' OR QI='H'
+            CALL FB.DRAW.BOX(0,4,80,17,' ',' ')
+            CRT @(19, 6):'HELP SCREEN - List of Commands'
+            CRT @( 3, 8):'B  - Go Back 1 Page'
+            CRT @( 3, 9):'-  - Go Back 1 Page'
+            CRT @( 3,10):'T  - Goto Top of Table (TOP)'
+            CRT @( 3,11):'A  - Add '
+            CRT @( 3,12):'E  - Enter '
+            CRT @( 3,13):'>  - Scroll to next Help Line'
+            CRT @( 3,14):'X  - Exit current Table {Saves}'
+            CRT @(40, 8):'F  - Go Forward 1 Page'
+            CRT @(40, 9):'+  - Go Forward 1 Page'
+            CRT @(40,10):'L  - Goto Last Page'
+            CRT @(40,11):'R  - Remove Selected Reasons'
+            CRT @(40,13):'<  - Scroll to prior Help Line'
+            CRT @(40,14):'EX - Exit {Lose changes}'
+*            CRT @(17,16):'PRINT - Prints Current Table'
+
+            CRT @(17,17):'HELP  - This help screen'
+            CALL ELINE('Viewing HELP Screen.')
+            GOSUB DSP.EDIT.SCN
+            GOTO UD.1
+
+         CASE QI = 'DEBUG'
+            CALL FB.DRAW.BOX(0,4,80,17,' ','')
+            CRT @(19, 6):'DEBUG SCREEN'
+            CRT @(0,7):NFSC.REC
+
+            CALL ELINE('Viewing DEBUG Screen.')
+            GOSUB DSP.EDIT.SCN
+
+         CASE QI='PRINT'                 ; * Print Table to printer
+            IF NUM.LINES > 0 THEN
+               YN.MSG = 'Print table to currently selected printer?'
+               YN.MASK = 'Y '
+               GOSUB ASK.Y.OR.N
+               IF YN.ANSWER = 'Y' THEN
+                  GOSUB PRINT.TABLE
+               END
+            END ELSE
+               CALL ELINE('Nothing to print! Unable to print.')
+               GOTO UD.2
+            END
+
+         CASE QI='A'
+            GOSUB ADD.NFSC.ENTRY
+            GOTO UD.1
+
+         CASE QI='E'
+            AFN.ANSWER = ''
+            EDIT.MODE = TRUE
+            GOSUB EDIT.NFSC.ENTRY
+            EDIT.MODE = FALSE
+            GOTO UD.1
+
+         CASE NUM(QI)
+            AFN.ANSWER = QI
+            GOSUB EDIT.NFSC.ENTRY
+            GOTO UD.1
+
+
+
+         CASE QI='D'
+            GOSUB DELETE.NFSC.ENTRY
+            GOTO UD.1
+
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO UD.2
+      END CASE
+
+EXIT.POINT:
+
+      IF NOT (EXIT.IT) THEN GOTO UD.1
+*
+      GOSUB SAVE.IT.ALL
+
+      STOP
+
+*----------------------------------------------------------------------
+DELETE.NFSC.ENTRY:
+*----------------------------------------------------------------------
+      IF NUM.LINES < 1 THEN
+         CALL ELINE("No entries to DELETE.")
+         RETURN
+      END
+
+      AFN.MSG = "Select Entry to Delete :"
+      AFN.MIN = 1
+      AFN.MAX = NUM.LINES
+      AFN.MASK = LAST.EDIT.MASK
+      GOSUB ASK.FOR.NUM
+      IF QI = 'EX' THEN STOP
+      IF QI = 'X' THEN RETURN
+      LAST.EDIT.MASK = AFN.ANSWER:' '
+      EDIT.NUMBER = AFN.ANSWER
+      DSP.PAGE = INT(EDIT.NUMBER/PAGE.SIZE.1)
+      IF DSP.PAGE*PAGE.SIZE.1 < EDIT.NUMBER THEN DSP.PAGE+=1
+      EDIT.Y = EDIT.NUMBER-(DSP.PAGE*PAGE.SIZE.1)+PAGE.SIZE.1
+      PAGE = DSP.PAGE
+      DSP.NUM.LINES = NUM.LINES
+      GOSUB DISPLAY.PAGE
+
+      DESC = REVON:'>':EDIT.NUMBER'R%2':SPACE(2)
+      DESC:= NFSC.REC<1,EDIT.NUMBER>'D2/':SPACE(2)
+      IF NFSC.REC<2,EDIT.NUMBER> THEN
+         DESC:= NFSC.REC<2,EDIT.NUMBER>'D2/'
+      END ELSE
+         DESC:= ' {OPEN} '
+      END
+
+      DESC:= SPACE(4)
+      DESC:= NFSC.REC<3,EDIT.NUMBER>'L#3':SPACE(4)
+      DESC:= NFSC.REC<4,EDIT.NUMBER>'R0#2':SPACE(3)
+      DESC:= NFSC.REC<5,EDIT.NUMBER>'R26(#6)':SPACE(2)
+      DESC:= NFSC.REC<6,EDIT.NUMBER>'R26(#6)':SPACE(3)
+      DESC:= NFSC.REC<7,EDIT.NUMBER>'R0':SPACE(3)
+      DESC:= NFSC.REC<8,EDIT.NUMBER>'R26(#6)':SPACE(5)
+      DESC:= '*':REVOFF
+
+      CRT @(0,START.Y.1+EDIT.Y):DESC:@(-4)         ; * Draw screen line
+
+      YN.MSG = 'Delete this entry?  Are you sure? :'
+      YN.MASK = 'N '
+      GOSUB ASK.Y.OR.N
+      IF YN.ANSWER = 'Y' THEN
+         DEL NFSC.REC<1,EDIT.NUMBER>
+         DEL NFSC.REC<2,EDIT.NUMBER>
+         DEL NFSC.REC<3,EDIT.NUMBER>
+         DEL NFSC.REC<4,EDIT.NUMBER>
+         DEL NFSC.REC<5,EDIT.NUMBER>
+         DEL NFSC.REC<6,EDIT.NUMBER>
+         DEL NFSC.REC<7,EDIT.NUMBER>
+         DEL NFSC.REC<8,EDIT.NUMBER>
+         DEL NFSC.REC<9,EDIT.NUMBER>
+         DEL NFSC.REC<10,EDIT.NUMBER>
+         DEL NFSC.REC<11,EDIT.NUMBER>
+         DEL NFSC.REC<12,EDIT.NUMBER>
+         DEL NFSC.REC<13,EDIT.NUMBER>
+         DEL NFSC.REC<14,EDIT.NUMBER>
+         DEL NFSC.REC<15,EDIT.NUMBER>
+         DEL NFSC.REC<16,EDIT.NUMBER>
+         DEL NFSC.REC<17,EDIT.NUMBER>
+         DEL NFSC.REC<18,EDIT.NUMBER>
+         DEL NFSC.REC<19,EDIT.NUMBER>
+         DEL NFSC.REC<20,EDIT.NUMBER>
+         DEL NFSC.REC<21,EDIT.NUMBER>
+         DEL NFSC.REC<22,EDIT.NUMBER>
+         DEL NFSC.REC<23,EDIT.NUMBER>
+         DEL NFSC.REC<24,EDIT.NUMBER>
+         DEL NFSC.REC<25,EDIT.NUMBER>
+         DEL NFSC.REC<26,EDIT.NUMBER>
+         DEL NFSC.REC<27,EDIT.NUMBER>
+         DEL NFSC.REC<28,EDIT.NUMBER>
+
+         NUM.LINES-=1
+         GOSUB COMPUTE.REC.SIZE
+      END
+
+      RETURN
+
+*----------------------------------------------------------------------
+ADD.NFSC.ENTRY:
+*----------------------------------------------------------------------
+      FOR T = 1 TO NUM.LINES
+         IF NFSC.REC<2,T>='' THEN
+            CALL ELINE("A Prior date range is open.  Close it and try again.")
+            RETURN
+         END
+      NEXT
+      DSP.NUM.LINES = NUM.LINES+1
+      EDIT.NUMBER = NUM.LINES+1
+      DSP.PAGE = INT(DSP.NUM.LINES/PAGE.SIZE.1)
+      IF DSP.NUM.LINES > DSP.PAGE*PAGE.SIZE.1 THEN DSP.PAGE+=1
+      PAGE = DSP.PAGE
+      GOSUB DISPLAY.PAGE
+      Y.POS = START.Y.1+LAST.Y
+      TEMP.REC = ''
+      BEGIN.DATE = '' ; END.DATE='' ; FSC.TABLE='' ; METHOD='' ; STATUS=''
+      LTL.MIN='' ; TL.BREAK='' ; TL.CALC='' ; TL.MIN=''
+      DELAY.DAYS=''
+
+      FIELD.POS = 1
+      EXIT.IT = FALSE
+      DONE = FALSE
+      ADD.MODE = TRUE
+      GOSUB PROCESS.DATA
+      ADD.MODE = FALSE
+
+      RETURN
+
+*----------------------------------------------------------------------
+EDIT.NFSC.ENTRY:
+*----------------------------------------------------------------------
+      IF NUM.LINES < 1 THEN
+         CALL ELINE("No entries to edit.  Try adding first.")
+         RETURN
+      END
+
+SELECT.ENTRY:
+      IF AFN.ANSWER = '' AND EDIT.MODE THEN
+         AFN.MSG = "Select Entry to Edit :"
+         AFN.MIN = 1
+         AFN.MAX = NUM.LINES
+         AFN.MASK = LAST.EDIT.MASK
+         GOSUB ASK.FOR.NUM
+         IF OCONV(AFN.ANSWER,"MCU") = 'X' THEN RETURN
+      END
+      EDIT.NUMBER = AFN.ANSWER
+      DSP.PAGE = INT(EDIT.NUMBER/PAGE.SIZE.1)
+      IF DSP.PAGE*PAGE.SIZE.1 < EDIT.NUMBER THEN DSP.PAGE+=1
+      EDIT.Y = EDIT.NUMBER-(DSP.PAGE*PAGE.SIZE.1)+PAGE.SIZE.1
+      IF DSP.PAGE*PAGE.SIZE.1 < EDIT.NUMBER THEN DSP.PAGE+=1
+      PAGE = DSP.PAGE
+      LAST.EDIT.MASK = AFN.ANSWER:' '
+      GOSUB DISPLAY.PAGE
+      Y.POS = START.Y.1+EDIT.Y
+      TEMP.REC=''
+      TEMP.REC<1> = NFSC.REC<1,EDIT.NUMBER> ; BEGIN.DATE = TEMP.REC<1>
+      TEMP.REC<2> = NFSC.REC<2,EDIT.NUMBER> ; END.DATE = TEMP.REC<2>
+      TEMP.REC<3> = NFSC.REC<3,EDIT.NUMBER> ; FSC.TABLE = TEMP.REC<3>
+      TEMP.REC<4> = NFSC.REC<4,EDIT.NUMBER> ; DELAY.DAYS = TEMP.REC<4>
+      TEMP.REC<5> = NFSC.REC<5,EDIT.NUMBER> ; LTL.MIN = TEMP.REC<5>
+      TEMP.REC<6> = NFSC.REC<6,EDIT.NUMBER> ; TL.MIN = TEMP.REC<6>
+      TEMP.REC<7> = NFSC.REC<7,EDIT.NUMBER> ; TL.BREAK = TEMP.REC<7>
+      TEMP.REC<8> = NFSC.REC<8,EDIT.NUMBER> ; TL.CALC = TEMP.REC<8>
+
+      FIELD.POS = 1
+      EXIT.IT = FALSE
+      DONE = FALSE
+      ADD.MODE = FALSE
+      GOSUB PROCESS.DATA
+      IF EDIT.MODE THEN
+         AFN.ANSWER = ''
+         GOTO SELECT.ENTRY
+      END
+
+      RETURN
+
+*----------------------------------------------------------------------
+GET.BEG.DATE:
+*----------------------------------------------------------------------
+      X.POS = 5
+      OLD.BEGIN.DATE = BEGIN.DATE
+      IF BEGIN.DATE THEN
+         MASK=OCONV(BEGIN.DATE,"D2/")
+      END ELSE
+         MASK = 'MM/DD/YY'
+      END
+      CRT @(0,22):"Enter a Begining Date for the new Fuel Surcharge.":@(-4)
+      HELP = "OPTIONS: [T]=TDay [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(X.POS,Y.POS,MASK,'DATE',Q,0,8,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF BEGIN.DATE AND QI='' THEN QI=MASK
+      BEGIN CASE
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'T'
+            Q = DATE()
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            RETURN
+
+         CASE NUM(Q) AND QI # ''
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.BEG.DATE
+      END CASE
+
+      BEGIN.DATE = Q
+      CRT @(X.POS,Y.POS):OCONV(BEGIN.DATE,"D2/")
+
+      IF NOT(FAILURE) AND BEGIN.DATE # OLD.BEGIN.DATE THEN
+         FOR T = 1 TO NUM.LINES
+            IF T # EDIT.NUMBER THEN      ; * Don't Check the line that you are working on.
+               IF BEGIN.DATE => NFSC.REC<1,T> AND BEGIN.DATE <= NFSC.REC<2,T> THEN
+                  CALL ELINE("Beginning Date resides within a prior date range. Try again.")
+                  BEGIN.DATE = OLD.BEGIN.DATE
+                  GOTO GET.BEG.DATE
+               END
+            END
+         NEXT
+      END
+      RETURN
+
+*----------------------------------------------------------------------
+GET.END.DATE:
+*----------------------------------------------------------------------
+      X.POS = 15
+      OLD.END.DATE = END.DATE
+      IF END.DATE THEN
+         MASK=OCONV(END.DATE,"D2/")
+      END ELSE
+         MASK = 'MM/DD/YY'
+      END
+      CRT @(0,22):"Enter a Ending Date for the new Fuel Surcharge.":@(-4)
+      HELP = "OPTIONS: [T]=TDay [O]=Leave Open [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(X.POS,Y.POS,MASK,'DATE',Q,0,8,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF END.DATE AND QI='' THEN QI=MASK
+      BEGIN CASE
+*
+* Exit Program
+*
+         CASE QI='EX'
+            STOP
+*
+* Back up
+*
+         CASE QI = 'X'
+            FAILURE=TRUE
+            IF END.DATE THEN
+               T = MASK
+            END ELSE
+               T = SPACE(8)
+            END
+            CRT @(X.POS, Y.POS):T
+            RETURN
+
+         CASE QI = '' OR QI='O' OR QI='0'
+            CRT @(X.POS, Y.POS):" {OPEN} "
+            END.DATE = ''
+
+         CASE NUM(Q)
+            END.DATE = Q
+            IF END.DATE < BEGIN.DATE THEN
+               CALL ELINE('The Closing Date ':END.DATE:' is before ':BEGIN.DATE:'')
+               GOTO GET.END.DATE
+            END
+            CRT @(X.POS, Y.POS):OCONV(END.DATE,"D2/")
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.END.DATE
+      END CASE
+
+      IF NOT(FAILURE) AND OLD.END.DATE # END.DATE THEN
+         FOR T = 1 TO NUM.LINES
+            IF T # EDIT.NUMBER THEN      ; * Don't Check the line that you are working on.
+               IF END.DATE => NFSC.REC<1,T> AND END.DATE <= NFSC.REC<2,T> THEN
+                  CALL ELINE("Ending Date resides within a prior date range.  Try again.")
+                  END.DATE = OLD.END.DATE
+                  GOTO GET.END.DATE
+               END
+               IF BEGIN.DATE < NFSC.REC<1,T> AND END.DATE => NFSC.REC<1,T> AND END.DATE => NFSC.REC<2,T> THEN
+                  CALL ELINE("Ending Date includes a prior date range.  Try again.")
+                  END.DATE = OLD.END.DATE
+                  GOTO GET.END.DATE
+               END
+            END
+         NEXT
+      END
+
+      RETURN
+
+*----------------------------------------------------------------------
+GET.FSC.TABLE:
+*----------------------------------------------------------------------
+      X.POS = 27
+      IF FSC.TABLE # "" THEN
+         MASK=FSC.TABLE'L#3'
+      END ELSE
+         MASK = '#'
+      END
+      CRT @(0,22):"Enter a Fuel Surcharge FSC Table.":@(-4)
+      HELP = TABLE.HELP
+      HELP := " [X]=Back [EX]=Exit"
+      CRT @(X.POS, Y.POS):SPACE(6)
+*NPR99      CALL GEN.IN(X.POS,Y.POS,MASK,'',Q,0,3,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      CALL GEN.IN(X.POS,Y.POS,MASK,'',Q,0,5,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF FSC.TABLE#'' AND QI='' THEN Q=FSC.TABLE
+
+      BEGIN CASE
+*
+* Exit Program
+*
+         CASE QI='EX'
+            STOP
+*
+* Back up
+*
+         CASE QI = 'X'
+            FAILURE=TRUE
+            IF FSC.TABLE#'' THEN
+               T = MASK'L#4'
+            END ELSE
+               T = SPACE(4)
+            END
+            CRT @(X.POS, Y.POS):T
+            RETURN
+
+*
+* A Number was entered..
+*
+         CASE NUM(Q)
+            SEL = Q
+            IF SEL < 1 OR SEL > NUM.TABLES THEN
+               CALL ELINE('Invalid Type, Please try again.')
+               GO GET.FSC.TABLE
+            END
+            FSC.TABLE = NFSC.TABLES<1,SEL>
+            CRT @(X.POS,Y.POS):FSC.TABLE'L#4'
+
+         CASE QI = ''
+            CRT @(X.POS,Y.POS):FSC.TABLE'L#4'
+            RETURN
+
+*
+* Manual Input
+*
+         CASE Q = 'XP' AND CLIENT.ID='00908'
+            FSC.TABLE = Q
+         CASE Q = 'AFS'
+            FSC.TABLE = Q
+         CASE Q = 'AFN'                  ; * JMK02
+            FSC.TABLE = Q                ; * JMK02
+         CASE 1
+
+            LOCATE Q IN NFSC.TABLES<1> SETTING POS THEN
+               FSC.TABLE = Q
+            END ELSE
+               CALL ELINE("Invalid option.  Try again")
+               GOTO GET.FSC.TABLE
+            END
+
+      END CASE
+
+      RETURN
+
+*----------------------------------------------------------------------
+GET.DELAY:
+*----------------------------------------------------------------------
+      X.POS = 34
+      IF DELAY.DAYS THEN
+         IF NUM(DELAY.DAYS) THEN         ; * JMK04
+            MASK=DELAY.DAYS'R0#2'
+         END ELSE                        ; * JMK04
+            MASK=DELAY.DAYS'R#2'         ; * JMK04
+         END                             ; * JMK04
+      END ELSE
+         MASK = '##'
+      END
+      CRT @(0,22):"Enter a Fuel Surcharge Delay Days, number of days before update.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CRT @(X.POS, Y.POS):SPACE(6)
+      CALL GEN.IN(X.POS,Y.POS,MASK,'',Q,0,2,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF DELAY.DAYS AND QI='' THEN Q=DELAY.DAYS
+
+      BEGIN CASE
+*
+* Exit Program
+*
+         CASE QI='EX'
+            STOP
+*
+* Back up
+*
+         CASE QI = 'X'
+            FAILURE=TRUE
+            IF DELAY.DAYS THEN
+               T = MASK
+            END ELSE
+               T = SPACE(6)
+            END
+            CRT @(X.POS, Y.POS):T
+            RETURN
+
+*
+* A Number was entered..
+*
+         CASE NUM(Q)
+            DELAY.DAYS = Q
+            CRT @(X.POS,Y.POS):DELAY.DAYS'R0#2'
+
+*
+* A Rule was entered..
+*
+         CASE QI[1,1]='R' AND NUM(QI[2,1])         ; * JMK04
+            DELAY.DAYS = Q               ; * JMK04
+            CRT @(X.POS,Y.POS):DELAY.DAYS'R#2'     ; * JMK04
+
+*
+* Idiot Input
+*
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.DELAY
+      END CASE
+
+      RETURN
+
+
+*----------------------------------------------------------------------
+GET.LTL.MINIMUM:
+*----------------------------------------------------------------------
+      X.POS = 39
+      IF LTL.MIN THEN
+         MASK=LTL.MIN'R26(#6)'
+      END ELSE
+         MASK = '#'
+      END
+      CRT @(0,22):"Enter a LTL Fuel Surcharge Minimum.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CRT @(X.POS, Y.POS):MASK
+      CALL GEN.IN(X.POS,Y.POS,MASK,'AMT2',Q,0,6,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF LTL.MIN AND QI='' THEN Q=LTL.MIN
+
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI = 'X'
+            FAILURE=TRUE
+            IF LTL.MIN THEN
+               T = MASK
+            END ELSE
+               T = SPACE(6)
+            END
+            CRT @(X.POS, Y.POS):T
+            RETURN
+
+*
+* A Number was entered..
+*
+         CASE NUM(Q)
+            LTL.MIN = Q
+            CRT @(X.POS,Y.POS):LTL.MIN'R26(#6)'
+*
+* Idiot Input
+*
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.LTL.MINIMUM
+      END CASE
+
+      RETURN
+
+*----------------------------------------------------------------------
+GET.TL.MINIMUM:
+*----------------------------------------------------------------------
+      X.POS = 47
+      IF TL.MIN THEN
+         MASK=TL.MIN'R26(#6)'
+      END ELSE
+         MASK = '#'
+      END
+      CRT @(0,22):"Enter a Truckload Fuel Surcharge Minimum.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CRT @(X.POS, Y.POS):SPACE(6)
+      CALL GEN.IN(X.POS,Y.POS,MASK,'AMT2',Q,0,6,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF TL.MIN AND QI='' THEN Q=TL.MIN
+
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            IF TL.MIN THEN
+               T = MASK
+            END ELSE
+               T = SPACE(6)
+            END
+            CRT @(X.POS, Y.POS):T
+            RETURN
+
+*
+* A Number was entered..
+*
+         CASE NUM(Q)
+            TL.MIN = Q
+            CRT @(X.POS,Y.POS):TL.MIN'R26(#6)'
+*
+* Idiot Input
+*
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.TL.MINIMUM
+      END CASE
+
+      RETURN
+
+
+*----------------------------------------------------------------------
+GET.TL.BREAK:
+*----------------------------------------------------------------------
+      X.POS = 55
+
+      IF TL.BREAK THEN
+         MASK=TL.BREAK'R0#6'
+      END ELSE
+         MASK = '#'
+      END
+
+      CRT @(0,22):"Enter a Truckload Weight Break.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CRT @(X.POS, Y.POS):MASK
+      CALL GEN.IN(X.POS,Y.POS,MASK,'',Q,0,6,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF TL.BREAK#'' AND QI='' THEN Q=TL.BREAK
+
+      BEGIN CASE
+
+         CASE QI='EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            IF TL.BREAK THEN
+               T = MASK
+            END ELSE
+               T = SPACE(6)
+            END
+            CRT @(X.POS, Y.POS):T
+            RETURN
+
+*
+* A Number was entered..
+*
+         CASE NUM(Q)
+            TL.BREAK = Q
+            CRT @(X.POS,Y.POS):TL.BREAK'R0#6'
+
+         CASE QI = ' '
+            TL.BREAK = QI
+            CRT @(X.POS,Y.POS):TL.BREAK'R0#6'
+
+*
+* Idiot Input
+*
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.TL.BREAK
+      END CASE
+
+      RETURN
+
+*----------------------------------------------------------------------
+GET.TL.CALC:
+*----------------------------------------------------------------------
+      X.POS = 66
+      IF TL.CALC THEN
+         MASK=TL.CALC'L#5'
+      END ELSE
+         MASK = '#'
+      END
+      CRT @(0,22):"Enter a Truckload Fuel Surcharge calculation method.":@(-4)
+      HELP = "OPTIONS: MILES or PERC [X]=Back [EX]=Exit Program"
+      CRT @(X.POS, Y.POS):SPACE(6)
+      CALL GEN.IN(X.POS,Y.POS,MASK,'',Q,0,5,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF TL.CALC AND QI='' THEN Q=TL.CALC
+
+      BEGIN CASE
+
+         CASE QI='EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            IF TL.CALC THEN
+               T = MASK
+            END ELSE
+               T = SPACE(5)
+            END
+            CRT @(X.POS, Y.POS):T
+            RETURN
+
+*
+* Idiot Input
+*
+         CASE 1
+            IF Q # 'MILES' AND Q # 'PERC' THEN
+               CALL ELINE("Invalid option.  Try again")
+               GOTO GET.TL.CALC
+            END ELSE
+               TL.CALC = Q
+            END
+            CRT @(X.POS,Y.POS):TL.CALC'L#5'
+      END CASE
+
+      RETURN
+
+
+
+
+*----------------------------------------------------------------------
+UPDATE.DISPLAY:
+*----------------------------------------------------------------------
+      IF NUM.LINES = 0 THEN
+         CALL FB.DRAW.BOX(0,8,80,PAGE.SIZE.1,' ','')
+         CALL FB.PRINT.CENT(0,78,12,'Carrier ':CARRIER.ID'R#5':', ':CARRIER.NAME:' (':CARRIER.CITY:', ':CARRIER.STATE:')')
+         CALL FB.PRINT.CENT(0,78,13,'does not have any Fuel Surcharges setup')
+         RETURN
+      END
+      DSP.PAGE=PAGE
+      DSP.NUM.LINES = NUM.LINES
+      GOSUB DISPLAY.PAGE
+
+      RETURN
+
+
+*----------------------------------------------------------------------
+DISPLAY.PAGE:
+*----------------------------------------------------------------------
+      STR.OUT = '(Page ':DSP.PAGE'R#1':' of ':NUM.PAGES:')'
+      CRT @(78-LEN(STR.OUT),3):STR.OUT
+
+      Y = 0
+      LAST.Y = 0
+      LINE = (DSP.PAGE-1)*PAGE.SIZE.1+1
+      LOOP
+      UNTIL (Y=>PAGE.SIZE.1)
+         BEGIN CASE
+            CASE LINE > DSP.NUM.LINES
+*
+* Print nothing - (Actually clears line)
+*
+               DESC=''
+
+            CASE NFSC.REC<1,LINE>=''
+               DESC = ' '
+               DESC:= LINE'R%2'
+               LINE+=1
+               IF LAST.Y = 0 THEN LAST.Y = Y+1
+
+            CASE 1
+               DESC = ' '
+               DESC:= LINE'R%2':SPACE(2)
+               DESC:= NFSC.REC<1,LINE>'D2/':SPACE(2)
+               IF NFSC.REC<2,LINE> THEN
+                  DESC:= NFSC.REC<2,LINE>'D2/'
+               END ELSE
+                  DESC:= ' {OPEN} '
+               END
+               DESC:= SPACE(4)
+*NPR99               DESC:= NFSC.REC<3,LINE>'L#3':SPACE(4)
+               DESC:= NFSC.REC<3,LINE>'L#4':SPACE(3)
+               DESC:= NFSC.REC<4,LINE>'R0#2':SPACE(3)
+               DESC:= NFSC.REC<5,LINE>'R26(#6)':SPACE(2)
+               DESC:= NFSC.REC<6,LINE>'R26(#6)':SPACE(3)
+               DESC:= NFSC.REC<7,LINE>'R0':SPACE(3)
+               DESC:= NFSC.REC<8,LINE>'R26(#6)':SPACE(5)
+               DESC:= '*'
+
+
+               LINE+=1
+         END CASE
+
+         Y+=1                            ; * Inc Y screen position
+         CRT @(0,START.Y.1+Y):DESC:@(-4)           ; * Draw screen line
+      REPEAT
+
+      RETURN
+
+
+
+
+*----------------------------------------------------------------------
+INIT.SCREEN: ***
+*----------------------------------------------------------------------
+
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79):
+
+      RETURN
+
+*----------------------------------------------------------------------
+DSP.CARRIER.SCN: ***
+*----------------------------------------------------------------------
+      GOSUB INIT.SCREEN
+      CRT @(0, 3):'CARRIER : ':@(-4)
+      CRT @(0, 4):'CLIENT  : ':@(-4)
+      CRT @(0, 5):STR('=',79):
+      CRT @(0,21):STR('=',79):
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+
+      RETURN
+
+*----------------------------------------------------------------------
+DSP.EDIT.SCN:
+*----------------------------------------------------------------------
+
+      GOSUB DSP.CARRIER.SCN
+      IF CARRIER.ID THEN
+         TEMP = CARRIER.ID'R%5':', ':CARRIER.NAME:' (':CARRIER.CITY:', ':CARRIER.STATE:')'
+      END ELSE
+         TEMP = ''
+      END
+      CRT @(0, 3):'CARRIER : ':TEMP:@(-4)
+
+      IF CLIENT.ID THEN
+         TEMP = CLIENT.ID'R%5':', ':CLIENT.NAME:' (':CLIENT.CITY:', ':CLIENT.STATE:')'
+      END ELSE
+         IF CARRIER.ID THEN
+            TEMP = '(All Clients)'
+         END ELSE
+            TEMP = ''
+         END
+      END
+      CRT @(0, 4):'CLIENT  : ':TEMP:@(-4)
+      CRT @(0, 6):'       Beg       End      FSC   Delay    LTL     TL    TL Wght  TL Calc  Index'
+      CRT @(0, 7):' ##    Date      Date    Table  Days     Min     Min    Break   Method  Details'
+      CRT @(0, 8):' --  --------  --------  -----  -----  ------  ------  -------  ------- -------'
+
+      RETURN
+
+
+
+*----------------------------------------------------------------------
+PRINT.TABLE:
+*----------------------------------------------------------------------
+
+      PRINTER ON
+      PAGE 1
+
+      L.TAB=CTR-(LEN(PROG.DESC)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):PROG.DESC
+      R.TAB=WIDTH-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE())
+      HEAD1=PROG.NAME:SPACE(L.TAB):PROG.DESC:SPACE(R.TAB):TIMEDATE():"'L'"
+      TITLE='Fuel Surcharge Entries'
+      L.TAB=CTR-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+      R.TAB=(WIDTH-LEN(TEMP))-20
+      HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )':"PAGE 'PL'"
+      HEAD3 = STR('-',WIDTH-1):"'L'"
+      TEMP = 'CARRIER : ':CARRIER.ID'R#5':', ':CARRIER.NAME:' (':CARRIER.CITY:', ':CARRIER.STATE:')'
+      HEAD4 = TEMP:"'L'"
+
+      IF CLIENT.ID THEN
+         TEMP = 'CLIENT  : ':CLIENT.ID'R#5':', ':CLIENT.NAME:' (':CLIENT.CITY:', ':CLIENT.STATE:')'
+         HEAD4:= TEMP:"'L'"
+      END
+
+      TEMP = '       Beg       End      FSC   Delay    LTL     TL    TL Wght  TL Calc'
+      TEMP1 =' ##    Date      Date    Table  Days     Min     Min    Break   Method '
+
+      HEAD5 = TEMP:"'L'"
+      HEAD6 = TEMP1:"'L'"
+
+      HEAD7 = ' --  --------  --------  -----  -----  ------  ------  -------  -------'
+
+      HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6:HEAD7
+      PAGE 0
+      HEADING HED
+      DONE=FALSE
+
+      FOR LINE = 1 TO NUM.LINES
+         DESC = '  '
+         DESC:= LINE'R%2':SPACE(2)
+         DESC:= NFSC.REC<1,LINE>'D2/':SPACE(2)
+         IF NFSC.REC<2,LINE> THEN
+            DESC:= NFSC.REC<2,LINE>'D2/'
+         END ELSE
+            DESC:= ' {OPEN} '
+         END
+         DESC:= SPACE(4)
+         DESC:= NFSC.REC<3,LINE>'L#3':SPACE(4)
+         DESC:= NFSC.REC<4,LINE>'R0#2':SPACE(3)
+         DESC:= NFSC.REC<5,LINE>'R26(#6)':SPACE(2)
+         DESC:= NFSC.REC<6,LINE>'R26(#6)':SPACE(3)
+         DESC:= NFSC.REC<7,LINE>'R0':SPACE(3)
+         DESC:= NFSC.REC<8,LINE>'R26(#6)':SPACE(1)
+         LINE+=1
+      NEXT
+
+      PRINTER OFF
+      CALL ELINE("Table printed.")
+
+      RETURN
+
+
+*-----------------------------------------------------------------------
+SAVE.IT.ALL:
+*-----------------------------------------------------------------------
+
+      IF WRITE.DATA THEN
+         YN.MSG = 'Update Table ?  :'
+         YN.MASK = 'Y'
+         GOSUB ASK.Y.OR.N
+
+         IF YN.ANSWER = 'Y' THEN
+*
+* Make sure the record contains at least 1 VALID record....
+*
+            T.ID = CARRIER.ID
+            IF CLIENT.ID THEN T.ID:='*':CLIENT.ID
+            IF NFSC.REC<1,1> # "" THEN
+
+* NPR03 Start changes
+               N.LNS = DCOUNT(NFSC.REC<1>,@VM)
+               FOR IL = 1 TO N.LNS
+                  W.TABLE = NFSC.REC<3,IL>
+                  W.NOTE = NFSC.REC<38,IL>
+                  IF W.TABLE = "AFN" AND W.NOTE NE "" THEN NFSC.REC<38,IL> = ""  ;* Remove note when changing to AFN
+               NEXT IL
+* NPR03 End changes
+
+               IF NFSC.REC<30>='' THEN NFSC.REC<30>='ENABLE'
+               WRITE NFSC.REC ON F.NFSC,T.ID
+*              IF T.ID='11159' THEN         ; * JMK01 ; * JMK03
+               IF T.ID='10665' THEN         ; * JMK01 ; * JMK03
+                  WRITE NFSC.REC ON F.TABLES,'AFS*FSC'          ; * JMK01
+               END                          ; * JMK01
+*              IF T.ID='10665' THEN         ; * JMK02 ; * JMK03
+               IF T.ID='11159' THEN         ; * JMK02 ; * JMK03
+                  WRITE NFSC.REC ON F.TABLES,'AFN*FSC'          ; * JMK02
+               END                          ; * JMK02
+            END ELSE
+               DELETE F.NFSC,T.ID
+            END
+         END
+      END
+
+      RETURN
+
+
+*-----------------------------------------------------------------------
+GET.CLIENT.CARRIER:
+*-----------------------------------------------------------------------
+      GOSUB DSP.EDIT.SCN
+
+GC.1:
+      IF CARRIER.ID THEN
+         MASK = CARRIER.ID'R%5'
+      END ELSE
+         MASK = '#####'
+      END
+      HELP = "Enter the carrier number. 'L'=List Setup Carriers/Clients 'X'=Back 'EX'=Exit"
+      CRT @(10,3):@(-4)
+      CALL GEN.IN(10,3,MASK,'',Q,0,20,'','',2,10,3,1,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' AND CARRIER.ID THEN QI=CARRIER.ID
+      BEGIN CASE
+         CASE QI = 'N'
+            DONE = 0
+            READVU X FROM F.DICT,'NEXT',1 ELSE X = 0
+            LOOP
+            UNTIL DONE DO
+               X = X+1
+               READ DUMMY FROM F.CARRIERS,X'R%5' ELSE DONE = 1
+            REPEAT
+
+         CASE QI = 'X' OR QI='EX' OR QI=''
+            STOP
+
+         CASE QI='L'
+            GOSUB LIST.CARRIERS
+            GOTO GET.CLIENT.CARRIER
+
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'CARRIERS','SDX.CARRIER,NAME','1,3,4',ITEM.LIST)
+            BEGIN CASE
+               CASE ITEM.LIST = ''
+                  GOTO GET.CLIENT.CARRIER
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO GET.CLIENT.CARRIER
+               CASE ITEM.LIST # ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO GET.CLIENT.CARRIER
+            END CASE
+
+         CASE NUM(QI)
+            T.CARRIER.ID = QI'R%5'
+            CALL CLR.CONTROL(T.CARRIER.ID)
+            GOSUB GET.CARRIER.INFO
+            IF T.CARRIER.ID = '' THEN GOTO GC.1
+            CARRIER.ID = T.CARRIER.ID
+
+         CASE 1
+            GOTO GC.1
+      END CASE
+
+      IF CARRIER.ID THEN
+         TEMP = CARRIER.ID'R%5':', ':CARRIER.NAME:' (':CARRIER.CITY:', ':CARRIER.STATE:')'
+      END ELSE
+         TEMP = ''
+      END
+      CRT @(0, 3):'CARRIER : ':TEMP:@(-4)
+
+
+*-------------------------------------
+* Enter Client Id/Name
+*-------------------------------------
+
+GC.2:
+      MASK = '#####'
+      HELP = "Enter the client number. 'L'=List Setup Carriers/Clients 'X'=Back 'EX'=Exit"
+      CRT @(10,4):@(-4)
+      CALL GEN.IN(10,4,MASK,'',Q,0,20,'','',2,10,4,1,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'X'
+            GOTO GC.1
+
+         CASE QI='EX'
+            STOP
+
+         CASE QI = ''
+
+         CASE QI='L'
+            GOSUB LIST.CARRIERS
+            GOSUB DSP.EDIT.SCN
+            GOTO GC.2
+
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'CLIENTS','SDX.CLIENTS,NAME','1,3,4',ITEM.LIST)
+            BEGIN CASE
+               CASE ITEM.LIST = ''
+                  GOSUB DSP.EDIT.SCN
+                  GOTO GC.2
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOSUB DSP.EDIT.SCN
+                  GOTO GC.2
+               CASE ITEM.LIST # ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOSUB DSP.EDIT.SCN
+                  GOTO GC.2
+            END CASE
+
+         CASE NUM(QI)
+         CASE 1
+            GOTO GC.2
+      END CASE
+
+*
+* Get the optional client info
+*
+      IF QI # '' THEN
+         T.CLIENT.ID = QI'R%5'
+         GOSUB GET.CLIENT.INFO
+         IF T.CLIENT.ID = '' THEN GOTO GC.2
+         CLIENT.ID = T.CLIENT.ID
+         TEMP = CLIENT.ID'R%5':', ':CLIENT.NAME:' (':CLIENT.CITY:', ':CLIENT.STATE:')'
+      END ELSE
+         CLIENT.ID = ''
+         TEMP = '(All Clients)'
+      END
+
+      CRT @(0, 4):'CLIENT  : ':TEMP:@(-4)
+
+*
+* Load NFSC Record
+*
+
+      T.ID = CARRIER.ID
+      IF CLIENT.ID THEN
+         T.ID:='*':CLIENT.ID
+         READV TEMP FROM F.NFSC,CARRIER.ID,1 ELSE
+            CALL ELINE('Carrier FSC MUST be on file before a Client Record can be setup')
+            GO GC.2
+         END
+      END
+      READ NFSC.REC FROM F.NFSC,T.ID ELSE
+         IF CLIENT.ID THEN
+            YN.MASK = 'N'
+            YN.MSG = 'Create a new fuel surcharge table for this client/carrier'
+            GOSUB ASK.Y.OR.N
+            IF YN.ANSWER = 'N' OR YN.ANSWER = 'X' THEN
+               GOTO CHOOSE.CARRIER
+            END
+         END
+         READ NFSC.REC FROM F.NFSC,CARRIER.ID ELSE
+            NFSC.REC=''
+         END
+      END
+
+      GOSUB COMPUTE.REC.SIZE
+
+      RETURN
+
+*----------------------------------------------------------------------
+LIST.CARRIERS:
+*----------------------------------------------------------------------
+      CRT @(0,0):@(-1)
+      EXECUTE 'SORT FB.NFSC BY CARRIER CARRIER CLIENT'
+      CALL ELINE('')
+      CALL FB.DRAW.BOX(0,5,80,PAGE.SIZE.1+2,' ','')
+
+      RETURN
+
+
+*----------------------------------------------------------------------
+COMPUTE.REC.SIZE: ; *Computes number of lines and number of pages
+*----------------------------------------------------------------------
+      NUM.LINES = DCOUNT(NFSC.REC<1>,@VM)
+      NUM.PAGES = INT(NUM.LINES/PAGE.SIZE.1)
+      IF NUM.PAGES < NUM.LINES*PAGE.SIZE.1 THEN NUM.PAGES+=1
+      IF EDIT.NUMBER > NUM.LINES THEN EDIT.NUMBER = NUM.LINES
+      DSP.NUM.LINES = NUM.LINES
+
+      RETURN
+
+
+*-----------------------------------------------------------------------
+GET.CLIENT.INFO: ***
+*-----------------------------------------------------------------------
+      MATREAD CLIENT.REC FROM F.CLIENTS,T.CLIENT.ID THEN
+         CLIENT.NAME = CL.NAME
+         CLIENT.CITY = CL.CITY
+         CLIENT.STATE = CL.ST
+         ZIP.LEN = CL.ZIP.FLAG
+      END ELSE
+         CALL ELINE("ERROR - Client ":T.CLIENT.ID:" is not a valid client.")
+         T.CLIENT.ID = ''
+      END
+
+      RETURN
+
+
+
+*-----------------------------------------------------------------------
+GET.CARRIER.INFO: ***
+*-----------------------------------------------------------------------
+      READ CARRIER.REC FROM F.CARRIERS,T.CARRIER.ID THEN
+         CARRIER.NAME = CARRIER.REC<1>
+         CARRIER.CITY = CARRIER.REC<3>
+         CARRIER.STATE = CARRIER.REC<4>
+      END ELSE
+         CALL ELINE("ERROR - Carrier ":T.CARRIER.ID:" is not a valid carrier.")
+         T.CARRIER.ID = ''
+      END
+
+      RETURN
+
+
+
+*----------------------------------------------------------------------
+* ASK.FOR.NUM
+*
+* A General NUMBER prompt routine.
+*
+* AFN.MIN  - MIN VALUE ALLOWABLE
+* AFN.MAX  - MAX VALUE ALLOWABLE
+* AFN.MSG  - MESSAGE TO DISPLAY
+* AFN.MASK - DEFAULT VALUE
+*
+*----------------------------------------------------------------------
+ASK.FOR.NUM: ***
+
+      AFN.ANSWER = ''
+
+AFN.1:
+      HELP = "Entry Options: [":AFN.MIN:"-":AFN.MAX:"] [X]-Back"
+      CRT @(0,22):AFN.MSG:@(-4)
+      MASK = AFN.MASK:' '
+      Q=''
+      CALL GEN.IN(LEN(AFN.MSG)+1,22,MASK,'',Q,0,2,'','',2,LEN(AFN.MSG)+1,22,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN QI=MASK
+
+      BEGIN CASE
+         CASE QI = 'X'
+         CASE QI='EX'
+            STOP
+         CASE QI>=AFN.MIN AND QI<=AFN.MAX
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO AFN.1
+      END CASE
+
+      AFN.ANSWER=QI
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+
+      RETURN
+
+
+*----------------------------------------------------------------------
+ASK.Y.OR.N: ***
+*
+* A General Yes No prompt routine.
+*----------------------------------------------------------------------
+      YN.ANSWER = ''
+
+Y.OR.N:
+
+*NPR01      HELP = "Entry Options: [Y]-Yes [N]-No [X]-Back [EX]-Exit program"
+      HELP = "Entry Options: [Y]-Yes [N]-No [X]-Back "  ;* NPR01 Only 1 char allowed can't enter 'EX'
+      CRT @(0,22):YN.MSG:@(-4)
+      MASK = YN.MASK'L#1'
+      Q=''
+      CALL GEN.IN(LEN(YN.MSG)+1,22,MASK,'',Q,0,1,'','',2,LEN(YN.MSG)+1,22,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+
+      IF QI='' THEN QI=MASK
+
+      BEGIN CASE
+         CASE QI = 'Y'
+         CASE QI = 'N'
+         CASE QI = 'X'
+         CASE QI='EX'
+            STOP
+
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO Y.OR.N
+      END CASE
+
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+      YN.ANSWER = QI
+
+      RETURN
+
+
+
+
+*-----------------------------------------------------------------------
+DEBUG:
+*-----------------------------------------------------------------------
+*
+* Was a special debug message passed? If not, Use the default.
+*
+      IF DEBUG.MSG = '' THEN DEBUG.MSG='DEBUG POINT - BREAK IT!':CHAR(7)
+      CRT @(0,0):DEBUG.MSG:
+      INPUT NULL,1
+      CRT @(0,0):SPACE(LEN(DEBUG.MSG)):
+      DEBUG.MSG=''                       ; * Clear it to prevent reuse of special.
+
+      RETURN
+
+*-----------------------------------------------------------------------
+PROCESS.DATA:
+*-----------------------------------------------------------------------
+      LOOP
+      WHILE (NOT(DONE OR EXIT.IT))
+         FAILURE = FALSE
+         STAY.PUT = FALSE
+         BEGIN CASE
+            CASE FIELD.POS = 0
+               DONE = TRUE
+               FAILURE = TRUE
+*
+* Begin Date
+*
+            CASE FIELD.POS = 1
+               GOSUB GET.BEG.DATE
+               TEMP.REC<1>=BEGIN.DATE
+*
+* End Date
+*
+            CASE FIELD.POS = 2
+               GOSUB GET.END.DATE
+               TEMP.REC<2>=END.DATE
+*
+* FSC Table
+*
+            CASE FIELD.POS = 3
+               GOSUB GET.FSC.TABLE
+               TEMP.REC<3>=FSC.TABLE
+*
+* Delay Days
+*
+            CASE FIELD.POS = 4
+               GOSUB GET.DELAY
+               TEMP.REC<4>=DELAY.DAYS
+
+*
+* LTL Minimum
+*
+            CASE FIELD.POS = 5
+               GOSUB GET.LTL.MINIMUM
+               TEMP.REC<5>=LTL.MIN
+*
+* TL Minimum
+*
+            CASE FIELD.POS = 6
+               GOSUB GET.TL.MINIMUM
+               TEMP.REC<6>=TL.MIN
+*
+* TL Break
+*
+            CASE FIELD.POS = 7
+               GOSUB GET.TL.BREAK
+               TEMP.REC<7>=TL.BREAK
+*
+* TL Break
+*
+            CASE FIELD.POS = 8
+               GOSUB GET.TL.CALC
+               TEMP.REC<8>=TL.CALC
+
+*
+* Get Details
+*
+            CASE FIELD.POS = 9
+               IF ADD.MODE THEN
+                  FOR T=1 TO 8
+                     NFSC.REC<T,NUM.LINES+1>=TEMP.REC<T>
+                  NEXT T
+                  GOSUB COMPUTE.REC.SIZE
+               END ELSE
+                  FOR T=1 TO 8
+                     NFSC.REC<T,EDIT.NUMBER>=TEMP.REC<T>
+                  NEXT T
+               END
+               DONE = TRUE
+               EDIT.PB=1                 ; * JMK02
+*              IF FSC.TABLE='AFS' AND CARRIER.ID#'11159' ELSE          ; * JMK01 ; * JMK02
+*              IF (FSC.TABLE='AFS' AND CARRIER.ID#'11159') OR (FSC.TABLE='AFN' AND CARRIER.ID#'10665') ELSE          ; * JMK01 ; * JMK02 ; * JMK03
+               IF (FSC.TABLE='AFS' AND CARRIER.ID#'10665') OR (FSC.TABLE='AFN' AND CARRIER.ID#'11159') ELSE          ; * JMK01 ; * JMK02 ; * JMK03
+                  YN.MSG = 'Review and Edit Price Break Information?'
+                  YN.MASK = 'Y '
+                  GOSUB ASK.Y.OR.N
+                  IF YN.ANSWER = 'Y' THEN
+                     GOSUB GET.DETAILS
+                  END
+               END                       ; * JMK01
+               GOSUB DSP.EDIT.SCN
+               GOSUB UPDATE.DISPLAY
+               LAST.EDIT.MASK = 1
+               EXIT.IT = TRUE
+
+         END CASE
+
+
+*
+* Handle various states
+*
+         BEGIN CASE
+            CASE EXIT.IT = TRUE
+            CASE DONE = TRUE
+            CASE STAY.PUT = TRUE
+            CASE FAILURE = TRUE
+               FIELD.POS-=1
+            CASE 1
+               FIELD.POS+=1
+         END CASE
+      REPEAT
+
+      RETURN
+
+*-----------------------------------------------------------------------
+GET.DETAILS:
+*-----------------------------------------------------------------------
+      PAGE = 1                           ; * Current Page Number
+
+
+      GOSUB DSP.EDIT.SCN.2
+*
+      GOSUB DSP.EDIT.SCN.3            ;* NPR01
+
+
+GD.1:
+*
+* Display current position
+*
+
+      GOSUB UPDATE.DISPLAY.2
+
+GD.2:
+      MASK = '########'
+      HELP = EDIT.HELP.2
+      CRT @(0,22):'Option :':@(-4):
+      CALL GEN.IN(8,22,MASK,'',Q,0,15,'','',2,8,22,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+*
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+
+         CASE QI='X' OR QI=''
+            RETURN
+
+         CASE QI='T' OR QI='TOP'         ; * Top Page
+            IF NUM.LINES.2 > 0 THEN
+               PAGE = 1
+            END ELSE
+               CALL ELINE('*** Top ***')
+               GOTO GD.1
+            END
+
+         CASE QI='L' OR QI='LAST'        ; * Last Page
+            IF NUM.LINES.2 > 0 THEN
+               PAGE=INT(NUM.LINES.2/PAGE.SIZE.2)
+               IF REM(NUM.LINES.2,PAGE.SIZE.2) THEN PAGE+=1
+            END ELSE
+               CALL ELINE('*** Bottom ***')
+               GOTO GD.1
+            END
+
+         CASE QI='B' OR QI='-'
+            IF PAGE > 1 THEN
+               PAGE-=1
+            END ELSE
+               CALL ELINE('*** Top ***')
+               GOTO GD.1
+            END
+
+         CASE QI='F' OR QI='+'
+*
+* Go forward 1 Page
+*
+            IF NUM.LINES.2>PAGE*PAGE.SIZE.2 THEN
+               PAGE+=1
+            END ELSE
+               CALL ELINE('*** Bottom ***')
+               GOTO GD.1
+            END
+
+
+         CASE QI='A'
+            GOSUB ADD.PRICE.BREAK
+            GOSUB COMPUTE.REC.SIZE.2
+            GOTO GD.1
+
+         CASE QI='E'
+            AFN.ANSWER = ''
+            GOSUB EDIT.PRICE.BREAK
+            GOTO GD.1
+
+         CASE NUM(QI)
+            IF QI>NUM.LINES.2 THEN       ; * JMK01
+               CALL ELINE('That line does not exist. Try the Add option.')       ; * JMK01
+               GOTO GD.2                 ; * JMK01
+            END                          ; * JMK01
+            AFN.ANSWER = QI
+            GOSUB EDIT.PRICE.BREAK
+            GOTO GD.1
+
+         CASE QI='D'
+            GOSUB DELETE.PRICE.BREAK
+            GOTO GD.1
+
+         CASE QI = "CAP"                          ;*NPR01
+            GOSUB EDIT.CAP.INFO
+            GOTO GD.1
+
+
+         CASE QI = "ST"                           ;*NPR01
+            GOSUB ENTER.STATE.INFO
+            GOTO GD.1
+
+         CASE QI = "N"                          ;*NPR02
+            GOSUB EDIT.NOTE.INFO                ;*NPR02
+            GOTO GD.1                           ;*NPR02
+
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO GD.2
+      END CASE
+
+      GO GD.1
+
+      RETURN
+*
+**********************************************************&&&&&&&&&&&&&
+ENTER.STATE.INFO:
+*
+      MASK = '#######.'
+      HELP = EDIT.HELP.3:" ...."
+      CRT @(0,22):'Option :':@(-4):
+      CALL GEN.IN(8,22,MASK,'',Q,0,15,'','',2,8,22,0,QI,HELP,0,23)
+
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+
+         CASE QI='X' OR QI=''
+            RETURN
+
+         CASE QI='T' OR QI='TOP'         ; * Top Page
+            IF NUM.LINES.3 > 0 THEN
+               PAGE = 1
+            END ELSE
+               CALL ELINE('*** Top ***')
+               GOTO ENTER.STATE.INFO
+            END
+
+         CASE QI='L' OR QI='LAST'        ; * Last Page
+            IF NUM.LINES.3 > 0 THEN
+               PAGE=INT(NUM.LINES.3/PAGE.SIZE.3)
+               IF REM(NUM.LINES.3,PAGE.SIZE.3) THEN PAGE+=1
+            END ELSE
+               CALL ELINE('*** Bottom ***')
+               GOTO ENTER.STATE.INFO
+            END
+
+         CASE QI='B' OR QI='-'
+            IF PAGE > 1 THEN
+               PAGE-=1
+            END ELSE
+               CALL ELINE('*** Top ***')
+               GOTO ENTER.STATE.INFO
+            END
+
+         CASE QI='F' OR QI='+'
+*
+* Go forward 1 Page
+*
+            IF NUM.LINES.3>PAGE*PAGE.SIZE.3 THEN
+               PAGE+=1
+            END ELSE
+               CALL ELINE('*** Bottom ***')
+               GOTO ENTER.STATE.INFO
+            END
+            GOTO ENTER.STATE.INFO
+
+         CASE QI='A'
+*
+            GOSUB ADD.STATE
+            GOSUB COMPUTE.REC.SIZE.3
+            GOTO ENTER.STATE.INFO
+
+         CASE QI='E'
+            AFN.ANSWER = ''
+            EDIT.MODE = TRUE
+            GOSUB EDIT.STATE
+            EDIT.MODE = FALSE
+            GOTO ENTER.STATE.INFO
+
+         CASE NUM(QI)
+            IF QI>NUM.LINES.3 THEN       ; * JMK01
+               CALL ELINE('That line does not exist. Try the Add option.')       ; * JMK01
+               GOTO ENTER.STATE.INFO                ; * JMK01
+            END                         ; * JMK01
+            AFN.ANSWER = QI
+            GOSUB EDIT.STATE
+            GOTO ENTER.STATE.INFO
+
+         CASE QI='D'
+            GOSUB DELETE.STATE
+            GOTO ENTER.STATE.INFO
+
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO ENTER.STATE.INFO
+      END CASE
+
+      RETURN
+*
+**********************************************************&&&&&&&&&&&&&
+*----------------------------------------------------------------------
+UPDATE.DISPLAY.2:
+*----------------------------------------------------------------------
+      IF NUM.LINES.2 = 0 THEN
+         CALL FB.PRINT.CENT(0,78,13,'No Details Setup for this carrier and date')
+         RETURN
+      END
+      DSP.PAGE=PAGE
+      DSP.NUM.LINES.2 = NUM.LINES.2
+      GOSUB DISPLAY.PAGE.2
+*
+      GOSUB DISPLAY.PAGE.3  ;*NPR01
+*
+
+      RETURN
+
+*----------------------------------------------------------------------
+COMPUTE.REC.SIZE.2: ; * Computes number of lines and number of pages
+*----------------------------------------------------------------------
+      NUM.LINES.2 = DCOUNT(NFSC.REC<9,EDIT.NUMBER>,@SVM)
+      NUM.PAGES.2 = INT(NUM.LINES.2/PAGE.SIZE.2)
+      IF NUM.PAGES.2 < NUM.LINES.2*PAGE.SIZE.2 THEN NUM.PAGES.2+=1
+      DSP.NUM.LINES.2 = NUM.LINES.2
+
+      LAST.EDIT.MASK = "1"   ;* NPR01
+
+      RETURN
+
+COMPUTE.REC.SIZE.3: ; * Computes number of lines and number of pages
+*----------------------------------------------------------------------
+*
+      GOSUB SORT.STATE.DATA
+
+      NUM.LINES.3 = DCOUNT(NFSC.REC<31>,@VM)
+      NUM.PAGES.3 = INT(NUM.LINES.3/PAGE.SIZE.3)
+      IF NUM.PAGES.3 < NUM.LINES.3*PAGE.SIZE.3 THEN NUM.PAGES.3+=1
+      DSP.NUM.LINES.3 = NUM.LINES.3
+
+      LAST.EDIT.MASK = "1"
+
+      RETURN
+
+
+*----------------------------------------------------------------------
+DISPLAY.PAGE.2:
+*----------------------------------------------------------------------
+      STR.OUT = '(Page ':DSP.PAGE'R#1':' of ':NUM.PAGES.2:')'
+      CRT @(78-LEN(STR.OUT),3):STR.OUT
+
+*NPR01
+      CAP.STR = @(15,20):NFSC.REC<34>'R37#6'
+      CAP.STR := @(24,20):NFSC.REC<35>'R37#6'
+      CAP.STR := @(32,20):NFSC.REC<36>'R37#6'
+      CAP.STR := @(59,20):NFSC.REC<38,EDIT.NUMBER>'L#20'   ;* NPR999
+      CRT @(14,20):CAP.STR
+
+** CRT @(0,22): ; DEBUG
+*NPR01
+
+      Y = 0
+      LAST.Y = 0
+
+      LINE.2 = (DSP.PAGE-1)*PAGE.SIZE.2+1
+
+      LOOP
+      UNTIL (Y=>PAGE.SIZE.2)
+         BEGIN CASE
+            CASE LINE.2 > DSP.NUM.LINES.2
+*
+* Print nothing - (Actually clears line)
+*
+               DESC=''
+
+            CASE NFSC.REC<9,EDIT.NUMBER,LINE.2>=''
+               DESC = ' '
+               DESC:= LINE.2'R%2'
+               LINE.2+=1
+               IF LAST.Y = 0 THEN LAST.Y = Y+1
+
+
+            CASE 1
+               DESC = ' '
+               DESC:= LINE.2'R%2':SPACE(2)
+               DESC:= NFSC.REC<9,EDIT.NUMBER,LINE.2>'R37#6':SPACE(3)
+               IF NFSC.REC<10,EDIT.NUMBER,LINE.2> = 'F' OR NFSC.REC<11,EDIT.NUMBER,LINE.2> = 'F' OR NFSC.REC<12,EDIT.NUMBER,LINE.2> = 'F' THEN
+                  DESC := ' See Formulas'
+               END ELSE
+                  DESC:= NFSC.REC<10,EDIT.NUMBER,LINE.2>'R37#6':SPACE(3)
+                  DESC:= NFSC.REC<11,EDIT.NUMBER,LINE.2>'R37#6':SPACE(3)
+                  DESC:= NFSC.REC<12,EDIT.NUMBER,LINE.2>'R37#6':SPACE(3)
+               END
+               LINE.2+=1
+         END CASE
+
+         Y+=1                            ; * Inc Y screen position
+         CRT @(0,START.Y.1+Y):DESC:@(-4)           ; * Draw screen line
+      REPEAT
+
+      CRT @(59,20):NFSC.REC<38,EDIT.NUMBER>'L#20'   ;* NPR999
+
+** CRT @(0,23): ; DEBUG
+
+      RETURN
+
+
+*----------------------------------------------------------------------
+DSP.EDIT.SCN.2:
+*----------------------------------------------------------------------
+
+      GOSUB DSP.CARRIER.SCN
+      IF CARRIER.ID THEN
+         TEMP = CARRIER.ID'R%5':', ':CARRIER.NAME:' (':CARRIER.CITY:', ':CARRIER.STATE:')'
+      END ELSE
+         TEMP = ''
+      END
+      CRT @(0, 3):'CARRIER : ':TEMP:@(-4)
+
+      IF CLIENT.ID THEN
+         TEMP = CLIENT.ID'R%5':', ':CLIENT.NAME:' (':CLIENT.CITY:', ':CLIENT.STATE:')'
+      END ELSE
+         IF CARRIER.ID THEN
+            TEMP = '(All Clients)'
+         END ELSE
+            TEMP = ''
+         END
+      END
+      CRT @(0, 4):'CLIENT  : ':TEMP'L#20':@(-4)
+      IF BEGIN.DATE # "" THEN
+         TEMP = '    EFF DATE: ':BEGIN.DATE'D2/':'    thru    '
+         IF END.DATE # "" THEN
+            DESC:= END.DATE'D2/'
+         END ELSE
+            DESC:= ' {OPEN} '
+         END
+         TEMP := DESC
+      END ELSE
+         TEMP = ''
+      END
+
+      CRT @(33,4):TEMP:@(-4)
+
+      CRT @(0, 6):'      Price                       TL'
+      CRT @(0, 7):' ##   Break    LTL %    TL %   Per Mile'
+      CRT @(0, 8):' -- -------- -------- -------- --------'
+
+      CRT @(0,21):' ============================================================================='
+*
+*NPR01
+      CRT @(1,20) : "CAP  Value : "    ;*NPR01
+      CRT @(51,20) : "Note : "         ;*NPR02
+*NPR01
+
+      GOSUB COMPUTE.REC.SIZE.2
+
+
+      RETURN
+
+*----------------------------------------------------------------------
+DSP.FORMULA.SCN.2:
+*----------------------------------------------------------------------
+      CRT @(42, 6):'|                                   |'
+      CRT @(42, 7):'|        Formula Information        |'
+      CRT @(42, 8):'+===================================+'
+      CRT @(42, 9):'|LTL   NAT Fuel Digits    :         |'
+      CRT @(42,10):'|      NAT Fuel Round     :         |'
+      CRT @(42,11):'|      Start Perc         :         |'
+      CRT @(42,12):'|      Increment Perc     :         |'
+      CRT @(42,13):'|      Start Price        :         |'
+      CRT @(42,14):'|      Increment Price    :         |'
+      CRT @(42,15):'|TL    NAT Fuel Digits    :         |'
+      CRT @(42,16):'|      NAT Fuel Round     :         |'
+      CRT @(42,17):'|      Start Perc         :         |'
+      CRT @(42,18):'|      Increment Perc     :         |'
+      CRT @(42,19):'|      Start Price        :         |'
+      CRT @(42,20):'|      Increment Price    :         |'
+      CRT @(42,21):'+===================================+'
+
+      CRT @(71, 9):LTL.DIGITS'R0#6'
+      CRT @(71,10):LTL.ROUND'R#6'
+      CRT @(71,11):LTL.START'R37#6'
+      CRT @(71,12):LTL.INCRE'R37#6'
+      CRT @(71,13):LTL.START.PRICE'R37#6'
+      CRT @(71,14):LTL.INCRE.PRICE'R37#6'
+      CRT @(71,15):TL.DIGITS'R0#6'
+      CRT @(71,16):TL.ROUND'R#6'
+      CRT @(71,17):TL.START'R37#6'
+      CRT @(71,18):TL.INCRE'R37#6'
+      CRT @(71,19):TL.START.PRICE'R37#6'
+      CRT @(71,20):TL.INCRE.PRICE'R37#6'
+
+
+      RETURN
+
+
+PROCESS.DATA.2:
+
+      LOOP
+      WHILE (NOT(DONE OR EXIT.IT))
+         FAILURE = FALSE
+         STAY.PUT = FALSE
+         BEGIN CASE
+            CASE FIELD.POS = 0
+               DONE = TRUE
+               FAILURE = TRUE
+*
+* Begin Date
+*
+            CASE FIELD.POS = 1
+               GOSUB GET.PRICE.BREAK
+               IF ADD.MODE THEN
+                  IF DONE.ADDING THEN
+                     DONE = TRUE
+                  END ELSE
+                     IF PRICE.BREAK LE NFSC.REC<9,EDIT.NUMBER,EDIT.PRICE-1> AND EDIT.PRICE#1 THEN
+                        CALL ELINE('PRICE BREAK MUST BE GREATER THAN PREVIOUS PRICE BREAK')
+                        FIELD.POS = FIELD.POS-1
+                     END ELSE
+                        TEMP.REC<1,9>=PRICE.BREAK
+                     END
+                  END
+               END ELSE
+                  IF PRICE.BREAK LE NFSC.REC<9,EDIT.NUMBER,EDIT.PRICE-1> AND EDIT.PRICE#1 THEN
+                     CALL ELINE('PRICE BREAK MUST BE GREATER THAN PREVIOUS PRICE BREAK')
+                     FIELD.POS = FIELD.POS-1
+                  END ELSE
+                     TEMP.REC<1,9>=PRICE.BREAK
+                  END
+
+               END
+
+*
+* End Date
+*
+            CASE FIELD.POS = 2
+               GOSUB GET.LTL.PERC
+               TEMP.REC<1,10>=LTL.PERC
+               IF ADD.MODE AND LTL.PERC = 'F' THEN DONE.ADDING = TRUE
+               IF LTL.PERC = 'F' THEN FIELD.POS = 4
+               IF LTL.PERC = 'F' THEN
+                  TEMP.REC<1,11>='F'
+               END
+
+*
+* FSC Table
+*
+            CASE FIELD.POS = 3
+               IF TL.CALC = 'PERC' THEN
+                  GOSUB GET.TL.PERC
+                  TEMP.REC<1,11>=TL.PERC
+               END
+*
+* Delay Days
+*
+            CASE FIELD.POS = 4
+               IF TL.CALC = 'MILES' THEN
+                  GOSUB GET.TL.PER.MILE
+                  TEMP.REC<1,12>=TL.PER.MILE
+               END
+*
+* Done PAL!
+*
+            CASE FIELD.POS = 5
+               IF ADD.MODE THEN
+                  FOR T= 9 TO 12
+                     NFSC.REC<T,EDIT.NUMBER,EDIT.PRICE>=TEMP.REC<1,T>
+                  NEXT T
+                  GOSUB COMPUTE.REC.SIZE
+               END ELSE
+                  FOR T=9 TO 12
+                     NFSC.REC<T,EDIT.NUMBER,EDIT.PRICE>=TEMP.REC<1,T>
+                  NEXT T
+               END
+               DONE = TRUE
+               IF LTL.PERC = 'F' THEN EXIT.IT = TRUE
+         END CASE
+
+
+*
+* Handle various states
+*
+         BEGIN CASE
+            CASE EXIT.IT = TRUE
+            CASE DONE = TRUE
+            CASE STAY.PUT = TRUE
+            CASE FAILURE = TRUE
+               FIELD.POS-=1
+            CASE 1
+               FIELD.POS+=1
+         END CASE
+      REPEAT
+
+      RETURN
+
+*----------------------------------------------------------------------
+EDIT.PRICE.BREAK:
+*----------------------------------------------------------------------
+      IF NUM.LINES.2 < 1 THEN
+         CALL ELINE("No entries to edit.  Try adding first.")
+         RETURN
+      END
+
+SELECT.PRICE:
+      IF AFN.ANSWER = '' THEN
+         AFN.MSG = "Select Entry to Edit :"
+         AFN.MIN = 1
+         AFN.MAX = NUM.LINES.2
+         AFN.MASK = LAST.EDIT.MASK
+         DONE = FALSE
+         GOSUB ASK.FOR.NUM
+         IF OCONV(AFN.ANSWER,"MCU") = 'X' THEN RETURN
+      END
+      EDIT.PRICE = AFN.ANSWER
+      DSP.PAGE = INT(EDIT.PRICE/PAGE.SIZE.1)
+      IF DSP.PAGE*PAGE.SIZE.1 < EDIT.PRICE THEN DSP.PAGE+=1
+      EDIT.Y = EDIT.PRICE-(DSP.PAGE*PAGE.SIZE.2)+PAGE.SIZE.2
+      IF DSP.PAGE*PAGE.SIZE.1 < EDIT.PRICE THEN DSP.PAGE+=1
+      PAGE = DSP.PAGE
+      LAST.EDIT.MASK = AFN.ANSWER:' '
+      GOSUB DISPLAY.PAGE.2
+*
+      GOSUB DISPLAY.PAGE.3  ;*NPR01
+*
+      Y.POS = START.Y.1+EDIT.Y
+      TEMP.REC<9> = NFSC.REC<9,EDIT.NUMBER,EDIT.PRICE> ; PRICE.BREAK = TEMP.REC<9>
+      TEMP.REC<10> = NFSC.REC<10,EDIT.NUMBER,EDIT.PRICE> ; LTL.PERC = TEMP.REC<10>
+      TEMP.REC<11> = NFSC.REC<11,EDIT.NUMBER,EDIT.PRICE> ; TL.PERC = TEMP.REC<11>
+      TEMP.REC<12> = NFSC.REC<12,EDIT.NUMBER,EDIT.PRICE> ; TL.PER.MILE = TEMP.REC<12>
+*     TEMP.REC<13> = NFSC.REC<13,EDIT.NUMBER> ; LTL.DIGITS = TEMP.REC<13>                  ; * JMK01
+*     TEMP.REC<14> = NFSC.REC<14,EDIT.NUMBER> ; LTL.ROUND = TEMP.REC<14>                   ; * JMK01
+*     TEMP.REC<15> = NFSC.REC<15,EDIT.NUMBER> ; LTL.START = TEMP.REC<15>                   ; * JMK01
+*     TEMP.REC<16> = NFSC.REC<16,EDIT.NUMBER> ; LTL.INCRE = TEMP.REC<16>                   ; * JMK01
+*     TEMP.REC<17> = NFSC.REC<17,EDIT.NUMBER> ; LTL.START.PRICE = TEMP.REC<17>             ; * JMK01
+*     TEMP.REC<18> = NFSC.REC<18,EDIT.NUMBER> ; LTL.INCRE.PRICE = TEMP.REC<18>             ; * JMK01
+*     TEMP.REC<23> = NFSC.REC<23,EDIT.NUMBER> ; TL.DIGITS = TEMP.REC<23>                   ; * JMK01
+*     TEMP.REC<24> = NFSC.REC<24,EDIT.NUMBER> ; TL.ROUND = TEMP.REC<24>                    ; * JMK01
+*     TEMP.REC<25> = NFSC.REC<25,EDIT.NUMBER> ; TL.START = TEMP.REC<25>                    ; * JMK01
+*     TEMP.REC<26> = NFSC.REC<26,EDIT.NUMBER> ; TL.INCRE = TEMP.REC<26>                    ; * JMK01
+*     TEMP.REC<27> = NFSC.REC<27,EDIT.NUMBER> ; TL.START.PRICE = TEMP.REC<27>              ; * JMK01
+*     TEMP.REC<28> = NFSC.REC<28,EDIT.NUMBER> ; TL.INCRE.PRICE = TEMP.REC<28>              ; * JMK01
+      TEMP.REC<13> = NFSC.REC<13,EDIT.NUMBER,EDIT.PRICE> ; LTL.DIGITS = TEMP.REC<13>       ; * JMK01
+      TEMP.REC<14> = NFSC.REC<14,EDIT.NUMBER,EDIT.PRICE> ; LTL.ROUND = TEMP.REC<14>        ; * JMK01
+      TEMP.REC<15> = NFSC.REC<15,EDIT.NUMBER,EDIT.PRICE> ; LTL.START = TEMP.REC<15>        ; * JMK01
+      TEMP.REC<16> = NFSC.REC<16,EDIT.NUMBER,EDIT.PRICE> ; LTL.INCRE = TEMP.REC<16>        ; * JMK01
+      TEMP.REC<17> = NFSC.REC<17,EDIT.NUMBER,EDIT.PRICE> ; LTL.START.PRICE = TEMP.REC<17>  ; * JMK01
+      TEMP.REC<18> = NFSC.REC<18,EDIT.NUMBER,EDIT.PRICE> ; LTL.INCRE.PRICE = TEMP.REC<18>  ; * JMK01
+      TEMP.REC<23> = NFSC.REC<23,EDIT.NUMBER,EDIT.PRICE> ; TL.DIGITS = TEMP.REC<23>        ; * JMK01
+      TEMP.REC<24> = NFSC.REC<24,EDIT.NUMBER,EDIT.PRICE> ; TL.ROUND = TEMP.REC<24>         ; * JMK01
+      TEMP.REC<25> = NFSC.REC<25,EDIT.NUMBER,EDIT.PRICE> ; TL.START = TEMP.REC<25>         ; * JMK01
+      TEMP.REC<26> = NFSC.REC<26,EDIT.NUMBER,EDIT.PRICE> ; TL.INCRE = TEMP.REC<26>         ; * JMK01
+      TEMP.REC<27> = NFSC.REC<27,EDIT.NUMBER,EDIT.PRICE> ; TL.START.PRICE = TEMP.REC<27>   ; * JMK01
+      TEMP.REC<28> = NFSC.REC<28,EDIT.NUMBER,EDIT.PRICE> ; TL.INCRE.PRICE = TEMP.REC<28>   ; * JMK01
+
+
+
+      FIELD.POS = 1
+      EXIT.IT = FALSE
+      DONE = FALSE
+      ADD.MODE = FALSE
+      GOSUB PROCESS.DATA.2
+
+
+      RETURN
+
+*----------------------------------------------------------------------
+DELETE.PRICE.BREAK:
+*----------------------------------------------------------------------
+      IF NUM.LINES.2 < 1 THEN
+         CALL ELINE("No entries to DELETE.")
+         RETURN
+      END
+
+      AFN.MSG = "Select Price Break to Delete :"
+      AFN.MIN = 1
+      AFN.MAX = NUM.LINES.2
+      AFN.MASK = LAST.EDIT.MASK
+      GOSUB ASK.FOR.NUM
+      IF QI = 'EX' THEN STOP
+      IF QI = 'X' THEN RETURN
+      LAST.EDIT.MASK = AFN.ANSWER:' '
+      EDIT.PRICE = AFN.ANSWER
+      DSP.PAGE = INT(EDIT.PRICE/PAGE.SIZE.2)
+      IF DSP.PAGE*PAGE.SIZE.2 < EDIT.PRICE THEN DSP.PAGE+=1
+      EDIT.Y = EDIT.PRICE-(DSP.PAGE*PAGE.SIZE.1)+PAGE.SIZE.1
+      PAGE = DSP.PAGE
+      DSP.NUM.LINES = NUM.LINES.2
+      GOSUB DISPLAY.PAGE.2
+*
+      GOSUB DISPLAY.PAGE.3  ;*NPR01
+*
+      DESC = ' '
+      DESC = REVON:'>':EDIT.PRICE'R%2':SPACE(2)
+      DESC:= NFSC.REC<9,EDIT.NUMBER,EDIT.PRICE>'R37#6':SPACE(3)
+      IF NFSC.REC<10,EDIT.NUMBER,EDIT.PRICE> = 'F' OR NFSC.REC<11,EDIT.NUMBER,EDIT.PRICE> = 'F' OR NFSC.REC<12,EDIT.NUMBER,EDIT.PRICE> = 'F' THEN
+         DESC := ' See Formulas':REVOFF
+      END ELSE
+         DESC:= NFSC.REC<10,EDIT.NUMBER,EDIT.PRICE>'R37#6':SPACE(3)
+         DESC:= NFSC.REC<11,EDIT.NUMBER,EDIT.PRICE>'R37#6':SPACE(3)
+         DESC:= NFSC.REC<12,EDIT.NUMBER,EDIT.PRICE>'R37#6':SPACE(3):REVOFF
+      END
+
+
+      CRT @(0,START.Y.1+EDIT.Y):DESC:@(-4)         ; * Draw screen line
+
+      YN.MSG = 'Delete this entry?  Are you sure? :'
+      YN.MASK = 'N '
+      GOSUB ASK.Y.OR.N
+      IF YN.ANSWER = 'Y' THEN
+         LTL.PERC = NFSC.REC<10,EDIT.NUMBER,EDIT.PRICE>
+         DEL NFSC.REC<9,EDIT.NUMBER,EDIT.PRICE>
+         DEL NFSC.REC<10,EDIT.NUMBER,EDIT.PRICE>
+         DEL NFSC.REC<11,EDIT.NUMBER,EDIT.PRICE>
+         DEL NFSC.REC<12,EDIT.NUMBER,EDIT.PRICE>
+         IF LTL.PERC = 'F' THEN
+            FOR T = 13 TO 28
+*              DEL NFSC.REC<T,EDIT.NUMBER>                   ; * JMK01
+               DEL NFSC.REC<T,EDIT.NUMBER,EDIT.PRICE>        ; * JMK01
+            NEXT T
+         END
+         NUM.LINES.2-=1
+         GOSUB COMPUTE.REC.SIZE.2
+      END
+
+      RETURN
+
+*----------------------------------------------------------------------
+GET.PRICE.BREAK:
+*----------------------------------------------------------------------
+      X.POS = 5
+      IF PRICE.BREAK THEN
+         MASK=PRICE.BREAK'R37#6'
+      END ELSE
+         MASK = '''R37#6'
+      END
+      CRT @(0,22):"Enter a price break.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(X.POS,Y.POS,MASK,'AMT3',Q,0,8,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=PRICE.BREAK
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            RETURN
+
+         CASE QI = '.'
+            DONE.ADDING = TRUE
+            RETURN
+
+         CASE QI = '' AND ADD.MODE = TRUE
+            DONE.ADDING = TRUE
+            RETURN
+
+
+         CASE NUM(QI)
+
+            PRICE.BREAK = Q
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.PRICE.BREAK
+      END CASE
+      PRICE.BREAK = Q
+
+      IF PRICE.BREAK = '' THEN
+         CALL ELINE("Invalid option.  Try again")
+         GOTO GET.PRICE.BREAK
+      END
+
+      CRT @(X.POS,Y.POS):PRICE.BREAK'R37#6'
+*ADD CHECKING FOR F IN THE LTL COLUMN HERE
+
+      RETURN
+
+
+*----------------------------------------------------------------------
+GET.LTL.PERC:
+*----------------------------------------------------------------------
+      X.POS = 14
+      IF LTL.PERC THEN
+         IF LTL.PERC = 'F' THEN
+            MASK=LTL.PERC'L#20'
+         END ELSE
+            MASK=LTL.PERC'R37#6'
+         END
+      END ELSE
+         MASK = '''R37#6'
+      END
+      CRT @(0,22):"Enter a LTL FSC percentage.":@(-4)
+      HELP = "OPTIONS: [F]ormula [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(X.POS,Y.POS,MASK,'AMT3',Q,0,8,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=LTL.PERC
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            RETURN
+
+         CASE QI = 'F' OR Q = 'F'
+            CRT @(14,Y.POS):' See Formulas'
+            GOSUB GET.FORMULA.INFO
+            LTL.PERC='F'
+            RETURN
+
+         CASE NUM(QI)
+            LTL.PERC = Q
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.LTL.PERC
+      END CASE
+      LTL.PERC=Q
+      IF PRICE.BREAK = '' THEN
+         CALL ELINE("Invalid option.  Try again")
+         GOTO GET.LTL.PERC
+      END
+      CRT @(X.POS,Y.POS):LTL.PERC'R37#6'
+
+      RETURN
+
+*----------------------------------------------------------------------
+GET.TL.PERC:
+*----------------------------------------------------------------------
+      X.POS = 23
+      IF TL.PERC THEN
+         MASK=TL.PERC'R37#6'
+      END ELSE
+         MASK = '''R37#6'
+      END
+      CRT @(0,22):"Enter a TL FSC percentage.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(X.POS,Y.POS,MASK,'AMT3',Q,0,8,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=TL.PERC
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            RETURN
+
+
+         CASE NUM(QI)
+            TL.PERC = Q
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.TL.PERC
+      END CASE
+      TL.PERC = Q
+      CRT @(X.POS,Y.POS):TL.PERC'R37#6'
+
+
+      RETURN
+
+*----------------------------------------------------------------------
+GET.TL.PER.MILE:
+*----------------------------------------------------------------------
+      X.POS = 32
+      IF TL.PER.MILE THEN
+         MASK=TL.PER.MILE'R37#6'
+      END ELSE
+         MASK = '''R37#6'
+      END
+      CRT @(0,22):"Enter a TL FSC per mile rate.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(X.POS,Y.POS,MASK,'AMT3',Q,0,8,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=TL.PER.MILE
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            RETURN
+
+
+         CASE NUM(QI)
+            TL.PER.MILE = Q
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.TL.PER.MILE
+      END CASE
+      TL.PER.MILE = Q
+      CRT @(X.POS,Y.POS):TL.PER.MILE'R37#6'
+      IF TL.PER.MILE = '' AND TL.PERC = '' THEN
+         CALL ELINE("Invalid option.  Try again")
+         GOTO GET.LTL.PERC
+      END
+
+
+
+      RETURN
+
+*----------------------------------------------------------------------
+GET.FORMULA.INFO:
+*----------------------------------------------------------------------
+
+*     TEMP.REC<13> = NFSC.REC<13,EDIT.NUMBER> ; LTL.DIGITS = TEMP.REC<13>                  ; * JMK01
+*     TEMP.REC<14> = NFSC.REC<14,EDIT.NUMBER> ; LTL.ROUND = TEMP.REC<14>                   ; * JMK01
+*     TEMP.REC<15> = NFSC.REC<15,EDIT.NUMBER> ; LTL.START = TEMP.REC<15>                   ; * JMK01
+*     TEMP.REC<16> = NFSC.REC<16,EDIT.NUMBER> ; LTL.INCRE = TEMP.REC<16>                   ; * JMK01
+*     TEMP.REC<17> = NFSC.REC<17,EDIT.NUMBER> ; LTL.START.PRICE = TEMP.REC<17>             ; * JMK01
+*     TEMP.REC<18> = NFSC.REC<18,EDIT.NUMBER> ; LTL.INCRE.PRICE = TEMP.REC<18>             ; * JMK01
+*     TEMP.REC<23> = NFSC.REC<23,EDIT.NUMBER> ; TL.DIGITS = TEMP.REC<23>                   ; * JMK01
+*     TEMP.REC<24> = NFSC.REC<24,EDIT.NUMBER> ; TL.ROUND = TEMP.REC<24>                    ; * JMK01
+*     TEMP.REC<25> = NFSC.REC<25,EDIT.NUMBER> ; TL.START = TEMP.REC<25>                    ; * JMK01
+*     TEMP.REC<26> = NFSC.REC<26,EDIT.NUMBER> ; TL.INCRE = TEMP.REC<26>                    ; * JMK01
+*     TEMP.REC<27> = NFSC.REC<27,EDIT.NUMBER> ; TL.START.PRICE = TEMP.REC<27>              ; * JMK01
+*     TEMP.REC<28> = NFSC.REC<28,EDIT.NUMBER> ; TL.INCRE.PRICE = TEMP.REC<28>              ; * JMK01
+      TEMP.REC<13> = NFSC.REC<13,EDIT.NUMBER,EDIT.PRICE> ; LTL.DIGITS = TEMP.REC<13>       ; * JMK01
+      TEMP.REC<14> = NFSC.REC<14,EDIT.NUMBER,EDIT.PRICE> ; LTL.ROUND = TEMP.REC<14>        ; * JMK01
+      TEMP.REC<15> = NFSC.REC<15,EDIT.NUMBER,EDIT.PRICE> ; LTL.START = TEMP.REC<15>        ; * JMK01
+      TEMP.REC<16> = NFSC.REC<16,EDIT.NUMBER,EDIT.PRICE> ; LTL.INCRE = TEMP.REC<16>        ; * JMK01
+      TEMP.REC<17> = NFSC.REC<17,EDIT.NUMBER,EDIT.PRICE> ; LTL.START.PRICE = TEMP.REC<17>  ; * JMK01
+      TEMP.REC<18> = NFSC.REC<18,EDIT.NUMBER,EDIT.PRICE> ; LTL.INCRE.PRICE = TEMP.REC<18>  ; * JMK01
+      TEMP.REC<23> = NFSC.REC<23,EDIT.NUMBER,EDIT.PRICE> ; TL.DIGITS = TEMP.REC<23>        ; * JMK01
+      TEMP.REC<24> = NFSC.REC<24,EDIT.NUMBER,EDIT.PRICE> ; TL.ROUND = TEMP.REC<24>         ; * JMK01
+      TEMP.REC<25> = NFSC.REC<25,EDIT.NUMBER,EDIT.PRICE> ; TL.START = TEMP.REC<25>         ; * JMK01
+      TEMP.REC<26> = NFSC.REC<26,EDIT.NUMBER,EDIT.PRICE> ; TL.INCRE = TEMP.REC<26>         ; * JMK01
+      TEMP.REC<27> = NFSC.REC<27,EDIT.NUMBER,EDIT.PRICE> ; TL.START.PRICE = TEMP.REC<27>   ; * JMK01
+      TEMP.REC<28> = NFSC.REC<28,EDIT.NUMBER,EDIT.PRICE> ; TL.INCRE.PRICE = TEMP.REC<28>   ; * JMK01
+
+
+
+
+      GOSUB DSP.FORMULA.SCN.2:
+
+GET.LTL.DIGITS:
+      IF LTL.DIGITS THEN
+         MASK=LTL.DIGITS'R0#6'
+      END ELSE
+         MASK = '''R0#6'
+      END
+      CRT @(0,22):"Enter a LTL National Fuel Digits Used.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(71,9,MASK,'AMT0',Q,0,6,'','',2,71,9,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=LTL.DIGITS
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            RETURN
+
+         CASE NUM(QI)
+            LTL.DIGITS = Q
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.LTL.DIGITS
+      END CASE
+      LTL.DIGITS = Q
+      CRT @(71,9):LTL.DIGITS'R0#6'
+
+GET.LTL.ROUND:
+      IF LTL.ROUND THEN
+         MASK=LTL.ROUND'R#6'
+      END ELSE
+         MASK = '''R#6'
+      END
+      CRT @(0,22):"Enter a LTL National Fuel Digits Rounded.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(71,10,MASK,'',Q,0,6,'','',2,71,10,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN QI=LTL.ROUND
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            GO GET.LTL.DIGITS
+
+         CASE QI = 'N' OR QI = 'Y'
+            LTL.ROUND = QI
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.LTL.ROUND
+      END CASE
+      CRT @(71,10):LTL.ROUND'R#6'
+
+GET.LTL.START:
+      IF LTL.START THEN
+         MASK=LTL.START'R37#6'
+      END ELSE
+         MASK = '''R37#6'
+      END
+      CRT @(0,22):"Enter a LTL Starting Percentage.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(71,11,MASK,'AMT3',Q,0,6,'','',2,71,11,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=LTL.START
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            GO GET.LTL.ROUND
+
+         CASE NUM(QI)
+            LTL.START = Q
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.LTL.START
+      END CASE
+      LTL.START = Q
+      CRT @(71,11):LTL.START'R37#6'
+
+
+
+GET.LTL.INCRE:
+      IF LTL.INCRE THEN
+         MASK=LTL.INCRE'R37#6'
+      END ELSE
+         MASK = '''R37#6'
+      END
+      CRT @(0,22):"Enter a LTL Increment Percentage.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(71,12,MASK,'AMT3',Q,0,6,'','',2,71,12,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=LTL.INCRE
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            GO GET.LTL.START
+
+         CASE NUM(QI)
+            LTL.INCRE = Q
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.LTL.INCRE
+      END CASE
+      LTL.INCRE = Q
+      CRT @(71,12):LTL.INCRE'R37#6'
+
+
+GET.LTL.START.PRICE:
+      IF LTL.START.PRICE THEN
+         MASK=LTL.START.PRICE'R37#6'
+      END ELSE
+         MASK = '''R37#6'
+      END
+      CRT @(0,22):"Enter a LTL Starting Price.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(71,13,MASK,'AMT3',Q,0,6,'','',2,71,13,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=LTL.START.PRICE
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            GO GET.LTL.INCRE
+
+         CASE NUM(QI)
+            LTL.START.PRICE = Q
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.LTL.START.PRICE
+      END CASE
+      LTL.START.PRICE = Q
+      CRT @(71.13):LTL.START.PRICE'R37#6'
+
+
+GET.LTL.INCRE.PRICE:
+      IF LTL.INCRE.PRICE THEN
+         MASK=LTL.INCRE.PRICE'R37#6'
+      END ELSE
+         MASK = '''R37#6'
+      END
+      CRT @(0,22):"Enter a LTL Increment Pirce.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(71,14,MASK,'AMT3',Q,0,6,'','',2,71,14,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=LTL.INCRE.PRICE
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            GO GET.LTL.START.PRICE
+
+         CASE NUM(QI)
+            LTL.INCRE.PRICE = Q
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.LTL.INCRE.PRICE
+      END CASE
+      LTL.INCRE.PRICE = Q
+      CRT @(71,14):LTL.INCRE.PRICE'R37#6'
+
+
+GET.TL.DIGITS:
+      IF TL.DIGITS THEN
+         MASK=TL.DIGITS'R0#6'
+      END ELSE
+         MASK = '''R0#6'
+      END
+      CRT @(0,22):"Enter a TL National Fuel Digits Used.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(71,15,MASK,'AMT3',Q,0,6,'','',2,71,15,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=TL.DIGITS
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            GO GET.LTL.INCRE.PRICE
+
+         CASE NUM(QI)
+            TL.DIGITS = Q
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.TL.DIGITS
+      END CASE
+      TL.DIGITS = Q
+      CRT @(71,15):TL.DIGITS'R0#6'
+
+GET.TL.ROUND:
+      IF TL.ROUND THEN
+         MASK=TL.ROUND'R#6'
+      END ELSE
+         MASK = '''R#6'
+      END
+      CRT @(0,22):"Enter a TL National Fuel Digits Rounded.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(71,16,MASK,'AMT0',Q,0,6,'','',2,71,16,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN QI=TL.ROUND
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            GO GET.TL.DIGITS
+
+         CASE QI = 'N' OR QI = 'Y'
+            TL.ROUND = QI
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.TL.ROUND
+      END CASE
+      CRT @(71,16):TL.ROUND'R#6'
+
+GET.TL.START:
+      IF TL.START THEN
+         MASK=TL.START'R37#6'
+      END ELSE
+         MASK = '''R37#6'
+      END
+      CRT @(0,22):"Enter a TL Starting Percentage.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(71,17,MASK,'AMT3',Q,0,6,'','',2,71,17,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=TL.START
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            GO GET.TL.ROUND
+
+         CASE NUM(QI)
+            TL.START = Q
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.TL.START
+      END CASE
+      TL.START = Q
+      CRT @(71,17):TL.START'R37#6'
+
+
+
+GET.TL.INCRE:
+      IF TL.INCRE THEN
+         MASK=TL.INCRE'R37#6'
+      END ELSE
+         MASK = '''R37#6'
+      END
+      CRT @(0,22):"Enter a TL Increment Percentage.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(71,18,MASK,'AMT3',Q,0,6,'','',2,71,18,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=TL.INCRE
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            GO GET.TL.START
+
+         CASE NUM(QI)
+            TL.INCRE = Q
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.TL.INCRE
+      END CASE
+      TL.INCRE = Q
+      CRT @(71,18):TL.INCRE'R37#6'
+
+
+GET.TL.START.PRICE:
+      IF TL.START.PRICE THEN
+         MASK=TL.START.PRICE'R37#6'
+      END ELSE
+         MASK = '''R37#6'
+      END
+      CRT @(0,22):"Enter a TL Starting Price.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(71,19,MASK,'AMT3',Q,0,6,'','',2,71,19,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=TL.START.PRICE
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            GO GET.TL.INCRE
+
+         CASE NUM(QI)
+            TL.START.PRICE = Q
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.TL.START.PRICE
+      END CASE
+      TL.START.PRICE = Q
+      CRT @(71.19):TL.START.PRICE'R37#6'
+
+
+GET.TL.INCRE.PRICE:
+      IF TL.INCRE.PRICE THEN
+         MASK=TL.INCRE.PRICE'R37#6'
+      END ELSE
+         MASK = '''R37#6'
+      END
+      CRT @(0,22):"Enter a TL Increment Price.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(71,20,MASK,'AMT3',Q,0,6,'','',2,71,20,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=TL.INCRE.PRICE
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            GO GET.TL.START.PRICE
+
+         CASE NUM(QI)
+            TL.INCRE.PRICE = Q
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.TL.INCRE.PRICE
+      END CASE
+      TL.INCRE.PRICE = Q
+      CRT @(71,20):TL.INCRE.PRICE'R37#6'
+
+
+      TEMP.REC<13> = LTL.DIGITS
+      TEMP.REC<14> = LTL.ROUND
+      TEMP.REC<15> = LTL.START
+      TEMP.REC<16> = LTL.INCRE
+      TEMP.REC<17> = LTL.START.PRICE
+      TEMP.REC<18> = LTL.INCRE.PRICE
+      TEMP.REC<23> = TL.DIGITS
+      TEMP.REC<24> = TL.ROUND
+      TEMP.REC<25> = TL.START
+      TEMP.REC<26> = TL.INCRE
+      TEMP.REC<27> = TL.START.PRICE
+      TEMP.REC<28> = TL.INCRE.PRICE
+
+*     IF ADD.MODE THEN                                       ; * JMK01
+*        FOR T = 13 TO 28                                    ; * JMK01
+*           NFSC.REC<T,EDIT.NUMBER+1>=TEMP.REC<T>            ; * JMK01
+*        NEXT T                                              ; * JMK01
+*     END ELSE                                               ; * JMK01
+      FOR T = 13 TO 28
+*        NFSC.REC<T,EDIT.NUMBER>=TEMP.REC<T>                 ; * JMK01
+         NFSC.REC<T,EDIT.NUMBER,EDIT.PRICE>=TEMP.REC<T>      ; * JMK01
+      NEXT T
+*     END                                                    ; * JMK01
+
+
+
+      RETURN
+
+
+
+
+*----------------------------------------------------------------------
+ADD.PRICE.BREAK:
+*----------------------------------------------------------------------
+      EDIT.PRICE = NUM.LINES.2
+      DSP.NUM.LINES.2 = EDIT.PRICE
+      DONE.ADDING = FALSE
+      LOOP
+      UNTIL DONE.ADDING DO
+         EDIT.PRICE = EDIT.PRICE+1
+         DSP.NUM.LINES.2 = EDIT.PRICE
+         OLD.DSP.PAGE = DSP.PAGE
+         DSP.PAGE = INT(DSP.NUM.LINES.2/PAGE.SIZE.2)
+         IF DSP.NUM.LINES.2 > DSP.PAGE*PAGE.SIZE.2 THEN DSP.PAGE+=1
+         EDIT.Y = EDIT.PRICE-(DSP.PAGE*PAGE.SIZE.2)+PAGE.SIZE.2
+         PAGE = DSP.PAGE
+         GOSUB DISPLAY.PAGE.2
+*
+         GOSUB DISPLAY.PAGE.3  ;*NPR01
+*
+         Y.POS = START.Y.1+EDIT.Y
+         EXIT.IT = FALSE
+         DONE = FALSE
+         ADD.MODE = TRUE
+         FIELD.POS = 1
+         PRICE.BREAK = ''
+         LTL.PERC = ''
+         TL.PERC = ''
+         TL.PER.MILE = ''
+         GOSUB PROCESS.DATA.2
+         IF FAILURE OR EXIT.IT THEN DONE.ADDING = TRUE
+
+      REPEAT
+
+      ADD.MODE = FALSE
+
+      RETURN
+*
+*----------------------------------------------------------------------
+DSP.EDIT.SCN.3: * State related Adjustments
+*----------------------------------------------------------------------
+*
+*NPR02      FOR LN = 6 TO 20
+      FOR LN = 6 TO 19
+         CRT @(42,LN):SPACE(37)
+      NEXT LN
+*
+*NPR88      CRT @(42,6):'| ## St Name             Adj % B/A Cap'
+*NPR88      CRT @(42,7):'| -- -- --------------- ------ -------'
+
+      CRT @(42,6):'| ## St Name             Adj % B/A I/O'     ;* NPR88
+      CRT @(42,7):'| -- -- --------------- ------ --- ---'     ;* NPR88
+
+
+      GOSUB COMPUTE.REC.SIZE.3
+*
+      RETURN
+*----------------------------------------------------------------------
+DSP.STATE.SCN.3:
+*----------------------------------------------------------------------
+*
+*
+      RETURN
+*----------------------------------------------------------------------
+DISPLAY.PAGE.3:
+*----------------------------------------------------------------------
+*
+      GOSUB DSP.EDIT.SCN.3
+*
+
+      Y = 0
+      LAST.Y.3 = 0
+
+      LINE.3 = (DSP.PAGE-1)*PAGE.SIZE.3+1
+
+      LOOP
+      UNTIL (Y=>PAGE.SIZE.3)
+         BEGIN CASE
+            CASE LINE.3 > DSP.NUM.LINES.3
+*
+* Print nothing - (Actually clears line)
+*
+               DESC = @(42,START.Y.3+Y):"|"
+            CASE NFSC.REC<31,LINE.3>=''
+               DESC = @(42,START.Y.3+Y):"|"
+               DESC := @(44,START.Y.3+Y) : LINE.3 'R%2'
+               LINE.3+=1
+               IF LAST.Y = 0 THEN LAST.Y = Y+1
+
+
+            CASE 1
+               DESC = @(42,START.Y.3+Y):"|"
+               DESC := @(44,START.Y.3+Y) : LINE.3 'R%2'
+               W.STATE = NFSC.REC<31,LINE.3>
+               W.ST.NAME = "??"
+               LOCATE W.STATE IN LEGAL.STATES<1> SETTING ST.POS THEN
+                  W.ST.NAME = OCONV(LEGAL.STATES<2,ST.POS>,"MCT")
+               END
+               W.ST.PERC.ADJ = NFSC.REC<32,LINE.3>
+               W.ST.PERC.BA  = NFSC.REC<33,LINE.3>   ;* Before or after Cap
+               W.ST.PERC.IO  = NFSC.REC<37,LINE.3>   ;* Apply State Adj to Inbound, Outbound or both type of Shipments
+               DESC:= @(47,START.Y.3+Y):W.STATE'L#2'
+               DESC:= @(50,START.Y.3+Y):W.ST.NAME 'L#15'
+               DESC:= @(66,START.Y.3+Y):W.ST.PERC.ADJ'R37#6'
+               DESC:= @(74,START.Y.3+Y):W.ST.PERC.BA 'L#2'
+               DESC:= @(78,START.Y.3+Y):W.ST.PERC.IO 'L#1'
+
+               LINE.3+=1
+         END CASE
+
+         Y+=1                     ; * Inc Y screen position
+         CRT DESC:@(-4)           ; * Draw screen line
+      REPEAT
+*
+
+      GOSUB COMPUTE.REC.SIZE.3
+*
+      RETURN
+*
+      PROCESS.DATA.3 :
+*
+
+
+      LOOP
+      WHILE (NOT(DONE OR EXIT.IT))
+         FAILURE = FALSE
+         STAY.PUT = FALSE
+         BEGIN CASE
+            CASE FIELD.POS = 0
+               DONE = TRUE
+               FAILURE = TRUE
+*
+* State
+*
+            CASE FIELD.POS = 1
+               GOSUB GET.STATE
+               IF ADD.MODE THEN
+                  LOCATE W.STATE IN NFSC.REC<31> SETTING PPOSX THEN
+                     CALL ELINE("State ":W.STATE:" Already entered - May only appear once")
+                     DONE = TRUE
+                     FAILURE = TRUE
+                  END
+                  IF DONE.ADDING THEN
+                     DONE = TRUE
+                  END ELSE
+                     TEMP.REC<31,EDIT.STATE>=W.STATE            ;* NPR01
+                  END
+               END ELSE
+                  TEMP.REC<31,EDIT.STATE>=W.STATE               ;* NPR01
+               END
+
+            CASE FIELD.POS = 2
+               GOSUB GET.ST.ADJ
+               TEMP.REC<32,EDIT.STATE>=W.ST.PERC.ADJ            ;* NPR01
+            CASE FIELD.POS = 3
+               GOSUB GET.ST.CAP.FLAG
+               TEMP.REC<33,EDIT.STATE>=W.ST.PERC.BA             ;* NPR01
+            CASE FIELD.POS = 4
+               GOSUB GET.ST.IO.FLAG
+               TEMP.REC<37,EDIT.STATE>=W.ST.PERC.IO             ;* NPR01
+*
+            CASE FIELD.POS = 5
+               IF ADD.MODE THEN
+                  NFSC.REC<31,EDIT.STATE> = W.STATE
+                  NFSC.REC<32,EDIT.STATE> = W.ST.PERC.ADJ
+                  NFSC.REC<33,EDIT.STATE> = W.ST.PERC.BA
+                  NFSC.REC<37,EDIT.STATE> = W.ST.PERC.IO
+                  GOSUB COMPUTE.REC.SIZE.3
+               END ELSE
+                  NFSC.REC<31,EDIT.STATE> = W.STATE
+                  NFSC.REC<32,EDIT.STATE> = W.ST.PERC.ADJ
+                  NFSC.REC<33,EDIT.STATE> = W.ST.PERC.BA
+                  NFSC.REC<37,EDIT.STATE> = W.ST.PERC.IO
+               END
+               DONE = TRUE
+         END CASE
+*
+         BEGIN CASE
+            CASE EXIT.IT = TRUE
+            CASE DONE = TRUE
+            CASE STAY.PUT = TRUE
+            CASE FAILURE = TRUE
+               FIELD.POS-=1
+            CASE 1
+               FIELD.POS+=1
+         END CASE
+      REPEAT
+*
+      RETURN
+*
+      GET.STATE :
+*
+      X.POS = 47
+      IF W.STATE THEN
+         MASK=W.STATE'L#2'
+      END ELSE
+         MASK = "" 'L#2'
+      END
+      CRT @(0,22):"Enter a State.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(X.POS,Y.POS.3,MASK,'',Q,0,8,'','',2,X.POS,Y.POS.3,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN QI=W.STATE
+
+      BEGIN CASE
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            RETURN
+
+         CASE QI = '.'
+            DONE.ADDING = TRUE
+            RETURN
+
+         CASE QI = '' AND ADD.MODE = TRUE
+            DONE.ADDING = TRUE
+            RETURN
+
+         CASE ALPHA(QI) AND LEN(QI) = 2
+            W.STATE = QI
+            LOCATE W.STATE IN LEGAL.STATES<1> SETTING ST.POS THEN
+               W.ST.NAME = OCONV(LEGAL.STATES<2,ST.POS>,"MCT")
+               Q = W.STATE
+            END ELSE
+               CALL ELINE(QI:" Not found in LEGAL.STATES Table")
+               GOTO GET.STATE
+            END
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.STATE
+      END CASE
+      W.STATE = Q
+
+      IF W.STATE = '' THEN
+         CALL ELINE("Invalid option.  Try again")
+         GOTO GET.STATE
+      END
+
+      CRT @(X.POS,Y.POS.3):W.STATE'L#2':" ":W.ST.NAME
+*
+      RETURN
+*
+      GET.ST.ADJ :  * Additional Adjustment for states if required
+*
+      X.POS = 66
+      IF W.ST.PERC.ADJ THEN
+         MASK=W.ST.PERC.ADJ'R37#6'
+      END ELSE
+         MASK = "" 'R37#6'
+      END
+      CRT @(0,22):"Enter a State Increment Percentage.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(X.POS,Y.POS.3,MASK,'AMT3',Q,0,6,'','',2,X.POS,Y.POS.3,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=W.ST.PERC.ADJ
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            GO GET.STATE
+
+         CASE NUM(QI)
+            W.ST.PERC.ADJ = Q
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.ST.ADJ
+      END CASE
+      W.ST.PERC.ADJ = Q
+      CRT @(X.POS,Y.POS.3):W.ST.PERC.ADJ'R37#6'
+*
+      RETURN
+*
+      GET.ST.CAP.FLAG :   * Apply Cap before or after State specific Adjustment
+*
+*NPR88      X.POS = 76
+      X.POS = 74
+      IF W.ST.PERC.BA THEN
+         MASK=W.ST.PERC.BA'L#2'
+      END ELSE
+         MASK = '''L#2'
+      END
+      CRT @(0,22):"Apply Cap [B]efore or [A]fter State specific Adjustment.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(X.POS,Y.POS.3,MASK,'AMT0',Q,0,6,'','',2,X.POS,Y.POS.3,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN QI=W.ST.PERC.BA
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            GO GET.ST.ADJ
+
+         CASE QI = 'A' OR QI = 'B'
+            W.ST.PERC.BA = QI
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.ST.CAP.FLAG
+      END CASE
+      CRT @(X.POS,Y.POS.3):W.ST.PERC.BA 'L#2'
+*
+      RETURN
+*
+      GET.ST.IO.FLAG :   * Apply Adjustment to Inbound/Outbound or both
+*
+      X.POS = 78
+      IF W.ST.PERC.IO THEN
+         MASK=W.ST.PERC.IO'L#2'
+      END ELSE
+         MASK = '''L#2'
+      END
+      CRT @(0,22):"Apply Adjustment to [I]nbound, [O]utbound or [B]oth.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(X.POS,Y.POS.3,MASK,'AMT0',Q,0,6,'','',2,X.POS,Y.POS.3,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN QI=W.ST.PERC.IO
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            GO GET.ST.ADJ
+
+         CASE QI = 'I' OR QI = 'O' OR QI = 'B'
+            W.ST.PERC.IO = QI
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.ST.IO.FLAG
+      END CASE
+      CRT @(X.POS,Y.POS.3):W.ST.PERC.IO 'L#2'
+*
+      RETURN
+*
+      ADD.STATE :
+*
+      EDIT.STATE = NUM.LINES.3
+      DSP.NUM.LINES.3 = 1
+      DONE.ADDING = FALSE
+      LOOP
+      UNTIL DONE.ADDING DO
+         EDIT.STATE = EDIT.STATE+1
+         DSP.NUM.LINES.3 = EDIT.STATE
+         OLD.DSP.PAGE = DSP.PAGE
+         DSP.PAGE = INT(DSP.NUM.LINES.3/PAGE.SIZE.3)
+         IF DSP.NUM.LINES.3 > DSP.PAGE*PAGE.SIZE.3 THEN DSP.PAGE+=1
+         EDIT.Y = EDIT.STATE-(DSP.PAGE*PAGE.SIZE.3)+PAGE.SIZE.3
+         PAGE = DSP.PAGE
+*
+         GOSUB DISPLAY.PAGE.3  ;*NPR01
+*
+         Y.POS.3 = START.Y.3+EDIT.STATE - 1  ;*????
+         EXIT.IT = FALSE
+         DONE = FALSE
+         ADD.MODE = TRUE
+         FIELD.POS = 1
+         W.STATE   = ''
+         W.ST.NAME = ''
+         W.ST.PERC.ADJ = ''
+         W.ST.PERC.BA  = ''
+         W.ST.PERC.IO  = ''   ;*NPR88
+         GOSUB PROCESS.DATA.3
+         IF FAILURE OR EXIT.IT THEN DONE.ADDING = TRUE
+
+      REPEAT
+
+      ADD.MODE = FALSE
+
+*
+      RETURN
+*
+      EDIT.STATE :
+*
+**********************************************%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+      IF NUM.LINES.3 < 1 THEN
+         CALL ELINE("No entries to edit.  Try adding first.")
+         RETURN
+      END
+
+SELECT.ENTRY.3:
+*
+      IF AFN.ANSWER = '' AND EDIT.MODE THEN
+         AFN.MSG = "Select Entry to Edit :"
+         AFN.MIN = 1
+         AFN.MAX = NUM.LINES.3
+         AFN.MASK = LAST.EDIT.MASK
+         GOSUB ASK.FOR.NUM
+         IF OCONV(AFN.ANSWER,"MCU") = 'X' THEN RETURN
+      END
+
+      EDIT.STATE = AFN.ANSWER
+      DSP.PAGE = INT(EDIT.STATE/PAGE.SIZE.3)
+      IF DSP.PAGE*PAGE.SIZE.3 < EDIT.STATE THEN DSP.PAGE+=1
+      EDIT.Y = EDIT.STATE-(DSP.PAGE*PAGE.SIZE.3)+PAGE.SIZE.3
+      IF DSP.PAGE*PAGE.SIZE.3 < EDIT.STATE THEN DSP.PAGE+=1
+      PAGE = DSP.PAGE
+      LAST.EDIT.MASK = AFN.ANSWER:' '
+
+      GOSUB DISPLAY.PAGE.3
+
+**      Y.POS = START.Y.3+EDIT.Y
+      Y.POS.3 = START.Y.3+EDIT.STATE - 1
+
+      TEMP.REC=''
+
+      TEMP.REC<31> = NFSC.REC<31,EDIT.STATE>
+      TEMP.REC<32> = NFSC.REC<32,EDIT.STATE>
+      TEMP.REC<33> = NFSC.REC<33,EDIT.STATE>
+      TEMP.REC<37> = NFSC.REC<37,EDIT.STATE>
+
+
+      W.STATE = TEMP.REC<31>
+      W.ST.NAME = "??"
+      LOCATE W.STATE IN LEGAL.STATES<1> SETTING ST.POS THEN
+         W.ST.NAME = OCONV(LEGAL.STATES<2,ST.POS>,"MCT")
+      END
+      W.ST.PERC.ADJ = TEMP.REC<32>
+      W.ST.PERC.BA  = TEMP.REC<33>   ;* Before or after Cap
+      W.ST.PERC.IO  = TEMP.REC<37>   ;* State Adjustment apply to Inbound/Outbound or both types of shipment
+
+      FIELD.POS = 1
+      EXIT.IT = FALSE
+      DONE = FALSE
+      ADD.MODE = FALSE
+
+      GOSUB PROCESS.DATA.3
+
+      IF EDIT.MODE THEN
+         AFN.ANSWER = ''
+         GOTO SELECT.ENTRY.3
+      END
+
+      RETURN
+
+**********************************************%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+*
+      RETURN
+*
+      DELETE.STATE :
+*
+****************************************$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+      IF NUM.LINES.3 < 1 THEN
+         CALL ELINE("No entries to edit.  Try adding first.")
+         RETURN
+      END
+
+SELECT.ENTRY.D:
+*
+*      IF AFN.ANSWER = '' AND EDIT.MODE THEN
+      AFN.MSG = "Select Entry to Delete :"
+      AFN.MIN = 1
+      AFN.MAX = NUM.LINES.3
+      AFN.MASK = LAST.EDIT.MASK
+      GOSUB ASK.FOR.NUM
+      IF OCONV(AFN.ANSWER,"MCU") = 'X' THEN RETURN
+*      END
+
+      EDIT.STATE = AFN.ANSWER
+      DSP.PAGE = INT(EDIT.STATE/PAGE.SIZE.3)
+      IF DSP.PAGE*PAGE.SIZE.3 < EDIT.STATE THEN DSP.PAGE+=1
+      EDIT.Y = EDIT.STATE-(DSP.PAGE*PAGE.SIZE.3)+PAGE.SIZE.3
+      IF DSP.PAGE*PAGE.SIZE.3 < EDIT.STATE THEN DSP.PAGE+=1
+      PAGE = DSP.PAGE
+      LAST.EDIT.MASK = AFN.ANSWER:' '
+*
+*&&&
+      GOSUB DISPLAY.PAGE.3
+
+      Y.POS.3 = START.Y.3+EDIT.STATE - 1
+
+* CRT @(0,22):" Y.POS.3  ":Y.POS.3;DEBUG
+
+      DESC = @(42,Y.POS.3):"|"
+      DESC := REVON:@(44,Y.POS.3) : LINE.3 'R%2'
+      W.STATE = NFSC.REC<31,EDIT.STATE>
+      W.ST.NAME = "??"
+      LOCATE W.STATE IN LEGAL.STATES<1> SETTING ST.POS THEN
+         W.ST.NAME = OCONV(LEGAL.STATES<2,ST.POS>,"MCT")
+      END
+      W.ST.PERC.ADJ = NFSC.REC<32,EDIT.STATE>
+      W.ST.PERC.BA  = NFSC.REC<33,EDIT.STATE>   ;* Before or after Cap
+      W.ST.PERC.IO  = NFSC.REC<37,EDIT.STATE>   ;* Apply State Adj to Inbound, Outbound or both type of Shipments
+      DESC:= @(47,Y.POS.3):W.STATE'L#2'
+      DESC:= @(50,Y.POS.3):W.ST.NAME 'L#15'
+      DESC:= @(66,Y.POS.3):W.ST.PERC.ADJ'R37#6'
+      DESC:= @(74,Y.POS.3):W.ST.PERC.BA 'L#2'
+      DESC:= @(78,Y.POS.3):W.ST.PERC.IO 'L#1' : REVOFF
+
+*
+      CRT DESC
+*
+      YN.MSG = 'Delete this entry?  Are you sure? :'
+      YN.MASK = 'N '
+      GOSUB ASK.Y.OR.N
+      IF YN.ANSWER = 'Y' THEN
+         IF NFSC.REC<31,EDIT.STATE> NE "" THEN
+            FOR T = 31 TO 33
+               DEL NFSC.REC<T,EDIT.STATE>                   ; * JMK01
+            NEXT T
+            DEL NFSC.REC<37,EDIT.STATE>
+         END
+         NUM.LINES.3-=1
+         GOSUB COMPUTE.REC.SIZE.3
+         GOSUB DISPLAY.PAGE.3   ;*mmmm
+      END
+
+*
+****************************************$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+*
+      RETURN
+*
+      EDIT.CAP.INFO :
+*
+      LTL.PERC.CAP = NFSC.REC<34>
+      TL.PERC.CAP  = NFSC.REC<35>
+      TL.MILE.CAP  = NFSC.REC<36>
+*
+      GET.LTL.PERC.CAP :
+*
+
+      IF LTL.PERC.CAP THEN
+         MASK=LTL.PERC.CAP'R37#6'
+      END ELSE
+         MASK = '''R37#6'
+      END
+      CRT @(0,22):"Enter a LTL Percentage Cap.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(15,20,MASK,'AMT3',Q,0,7,'','',2,15,20,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=LTL.PERC.CAP
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            RETURN
+
+         CASE NUM(QI)
+            LTL.PERC.CAP = Q
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.LTL.PERC.CAP
+      END CASE
+      LTL.PERC.CAP = Q
+      CRT @(15,20):LTL.PERC.CAP'R37#6'
+*
+      NFSC.REC<34> = LTL.PERC.CAP
+      TEMP.REC<34> = LTL.PERC.CAP
+*
+      GET.TL.PERC.CAP :
+*
+
+      IF TL.PERC.CAP THEN
+         MASK=TL.PERC.CAP'R37#6'
+      END ELSE
+         MASK = '''R37#6'
+      END
+      CRT @(0,22):"Enter a TL Percentage Cap.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(24,20,MASK,'AMT3',Q,0,7,'','',2,24,20,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=TL.PERC.CAP
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            RETURN
+
+         CASE NUM(QI)
+            TL.PERC.CAP = Q
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.TL.PERC.CAP
+      END CASE
+      TL.PERC.CAP = Q
+      CRT @(24,20):TL.PERC.CAP'R37#6'
+*
+      NFSC.REC<35> = TL.PERC.CAP
+      TEMP.REC<35> = TL.PERC.CAP
+*
+      GET.TL.MILE.CAP :
+*
+
+      IF TL.MILE.CAP THEN
+         MASK=TL.MILE.CAP'R37#6'
+      END ELSE
+         MASK = '''R37#6'
+      END
+      CRT @(0,22):"Enter a TL Mile Cap.":@(-4)
+      HELP = "OPTIONS: [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(32,20,MASK,'AMT3',Q,0,7,'','',2,32,20,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=TL.MILE.CAP
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+
+         CASE QI = 'X'
+            FAILURE=TRUE
+            RETURN
+
+         CASE NUM(QI)
+            TL.MILE.CAP = Q
+
+         CASE 1
+            CALL ELINE("Invalid option.  Try again")
+            GOTO GET.TL.MILE.CAP
+      END CASE
+      TL.MILE.CAP = Q
+      CRT @(32,20):TL.MILE.CAP'R37#6'
+*
+      NFSC.REC<36> = TL.MILE.CAP
+      TEMP.REC<36> = TL.MILE.CAP
+*
+      RETURN
+
+** NPR02 Start Changes
+*
+      EDIT.NOTE.INFO :
+*
+
+      FSC.NOTE  = NFSC.REC<38,EDIT.NUMBER> ;* NPR999
+      IF FSC.NOTE THEN
+         MASK=FSC.NOTE'L#20'
+      END ELSE
+         MASK = SPACE(20) 'L#20'  ;* NPR999
+      END
+      CRT @(0,22):"Enter Description":@(-4)
+      HELP = "OPTIONS: Space [ ] To clear [X]=Back [EX]=Exit Program"
+      CALL GEN.IN(59,20,MASK,'',Q,0,20,'','',2,59,20,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN Q=FSC.NOTE
+      IF QI=' ' THEN Q=''
+      BEGIN CASE
+         CASE QI = 'EX'
+            STOP
+         CASE QI = 'X'
+            FAILURE=TRUE
+            RETURN
+      END CASE
+      FSC.NOTE = Q
+      CRT @(59,20):FSC.NOTE'L#20'
+*
+      NFSC.REC<38,EDIT.NUMBER> = FSC.NOTE  ;* NPR999
+
+      RETURN
+*
+* NPR02 End changes
+*
+      SORT.STATE.DATA :
+*
+      NEW.REC = ""
+*
+      N.STS = DCOUNT(NFSC.REC<31>,@VM)
+      FOR I.ST = 1 TO N.STS
+         X.ST = NFSC.REC<31,I.ST>
+         X.ST.PERC.ADJ = NFSC.REC<32,I.ST>
+         X.ST.PERC.BA  = NFSC.REC<33,I.ST>
+         X.ST.PERC.IO  = NFSC.REC<37,I.ST>
+
+         IF X.ST.PERC.IO = '' THEN X.ST.PERC.IO = 'B'  ;* Both
+         IF X.ST.PERC.IO = 'B' THEN SORT.STR = X.ST : "1"
+         IF X.ST.PERC.IO = 'I' THEN SORT.STR = X.ST : "2"
+         IF X.ST.PERC.IO = 'O' THEN SORT.STR = X.ST : "3"
+
+         LOCATE X.ST IN NEW.REC<31> BY 'AR' SETTING ST.POS THEN
+            NULL
+         END ELSE
+            INS X.ST BEFORE NEW.REC<31,ST.POS>
+            INS X.ST.PERC.ADJ BEFORE NEW.REC<32,ST.POS>
+            INS X.ST.PERC.BA BEFORE NEW.REC<33,ST.POS>
+            INS X.ST.PERC.IO BEFORE NEW.REC<37,ST.POS>
+         END
+      NEXT I.ST
+*
+      FOR ATTR = 31 TO 33
+         NFSC.REC<ATTR> = NEW.REC<ATTR>
+      NEXT ATTR
+      NFSC.REC<37> = NEW.REC<37>
+*
+      RETURN

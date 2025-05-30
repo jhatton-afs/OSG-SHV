@@ -1,0 +1,150 @@
+***************************************************
+* Program name : CAVENDERS.SPECIAL
+* Author       : Greg Bino
+* Date written : Feb 23, 2021
+* Library      : FBBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* update upscommtbl for cavenders invoicing
+*
+* Last updated by afs (AFSLOGISTICS\gbino) at 08:58:43 on 04/03/2023.
+*
+* Start modification history
+
+* End modification history.
+*******************************************************
+* Initialize variables
+*
+      COMMAND=@SENTENCE
+      BEG.DATE=FIELD(COMMAND,' ',2)
+      END.DATE=FIELD(COMMAND,' ',3)
+      IF BEG.DATE='' THEN BEG.DATE=OCONV(DATE(),'D2/')
+      IF END.DATE='' THEN END.DATE=OCONV(DATE(),'D2/')
+      END.DATE=OCONV(DATE(),'D2/')
+      IBEG.DATE=ICONV(BEG.DATE,'D')
+      IEND.DATE=ICONV(END.DATE,'D')
+      CALL GET.USER.NEW(USER,CH.NUM)
+
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CCARRIERS',PROG.NAME)
+      END
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+         CALL OPEN.ABORT('FB.TRANSPORT',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      OPEN '','EMAILDATA' TO F.EMAILDATA ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+
+      CLIENT = '01825'
+      OPEN '','FB.UNPROCESS,':CLIENT TO F.UP ELSE
+         CALL OPEN.ABORT('FB.UNPROCESS,':CLIENT,PROG.NAME)
+      END
+      LOG.ONLY = 'N'
+      FILE.SEL = 3                       ; * fb.bills.hist
+      BUILD.DF.IN=''
+      SEPARATE.DIVISIONS ='0'
+      ONCE = 0
+      DIVISIONAL.ID='ALL'
+      AUTO=1
+*
+     ** STMT='CAVENDERS.SPECIAL.UPDT ':BEG.DATE'D2/':' ':END.DATE'D2/':' has finished.'      ; * populates fb.bills 42, 43, 44
+      STMT='CAVENDERS.SPECIAL.UPDT '
+      EXECUTE STMT CAPTURING RESULTS
+*
+      IBEG.DATE = OCONV(DATE() - 6,'D2/')
+      END.DATE = OCONV(DATE(),'D2/')
+ DEBUG
+      * THIS BUILDS UPSCOMMTBL
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT ELSE CLIENT.REC = ''
+
+      BUILD.DF.IN<1>=CLIENT ; BUILD.DF.IN<2>=LOG.ONLY
+      BUILD.DF.IN<3>='UPSDTL' ; BUILD.DF.IN<4>='ALL'
+      BUILD.DF.IN<5>=FILE.SEL ; BUILD.DF.IN<6>=IBEG.DATE
+      BUILD.DF.IN<7>=END.DATE ; BUILD.DF.IN<8>=''
+      BUILD.DF.IN<9>='N' ; BUILD.DF.IN<10>='N'
+      BUILD.DF.IN<11>='N' ; BUILD.DF.IN<12>='N'
+      BUILD.DF.IN<13>=CLIENT.REC<134> ; BUILD.DF.IN<14>='EMAIL'
+      BUILD.DF.IN<15>=SEPARATE.DIVISIONS ; BUILD.DF.IN<16>='ALL'
+      BUILD.DF.IN<17>=CLIENT.REC<135> ; BUILD.DF.IN<18>='1'
+      BUILD.DF.IN<19>=CLIENT.REC<125> ; BUILD.DF.IN<20>=''
+      IF CLIENT.REC<179>#'' AND ONCE=0 THEN
+         BUILD.DF.IN<19>=CLIENT.REC<179>
+      END
+      BUILD.DF.IN<19>='gbinO@afs.net'
+      BUILD.DF.IN<21>=USER ; BUILD.DF.IN<22>=CH.NUM
+      BUILD.DF.IN<23>=AUTO ; BUILD.DF.IN<24>=''
+      BUILD.DF.IN<25>='FROM FB.3.1.NEW' ; BUILD.DF.IN<26>=1
+      BUILD.DF.IN<27>='0' ; BUILD.DF.IN<28>='0'
+      BUILD.DF.IN<29>='N'
+      BUILD.DF.IN<45>=ONCE
+      CALL BUILD.DF.SUB.SEQ(F.CLIENTS,F.CARRIERS,F.TRANSPORT,F.TABLES,F.EMAILDATA,BUILD.DF.IN,BUILD.DF.ALL.OUT)
+      ***********************************************************
+
+     
+      * NOW WE ARE READY TO UPDATE FB.BILLS ATT 32
+      OPEN '','UPSCOMMTBL' TO F.UPSCOMMTBL ELSE
+         CALL OPEN.ABORT('UPSCOMMTBL',PROG.NAME)
+      END
+      OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS.HIST ELSE
+         CALL OPEN.ABORT('FB.BILLS.HIST',PROG.NAME)
+      END
+      OPEN '','FB.BILLS,':CLIENT TO F.BILLS ELSE
+         CALL OPEN.ABORT('FB.BILLS.HIST',PROG.NAME)
+      END
+      IBEG.DATE = ICONV(IBEG.DATE,'D')
+      UPS.FILE.DATE = OCONV(IBEG.DATE ,'D2-')      ; * assume friday process date and ups file is from previous saturday
+      CONVERT "-" TO "" IN UPS.FILE.DATE
+    
+      STMT='SSELECT UPSCOMMTBL WITH @ID = "' : IEND.DATE : '*01825]"'
+      EXECUTE STMT CAPTURING OUTPUT
+      EOJ = 0
+      LOOP
+         READNEXT ID ELSE EOJ = 1
+      UNTIL EOJ DO
+         BILLS.ID='00041*':ID[19,3]:'-':ID[22,3]:UPS.FILE.DATE:'-O*0'
+        
+         READ DBILLS FROM F.BILLS.HIST,BILLS.ID ELSE
+            CONTINUE
+         END
+
+         READ DFB.WORK FROM F.UPSCOMMTBL,ID ELSE CONTINUE
+         UP.ARRAY="*NEW*"
+         UP.ID='UPSCOMMTBL*':ID
+         WRITE UP.ARRAY ON F.UP,UP.ID ELSE
+            NULL
+         END
+         DELETE F.UPSCOMMTBL,ID
+         NUM.OF.ITEMS=DCOUNT(DFB.WORK<1>,@VM)
+         FOUND = 0
+         FOR I = 1 TO NUM.OF.ITEMS
+            LOCATE DFB.WORK<1,I> IN DBILLS<31> SETTING POS THEN
+               DBILLS<32,POS>=DFB.WORK<2,I>*100
+               FOUND = 1
+            END ELSE
+               CALL ELINE('Cannot find ':DFB.WORK<1,I>:' in bill ':BILLS.ID)
+               CONTINUE
+            END
+         NEXT I
+         IF FOUND THEN
+            WRITE DBILLS ON F.BILLS.HIST,BILLS.ID
+            WRITE DBILLS ON F.BILLS,BILLS.ID
+         END
+      REPEAT
+      * NEED TO REMOVE PROC.DT    !!!!!!!
+      CMD ='SELECT FB.BILLS,01825 WITH PROC.DT'
+      EXECUTE CMD CAPTURING OUTPUT RETURNING JUNK
+      IF @SELECTED THEN
+         EOJ = 0
+         LOOP
+            READNEXT BILL.ID ELSE EOJ = 1
+         UNTIL EOJ DO
+            WRITEV "" ON F.BILLS,BILL.ID,37
+            WRITEV "" ON F.BILLS.HIST,BILL.ID,37
+         REPEAT
+      END

@@ -1,0 +1,511 @@
+***********************************************************************
+* Program name :  FB.SMNAACRP
+* Author       :  MIKE KERBOW
+* Date written :  03/01/2005
+* Library      :  FBBP
+$* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* BUILD A DELIMITED FILE OF ORDER INFORMATION FOR SWEDISH MATCH
+*
+* Last updated by afs (AFSLOGISTICS\gbino) at 09:47:33 on 04/03/2019.
+*
+* Mod nn  mm/dd/yy, init, req #, description
+* Start modification history
+* 072806 - JMK01 - MODIFIED TO IGNORE ANY VOID RECORDS
+* 110806 - JMK02 - T200611080010 / priority 2 /FW: Replacement of John Esposito with Adam Smith on reports
+* 062807 - JMK03 - C200706110007  /   /  Swedish Match Sales Order Accrual File SMNAACRP
+* 072707 - JMK04 - T200707260003   RE: Swedish Match accrual report
+* 032108 - JMK05 - C080887 - Swedish Match Sales Order Accrual File report
+* 010509 - NPR01 - C090005 - Remove Kelly Gammon from emails
+* 030209 - JMK06 - Remove Holly Barany and add Mark Newton to emails
+* 052809 - JMK07 - C090710 - Remove Adam Smith from recipient lists
+* 110209 - JMK08 - C091328 - Swedish Match report recipients
+* 032510 - JMK09 - ADD TROUBLESHOOTING CAPABILITY TO REPORT
+* 051311 - NPR02 - Added additional info to the email that goes out when an unauthorized person tries to use the pgm.
+* 070312 - JMK10 - SysAid#3045 - Swedish Match- please add to distribution list
+* 080112 - JMK11 - SysAid#3421 - Swedish Match Accrual File
+* 082012 - JMK12 - SysAid#3637 - Swedish Match- email distribution list
+* 123113 - JMK13 - SysAid#8085 - Swedish Match Access
+* 112114 - JMK14 - SysAid#13388 - Swedish Match report
+* 041715 - JMK15 - SysAid#16450 - Swedish Match - add email
+* 081115 - DRF01 - SysAid 19293 - Gave Cynthia access
+* 063016 - GRB01 - SysAid 25575 - add operator table
+* 013018 - DRF02 - Ticket 10166 - added the once for all who have access
+*                  to this program in case troubleshoot is on. The user 
+*                  can override the troubleshoot email
+* 040319 - GRB02 - ACCU-32 Remove MC minimum charge column
+* End modification history
+**********************************************************************************************************************
+
+      $INCLUDE PROG.ADMIN INC_OPTIONS
+
+* Initialize variables
+
+      PROMPT''
+      CALL GET.USER.NEW(USER,CH.NUM)
+      USER=OCONV(USER,'MCU')
+      RESTRICT.ACCESS=1
+      TESTING=0                          ; * JMK03
+      ONCE=0    ; * DRF02
+
+      PROG.NAME='FB.SMNAACRP'
+      PROG.DESC='Build File of Sales Order Information for Swedish Match'
+      PACK.NAME='Freight Billing'
+      MASK.CHAR='-'
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.SMNAACRP' ; UPL.VOUT = ''   ;* NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ;* NPR_UPL 04/23/2010
+      BACK.FLAG=0
+      PAGE.NUM=1 ; PROMPT.NUM=1
+      BANK.ID=''
+      BANK.NAME=''
+      BEG.DATE=''
+      END.DATE=''
+      TO.ADD=''
+      CC.ADD=''
+      BCC.ADD=''
+      TO.ADD<1,-1>='afsreports@swedishmatch.com'   ; * JMK15
+      TO.ADD<1,-1>='JShivers@afs.net'    ; * JMK10 ; * JMK11
+      TO.ADD<1,-1>='Logistics@SMNA.com'  ; * JMK12
+      CC.ADD<1,-1>='RJustice@afs.net'    ; * JMK08
+      CC.ADD<1,-1>='SChutai@afs.net'     ; * JMK13
+      CC.ADD<1,-1>='CProcell@afs.net'     ; * DRF01
+
+* Open other files
+
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE          ; *JMK09
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)      ; *JMK09
+      END                                ; * JMK09
+      OPEN '','FB.BOL.CRX,01344' TO F.BOL ELSE
+         CALL OPEN.ABORT('FB.BOL.CRX,01344',PROG.NAME)
+      END
+      OPEN '','VOC' TO F.VOC ELSE
+         CALL ELINE('Unable to open VOC file - Call IS Department.')
+         GOTO THE.END
+      END
+
+      OPEN '','BCTRL' TO F.BCTRL ELSE              ; *NPR01
+         CALL OPEN.ABORT('BCTRL',PROG.NAME)        ; *NPR01
+      END                                          ; *NPR01
+   OPEN '','OPERATOR' TO F.OP ELSE CALL OPEN.ABORT("OPERATOR",PROG.NAME)      ; * GRB01
+      OPEN '','BILLDATA.STC' TO F.BILLDATA ELSE
+         READ BILLDATA.REC FROM F.VOC,'BILLDATA' ELSE
+            CALL ELINE('Unable to open VOC BILLDATA - Call IS Department.')
+            GOTO THE.END
+         END
+         BILLDATA.REC<2>:='\STC'
+         WRITE BILLDATA.REC ON F.VOC,'BILLDATA.STC' ELSE
+            CALL ELINE('STC is not in the BILLDATA folder - Call IS Department.')
+            GOTO THE.END
+         END
+         OPEN '','BILLDATA.STC' TO F.BILLDATA ELSE
+            CALL ELINE('Unable to open STC file. Call IS Department.')
+            GOTO THE.END
+         END
+      END
+      READ BILLDATA.REC FROM F.VOC,'BILLDATA.STC' ELSE BILLDATA.REC=''
+
+* Display heading
+
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+      GOSUB SET.DISPLAY.VARIABLE
+      IF RESTRICT.ACCESS THEN
+    * Begin GRB01
+      	READV OP.FLG FROM F.OP,USER,15 ELSE
+         OP.FLG = "N"
+      END
+      IF OP.FLG = "Y" THEN
+    ****     BEGIN CASE
+*
+* Authorized Users
+*
+            *****CASE USER = 'BFRANKLIN'      ; * JMK10
+            *****CASE USER = 'BRIAN'
+            *****CASE USER = 'BROSE'          ; * JMK10
+            *****CASE USER = 'DAVID'
+            *****CASE USER = 'GBINO'
+            *****CASE USER = 'CYNTHIA'        ; * DRF01
+            *****CASE USER = 'DONNA'
+            *****CASE USER = 'JSHIVERS'       ; * JMK04
+            *****CASE USER = 'MARY'
+            *****CASE USER = 'MDARLINGTON'    ; * JMK13
+            *****CASE USER = 'MYRA'
+            *****CASE USER = 'SCHUTAI'        ; * JMK13
+            *****CASE USER = 'SMATTHEWS'      ; * Added per Scott Matthews and Owen Ok. DRF 11/03/06
+            *****CASE USER = 'WPETTIGREW'     ; * JMK03
+*
+* Restrict the other
+*
+END ELSE
+          ****  CASE 1
+               CALL FB.PRINT.CENT(1,80,12,'Restricted Access Application')
+               CALL FB.PRINT.CENT(1,80,14,'Access Denied! See Owen for Access')
+               CALL ELINE('')
+               READV USER.NAME FROM F.BCTRL, USER,13 ELSE USER.NAME = ''
+               SUBJ='User ' : USER :' - ' : USER.NAME : ' tried to access program FB.SMNAACRP'
+               TEXT='User ' : USER :' - ' : USER.NAME : ' tried to access program FB.SMNAACRP'
+               TEXT<1,-1> = " "
+               TEXT<1,-1> = "The program Builds a File of Sales Order Information for Swedish Match "
+               GOSUB ACCESS.NOTIFY       ; * JMK05
+               STOP
+    ****     END CASE
+       END  
+    * End GRB01     
+      END
+      IF TESTING AND USER # 'MKERBOW' THEN         ; * JMK03
+         CALL ELINE('This is in testing mode at this time.')           ; * JMK03
+         CALL ELINE('Contact Help Desk for access.')         ; * JMK03
+      END                                ; * JMK03
+      CLIENT.ID='01344'                  ; * JMK09
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE          ; * JMK09
+         CALL ELINE('Client record is not on file!  Call Help Desk.')  ; * JMK09
+      END                                ; * JMK09
+      IF CLIENT.REC<179>#'' THEN         ; * JMK23
+TROUBLESHOOT.PROMPT: ; * JMK69
+         HELP=CLIENT.REC<242>:" EX=Stop [YES]=Continue [ONCE]=Override troubleshoot."     ; * JMK69 ; * JMK106    ; * DRF02
+         CALL GEN.IN(0,22,'Troubleshooting is currently active. Continue. ----','',Q,0,4,'','',0,-4,22,1,QI,HELP,0,23)   ; * JMK69 ; * JMK97 ; * JMK106
+         QI=OCONV(QI,'MCU')              ; * JMK69
+         BEGIN CASE                      ; * JMK69
+            CASE QI='EX'                 ; * JMK69
+               STOP                      ; * JMK69
+            CASE QI='YES'                ; * JMK69
+           
+*DF            CASE QI='ONCE' AND USER='MARY'         ; * JMK97    ; * DRF02
+            CASE QI='ONCE'          ; * JMK97    ; * DRF02
+               ONCE=1                    ; * JMK97
+            CASE 1                       ; * JMK69
+               CALL ELINE('Invalid entry. Must be [X], [EX], or [YES].')         ; * JMK69
+               GOTO TROUBLESHOOT.PROMPT  ; * JMK69
+         END CASE                        ; * JMK69
+      END                                ; * JMK23
+*
+* Verify selection criteria is correct
+*
+VERIFY.SELECTION: ***
+      HELP='ENTER to continue. [X]=Back [EX]it'
+      CALL GEN.IN(0,22,'Enter Selection : ----','',Q,0,4,'','',0,-4,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX' OR QI='EXI' OR QI='EXIT'
+            GOTO THE.END
+         CASE QI='X'
+            GOTO THE.END
+         CASE QI=''
+         CASE 1
+            GOTO VERIFY.SELECTION
+      END CASE
+      EXP.REC=''
+      HDG.LINE=''
+      HDG.LINE<1,1>='ORDER'
+      HDG.LINE<1,2>='SHIP DATE'
+      HDG.LINE<1,3>='TYPE'
+      HDG.LINE<1,4>='SCAC'
+      HDG.LINE<1,5>='SHP CITY'
+      HDG.LINE<1,6>='SHP ST'
+      HDG.LINE<1,7>='SHP ZIP'
+      HDG.LINE<1,8>='CNSGN NAME'
+      HDG.LINE<1,9>='CNS CITY'
+      HDG.LINE<1,10>='CNS ST'
+      HDG.LINE<1,11>='CNS ZIP'
+      HDG.LINE<1,12>='ENTITY'
+      HDG.LINE<1,13>='COST CTR'
+      HDG.LINE<1,14>='ACCT'
+      HDG.LINE<1,15>='X'
+      HDG.LINE<1,16>='PROJ'
+      HDG.LINE<1,17>='TOT WGT'
+      HDG.LINE<1,18>='CASES'
+      HDG.LINE<1,19>='CWT'
+****      HDG.LINE<1,20>='MC' ; *GRB02
+      HDG.LINE<1,20>='CALC NET' ; *GRB02
+      HDG.LINE<1,21>='ACCRUE' ; *GRB02
+      EXP.REC<-1>=HDG.LINE
+*
+* Start processing the export information
+*
+      CRT @(0,20):'Performing accrual estimation...'
+      RATES=''
+      STMT='SSELECT FB.BOL.CRX,01344'
+      EXECUTE STMT RTNLIST BOL.LIST CAPTURING OUTPUT
+      NUM.ITMS=@SELECTED
+      IF NUM.ITMS THEN
+         EOF=0
+         CNT=0
+         LOOP
+            READNEXT BOL.ID FROM BOL.LIST ELSE EOF=1
+         UNTIL EOF DO
+            CNT+=1
+            CALL PROG.BAR(22,CNT,NUM.ITMS,PER)
+            READ BOL.REC FROM F.BOL,BOL.ID THEN
+*              IF BOL.REC<3>+0#0 AND BOL.REC<22>#'' THEN ; * JMK01
+               IF BOL.REC<3>+0#0 AND BOL.REC<22>#'' AND BOL.REC<23>#'V' THEN     ; * JMK01
+                  SM.ORDER=BOL.REC<8>
+                  SM.SDATE=BOL.REC<2>
+                  SM.TYPE=BOL.REC<10>
+                  SM.SCAC=BOL.REC<11>
+                  SM.SCITY=BOL.REC<15>
+                  SM.SST=BOL.REC<16>
+                  SM.SZIP=BOL.REC<14>
+                  SM.CNAME=BOL.REC<17>
+                  SM.CCITY=BOL.REC<19>
+                  SM.CST=BOL.REC<20>
+                  SM.CZIP=BOL.REC<18>
+                  SM.ENT=BOL.REC<9>[1,4]
+                  SM.CCTR=BOL.REC<9>[5,3]
+                  SM.ACCT=BOL.REC<9>[8,7]
+                  SM.X=BOL.REC<9>[15,3]
+                  SM.PROJ=BOL.REC<9>[18,5]
+                  SM.TWGT=SUM(BOL.REC<22>)
+                  SM.CASES=BOL.REC<12>
+                  SM.TAMT=BOL.REC<3>
+                  RATE.ID=SM.SZIP[1,5]:SM.CZIP[1,5]
+                  LOCATE(RATE.ID,RATES,1;RPOS) ELSE
+                     INS RATE.ID BEFORE RATES<1,RPOS>
+                     INS 0 BEFORE RATES<2,RPOS>
+                     INS 0 BEFORE RATES<3,RPOS>
+                  END
+                  RATES<2,RPOS>+=SM.TAMT
+                  RATES<3,RPOS>+=SM.TWGT
+               END
+            END
+         REPEAT
+      END
+*
+* Start processing the export information
+*
+      CRT @(0,20):'Processing sales order export...'
+      STMT='SSELECT FB.BOL.CRX,01344'
+      EXECUTE STMT RTNLIST BOL.LIST CAPTURING OUTPUT
+      NUM.ITMS=@SELECTED
+      IF NUM.ITMS THEN
+         EOF=0
+         CNT=0
+         LOOP
+            READNEXT BOL.ID FROM BOL.LIST ELSE EOF=1
+         UNTIL EOF DO
+            CNT+=1
+            CALL PROG.BAR(22,CNT,NUM.ITMS,PER)
+            READ BOL.REC FROM F.BOL,BOL.ID THEN
+               IF BOL.REC<23>='V' THEN GO SKIP.BOL
+               IF BOL.REC<3>#"" THEN GO SKIP.BOL
+               IF BOL.REC<8>="" THEN GO SKIP.BOL
+               IF BOL.REC<2>="" THEN GO SKIP.BOL
+               IF BOL.REC<11>='BEIT' THEN GO SKIP.BOL
+               IF BOL.REC<11>='CPU' THEN GO SKIP.BOL
+               IF BOL.REC<11>='EXPO' THEN GO SKIP.BOL
+               IF BOL.REC<11>='UPS' THEN GO SKIP.BOL
+               IF BOL.REC<11>='UPS2' THEN GO SKIP.BOL        ; * JMK14
+               IF BOL.REC<11>='UPS3' THEN GO SKIP.BOL        ; * JMK14
+               IF BOL.REC<17>[1,16]='NATIONAL TOBACCO' THEN GO SKIP.BOL
+               SM.ORDER=BOL.REC<8>
+               SM.SDATE=BOL.REC<2>
+               SM.TYPE =BOL.REC<10>
+               SM.SCAC =BOL.REC<11>
+               SM.SCITY=BOL.REC<15>
+               SM.SST =BOL.REC<16>
+               SM.SZIP =BOL.REC<14>
+               SM.CNAME=BOL.REC<17>
+               SM.CCITY=BOL.REC<19>
+               SM.CST =BOL.REC<20>
+               SM.CZIP =BOL.REC<18>
+               SM.ENT =TRIM(BOL.REC<9>[1,4])
+               SM.CCTR =TRIM(BOL.REC<9>[5,3])
+               SM.ACCT =TRIM(BOL.REC<9>[8,7])
+               SM.X =TRIM(BOL.REC<9>[15,3])
+               SM.PROJ =TRIM(BOL.REC<9>[18,5])
+               SM.TWGT =SUM(BOL.REC<22>)
+               SM.CASES=BOL.REC<12>
+               SCITY=OCONV(SM.SCITY,'MCU')         ; * JMK03
+               SST=OCONV(SM.SST,'MCU')   ; * JMK03
+               DCITY=OCONV(SM.CCITY,'MCU')         ; * JMK03
+               DST=OCONV(SM.CST,'MCU')   ; * JMK03
+               SM.TL=''                  ; * JMK03
+               BEGIN CASE
+                  CASE SM.SCAC='AMX' ; SM.MC=98340
+                  CASE SM.SCAC='AVRT' OR SM.SCAC='AVER' ; SM.MC=4500
+                  CASE SM.SCAC='BEL' ; SM.MC=121647
+                  CASE SM.SCAC='BLMT'    ; * JMK03
+                     BEGIN CASE          ; * JMK03
+                        CASE DCITY='GARLAND' ; SM.TL=150000  ; * JMK03
+                     END CASE            ; * JMK03
+                  CASE SM.SCAC='CENF' ; SM.MC=4200
+                  CASE SM.SCAC='PGTL'
+*                    DEST=OCONV(SM.CCITY,'MCU')    ; * JMK03
+                     BEGIN CASE
+*                       CASE DEST='PITTSBURGH' ; SM.MC=101761          ; * JMK03
+*                       CASE DEST='BUTNER' ; SM.MC=99550     ; * JMK03
+*                       CASE DEST='FORT MILL' ; SM.MC=88770  ; * JMK03
+*                       CASE DEST='MORROW' ; SM.MC=67568     ; * JMK03
+                        CASE DCITY='PITTSBURGH' ; SM.TL=150000         ; * JMK03
+                        CASE DCITY='BUTNER' ; SM.TL=170000   ; * JMK03
+                        CASE DCITY='FT MILL' ; SM.TL=130000  ; * JMK03
+                        CASE DCITY='MORROW' ; SM.TL=95000    ; * JMK03
+                        CASE DCITY='GARLAND' ; SM.TL=170000  ; * JMK03
+*                       CASE 1 ; SM.MC=''
+                     END CASE
+*                 CASE SM.SCAC='DASH' ; SM.MC=302500         ; * JMK03
+                  CASE SM.SCAC='DASH' ; SM.TL=350000         ; * JMK03
+                  CASE SM.SCAC='PLDI' ; SM.MC=''
+*                 CASE SM.SCAC='DAFG' ; SM.MC=4600 ; * JMK03
+                  CASE SM.SCAC='DAFG' ; SM.MC=4750           ; * JMK03
+                  CASE SM.SCAC='YFSY' ; SM.MC=9000
+                  CASE SM.SCAC='EMTW' ; SM.MC=1500
+*                 CASE SM.SCAC='EXLA' ; SM.MC=5200 ; * JMK03
+                  CASE SM.SCAC='EXLA' ; SM.MC=5065           ; * JMK03
+                  CASE SM.SCAC='EXPT' ; SM.MC=''
+*                 CASE SM.SCAC='FXFE' ; SM.MC=4850 ; * JMK03
+                  CASE SM.SCAC='FXFE' ; SM.MC=5250           ; * JMK03
+                  CASE SM.SCAC='FXFN' ; SM.MC=7950           ; * JMK03
+                  CASE SM.SCAC='FXFW' ; SM.MC=5500
+*                 CASE SM.SCAC='NEMF' ; SM.MC=4200 ; * JMK03
+                  CASE SM.SCAC='NEMF' ; SM.MC=4619           ; * JMK03
+*                 CASE SM.SCAC='ODFL' ; SM.MC=5200 ; * JMK03
+                  CASE SM.SCAC='ODFL' ; SM.MC=6000           ; * JMK03
+                  CASE SM.SCAC='OVNT' ; SM.MC=6000
+*                 CASE SM.SCAC='PITD' ; SM.MC=3570 ; * JMK03
+                  CASE SM.SCAC='PITD'
+                     BEGIN CASE
+                        CASE DST='PA' ; SM.MC=4500           ; * JMK03
+                        CASE DST='OH' ; SM.MC=4500           ; * JMK03
+                        CASE 1 ; SM.MC=4800        ; * JMK03
+                     END CASE            ; * JMK03
+                  CASE SM.SCAC='RNLO' ; SM.MC=5300
+                  CASE SM.SCAC='RDWY' ; SM.MC=9000
+*                 CASE SM.SCAC='SAIA' ; SM.MC=4945 ; * JMK03
+                  CASE SM.SCAC='SAIA'    ; * JMK03
+                     BEGIN CASE          ; * JMK03
+                        CASE SST=DST ; SM.MC=4830  ; * JMK03
+                        CASE SST#DST ; SM.MC=5245  ; * JMK03
+                     END CASE            ; * JMK03
+                  CASE SM.SCAC='RETL' ; SM.MC=5000
+                  CASE SM.SCAC='TLEX'    ; * JMK03
+                     BEGIN CASE          ; * JMK03
+                        CASE DCITY='PITTSBURGH' ; SM.TL=133000         ; * JMK03
+                        CASE DCITY='GARLAND' ; SM.TL=135000  ; * JMK03
+                     END CASE            ; * JMK03
+                  CASE 1 ; SM.MC=''
+               END CASE
+               IF SM.TL#'' THEN          ; * JMK03
+                  SM.ACC=SM.TL           ; * JMK03
+               END ELSE                  ; * JMK03
+                  RATE.ID=SM.SZIP[1,5]:SM.CZIP[1,5]
+                  LOCATE(RATE.ID,RATES,1;RPOS) THEN
+                     TOT.AMT=RATES<2,RPOS>
+                     TOT.WGT=RATES<3,RPOS>
+                     IF TOT.WGT/100=0 THEN         ; * JMK03
+                        SM.CWT=0         ; * JMK03
+                     END ELSE            ; * JMK03
+                        SM.CWT=TOT.AMT/(TOT.WGT/100)
+                     END                 ; * JMK03
+                  END ELSE
+                     TOT.AMT=0
+                     TOT.WGT=0
+                     SM.CWT=0
+                  END
+                  SM.CALCNET=SM.CWT*(SM.TWGT/100)
+                  IF SM.CALCNET>SM.MC THEN
+                     SM.ACC=SM.CALCNET
+                  END ELSE
+                     SM.ACC=SM.MC
+                  END
+               END                       ; * JMK03
+               EXP.LINE=''
+               EXP.LINE<1,1>=SM.ORDER
+               EXP.LINE<1,2>=SM.SDATE 'D2/'
+               EXP.LINE<1,3>=SM.TYPE
+               EXP.LINE<1,4>=SM.SCAC
+               EXP.LINE<1,5>=SM.SCITY
+               EXP.LINE<1,6>=SM.SST
+               EXP.LINE<1,7>=SM.SZIP
+               EXP.LINE<1,8>=SM.CNAME
+               EXP.LINE<1,9>=SM.CCITY
+               EXP.LINE<1,10>=SM.CST
+               EXP.LINE<1,11>=SM.CZIP
+               EXP.LINE<1,12>=SM.ENT
+               EXP.LINE<1,13>=SM.CCTR
+               EXP.LINE<1,14>=SM.ACCT
+               EXP.LINE<1,15>=SM.X
+               EXP.LINE<1,16>='=':QUOTE(SM.PROJ)
+               EXP.LINE<1,17>=SM.TWGT
+               EXP.LINE<1,18>=SM.CASES
+               EXP.LINE<1,19>=SM.CWT'R26,'
+****               EXP.LINE<1,20>=SM.MC'R26,' ; *GRB02
+               EXP.LINE<1,20>=SM.CALCNET'R26,' ; *GRB02
+               EXP.LINE<1,21>=SM.ACC'R26,' ; *GRB02
+               EXP.REC<-1>=EXP.LINE
+SKIP.BOL: *
+            END
+         REPEAT
+      END ELSE
+         EXP.REC='Although the file was processed, there is no accrual sales order information on file.'
+      END
+      EXP.REC=CHANGE(EXP.REC,@VM,CHAR(9))
+      EXP.ID='SMNAACRP.XLS'
+      WRITE EXP.REC ON F.BILLDATA,EXP.ID
+      EMAIL.OUT=''
+      EMAIL.OUT<1>=TO.ADD
+      EMAIL.OUT<2>=CC.ADD
+      EMAIL.OUT<3>=BCC.ADD
+*DF      IF CLIENT.REC<179>#'' THEN         ; * JMK09
+      IF CLIENT.REC<179>#'' AND ONCE=0 THEN         ; * JMK09    ; * DRF02
+         EMAIL.OUT<1>=TRIM(CLIENT.REC<179>)        ; * JMK09
+         EMAIL.OUT<2>=''                 ; * JMK09
+         EMAIL.OUT<3>=''                 ; * JMK09
+      END                                ; * JMK09
+      IF TESTING THEN
+         EMAIL.OUT<1>='GBINO@afs.net'
+         EMAIL.OUT<2>=''
+         EMAIL.OUT<3>=''
+      END
+      EMAIL.OUT<4>='Reports'
+      EMAIL.OUT<5,1>='Swedish Match Sales Order Accrual File SMNAACRP'
+      EMAIL.OUT<6>=EXP.ID
+      EMAIL.OUT<6,2>='The attached files contain a Detail Spreadsheet of the'
+      EMAIL.OUT<6,3>='accrued sales orders pending payment from AFS Logistics, LLC'
+      EMAIL.OUT<11> = BILLDATA.REC<2>:'\':EXP.ID
+      EVIN = EMAIL.OUT
+      EVOUT = ''
+      IF EMAIL.OUT<1>#'' THEN CALL SENDMAIL(EVIN,EVOUT)
+      GOTO THE.END
+********************************************************************************
+DISPLAY.SCREEN: ***
+********************************************************************************
+      CRT @(0,3):@(-3)
+      BEGIN CASE
+         CASE PAGE.NUM=1
+            IF DISPLAY<1> THEN
+               CRT @( 0, 3):'Beginning Date to Export : ':BEG.DATE 'D4/'
+            END
+            IF DISPLAY<2> THEN
+               CRT @( 0, 4):'Ending Date to Export    : ':END.DATE 'D4/'
+            END
+      END CASE
+      RETURN
+
+********************************************************************************
+ACCESS.NOTIFY: ***
+********************************************************************************
+      MVIN=''                            ; * JMK03
+         MVIN<1,-1>='KGilbert@afs.net'
+      MVIN<1,-1>='SMatthews@afs.net'     ; * JMK03
+      MVIN<2>='DFriend@afs.net'
+      MVIN<2,-1>='GBINO@afs.net'
+      MVIN<4>='AFS'                      ; * JMK03
+      MVIN<5>=SUBJ                       ; * JMK03
+      MVIN<6>=TEXT                       ; * JMK03
+      CALL SENDMAIL(MVIN,MVOUT)          ; * JMK03
+      RETURN
+********************************************************************************
+SET.DISPLAY.VARIABLE: ***
+********************************************************************************
+      NUM.PROMPTS=21
+      DISPLAY=''
+      FOR X=1 TO NUM.PROMPTS
+         DISPLAY<X>=0
+      NEXT X
+      RETURN
+********************************************************************************
+THE.END: ***
+********************************************************************************
+      CRT @(0,23):@(-4):
+      STOP
+      END

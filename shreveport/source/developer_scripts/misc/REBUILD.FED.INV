@@ -1,0 +1,143 @@
+
+
+* PROGRAM: REBUILD.FED.INV
+* PROGRAM TO REBUILD THE FED.INV.XREF FILE
+*
+*  THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS.
+*
+* FREIGHT BILLING/EDI PACKAGE
+*
+*  AUTHOR       : David R. Friend
+*  DATE CREATED : 05/12/98
+*  DESCRIPTION  : This program clear the FED.INV.XREF file and rebuild
+*                 the file using attribute 94 in the FB.BILLS.HIST file.
+*
+***********************************************************************
+* MODIFICATIONS:
+* 05/10/06 : JCW01 : CHANGES TO @SELECTED, CLEARSELECT, AND STMT<X>
+***********************************************************************
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Initialize variables.
+*
+
+      CALL GET.USER(USER)
+      USER=OCONV(USER,'MCL')
+*
+      PROMPT''
+      ERRMSG=''
+      PROG.NAME='REBUILD.FED.INV'
+      PROG.DESC="Rebuild FedEx Invoice Xref File"
+      PACK.NAME="Freight Billing"
+*
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'REBUILD.FED.INV' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+* Open general files
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','FED.INV.XREF' TO F.INV.XREF ELSE
+         CALL OPEN.ABORT("FED.INV.XREF",PROG.NAME)
+      END
+      CALL AFS.SCR.HEAD(CO.ID, FILE.ID, '', PROG.NAME, PROG.DESC, PACK.NAME, CO.NAME, TIME.DATE, 1)
+      CRT @(5,09):'************************************************************'
+      CRT @(5,10):'*                                                          *'
+      CRT @(5,11):'*   WARNING this process should not be run while FedEx     *'
+      CRT @(5,12):'*   invoice are being entered.                             *'
+      CRT @(5,13):'*                                                          *'
+      CRT @(5,14):'************************************************************'
+
+*
+* Verify selection is correct.
+*
+VERIFY.SELECTION:***
+      HELP="[Y]es, [N]o, or [EX]it."
+      CALL GEN.IN(0,22,'Do you wish to rebuild Fedex invoice xref file. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX' OR QI='X' OR QI='N'
+            STOP
+         CASE QI='Y'
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be Y, N, or EX.')
+            GOTO VERIFY.SELECTION
+      END CASE
+*
+* Clear Fedex invoice xref file
+*
+      CLEARFILE F.INV.XREF
+
+*************************************************************************
+*
+* SELECT CLIENT FILE
+*
+      TEXT='Selecting Clients.'
+      CALL CENTER(TEXT,80)
+      CRT @(0,16):TEXT
+*
+      EXECUTE "SELECT VOC 'FB.BILLS.HIST' *A7" RTNLIST CLIENT.LIST CAPTURING OUTPUT
+*
+      ITEMS = @SELECTED
+*     IF NOT( @SELECTED ) THEN ; * JCW01
+      IF @SELECTED < 1 THEN    ; * JCW01
+        CALL ELINE('ERROR - No clients on file.')
+        GOTO EXIT.PROGRAM
+      END
+      COUNTER.1=0
+      PER=0
+      LOOP
+        READNEXT CLIENT.ID FROM CLIENT.LIST ELSE CLIENT.ID='DONE'
+      UNTIL CLIENT.ID='DONE' DO
+        COUNTER.1=COUNTER.1+1
+        IF CLIENT.ID='FB.BILLS.HIST' THEN GO SKIP.CLIENT
+        READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE CLIENT.REC=''
+        IF CLIENT.REC<2>='' THEN 
+          CLIENT.NAME='*** Not On File ***'
+        END ELSE
+          CLIENT.NAME=CLIENT.REC<2>
+        END
+        CRT @(0,17):CLIENT.ID:" ":CLIENT.NAME:" - Now selecting freight bills":@(-4):
+        CALL PROG.BAR(20,COUNTER.1,ITEMS,PER.1)
+        OPEN '','FB.BILLS.HIST,':CLIENT.ID TO FB.BILLS THEN
+           FILE='FB.BILLS.HIST,':CLIENT.ID
+           GOSUB SELECT.BILLS
+        END
+SKIP.CLIENT:***
+      REPEAT
+
+EXIT.PROGRAM:*** End
+      STOP
+
+*
+* Select bills for the clients
+*
+SELECT.BILLS:***
+      STMT='SSELECT ':FILE:' WITH CARRIER# = "00015"'
+      STMT=STMT:' AND WITH 94 # ""'
+      STMT=STMT:' AND WITH VERSION = "0" '
+      EXECUTE STMT PASSLIST RTNLIST BILLS.LIST CAPTURING OUTPUT
+      NUM.BILLS = @SELECTED
+      CRT @(0,17):CLIENT.ID:" ":CLIENT.NAME:" - Now processing ":NUM.BILLS:" Freight Bills":@(-4):
+      COUNTER.2=0
+      DONE=0
+*
+* Get next item to process
+*
+      LOOP
+         READNEXT ID FROM BILLS.LIST ELSE DONE = 1
+      UNTIL DONE DO
+         COUNTER.2=COUNTER.2+1
+         IF NUM.BILLS>0 THEN CALL PROG.BAR(22,COUNTER.2,NUM.BILLS,PER.2)
+         READ PRO.REC FROM FB.BILLS,ID THEN
+           READ DINV.XREF FROM F.INV.XREF,PRO.REC<94> ELSE DINV.XREF=''
+           LOCATE ID IN  DINV.XREF BY 'AR' SETTING INV.POS ELSE
+             INS ID BEFORE DINV.XREF<INV.POS>
+             WRITE DINV.XREF ON F.INV.XREF,PRO.REC<94>
+           END
+         END
+      REPEAT
+RETURN
+

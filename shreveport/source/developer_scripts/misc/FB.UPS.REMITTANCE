@@ -1,0 +1,299 @@
+*======================================================================
+*
+*  PROGRAM: FB.UPS.REMITTANCE   - UPS Remittance Processor
+*
+*
+*  PROGRAMMER: David R. Friend
+*
+*  NOTES: This is currently only setup for UPS
+*
+*
+*  COMMENTS:
+*
+*
+*
+*  EDIT HISTORY:
+*
+*    NAME :   DATE   : DESCRIPTION
+* 111714 - SWB02 - SysAid 13415 - Fix bug in Delayed Emails for
+*                                 UPS Remittances
+* 100314 - DRF01 - SysAid 11706 - Added KShelton to the emails
+* 120511 - SWB01 - Add logic for Delay Emails project
+*  --------------------------------------------------------------
+*======================================================================
+*   COPYRIGHT (C) 1995 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED
+*       ----------------------------------------------------
+*  This program is sole property of AFS Logistics, LLC (AUTOMATED
+*  FREIGHT SYSTEMS) and may not be used, copied, or modified without
+*  the express written consent of Brian Barker of AFS Logistics, LLC.
+*======================================================================
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+      PROMPT''
+      PROG.NAME='EDI.1.3'
+      PROG.DESC='UPS Remittance File Generator'
+      PACK.NAME='UPS Remittance'
+      CO.NAME='AFS Logistics, LLC'
+      DATE.PRINTED=DATE()                ; * SWB01
+      TIME.PRINTED=TIME()                ; * SWB01
+      EMAIL.DELAY.SUBSYSTEM='FPCR'       ; * SWB01
+      EMAIL.DELAY.DEFAULTS='C'           ; * SWB01 - Calendar Mode
+      EMAIL.DELAY.DEFAULTS<2>='C'        ; * SWB01 - Use Check Date
+      EMAIL.DELAY.DEFAULTS<3>=0          ; * SWB01 - Number of Days to Delay
+      EMAIL.DELAY.DEFAULTS<4>=55800      ; * SWB01 - Delay to Time of Day
+*This program should use the CHECK.DATE as the Email Delay Basis Date.
+*Assign the default basis date to 'Today' so if all else fails, there
+*will be a date assigned.
+      EMAIL.DELAY.DEFAULTS<5>=DATE.PRINTED         ; * SWB01
+      EMAIL.DELAY.DEFAULTS<6>=EMAIL.DELAY.SUBSYSTEM          ; * SWB01
+
+
+      PORT.NUM = SYSTEM(19)              ; * Port user is sitting on
+      CALL GET.USER(USER.NAME)
+
+      *
+      * Check for Restricted Access
+      *
+      RESTRICT.ACCESS = 1                ; * 1 = Restrict Access to the program
+      KEEP.READING = 1                   ; * Loop terminating variable
+      NEW.UPS.STUB = ''
+      EMAIL.SEND='HOLD'                  ; * JMK34
+      EMAIL.SEND.DELAY=EMAIL.SEND:@VM:'DELAY'      ; * SWB01
+      IF RESTRICT.ACCESS THEN
+         BEGIN CASE
+               *
+               * Authorized Users
+               *
+            CASE USER.NAME = 'JIM'
+            CASE USER.NAME = 'OWEN'
+            CASE USER.NAME = 'AMY'
+            CASE USER.NAME = 'DEBBIE'
+            CASE USER.NAME = 'GINGER'
+            CASE USER.NAME = 'DAVID'
+            CASE USER.NAME = 'MYRA'
+            CASE USER.NAME = 'MDODSON'
+            CASE USER.NAME = 'KMESSENGER'
+            CASE USER.NAME = 'MKERBOW'
+            CASE USER.NAME = 'LLOVELL'
+            CASE USER.NAME = 'LCORKERN'
+            CASE USER.NAME = 'SBARBEE'
+            CASE USER.NAME = 'AHERBEL'
+            CASE USER.NAME = 'BTYOUNG'   ; * Ticket 082377 DRF 10/22/08
+            CASE USER.NAME = 'CDYSON'
+
+               *
+               * Restrict the other MoFo's
+               *
+            CASE 1
+*df               CALL FB.PRINT.CENT(1,80,12,'Restricted Access Application')
+*df               CALL FB.PRINT.CENT(1,80,14,'Access Denied!')
+*df               GOTO EXIT.POINT
+         END CASE
+      END
+
+      *
+      * Open Files
+      *
+      OPEN '','UPS.REMITTANCE' TO F.UPS.REMIT ELSE
+         CALL OPEN.ABORT("UPS.REMITTANCE",PROG.NAME)
+      END
+      OPEN '','EMAILDATA' TO F.EMAILDATA ELSE
+         CALL OPEN.ABORT("EMAILDATA",PROG.NAME)
+      END
+      OPEN '','FB.CHECKS.HDR' TO F.CHECKS ELSE     ; * JCW03
+         CALL OPEN.ABORT("FB.CHECKS.HDR",PROG.NAME)          ; * JCW03
+      END                                ; * JCW03
+
+      OPEN '','TC.HOLIDAYS' TO F.TC.HOLIDAYS ELSE  ; * SWB01
+         CALL OPEN.ABORT('TC.HOLIDAYS',PROG.NAME)  ; * SWB01
+      END                                ; * SWB01
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT("FB.TABLES",PROG.NAME)
+      END
+      READ EMAIL.DELAY.PARMS.REC FROM F.TABLES,'FPCR*ALL' ELSE         ; * SWB01
+*If the control record is missing, don't delay the emails
+         EMAIL.DELAY.PARMS.REC=''
+      END                                ; * SWB01
+      CALL CHANNEL(CH.NUM)
+
+
+      *
+      * Select Remittance files to process
+      *
+      CRT @(30,13):'Selecting UPS Remittance'
+      PREC='SSELECT UPS.REMITTANCE WITH 17 BY 17'
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+      IF SYSTEM(11) ELSE
+         CRT @(30,13):'No UPS Remittance to process'
+*DF         GOTO EXIT.POINT
+         STOP
+      END
+      NUM.ITEMS = @SELECTED              ; * Gross Num of remit. bills to process
+      LOOP
+         *
+         * Read next Item Name
+         *
+         READNEXT REC.NAME ELSE KEEP.READING = 0
+      WHILE KEEP.READING DO
+         *
+         * Load Item into memory and get the Check Number
+         *
+         READ NEW.REMIT.REC FROM F.UPS.REMIT,REC.NAME ELSE
+            CALL ELINE("ERROR - Unable to read from F.UPS.REMIT")
+            STOP
+         END
+         INVOICE.NUM=NEW.REMIT.REC<2>
+         INVOICE.AMT=NEW.REMIT.REC<7>
+         CHECK.ID=NEW.REMIT.REC<17>
+         CHECK.DATE=NEW.REMIT.REC<16>
+         UPS.REMIT.LINE=INVOICE.NUM:@VM:INVOICE.AMT'R26'
+         NEW.UPS.STUB<-1>=UPS.REMIT.LINE
+         DELETE F.UPS.REMIT,REC.NAME
+      REPEAT
+* Email Stub to UPS
+      OCHECK.DATE=CHECK.DATE'D4-'
+      YYYYMMDD=OCHECK.DATE[7,4]:OCHECK.DATE[1,2]:OCHECK.DATE[4,2]
+      CHECK.NUM=FIELD(CHECK.ID,'*',1)
+      READV CHECK.AMT FROM F.CHECKS,CHECK.ID,4 ELSE CHECK.AMT=0
+      NEW.UPS.STUB=CHANGE(NEW.UPS.STUB,@VM,CHAR(9))          ; *Swap Values to Tabs
+      NEW.UPS.STUB.ID='00041-REMIT-':YYYYMMDD:"-":CHECK.NUM'R%6':'.xls'
+      CHECK.INFO="Check # ":CHECK.NUM'R%6':" dated ":CHECK.DATE'D4-':" in the amount of ":CHECK.AMT'R26,$'
+      WRITE NEW.UPS.STUB ON F.EMAILDATA,NEW.UPS.STUB.ID
+      EMAIL.OUT=''
+*df      EMAIL.OUT<1>='dfriend@afs.net'
+      EMAIL.OUT<1>='payups@ups.com'
+      EMAIL.OUT<2>='srittenbach@afs.net'           ; * NPR02
+      EMAIL.OUT<2,2>='dfriend@afs.net'
+      EMAIL.OUT<2,3>='DGarrett@afs.net'
+      EMAIL.OUT<2,4>='cbeasley@afs.net'
+      EMAIL.OUT<2,5>='KShelton@afs.net'  ; * DRF01
+      LOCATE 'CarrierRemittance@afs.net' IN EMAIL.OUT<3> SETTING CPOS ELSE       ; * JMK32
+         EMAIL.OUT<3,-1>='CarrierRemittance@afs.net'         ; * JMK08 ; * JMK32
+      END                                ; * JMK32
+      EMAIL.OUT<4>='AccountsPayable@afs.net'
+      EMAIL.OUT<5>="Remittance for Check# ":CHECK.NUM'R%6':" dated ":CHECK.DATE'D2-'
+      EMAIL.OUT<6,2>="The attached TAB delimited file contains remittance information"
+      EMAIL.OUT<6,3>="for Check # ":CHECK.NUM'R%6':" dated ":CHECK.DATE'D4-':" in the amount of ":CHECK.AMT'R26,$'
+      EMAIL.OUT<6,4>="If you have any questions concerning this email"
+      EMAIL.OUT<6,-1>="Please contact: Accounts Payable Department"
+      EMAIL.OUT<6,-1>="AFS Logistics, LLC"
+      EMAIL.OUT<6,-1>="P.O. Box 18170"
+      EMAIL.OUT<6,-1>="Shreveport, LA  71138"
+      EMAIL.OUT<6,-1>="Phone: 318-798-2111 x1227"
+      EMAIL.OUT<6,-1>='FAX: 318-797-3628'
+      EMAIL.OUT<6,-1>='EMAIL: AccountsPayable@afs.net'
+      EMAIL.OUT<6,-1>="This is an automated message, do NOT reply"
+      EMAIL.OUT<6,-1>="If you need to check the payment status of any"
+      EMAIL.OUT<6,-1>="other invoices please visit our web site at:"
+*     EMAIL.OUT<6,-1>="http:\\www.AFSLogistics.com"       ; * JMK18
+      EMAIL.OUT<6,-1>="http:\\www.AFS.net"         ; * JMK18
+      EMAIL.OUT<11>='E:\ARDENT\PUBLIC\EMAILDATA\'
+      EMAIL.OUT<11>:=NEW.UPS.STUB.ID
+      VIN=EMAIL.OUT
+
+      READ DELAY.EMAILS FROM F.TABLES,'FB.UPS.REMITTANCE.CTRL' ELSE    ; * SWB02
+*If this record can't be read then
+         DELAY.EMAILS = 1                ; * SWB02
+      END                                ; * SWB02
+
+*     IF EMAIL.DELAY.PARMS.REC # '' THEN           ; * SWB01          ; * SWB02
+      IF DELAY.EMAILS THEN               ; * SWB02
+*This relies on DELAY.EMAILS being set correctly in FB.5.4.LASER including when and if
+*the control record FB.TABLES FPCR*ALL is deleted in which case DELAY.EMAILS should be a '0'
+         VIN<8,-1>=EMAIL.SEND.DELAY      ; * SWB01
+         GOSUB CALC.EMAIL.DELAY          ; * SWB01
+         DELAYED.EMAIL.ID='FPCR_':CHECK.ID         ; * SWB01
+         GOSUB SETUP.EMAIL.FOR.DELAY     ; * SWB01
+      END ELSE                           ; * SWB01
+         VIN<8,-1>=EMAIL.SEND            ; * JMK34
+      END                                ; * SWB01
+      CALL SENDMAIL(VIN,VOUT)
+      STOP                               ; * SWB01
+
+CALC.EMAIL.DELAY:                        ; * SWB01
+*Apply the user defined parameters to figure out how long to delay
+*the sending of this email.
+      EDC.VIN=EMAIL.DELAY.PARMS.REC<1>   ; * SWB01
+      EDC.VIN<2>=EMAIL.DELAY.PARMS.REC<2>          ; * SWB01
+      EDC.VIN<3>=EMAIL.DELAY.PARMS.REC<3>          ; * SWB01
+      EDC.VIN<4>=EMAIL.DELAY.PARMS.REC<4>          ; * SWB01
+*The variable used for the CHECK DATE must be in ICONV format.
+      EDC.VIN<5>=CHECK.DATE              ; * SWB01
+      EDC.VIN<6>=EMAIL.DELAY.SUBSYSTEM   ; * SWB01
+      EDC.VOUT=''                        ; * SWB01
+
+      CALL EMAIL.DELAY.CALC(EDC.VIN,EDC.VOUT,CHECK.DATE,F.TC.HOLIDAYS)           ; * SWB01
+      IF EDC.VOUT<2>='' THEN             ; * SWB01
+         DELAY.TO.DATE=EDC.VOUT<1>       ; * SWB01
+      END ELSE                           ; * SWB01
+*There was an error returned. If the error is for any parameter
+*EXCEPT the time, use the default Date criteria. If the error involves
+*the TIME, use the date returned and the default TIME.
+*First, send an email letting I.T. know about the errors.
+         EVIN=''                         ; * SWB01
+         EVOUT=''                        ; * SWB01
+         DATE.CALC.ERROR=0               ; * SWB01
+         TIME.CALC.ERROR=0               ; * SWB01
+         EVIN='EmailDelayAlerts@afs.net'           ; * SWB01
+         EVIN<5>='FPCR Delayed Email had errors.'  ; * SWB01
+         EMSG='Errors occurred concerning Delayed Emails when User ':USER.NAME:' ran '     ; * SWB01
+         EMSG := PROG.NAME:' on ':OCONV(DATE.PRINTED,'D2/'):' at ':OCONV(TIME.PRINTED,'MTH'):' for check number ':CHECK.ID:'.'     ; * SWB01
+         DELAY.CALC.ERRORS=EDC.VOUT<2>   ; * SWB01
+         FOR DCE = 1 TO DELAY.CALC.ERRORS          ; * SWB01
+            DELAY.CALC.ERROR=DELAY.CALC.ERRORS<1, DCE>       ; * SWB01
+            IF DELAY.CALC.ERROR # '' THEN          ; * SWB01
+               IF DCE=5 THEN             ; * SWB01
+                  TIME.CALC.ERROR=1      ; * SWB01
+               END ELSE                  ; * SWB01
+                  DATE.CALC.ERROR=1      ; * SWB01
+               END                       ; * SWB01
+               EMSG:=DELAY.CALC.ERROR:@VM          ; * SWB01
+            END                          ; * SWB01
+            EMSG:=@VM:'DELAYED.EMAIL ID is "':DELAYED.EMAIL.ID:'". '   ; * SWB01
+         NEXT DCE                        ; * SWB01
+         EVIN<6>=EMSG                    ; * SWB01
+         EVIN<7>=1                       ; * SWB01
+         CALL SENDMAIL(EVIN,EVOUT)       ; * SWB01
+*
+         EDC.VOUT=''                     ; * SWB01
+         IF DATE.CALC.ERROR THEN         ; * SWB01
+            EDC.VIN=EMAIL.DELAY.DEFAULTS<1>        ; * SWB01
+            EDC.VIN<2>=EMAIL.DELAY.DEFAULTS<2>     ; * SWB01
+            EDC.VIN<3>=EMAIL.DELAY.DEFAULTS<3>     ; * SWB01
+*The variable used for the CHECK DATE must be in ICONV format.
+         END ELSE                        ; * SWB01
+            EDC.VIN=EMAIL.DELAY.PARMS.REC<1>       ; * SWB01
+            EDC.VIN<2>=EMAIL.DELAY.PARMS.REC<2>    ; * SWB01
+            EDC.VIN<3>=EMAIL.DELAY.PARMS.REC<3>    ; * SWB01
+         END                             ; * SWB01
+*
+         IF TIME.CALC.ERROR THEN         ; * SWB01
+*TIME Calculation error
+            EDC.VIN=EMAIL.DELAY.DEFAULTS<4>        ; * SWB01
+         END ELSE                        ; * SWB01
+            EDC.VIN<4>=EMAIL.DELAY.PARMS.REC<4>    ; * SWB01
+         END                             ; * SWB01
+*
+         EDC.VIN<5>=CHECK.DATE           ; * SWB01
+         EDC.VIN<6>=EMAIL.DELAY.SUBSYSTEM          ; * SWB01
+*
+         CALL EMAIL.DELAY.CALC(EDC.VIN,EDC.VOUT,CHECK.DATE,F.TC.HOLIDAYS)        ; * SWB01
+*
+         DELAY.TO.DATE=EDC.VOUT<1>       ; * SWB01
+      END                                ; * SWB01
+      RETURN                             ; * SWB01
+*
+*
+SETUP.EMAIL.FOR.DELAY:                   ; * SWB01
+
+      VIN<12>=DELAY.TO.DATE              ; * SWB01
+      VIN<13>=EMAIL.DELAY.PARMS.REC<4>   ; * SWB01
+*IMPORTANT NOTE: The DELAYED.EMAIL.ID determined below will ALWAYS have a numeric counter determined and
+*appended after the 'pipe' character in SENDMAIL. Adding anything after the pipe and counter or adding a pipe into other parts of the
+*ID WILL CAUSE PROBLEMS.
+      VIN<14>=DELAYED.EMAIL.ID:'|'       ; * SWB01
+
+      RETURN                             ; * SWB01
+*
+   END

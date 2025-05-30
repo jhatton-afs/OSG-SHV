@@ -1,0 +1,708 @@
+***********************************************************************
+* Build a spread sheet for Alcon Monthly reports
+* Copyright (c) AFS Logistics, LLC., 2001
+*
+* AUTHOR : David R Friend
+* Date   : 5-17-02
+***********************************************************************
+* 101205 - JMK01 - ADD FB.PROC.DATE.XREF PRE SELECTION FOR PERFORMANCE
+* 050906 - JCW01 - CHANGES TO @SELECTED, CLEARSELECT, AND STMT<X>
+* 100306 - JMK02 - USE THE ALCON FB SUMMARY FILE FOR THE REPORT
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+*
+***   Initialize general variables
+*
+      CALL GET.USER(USER)
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='BUILD.DF.ALCON.MONTHLY'
+      PROG.DESC='Monthly Report'
+      PACK.NAME='Freight Payment'
+      PROMPT''
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'BUILD.DF.ALCON.MONTHLY' ; UPL.VOUT = ''                    ;* NPR_UPL 04/22/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/22/2010
+      MASK.CHAR='-'
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+
+*
+***   Write screen header
+*
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+
+      BILLDATA.REC = ''
+
+      OPEN '','VOC' TO F.VOC ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE('UNABLE TO OPEN VOC FILE')
+         STOP
+      END
+
+      READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')
+         STOP
+      END
+
+      BILLDATA.REC<2>:='\':USER
+      WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE('YOUR USER NAME ':USER:' IS NOT IN THE BILLDATA FOLDER - PLEASE SEE OWEN/TAMI/DAVID')
+         STOP
+      END
+      OPEN '','BILLDATA.':USER TO BILLDATA ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE('UNABLE TO OPEN BILLDATA.':USER)
+         STOP
+      END
+*
+***   Initialize input variables with their defaults
+*
+*DF      CLIENT.ID='ALL'
+      CLIENT.ID='10356'                  ; * JMK02
+      BEG.DATE=DATE()
+      END.DATE=DATE()
+
+*
+***   Open files
+*
+***********************************************************************
+* Work File consists of items with the following detail
+* Attribute Description
+* ---------------------------------------------------------------------
+*     1     Number of Bills (MTD)
+*     2     Weight (MTD)
+*     3     Amount Paid (MTD)
+*     4     Number of Bills (YTD)
+*     5     Weight (YTD)
+*     6     Amount Paid (YTD)
+***********************************************************************
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+         END
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+
+*
+***   Get Client ID
+*
+100:  LN='Client ID Number    : '
+      MASK=CLIENT.ID:STR(MASK.CHAR,20-LEN(CLIENT.ID))
+      HELP='Enter Client ID or letters for search. [ENTER]=Accept [EX]=Exit'
+      CALL GEN.IN(0,3,LN:MASK:@(-4),'',Q,0,20,'','',2,-22,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO END.PROGRAM
+         CASE QI=''
+            QI=CLIENT.ID
+         CASE NOT(QI MATCHES '0N')
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 100
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 100
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO 100
+            END CASE
+         CASE NUM(QI)
+            QI=QI'R%5'
+         CASE 1
+            GOTO 100
+      END CASE
+      CLIENT.ID=QI
+      IF CLIENT.ID[1,2]='99' THEN
+         CALL ELINE('Traffic Survey accounts are not allowed.')
+         GOTO 100
+      END
+      IF CLIENT.ID='00000' THEN
+         CALL ELINE('This is not a valid account.')
+         GOTO 100
+      END
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID THEN
+         CLIENT.NAME=CLIENT.REC<2>
+         BEGIN CASE
+            CASE CLIENT.REC<30>='A'
+               CLIENT.STATUS='Active'
+            CASE CLIENT.REC<30>='I'
+               CLIENT.STATUS='Inactive'
+            CASE CLIENT.REC<30>='O'
+               CLIENT.STATUS='Out of Business'
+            CASE CLIENT.REC<30>=''
+               CLIENT.STATUS='null'
+            CASE 1
+               CLIENT.STATUS=CLIENT.REC<30>
+         END CASE
+         SAVE.SCREEN.LINE.CLIENT=LN:CLIENT.ID:' ':CLIENT.NAME:' (':CLIENT.STATUS:')'
+      END ELSE
+         CALL ELINE('Client ':CLIENT.ID:' not on file.')
+         GOTO 100
+      END
+      CRT @(0,3):SAVE.SCREEN.LINE.CLIENT:@(-4)
+
+
+*
+***   Get beginning date
+*
+300:  LN='Beginning Date      : '
+      MASK=BEG.DATE'D4/'
+      HELP='Enter freight bill beginning date. [ENTER]=Accept [T]=Today [X]=Back [EX]=Exit'
+      CALL GEN.IN(0,5,LN:MASK:@(-4),'',Q,0,10,'','',2,-12,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO END.PROGRAM
+         CASE QI='X'
+            CRT @(0,5):@(-4)
+            GOTO 100
+         CASE QI='T'
+            QI=DATE()'D4/'
+         CASE QI=''
+            QI=BEG.DATE'D4/'
+         CASE QI MATCHES '0N'
+            BEGIN CASE
+               CASE LEN(QI)=4
+                  QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,4]
+               CASE LEN(QI)=6
+                  IF QI[5,2]<50 THEN
+                     QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,2]:QI[5,2]
+                  END ELSE
+                     QI=QI[1,2]:'.':QI[3,2]:'.':'19':QI[5,2]           ; * ((DATE()-365)'D4/')[7,2]:QI[5,2]
+                  END
+               CASE LEN(QI)=8
+                  QI=QI[1,2]:'.':QI[3,2]:'.':QI[5,4]
+               CASE 1
+                  CALL ELINE('Use one of the following formats: MMDD or MMDDYY or MMDDYYYY.')
+                  GOTO 300
+            END CASE
+      END CASE
+      BEG.DATE=ICONV(QI,'D')
+      IF BEG.DATE='' THEN
+         CALL ELINE('Invalid date.')
+         GOTO 300
+      END
+      CRT @(0,5):LN:BEG.DATE'D4/':@(-4)
+
+*
+***   Get ending date
+*
+400:  LN='Ending Date         : '
+      MASK=END.DATE'D4/'
+      HELP='Enter freight bill ending date. [ENTER]=Accept [T]=Today [X]=Back [EX]=Exit'
+      CALL GEN.IN(0,7,LN:MASK:@(-4),'',Q,0,10,'','',2,-12,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO END.PROGRAM
+         CASE QI='X'
+            CRT @(0,7):@(-4)
+            GOTO 300
+         CASE QI='T'
+            QI=DATE()'D4/'
+         CASE QI=''
+            QI=END.DATE'D4/'
+         CASE QI MATCHES '0N'
+            BEGIN CASE
+               CASE LEN(QI)=4
+                  QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,4]
+               CASE LEN(QI)=6
+                  IF QI[5,2]<50 THEN
+                     QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,2]:QI[5,2]
+                  END ELSE
+                     QI=QI[1,2]:'.':QI[3,2]:'.':'19':QI[5,2]           ; * ((DATE()-365)'D4/')[7,2]:QI[5,2]
+                  END
+               CASE LEN(QI)=8
+                  QI=QI[1,2]:'.':QI[3,2]:'.':QI[5,4]
+               CASE 1
+                  CALL ELINE('Use one of the following formats: MMDD or MMDDYY or MMDDYYYY.')
+                  GOTO 400
+            END CASE
+      END CASE
+      END.DATE=ICONV(QI,'D')
+      IF END.DATE='' THEN
+         CALL ELINE('Invalid date.')
+         GOTO 400
+      END
+      IF END.DATE LT BEG.DATE THEN
+         CALL ELINE('Ending date must occur later than beginning date.')
+         GOTO 400
+      END
+      CRT @(0,7):LN:END.DATE'D4/':@(-4)
+
+*
+***   Verify data
+*
+500:  LN='Verify the entered data. Select : '
+      MASK=STR(MASK.CHAR,2)
+      HELP='[ENTER]=Continue [X]=Change [EX]=Exit'
+      CALL GEN.IN(0,22,LN:MASK,'',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO END.PROGRAM
+         CASE QI='X'
+            GOTO 400
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO 500
+      END CASE
+
+*
+***   Clear work file
+*
+      CLEARFILE F.WORK
+
+      NUM.CLIENT=1
+      COUNTER.1=0 ; PER.1=0
+      CLIENT=CLIENT.ID
+      BEG.MONTH=OCONV(BEG.DATE,'DM')
+      BEG.DAY=OCONV(BEG.DATE,'DD')
+      BEG.YEAR=OCONV(BEG.DATE,'DY')
+      END.MONTH=OCONV(END.DATE,'DM')
+      END.DAY=OCONV(END.DATE,'DD')
+      END.YEAR=OCONV(END.DATE,'DY')
+      FISC.MONTH=FIELD(CLIENT.REC<29>,'.',1)
+      FISC.DAY=FIELD(CLIENT.REC<29>,'.',2)
+      IF FISC.MONTH < 1 OR FISC.MONTH > 12 OR FISC.DAY < 1 OR FISC.DAY > 31 THEN
+         CALL ELINE('Invalid Fisc Date :':CLIENT.REC<29>:' - Please setup in client maintenance')
+         STOP
+      END
+      IF BEG.MONTH:BEG.DAY < FISC.MONTH:FISC.DAY THEN
+         FISC.YEAR=(BEG.YEAR-1)'R%2'
+         IF FISC.YEAR < 0 THEN
+            FISC.YEAR=99
+         END
+      END ELSE
+         FISC.YEAR=BEG.YEAR
+      END
+      FYR.DATE=FISC.MONTH:'.':FISC.DAY:'.':FISC.YEAR
+      FYR.DATE=ICONV(FYR.DATE,'D2.')
+SELECT.BILLS:
+      COUNTER.1=COUNTER.1+1
+      READV CLIENT.NAME FROM F.CLIENTS,CLIENT,2 ELSE
+         CLIENT.NAME='*** Not On File ***'
+      END
+      CRT @(0,15):CLIENT:' ':CLIENT.NAME:' #':COUNTER.1:' - Selecting Freight Bills':@(-4):
+*DF      CALL PROG.BAR(17,COUNTER.1,NUM.CLIENTS,PER.1)
+*     OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS THEN ; * JMK02
+*        STMT='SELECT FB.PROC.DATE.XREF,':CLIENT:' WITH DATE >= "':OCONV(FYR.DATE,'D2/'):'" AND WITH DATE <= "':OCONV(END.DATE,'D2/'):'"'    ; * JMK01 ; * JMK02
+*        EXECUTE STMT RTNLIST CAPTURING RESULTS    ; * JMK01 ; * JMK02
+*        IF @SELECTED THEN               ; * JMK01 ; * JCW01 ; * JMK02
+*        IF @SELECTED > 0 THEN                     ; * JCW01 ; * JMK02
+*           STMT='QSELECT FB.PROC.DATE.XREF,':CLIENT         ; * JMK01 ; * JMK02
+*           EXECUTE STMT PASSLIST CAPTURING RESULTS          ; * JMK01 ; * JMK02
+*        END ELSE                        ; * JMK01 ; * JMK02
+*           CLEARSELECT                  ; * JMK01 ; * JCW01 ; * JMK02
+*           CALL ELINE('No bills on file with these criteria.') ; * JCW01 ; * JMK02
+*        END                             ; * JMK01 ; * JMK02
+*        STMT='SELECT FB.BILLS.HIST,':CLIENT ; * JMK02
+*        STMT:=' WITH VERSION = "0"'     ; * Exclude duplicates ; * JMK02
+*        STMT:=' AND WITH 37 GE "':OCONV(FYR.DATE,'D2/'):'"'           ; * Within the dates ; * JMK02
+*        STMT:=' AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'           ; * Within the dates ; * JMK02
+*        STMT:=' AND WITH 39 # "R"'      ; * Exclude rejects ; * JMK02
+*        EXECUTE STMT PASSLIST RTNLIST BILLS.LIST CAPTURING OUTPUT ; * JMK02
+      OPEN '','FB.BILLS.SUMMARY,':CLIENT TO F.SUMM THEN      ; * JMK02
+         STMT='SELECT FB.BILLS.SUMMARY,':CLIENT    ; * JMK02
+         STMT:=' AND WITH DATE GE "':OCONV(FYR.DATE,'D2/'):'"'         ; * Within the dates ; * JMK02
+         STMT:=' AND WITH DATE LE "':OCONV(END.DATE,'D2/'):'"'         ; * Within the dates ; * JMK02
+         EXECUTE STMT PASSLIST RTNLIST SUMM.LIST CAPTURING OUTPUT      ; * JMK02
+         NUM.BILLS=@SELECTED
+*        IF NUM.BILLS=0 THEN   ; * JCW01
+         IF NUM.BILLS < 1 THEN           ; * JCW01
+            CALL ELINE('No bills on file with these criteria.')
+            GOTO END.PROGRAM
+         END
+*        CRT @(0,18):CLIENT:' ':CLIENT.NAME:' - Processing ':NUM.BILLS:' Freight Bills':@(-4): ; * JMK02
+         CRT @(0,18):CLIENT:' ':CLIENT.NAME:' - Processing ':NUM.BILLS:' Records':@(-4):   ; * JMK02
+         COUNTER.2=0 ; PER.2=0
+         LOOP
+*           READNEXT PRO.ID FROM BILLS.LIST ELSE PRO.ID='DATA.ENTRY.IS.FINISHED' ; * JMK02
+*        UNTIL PRO.ID='DATA.ENTRY.IS.FINISHED' DO ; * JMK02
+            READNEXT SUMM.ID FROM SUMM.LIST ELSE SUMM.ID='DATA.ENTRY.IS.FINISHED'          ; * JMK02
+         UNTIL SUMM.ID='DATA.ENTRY.IS.FINISHED' DO           ; * JMK02
+            COUNTER.2=COUNTER.2+1
+            CALL PROG.BAR(20,COUNTER.2,NUM.BILLS,PER.2)
+*           READ BILL.REC FROM F.BILLS,PRO.ID THEN ; * JMK02
+            READ SUMM.REC FROM F.SUMM,SUMM.ID THEN           ; * JMK02
+*              BILL.MODE=BILL.REC<21>    ; * JMK02
+               BILL.MODE=FIELD(SUMM.ID,'*',2)      ; * JMK02
+               IF BILL.MODE = '2' OR BILL.MODE = '12' OR BILL.MODE = '8' THEN
+                  ALCON.MODE='A'         ; * Air Bill
+               END ELSE
+                  ALCON.MODE='S'         ; * Surface Bill
+               END
+*              CARRIER.ID=FIELD(PRO.ID,'*',1)      ; * JMK02
+               CARRIER.ID=FIELD(SUMM.ID,'*',3)     ; * JMK02
+               READV CARRIER.NAME FROM F.CARRIERS,CARRIER.ID,1 ELSE
+                  CARRIER.NAME='Unknown Carrier'
+               END
+               CARRIER.NAME=' ':CARRIER.NAME
+*              DIVISION=BILL.REC<9>      ; * JMK02
+               DIVISION=FIELD(SUMM.ID,'*',1)       ; * JMK02
+               IF DIVISION='' THEN DIVISION='TOTAL'
+*              IOT=BILL.REC<2>           ; * JMK02
+               IOT=FIELD(SUMM.ID,'*',4)  ; * JMK02
+               PROC.DT=FIELD(SUMM.ID,'*',5)        ; * JMK02
+               IF IOT='T' THEN IOT='I'
+               FIELD1=DIVISION
+               FIELD2=ALCON.MODE
+               FIELD3=CARRIER.NAME
+               FIELD4=IOT
+               GOSUB BUILD.WORK.ID
+               READ WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+               GOSUB UPDATE.WORK.REC
+               WRITE WORK.REC ON F.WORK,WORK.ID
+* 2 of 16
+               FIELD1=DIVISION
+               FIELD2=ALCON.MODE
+               FIELD3=CARRIER.NAME
+               FIELD4='TOTAL'
+               GOSUB BUILD.WORK.ID
+               READ WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+               GOSUB UPDATE.WORK.REC
+               WRITE WORK.REC ON F.WORK,WORK.ID
+* 3 of 16
+               FIELD1=DIVISION
+               FIELD2=ALCON.MODE
+               FIELD3='TOTAL'
+               FIELD4=IOT
+               GOSUB BUILD.WORK.ID
+               READ WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+               GOSUB UPDATE.WORK.REC
+               WRITE WORK.REC ON F.WORK,WORK.ID
+* 4 of 16
+               FIELD1=DIVISION
+               FIELD2=ALCON.MODE
+               FIELD3='TOTAL'
+               FIELD4='TOTAL'
+               GOSUB BUILD.WORK.ID
+               READ WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+               GOSUB UPDATE.WORK.REC
+               WRITE WORK.REC ON F.WORK,WORK.ID
+* 5 of 16
+*DF               FIELD1=DIVISION
+*DF               FIELD2='TOTAL'
+*DF               FIELD3=CARRIER.NAME
+*DF               FIELD4=IOT
+*DF               GOSUB BUILD.WORK.ID
+*DF               READ WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+*DF               GOSUB UPDATE.WORK.REC
+*DF               WRITE WORK.REC ON F.WORK,WORK.ID
+* 6 of 16
+*DF               FIELD1=DIVISION
+*DF               FIELD2='TOTAL'
+*DF               FIELD3=CARRIER.NAME
+*DF               FIELD4='TOTAL'
+*DF               GOSUB BUILD.WORK.ID
+*DF               READ WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+*DF               GOSUB UPDATE.WORK.REC
+*DF               WRITE WORK.REC ON F.WORK,WORK.ID
+* 7 of 16
+               FIELD1=DIVISION
+               FIELD2='TOTAL'
+               FIELD3='TOTAL'
+               FIELD4=IOT
+               GOSUB BUILD.WORK.ID
+               READ WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+               GOSUB UPDATE.WORK.REC
+               WRITE WORK.REC ON F.WORK,WORK.ID
+* 8 of 16
+               FIELD1=DIVISION
+               FIELD2='TOTAL'
+               FIELD3='TOTAL'
+               FIELD4='TOTAL'
+               GOSUB BUILD.WORK.ID
+               READ WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+               GOSUB UPDATE.WORK.REC
+               WRITE WORK.REC ON F.WORK,WORK.ID
+* 9 of 16
+               IF DIVISION='TOTAL' THEN
+                  GOTO SKIP.BILL
+               END
+               FIELD1='TOTAL'
+               FIELD2=ALCON.MODE
+               FIELD3=CARRIER.NAME
+               FIELD4=IOT
+               GOSUB BUILD.WORK.ID
+               READ WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+               GOSUB UPDATE.WORK.REC
+               WRITE WORK.REC ON F.WORK,WORK.ID
+* 10 of 16
+               FIELD1='TOTAL'
+               FIELD2=ALCON.MODE
+               FIELD3=CARRIER.NAME
+               FIELD4='TOTAL'
+               GOSUB BUILD.WORK.ID
+               READ WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+               GOSUB UPDATE.WORK.REC
+               WRITE WORK.REC ON F.WORK,WORK.ID
+* 11 of 16
+               FIELD1='TOTAL'
+               FIELD2=ALCON.MODE
+               FIELD3='TOTAL'
+               FIELD4=IOT
+               GOSUB BUILD.WORK.ID
+               READ WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+               GOSUB UPDATE.WORK.REC
+               WRITE WORK.REC ON F.WORK,WORK.ID
+* 12 of 16
+               FIELD1='TOTAL'
+               FIELD2=ALCON.MODE
+               FIELD3='TOTAL'
+               FIELD4='TOTAL'
+               GOSUB BUILD.WORK.ID
+               READ WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+               GOSUB UPDATE.WORK.REC
+               WRITE WORK.REC ON F.WORK,WORK.ID
+* 13 of 16
+*DF               FIELD1='TOTAL'
+*DF               FIELD2='TOTAL'
+*DF               FIELD3=CARRIER.NAME
+*DF               FIELD4=IOT
+*DF               GOSUB BUILD.WORK.ID
+*DF               READ WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+*DF               GOSUB UPDATE.WORK.REC
+*DF               WRITE WORK.REC ON F.WORK,WORK.ID
+* 14 of 16
+*DF               FIELD1='TOTAL'
+*DF               FIELD2='TOTAL'
+*DF               FIELD3=CARRIER.ID
+*DF               FIELD4='TOTAL'
+*DF               GOSUB BUILD.WORK.ID
+*DF               READ WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+*DF               GOSUB UPDATE.WORK.REC
+*DF               WRITE WORK.REC ON F.WORK,WORK.ID
+* 15 of 16
+               FIELD1='TOTAL'
+               FIELD2='TOTAL'
+               FIELD3='TOTAL'
+               FIELD4=IOT
+               GOSUB BUILD.WORK.ID
+               READ WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+               GOSUB UPDATE.WORK.REC
+               WRITE WORK.REC ON F.WORK,WORK.ID
+* 16 of 16
+               FIELD1='TOTAL'
+               FIELD2='TOTAL'
+               FIELD3='TOTAL'
+               FIELD4='TOTAL'
+               GOSUB BUILD.WORK.ID
+               READ WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+               GOSUB UPDATE.WORK.REC
+               WRITE WORK.REC ON F.WORK,WORK.ID
+            END                          ; * READ BILL.REC FROM F.BILLS,PRO.ID
+SKIP.BILL:***
+         REPEAT
+      END ELSE
+         CRT @(0,23):'Could not open FB.BILLS.HIST,':CLIENT:'. Skipping this file.':
+      END                                ; * OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS
+
+*
+***   Read work file and print data to an output file
+*
+
+READ.WORK.FILE:
+      ALCON.REPORT=''
+
+      NUM.BILLS=0
+      OLD.DIVISION='*****'
+      OLD.ALCON.MODE='*****'
+      OLD.CARRIER.NAME='*****'
+      STMT='SSELECT FBWORK':CH.NUM
+      EXECUTE STMT PASSLIST CAPTURING OUTPUT
+      LOOP
+         READNEXT WORK.ID ELSE WORK.ID='DATA.ENTRY.IS.FINISHED'
+      UNTIL WORK.ID='DATA.ENTRY.IS.FINISHED' DO
+         READ WORK.REC FROM F.WORK,WORK.ID THEN
+            DIVISION=FIELD(WORK.ID,'*',1)
+            IF OLD.DIVISION='*****' THEN OLD.DIVISION=DIVISION
+            IF OLD.DIVISION#DIVISION THEN
+               GOSUB BUILD.FILE
+               OLD.DIVISION=DIVISION
+               OLD.ALCON.MODE='*****'
+               OLD.CARRIER.NAME='*****'
+               NUM.BILLS=0
+               ALCON.REPORT=''
+            END
+            ALCON.MODE=FIELD(WORK.ID,'*',2)
+            CARRIER.NAME=TRIM(FIELD(WORK.ID,'*',3))
+            IOT=FIELD(WORK.ID,'*',4)
+            NUM.BILLS+=1
+            ATT.NUM=NUM.BILLS+3
+            IF ALCON.MODE#OLD.ALCON.MODE THEN
+               IF ALCON.MODE='A' THEN
+                  ALCON.REPORT<ATT.NUM,1>='Air'
+               END
+               IF ALCON.MODE='S' THEN
+                  ALCON.REPORT<ATT.NUM,1>='Surface'
+               END
+*DF              IF ALCON.MODE='TOTAL' THEN
+*DF                IF OLD.ALCON.MODE='A' THEN
+*DF                  ALCON.REPORT<ATT.NUM,1>='Total Air'
+*DF                END
+*DF                IF OLD.ALCON.MODE='S' THEN
+*DF                  ALCON.REPORT<ATT.NUM,1>='Total Surface'
+*DF                END
+*DF                IF OLD.ALCON.MODE#'A' AND OLD.ALCON.MODE#'S' THEN
+*DF                  ALCON.REPORT<ATT.NUM,1>='Grand Total'
+*DF                END
+*DF              END
+               OLD.ALCON.MODE=ALCON.MODE
+               OLD.CARRIER.NAME='*****'
+            END
+            IF OLD.CARRIER.NAME#CARRIER.NAME THEN
+               IF CARRIER.NAME#'TOTAL' THEN
+                  ALCON.REPORT<ATT.NUM, 2>=TRIM(CARRIER.NAME)
+               END ELSE
+                  IF ALCON.MODE='A' THEN
+                     ALCON.REPORT<ATT.NUM,1>='Total Air'
+                  END
+                  IF ALCON.MODE='S' THEN
+                     ALCON.REPORT<ATT.NUM,1>='Total Surface'
+                  END
+                  IF ALCON.MODE#'A' AND OLD.ALCON.MODE#'S' THEN
+                     ALCON.REPORT<ATT.NUM,1>='Grand Total'
+                  END
+               END
+               OLD.CARRIER.NAME=CARRIER.NAME
+            END
+            IF IOT='TOTAL' THEN
+               IF CARRIER.NAME#'TOTAL' THEN
+                  ALCON.REPORT<ATT.NUM, 3>='Subtotal'
+               END
+               NUM.BILLS+=1
+            END ELSE
+               ALCON.REPORT<ATT.NUM, 3>=IOT
+            END
+            ALCON.REPORT<ATT.NUM, 4>=WORK.REC<1>
+            ALCON.REPORT<ATT.NUM, 5>=WORK.REC<4>
+            ALCON.REPORT<ATT.NUM, 6>=WORK.REC<2>
+            ALCON.REPORT<ATT.NUM, 7>=WORK.REC<5>
+            ALCON.REPORT<ATT.NUM, 8>=WORK.REC<3>'R26'
+            ALCON.REPORT<ATT.NUM, 9>=WORK.REC<6>'R26'
+            IF WORK.REC<1>#0 THEN
+               MTD.AV.PAID=WORK.REC<3>/WORK.REC<1>
+               MTD.AV.WT=WORK.REC<2>/WORK.REC<1>
+            END ELSE
+               MTD.AV.PAID=0
+               MTD.AV.WT=0
+            END
+            ALCON.REPORT<ATT.NUM,10>=MTD.AV.PAID'R26'
+            IF WORK.REC<4>#0 THEN
+               YTD.AV.PAID=WORK.REC<6>/WORK.REC<4>
+               YTD.AV.WT=WORK.REC<5>/WORK.REC<4>
+            END ELSE
+               YTD.AV.PAID=0
+               YTD.AV.WT=0
+            END
+            ALCON.REPORT<ATT.NUM,11>=YTD.AV.PAID'R26'
+            ALCON.REPORT<ATT.NUM,12>=MTD.AV.WT'R0'
+            ALCON.REPORT<ATT.NUM,13>=YTD.AV.WT'R0'
+            IF WORK.REC<2>#0 THEN
+               MTD.AV.CWT=WORK.REC<3>/WORK.REC<2>*100
+            END ELSE
+               MTD.AV.CWT=0
+            END
+            ALCON.REPORT<ATT.NUM,14>=MTD.AV.CWT'R26'
+            IF WORK.REC<5>#0 THEN
+               YTD.AV.CWT=WORK.REC<6>/WORK.REC<5>*100
+            END ELSE
+               YTD.AV.CWT=0
+            END
+            ALCON.REPORT<ATT.NUM,15>=YTD.AV.CWT'R26'
+         END                             ; * READ WORK.REC FROM F.WORK,WORK.ID
+      REPEAT
+      GOSUB BUILD.FILE
+      GOTO END.PROGRAM
+BUILD.FILE:***
+      TEXT='Monthly Report for Client: ':CLIENT.ID
+      IF OLD.DIVISION='TOTAL' THEN
+         TEXT=TEXT:' For All Divisions'
+      END ELSE
+         TEXT=TEXT:' For Division ':OLD.DIVISION
+      END
+      TEXT=TEXT:' from ':BEG.DATE'D4/':' to ':END.DATE'D4/'
+      ALCON.REPORT<1,1>=TEXT
+      ALCON.REPORT<2, 1>=' '
+      ALCON.REPORT<3, 1>='Mode'
+      ALCON.REPORT<3, 2>='Carrier'
+      ALCON.REPORT<3, 3>='I/O/T'
+      ALCON.REPORT<3, 4>='MTD Shpts'
+      ALCON.REPORT<3, 5>='YTD Shpts'
+      ALCON.REPORT<3, 6>='MTD Wt'
+      ALCON.REPORT<3, 7>='YTD Wt'
+      ALCON.REPORT<3, 8>='MTD $ Paid'
+      ALCON.REPORT<3, 9>='YTD $ Paid'
+      ALCON.REPORT<3,10>='MTD Av $/Shpt'
+      ALCON.REPORT<3,11>='YTD Av $/Shpt'
+      ALCON.REPORT<3,12>='MTD Av #/Shpt'
+      ALCON.REPORT<3,13>='YTD Av #/Shpt'
+      ALCON.REPORT<3,14>='MTD Av $/Cwt'
+      ALCON.REPORT<3,15>='YTD Av $/Cwt'
+      ALCON.REPORT=CHANGE(ALCON.REPORT,@VM,TAB)
+      IF OLD.DIVISION='TOTAL' THEN OLD.DIVISION='ALL'
+      FILE.ID='MONTHLY':CLIENT.ID:OLD.DIVISION:BEG.YEAR:BEG.MONTH:BEG.DAY:'-':END.YEAR:END.MONTH:END.DAY:'.XLS'
+      WRITE ALCON.REPORT ON BILLDATA,FILE.ID ELSE
+         CALL ELINE(FILE.ID:' could not be written.')
+      END
+      RETURN
+
+BUILD.WORK.ID:***
+*     Build work file item ID
+      WORK.ID=FIELD1'R%5':'*':FIELD2:'*':FIELD3:'*':FIELD4
+      RETURN
+
+
+INIT.WORK.REC:***
+*     Zero out all values of WORK.REC
+      WORK.REC=''
+      FOR X=1 TO 6
+         WORK.REC<X>=0
+      NEXT X
+      RETURN
+
+
+UPDATE.WORK.REC:***
+*     Update work record arrays
+*     IF BILL.REC<37> LT BEG.DATE ELSE   ; * JMK02
+*        WORK.REC<1>+=1                  ; * JMK02
+*        WORK.REC<2>+=BILL.REC<6>        ; * JMK02
+*        WORK.REC<3>+=BILL.REC<8>        ; * JMK02
+*     END                                ; * JMK02
+*     WORK.REC<4>+=1                     ; * JMK02
+*     WORK.REC<5>+=BILL.REC<6>           ; * JMK02
+*     WORK.REC<6>+=BILL.REC<8>           ; * JMK02
+      IF PROC.DT LT BEG.DATE ELSE        ; * JMK02
+         WORK.REC<1>+=SUMM.REC<1>        ; * JMK02
+         WORK.REC<2>+=SUMM.REC<2>        ; * JMK02
+         WORK.REC<3>+=SUMM.REC<3>        ; * JMK02
+      END                                ; * JMK02
+      WORK.REC<4>+=SUMM.REC<1>           ; * JMK02
+      WORK.REC<5>+=SUMM.REC<2>           ; * JMK02
+      WORK.REC<6>+=SUMM.REC<3>           ; * JMK02
+      RETURN
+
+
+CALL.NET.ADMIN:***
+      CALL ELINE("CALL NETWORK ADMINISTRATOR!")
+      CALL ELINE("CALL NETWORK ADMINISTRATOR!!!!!")
+      RETURN
+END.PROGRAM:***
+*     End of program
+      CRT @(0,23):
+   END

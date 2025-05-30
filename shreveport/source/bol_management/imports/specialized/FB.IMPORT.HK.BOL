@@ -1,0 +1,297 @@
+*************************************************************************
+* Program : FB.IMPORT.HK.BOL
+*           Import BOL data from H&K Dallas
+* Author  : James Barberousse
+* Date    : March 2002
+*
+* Copyright (c) 2002 by AFS Logistics, LLC. - All Rights Reserved
+*************************************************************************
+* Format of HK Text file                     Format of FB.BOL.CRX,01057
+* Tab-delimited with possible spaces         ITEM ID = Order Number-Suffix
+* ----------------------------------------------------------------------
+* (1) Invoice Number (whole number)          H<1> Amount (flat)
+* (2) Suffix (1 or 2 digit number)           H<2> Invoice Date (flat)
+* (3) Amount (decimal number)                A<3> Total Amount (flat)
+* (4) General Ledger Number (whole number)   A<4> Last Date Updated (flat)
+* (5) Order Number (whole number)            A<5> Amount by Pro (mv)
+* (6) Suffix (1 or 2 digit number)           A<6> Pro Numbers (mv)
+* (7) Invoice Date (YYYYMMDD)                A<7> Date of Pro (mv)
+*                                            H<8> Invoice Number-Suffix
+*                                            H<9> General Ledger Number
+*************************************************************************
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+* Initialize general variables
+      PROMPT''
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='FB.IMPORT.HK.BOL'
+      PROG.DESC='Import H&K Dallas BOL Data'
+      PACK.NAME='Freight Payment'
+      MASK.CHAR='-'
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.IMPORT.HK.BOL' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+
+* Write screen header
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+
+* Restrict program usage
+      VALID.USER=1
+      BEGIN CASE
+         CASE USER.NAME='OWEN'
+         CASE USER.NAME='MYRA'
+         CASE USER.NAME='DAVID'
+         CASE USER.NAME='J-AMES'
+         CASE 1
+            VALID.USER=0
+      END CASE
+
+      IF NOT(VALID.USER) THEN
+         TEMP='**  This is a restricted access application  **'
+         CALL CENTER(TEMP,80)
+         CRT @(0,12):TEMP
+         GOTO THE.END
+      END
+
+* Open client file and read record for client
+      CLIENT.NUMBER='01057'
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.NUMBER ELSE
+         CALL ELINE('Could not read client file.')
+         GOTO THE.END
+      END
+
+100:***
+      LN='Are you ready to import BOL codes from ':CLIENT.NUMBER:' ':CLIENT.REC<2>:'? '
+      MASK='N-'
+      HELP='[Y]=Yes [N]=No [EX]=Exit'
+      CALL GEN.IN(0,5,LN:MASK,'',Q,0,2,'','',2,-2,5,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX' OR QI='N' OR QI=''
+            GOTO THE.END
+         CASE QI='Y'
+            NULL
+         CASE 1
+            GOTO 100
+      END CASE
+
+* Open other files
+      OPEN '','BILLDATA.MYRA' TO F.BILLDATA ELSE
+         CALL OPEN.ABORT('BILLDATA.MYRA',PROG.NAME)
+      END
+      OPEN '','FB.BOL.CRX,':CLIENT.NUMBER TO F.BOL ELSE
+         CALL OPEN.ABORT('FB.BOL.CRX,':CLIENT.NUMBER,PROG.NAME)
+      END
+
+* Set update date
+      UPDATE.DATE=CLIENT.REC<82>+1; * Last processed + 1 day
+      IF UPDATE.DATE<DATE() THEN
+         UPDATE.DATE=DATE()
+      END
+
+* Read in the existing H&K Dallas text file
+      READ HK.IMPORT FROM F.BILLDATA,'HK.TXT' ELSE
+         CALL ELINE('HK.TXT does not exist.')
+         GOTO THE.END
+      END
+      HK.LAST.IMPORT=HK.IMPORT; * Save file for writing as "last"
+
+* Prepare the file for processing
+      HK.IMPORT=CHANGE(HK.IMPORT,TAB,@VM)
+      NUM.ATTRIBUTES=DCOUNT(HK.IMPORT,@AM)
+      FOR X=1 TO NUM.ATTRIBUTES
+         NUM.VALUES=DCOUNT(HK.IMPORT<X>,@VM)
+         FOR Y=1 TO NUM.VALUES
+            HK.IMPORT<X,Y>=TRIM(HK.IMPORT<X,Y>)
+         NEXT Y
+      NEXT X
+
+* Status lines
+      CRT @(0,5):'Total items in import file = ':NUM.ATTRIBUTES:@(-4)
+      CRT @(0,7):'Total Items processed'
+      CRT @(0,8):'---------------------'
+
+* Set counters for processing
+      COUNTER=0
+      ALREADY.THERE=0
+      ALREADY.THERE.BOTH.MATCH=0
+      ALREADY.THERE.AMOUNTS.MATCH=0
+      ALREADY.THERE.DATES.MATCH=0
+      ALREADY.THERE.NEITHER.MATCH=0
+
+      ALREADY.THERE.NULL=0
+      NOT.THERE=0
+
+      RESULTS.ARRAY=''
+      ERROR.ARRAY=''
+
+* Process file
+      LOOP WHILE HK.IMPORT#''
+         COUNTER+=1
+         CRT @(0,9):COUNTER'R#21'
+         ITEM.ID=HK.IMPORT<1,5>:'-':HK.IMPORT<1,6>'R%2';            * Order # and Suffix
+         HK.AMOUNT=ICONV(HK.IMPORT<1,3>,'MR2');                     * Amount
+         HK.DATE=HK.IMPORT<1,7>;                                    * Invoice Date
+         HK.DATE=HK.DATE[5,2]:'-':HK.DATE[7,2]:'-':HK.DATE[1,4]
+         HK.DATE=ICONV(HK.DATE,'D')
+         HK.INVOICE.SUFFIX=HK.IMPORT<1,1>:'-':HK.IMPORT<1,2>'R%2';  * Invoice # and Suffix
+         HK.GENERAL.LEDGER=HK.IMPORT<1,4>;                          * General Ledger Number
+
+         READ BOL.ITEM FROM F.BOL,ITEM.ID THEN
+            ALREADY.THERE+=1
+            BEGIN CASE
+               CASE HK.AMOUNT=BOL.ITEM<1> AND HK.DATE=BOL.ITEM<2>
+                  * Amounts match, and invoice dates match
+                  ALREADY.THERE.BOTH.MATCH+=1
+
+               CASE HK.AMOUNT=BOL.ITEM<1> AND HK.DATE#BOL.ITEM<2>
+                  * Amounts match, but invoice dates do not match
+                  ALREADY.THERE.AMOUNTS.MATCH+=1
+                  LINE=''
+                  LINE<1,1>='BOL ITEM.ID ':ITEM.ID
+                  LINE<1,2>='Amounts match, but Invoice Dates do not match. File not changed.'
+                  LINE<1,3>='Amount                = ':OCONV(HK.AMOUNT,'MR2')
+                  LINE<1,4>='Existing Invoice Date = ':BOL.ITEM<2>'D4-'
+                  LINE<1,5>='New Invoice Date      = ':HK.DATE'D4-'
+                  ERROR.ARRAY<-1>=LINE
+                  ERROR.ARRAY<-1>=' '
+                  ERROR.ARRAY<-1>=' '
+
+               CASE HK.AMOUNT#BOL.ITEM<1> AND HK.DATE=BOL.ITEM<2>
+                  * Amounts do not match, but invoice dates match
+                  ALREADY.THERE.DATES.MATCH+=1
+                  LINE=''
+                  LINE<1,1>='BOL ITEM.ID ':ITEM.ID
+                  LINE<1,2>='Amounts do not match, but Invoice Dates match. File not changed.'
+                  LINE<1,3>='Existing Amount       = ':OCONV(BOL.ITEM<1>,'MR2')
+                  LINE<1,4>='New Amount            = ':OCONV(HK.AMOUNT,'MR2')
+                  LINE<1,5>='Invoice Date          = ':BOL.ITEM<2>'D4-'
+                  ERROR.ARRAY<-1>=LINE
+                  ERROR.ARRAY<-1>=' '
+                  ERROR.ARRAY<-1>=' '
+
+               CASE HK.AMOUNT#BOL.ITEM<1> AND HK.DATE#BOL.ITEM<2>
+                  * Amounts do not match, and invoice dates do not match
+                  ALREADY.THERE.NEITHER.MATCH+=1
+                  LINE=''
+                  LINE<1,1>='BOL ITEM.ID ':ITEM.ID
+                  LINE<1,2>='Amounts do not match, and Invoice Dates do not match. File not changed.'
+                  LINE<1,3>='Existing Amount       = ':OCONV(BOL.ITEM<1>,'MR2')
+                  LINE<1,4>='New Amount            = ':OCONV(HK.AMOUNT,'MR2')
+                  LINE<1,5>='Existing Invoice Date = ':BOL.ITEM<2>'D4-'
+                  LINE<1,6>='New Invoice Date      = ':HK.DATE'D4-'
+                  ERROR.ARRAY<-1>=LINE
+                  ERROR.ARRAY<-1>=' '
+                  ERROR.ARRAY<-1>=' '
+            END CASE
+
+            IF (BOL.ITEM<1>+0)=0 THEN; * Existing amount is zero
+               ALREADY.THERE.NULL+=1
+               LINE=''
+               LINE<1,1>='BOL ITEM.ID ':ITEM.ID
+               LINE<1,2>='Existing Amount was zero. Updated to New Amount.'
+               LINE<1,3>='Existing Amount       = ':OCONV(BOL.ITEM<1>,'MR2')
+               LINE<1,4>='New Amount            = ':OCONV(HK.AMOUNT,'MR2')
+               ERROR.ARRAY<-1>=LINE
+               ERROR.ARRAY<-1>=' '
+               ERROR.ARRAY<-1>=' '
+               BOL.ITEM<1>=HK.AMOUNT
+               BOL.ITEM<2>=HK.DATE
+               BOL.ITEM<4>=UPDATE.DATE
+               BOL.ITEM<8>=HK.INVOICE.SUFFIX
+               BOL.ITEM<9>=HK.GENERAL.LEDGER
+            END
+         END ELSE
+            NOT.THERE+=1
+            BOL.ITEM=''
+            BOL.ITEM<1>=HK.AMOUNT
+            BOL.ITEM<2>=HK.DATE
+            BOL.ITEM<4>=UPDATE.DATE
+            BOL.ITEM<8>=HK.INVOICE.SUFFIX
+            BOL.ITEM<9>=HK.GENERAL.LEDGER
+         END
+         WRITE BOL.ITEM ON F.BOL,ITEM.ID
+         DEL HK.IMPORT<1>
+      REPEAT
+      
+* Update files
+      WRITE HK.LAST.IMPORT ON F.BILLDATA,'HK-LAST.TXT' THEN
+         WRITE HK.LAST.IMPORT ON F.BILLDATA,'HK-':TIMEDATE():'.TXT'
+         DELETE F.BILLDATA,'HK.TXT'; * Delete the original HK text file
+      END ELSE
+         CALL ELINE('Could not write HK-LAST.TXT. Not deleting HK.TXT. Call James.')
+      END
+
+* Screen output of results
+      CRT @(0,12):'Items already existing in the BOL cross reference file:'
+      CRT @(0,13):'   1 Same Amounts, Same Invoice Dates           (not changed) = ':ALREADY.THERE.BOTH.MATCH'R#4'
+      CRT @(0,14):'   2 Same Amounts, Different Invoice Dates      (not changed) = ':ALREADY.THERE.AMOUNTS.MATCH'R#4'
+      CRT @(0,15):'   3 Different Amounts, Same Invoice Dates      (not changed) = ':ALREADY.THERE.DATES.MATCH'R#4'
+      CRT @(0,16):'   4 Different Amounts, Different Invoice Dates (not changed) = ':ALREADY.THERE.NEITHER.MATCH'R#4'
+      CRT @(0,17):'---- Total items already in the file                          = ':ALREADY.THERE'R#4'
+
+      CRT @(0,19):'   5 Zero or Null Amount (occurs as 1-4 above)      (changed) = ':ALREADY.THERE.NULL'R#4'
+      CRT @(0,20):'---- Total items not in the file                    (written) = ':NOT.THERE'R#4'
+
+* Email output of results
+      RESULTS.ARRAY<-1>='Items already existing in the BOL cross reference file:'
+      RESULTS.ARRAY<-1>='   1 Same Amounts, Same Invoice Dates           (not changed) = ':ALREADY.THERE.BOTH.MATCH'R#4'
+      RESULTS.ARRAY<-1>='   2 Same Amounts, Different Invoice Dates      (not changed) = ':ALREADY.THERE.AMOUNTS.MATCH'R#4'
+      RESULTS.ARRAY<-1>='   3 Different Amounts, Same Invoice Dates      (not changed) = ':ALREADY.THERE.DATES.MATCH'R#4'
+      RESULTS.ARRAY<-1>='   4 Different Amounts, Different Invoice Dates (not changed) = ':ALREADY.THERE.NEITHER.MATCH'R#4'
+      RESULTS.ARRAY<-1>='---- Total items already in the file                          = ':ALREADY.THERE'R#4'
+      RESULTS.ARRAY<-1>=' '
+      RESULTS.ARRAY<-1>='   5 Zero or Null Amount (occurs as 1-4 above)      (changed) = ':ALREADY.THERE.NULL'R#4'
+      RESULTS.ARRAY<-1>='---- Total items not in the file                    (written) = ':NOT.THERE'R#4'
+
+      EMAIL.OUT=''
+      EMAIL.OUT<1,1>='oweninfo@afs.net';   * To: Email addresses
+*****      EMAIL.OUT<1,2>='Myra@afs.net'
+*      EMAIL.OUT<1,3>='David@afs.net'
+*     EMAIL.OUT<1,4>='J-ames@afs.net'
+      EMAIL.OUT<2>='';                          * CC: Email addresses      
+      EMAIL.OUT<3>='';                          * BCC: Email addresses
+      EMAIL.OUT<4>='Reports@afs.net';  * From Email address
+      EMAIL.OUT<5>='Results From Running ':PROG.NAME:' - Import Of New BOL Data For ':CLIENT.NUMBER:' ':CLIENT.REC<2>; * Subject of Email
+
+      * Email body
+      EMAIL.OUT<6,-1>=USER.NAME:' ran ':PROG.NAME:' (':PROG.DESC:') on ':DATE()'D2/':' at ':OCONV(TIME(),'MTHS'):' with the following results:'
+      EMAIL.OUT<6,-1>=' '
+      NUM=DCOUNT(RESULTS.ARRAY,@AM)
+      FOR X=1 TO NUM
+         EMAIL.OUT<6,-1>='   ':RESULTS.ARRAY<X>
+      NEXT X
+
+      IF ERROR.ARRAY#'' THEN
+         EMAIL.OUT<6,-1>=' '
+         EMAIL.OUT<6,-1>=' '
+         EMAIL.OUT<6,-1>=' '
+         EMAIL.OUT<6,-1>='The following conflicts occurred between existing data and new data:'
+         EMAIL.OUT<6,-1>=' '
+         NUM=DCOUNT(ERROR.ARRAY,@AM)
+         FOR X=1 TO NUM
+            EMAIL.OUT<6,-1>='   ':ERROR.ARRAY<X>
+         NEXT X
+      END
+
+      EMAIL.OUT<7>=1; * Auto format (add carriage returns to end of text)
+
+      VIN=EMAIL.OUT
+      VOUT=''
+      CALL SENDMAIL(VIN,VOUT)
+
+      CALL ELINE('')
+
+*************************************************************************
+
+THE.END:***
+* End of program
+      CRT @(0,23):
+      END

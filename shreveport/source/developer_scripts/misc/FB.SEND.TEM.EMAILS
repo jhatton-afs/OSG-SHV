@@ -1,0 +1,972 @@
+      SUBROUTINE FB.SEND.TEM.EMAILS(VIN,EMAIL.ARRAY,PRV.EMAIL.ARRAY,F.CLIENTS,F.CARRIERS,F.TRANSPORT,F.TABLES)
+*****************************************************
+* Program name : FB.SEND.TEM.EMAILS
+* Author       : unknown
+* Date written : 06-29-2006
+* Library      : FBBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* Send Misroute emails
+*
+* Last updated by AFS (gbino) at 07:57:18 on 11/09/2016.
+*
+* Start modification history
+* 032307 - JMK01 - C200703220003 /  3/23/07 / Updating misroute letters and debit memos
+* 091208 - JMK02 - C082057 - Add ability to take account off of troubleshoot temporarily for processing ; Post to AR program
+* 092009 - JMK03 - C090669 - LCC Emails ; with transit times
+* 100709 - JMK04 - C091185 - All Rexel Branches received LCC report for entire company
+* 010710 - JMK05 - T100029 - Pro# is not included body of TEM email
+* 060210 - JMK06 - Add total weight to email body for Darling (00850, 01270, 01433)
+* 021511 - JMK07 - ADD AFS BOL INDICATOR TO HTML BODY
+* 071211 - JMK08 - T110809 - Update TEM Notification Email
+* 071811 - JMK09 - T110802 - Carrier Letter from ProComm ; remove "Logistics LLC" - should be AFS only.
+* 083112 - JMK10 - Remove OwenInfo (Bfranklin) from email lists
+* 052814 - JMK11 - SysAid#9716 - Lou Cervone
+* 111516 - GRB01 - SysAid 28481 Excessive freight charge change
+* 012017 - GRB02 - SysAid 28528 add minimum amount value from client<310>
+* 101723 - NKH01 - ACCU-2459 Send misroute and lcc report as csv for client 5267
+* End modification history
+*
+************************************************************
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.SEND.TEM.EMAILS' ; UPL.VOUT = ''       ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+
+      OPEN '','EMAILDATA' TO EMAILDATA ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE('Unable To Open EMAILDATA')
+         STOP
+      END
+
+      TODAY=DATE()
+      TESTING=0
+      PATH.ID='E:\ARDENT\PUBLIC\EMAILDATA\'
+      MRS.ATTACH.ID=''                   ; * JMK03
+      LCC.ATTACH.ID=''                   ; * JMK03
+      ATTACH.ID=''
+      TAB=CHAR(9)
+      VC.NAME = VIN<1>
+      VC.ADDR1 = VIN<2>
+      VC.ADDR2 = VIN<3>
+      VC.CITY = VIN<4>
+      VC.ST= VIN<5>
+      VC.ZIP = VIN<6>
+      CLIENT.NAME = VIN<7>
+      DIV.ID = VIN<8>
+      DIV.DESC = VIN<9>
+      CARR.CHG.FLAG = VIN<10>
+      DM.TOTAL = VIN<11>
+      LOC.DESC = VIN<12>
+      TOTAL.OVERCHARGE = VIN<13>
+      CONF.LINE = VIN<14>
+      EMAIL.DATE = VIN<15>
+      EMAIL.DATE.O=OCONV(EMAIL.DATE,'D2/')
+      EMAIL.TYPE = VIN<16>
+      NUM.SHIPMENTS = DCOUNT(EMAIL.ARRAY<1>,@VM)
+      VCI = VIN<17>
+      CLIENT.ID = VIN<18>
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE CIENT.REC=''
+
+      SLS.REF=''
+      SVC.SLS=CLIENT.REC<115>
+      IF SVC.SLS#'' THEN
+         SLS.REF='Ref: ':SVC.SLS
+      END
+      SVC.SLS.NAME=OCONV(SVC.SLS,'TAR.SLSMAN.1000.1;X;;1')
+      SVC.SLS.EMAIL=OCONV(SVC.SLS,'TAR.SLSMAN.1000.1;X;;8')
+      IF SVC.SLS.NAME#'' THEN
+         SLS.REF:=' - '
+         SLS.INI=''
+         NWDS=DCOUNT(SVC.SLS.NAME,' ')
+         FOR WD=1 TO NWDS
+            SLS.INI:=TRIM(FIELD(SVC.SLS.NAME,' ',WD))[1,1]
+         NEXT WD
+         SLS.INI=OCONV(SLS.INI,'MCU')
+         SLS.REF:=SLS.INI
+      END
+      VERSION=CLIENT.REC<173>
+      IF CLIENT.ID[1,2]='99' THEN
+         BEGIN CASE
+            CASE VERSION='8'
+            CASE VERSION='733'
+            CASE VERSION='734'
+            CASE 1
+               VERSION='8'
+         END CASE
+      END
+      BEGIN CASE                         ; * JMK06
+         CASE CLIENT.ID='00850'          ; * JMK06
+            DARLING=1                    ; * JMK06
+         CASE CLIENT.ID='01270'          ; * JMK06
+            DARLING=1                    ; * JMK06
+         CASE CLIENT.ID='01433'          ; * JMK06
+            DARLING=1                    ; * JMK06
+         CASE 1                          ; * JMK06
+            DARLING=0                    ; * JMK06
+      END CASE                           ; * JMK06
+      SORT=CLIENT.REC<174>
+      IF SORT='' THEN SORT=1
+      MIN.DM.AMT = VIN<19>
+      EMAIL.ADD=VIN<20>
+
+      IF EMAIL.ADD#'' THEN               ; * JMK03
+         USER=VIN<21>
+         CH.NUM=VIN<22>
+         EMAIL.LIST=VIN<23>
+         ONCE = VIN<24>                  ; * JMK02
+         LCC.OVERCHARGE = VIN<25>        ; * JMK03
+         LCC.LIST = VIN<26>              ; * JMK03
+         BEG.DATE = VIN<27>              ; * JMK03
+         END.DATE = VIN<28>              ; * JMK03
+         MRS.FLG=TOTAL.OVERCHARGE+0#0    ; * JMK03
+         LCC.FLG=LCC.OVERCHARGE+0#0      ; * JMK03
+         LVL1.NVAL=DCOUNT(EMAIL.LIST,@VM)
+         NEW.EMAIL.LIST=''
+         FOR LVL1.VAL=1 TO LVL1.NVAL
+            LVL1.ALL=EMAIL.LIST<1,LVL1.VAL>
+            LVL2.NVAL=DCOUNT(LVL1.ALL,'|')
+            FOR LVL2.VAL=1 TO LVL2.NVAL
+               LVL2.ALL=FIELD(LVL1.ALL,'|',LVL2.VAL)
+               LVL3.NVAL=DCOUNT(LVL2.ALL,';')
+               FOR LVL3.VAL=1 TO LVL3.NVAL
+                  EMAILADD=FIELD(LVL2.ALL,';',LVL3.VAL)
+                  BEGIN CASE
+                     CASE EMAILADD='bbarker@afs.net'
+                     CASE EMAILADD='misroutes@afs.net'
+                     CASE EMAILADD='TEM@afs.net'   ; * JMK03
+                     CASE EMAILADD='nmeddaugh@afs.net'
+                     CASE EMAILADD=OCONV(SVC.SLS.EMAIL,'MCL')
+                     CASE 1
+                        LOCATE EMAILADD IN NEW.EMAIL.LIST<1> SETTING NPOS ELSE
+                           NEW.EMAIL.LIST<1,-1>=EMAILADD
+                        END
+                  END CASE
+               NEXT LVL3.VAL
+            NEXT LVL2.VAL
+         NEXT LVL1.VAL
+         EMAIL.LIST=NEW.EMAIL.LIST
+         FB.LIST=EMAIL.ARRAY<8>
+         BEG.DATE.O=BEG.DATE'D2/'
+         BEG.DATE.O=BEG.DATE.O[7,2]:BEG.DATE.O[4,2]:BEG.DATE.O[1,2]
+         END.DATE.O=END.DATE'D2/'
+         END.DATE.O=END.DATE.O[7,2]:END.DATE.O[4,2]:END.DATE.O[1,2]
+
+         TO.ADD=FIELD(EMAIL.ADD,'|',1)
+         CC.ADD=FIELD(EMAIL.ADD,'|',2)
+         BCC.ADD=FIELD(EMAIL.ADD,'|',3)
+         CLIENT.ADD=FIELD(EMAIL.ADD,'|',4)
+         VC.ADD=FIELD(EMAIL.ADD,'|',5)
+         IF VC.ADD # "" THEN DETAIL=1 ELSE DETAIL=0
+         DASH=STR('-',250)
+         TO_ADD=''
+         CC_ADD=''
+         BCC_ADD=''
+         NVAL=DCOUNT(TO.ADD,';')
+         FOR VAL=1 TO NVAL
+            ADDR=FIELD(TO.ADD,';',VAL)
+            IF TRIM(ADDR)#'' THEN
+               TO_ADD<1,-1>=ADDR
+            END
+         NEXT VAL
+         NVAL=DCOUNT(CC.ADD,';')
+         FOR VAL=1 TO NVAL
+            ADDR=FIELD(CC.ADD,';',VAL)
+            IF TRIM(ADDR)#'' THEN
+               CC_ADD<1,-1>=ADDR
+            END
+         NEXT VAL
+         NVAL=DCOUNT(BCC.ADD,';')
+         FOR VAL=1 TO NVAL
+            ADDR=FIELD(BCC.ADD,';',VAL)
+            IF TRIM(ADDR)#'' THEN
+               BCC_ADD<1,-1>=ADDR
+            END
+         NEXT VAL
+         IF (TOTAL.OVERCHARGE+LCC.OVERCHARGE)>30000 THEN
+
+         END
+
+         LOCATE 'TEMClientEmails@afs.net' in BCC_ADD<1> SETTING BPOS ELSE
+            BCC_ADD<1,-1>='TEMClientEmails@afs.net'
+         END
+*****         BCC_ADD<1,-1>='nmeddaugh@afs.net'
+         IF TESTING THEN
+            TO_ADD.ORG=TO_ADD
+            CC_ADD.ORG=CC_ADD
+            BCC_ADD.ORG=BCC_ADD
+            TO_ADD=''
+
+
+            CC_ADD=''
+            BCC_ADD=''
+*****            BCC_ADD<1,-1>='nmeddaugh@afs.net'          ; * JMKXX - FOR TESTING
+         END
+****         BCC_ADD<1,-1>='nmeddaugh@afs.net'   ; * JMKXX - FOR TESTING
+
+         **** FROM_ADD='TEM@afs.net' ; * GRB01
+         FROM_ADD='AFS'                  ; * GRB01
+
+         SUBJECT=''
+         MESSAGE=''
+         MESSAGE<1,-1>=\<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN">\
+         MESSAGE<1,-1>=\<HTML LANG="EN-US">\
+         MESSAGE<1,-1>=\<STYLE>\
+         MESSAGE<1,-1>=\<!--\
+         MESSAGE<1,-1>=\TABLE { font-size : x-small}\
+         MESSAGE<1,-1>=\-->\
+         MESSAGE<1,-1>=\</STYLE>\
+         MESSAGE<1,-1>=\<HEAD>\
+         MESSAGE<1,-1>=\</HEAD>\
+         MESSAGE<1,-1>=\<BODY>\
+
+         EMAIL.NVAL=DCOUNT(EMAIL.LIST,@VM)
+         EMAIL.NVAL=1                    ; * JMK - TEMPORARY DISABLE
+         IF EMAIL.LIST#'' AND EMAIL.NVAL > 1 THEN
+            MESSAGE<1,-1>=\<p >NOTE: Depending on personal filters, copies of this notice may have been sent to :\
+            FOR EMAIL.VAL=1 TO EMAIL.NVAL
+               MESSAGE:=EMAIL.LIST<1,EMAIL.VAL>
+               BEGIN CASE
+                  CASE EMAIL.VAL=EMAIL.NVAL
+                     MESSAGE:='.'
+                  CASE 1
+                     MESSAGE:='; '
+               END CASE
+            NEXT EMAIL.VAL
+            MESSAGE:=\</p>\
+         END
+
+*****************************************************************
+* START EMAIL
+*****************************************************************
+
+         FMT.EMAIL.DATE = TRIM(EMAIL.DATE'DMADL'):', ':TRIM(EMAIL.DATE'DY4')     ; * SWB CACHE SYNTAX FIXES
+
+         SUBJECT="Excessive Freight Expense - ":(TOTAL.OVERCHARGE+LCC.OVERCHARGE)'MR26,$':" - ":CLIENT.NAME:" (":CLIENT.ID:")"
+         IF EMAIL.TYPE = 'DM' THEN
+            SUBJECT='Debit Memo ':SUBJECT
+         END
+
+         GOSUB PRINT.INTRO
+
+         IF DETAIL THEN
+            BEGIN CASE
+               CASE VCI = 'C'
+
+                  IF TOTAL.OVERCHARGE+0#0 THEN
+                     MESSAGE<1,-1>=\<p >AFS has restructured the LTL transportation for \:CLIENT.NAME:\ in \:LOC.DESC:\.\
+                     MESSAGE:=\  Preferred Carriers have been chosen based on service and price.  The shipments below\
+                     MESSAGE:=\ were not shipped on these Preferred Carriers and resulted in excessive charges.  In\
+                     MESSAGE:=\ an effort to minimize costs and improve service, we request that on all subsequent\
+
+                     MESSAGE:=\ shipments you use the Approved Carrier for that shipment.</p>\
+                     MESSAGE<1,-1>=\<p >Thank you for your assistance.  If for any reason you are unable to ship using the\
+                     MESSAGE:=\ Approved Carrier, please call us at 877-531-2796 option 2.</p>\
+                     MESSAGE<1,-1>=\<p >The following freight was shipped from or returned to \:CLIENT.NAME:\ in \:LOC.DESC
+
+                     MESSAGE:=\ using Unapproved Carriers and resulting in excessive charges\
+                     MESSAGE:=\ of <b><font color="red">\:TOTAL.OVERCHARGE'R26,$':\</b><font color="black">.</p>\
+                  END
+
+                  GOSUB PRINT.MRS.SHIPMENT.DETAILS
+
+                  IF LCC.OVERCHARGE+0#0 THEN
+                     GOSUB PRINT.LCC.SHIPMENT.DETAILS
+                  END
+
+               CASE VCI = 'I'
+
+                  IF TOTAL.OVERCHARGE+0#0 THEN
+                     MESSAGE<1,-1>=\<p >AFS has restructured the LTL transportation for \:CLIENT.NAME:\ in \:LOC.DESC:\.\
+                     MESSAGE:=\  Preferred Carriers have been chosen based on service and price.  The shipments below\
+                     MESSAGE:=\ were not shipped on these Preferred Carriers and resulted in excessive charges.  In\
+                     MESSAGE:=\ an effort to minimize costs and improve service, we request that on all subsequent\
+
+                     MESSAGE:=\ shipments you use the Approved Carrier for that shipment.</p>\
+                     MESSAGE<1,-1>=\<p >Thank you for your assistance.  If for any reason you are unable to ship using the\
+
+                     MESSAGE:=\ Approved Carrier, please call us at 877-531-2796 option 2.</p>\      ; * JMK08
+                     MESSAGE<1,-1>=\<p >The following freight was shipped intercompany to your division or location in\
+
+                     MESSAGE:=\ \:LOC.DESC:\ using incorrect Unapproved Carriers resulting in excessive charges\
+                     MESSAGE:=\ of <font color="red">\:TOTAL.OVERCHARGE'R26,$':\<font color="black">.</p>\
+                  END
+
+                  GOSUB PRINT.MRS.SHIPMENT.DETAILS
+
+                  IF EMAIL.TYPE # "LTR1" AND DETAIL="1" THEN
+                     MESSAGE<1,-1>=\<p >On behalf of \:CLIENT.NAME:\ in \:LOC.DESC:\, we have\
+                     MESSAGE:=\ previously notified you in writing of the approved routing process.  It has come\
+                     MESSAGE:=\ to our attention that you have not followed our routing instructions.</p>\
+
+                     MESSAGE<1,-1>=\<p >The following shipments were previously shipped/returned using Unapproved Carriers\
+                     MESSAGE:=\ resulting in excessive charges.</p>\
+                     GOSUB PRINT.PRV.SHIPMENT.DETAILS
+                  END
+
+                  IF LCC.OVERCHARGE+0#0 THEN
+                     GOSUB PRINT.LCC.SHIPMENT.DETAILS
+                  END
+
+               CASE VCI = 'V' OR VCI = ''
+
+                  IF TOTAL.OVERCHARGE+0#0 THEN
+                     MESSAGE<1,-1>=\<p >The following freight was shipped to \:CLIENT.NAME:\ in \:LOC.DESC
+
+                     MESSAGE:=\ using Unapproved Carriers resulting in excessive charges of <b><font color="red">\:TOTAL.OVERCHARGE'R26,$':\<font color="black"></b>.</p>\
+                  END
+
+                  GOSUB PRINT.MRS.SHIPMENT.DETAILS
+
+                  BEGIN CASE
+                     CASE EMAIL.TYPE = 'LTR1'
+                        GOSUB PRINT.INSTRS
+
+                     CASE EMAIL.TYPE = 'LTR2' OR EMAIL.TYPE = 'LTR3' OR EMAIL.TYPE = 'LTR4' OR EMAIL.TYPE='LTR5' OR EMAIL.TYPE = 'LTR6'
+
+                        MESSAGE<1,-1>=\<p >On behalf of \:CLIENT.NAME:\ in \:LOC.DESC:\ we have previously notified you in writing of the approved\
+                        MESSAGE:=\ routing process.  It has come to our attention that you have not followed our routing\
+                        MESSAGE:=\ instructions.</p>\
+
+                        IF DETAIL="1" THEN
+
+                           MESSAGE<1,-1>=\<p >The following shipments were previously shipped or returned using Unapproved Carriers\
+                           MESSAGE:=\ resulting in excessive charges.</p>\
+                           GOSUB PRINT.PRV.SHIPMENT.DETAILS
+                        END
+                        GOSUB PRINT.INSTRS
+                     CASE EMAIL.TYPE = 'DM'
+
+                        MESSAGE<1,-1>=\<p >Excessive freight costs of the misrouted shipment(s) listed above have been deducted\
+                        MESSAGE:=\ from your invoice.  Continued failure to comply with transportation routing instructions \
+                        MESSAGE:=\ will result in additional debits.  Excessive cost is subject to a <b>\:MIN.DM.AMT'R26,$#6':\</b> administrative\
+                        MESSAGE:=\ minimum.</p>\
+
+                        MESSAGE<1,-1>=\<p >On behalf of \:CLIENT.NAME:\ in \:LOC.DESC:\, we have\
+                        MESSAGE:=\ previously notified you in writing of the approved routing process.  It has come\
+                        MESSAGE:=\ to our attention that you have not followed our routing instructions.</p>\
+
+                        IF DETAIL="1" THEN
+                           MESSAGE<1,-1>=\<p >The following shipments were previously shipped or returned using Unapproved Carriers\
+                           MESSAGE:=\ resulting in excessive charges.</p>\
+                           GOSUB PRINT.PRV.SHIPMENT.DETAILS
+                        END
+                        MESSAGE<1,-1>=\<p >If you have any questions, please contact us at 877-531-2796 option 2.</p>\   ; * JMK08
+                  END CASE
+                  IF LCC.OVERCHARGE+0#0 THEN
+                     GOSUB PRINT.LCC.SHIPMENT.DETAILS
+                  END
+
+            END CASE
+         END ELSE
+            IF TOTAL.OVERCHARGE+0#0 THEN
+               MESSAGE<1,-1>=\<p >AFS has restructured the LTL transportation for \:CLIENT.NAME:\.\
+               MESSAGE:=\  Preferred Carriers have been chosen based on service and price.  The shipments below\
+               MESSAGE:=\ were not shipped on these Preferred Carriers and resulted in excessive charges.  In\
+               MESSAGE:=\ an effort to minimize costs and improve service, we request that on all subsequent\
+
+               MESSAGE:=\ shipments you use the Approved Carrier for that shipment.</p>\
+               MESSAGE<1,-1>=\<p >Thank you for your assistance.  If for any reason you are unable to ship using the\    ; *JMK01
+
+               MESSAGE:=\ Approved Carrier, please call us at 877-531-2796 option 2.</p>\  ; * JMK08
+               MESSAGE<1,-1>=\<p >The following freight was shipped from or returned to \:CLIENT.NAME
+
+               MESSAGE:=\ using Unapproved Carriers and resulting in excessive charges\
+               MESSAGE:=\ of <b><font color="red">\:TOTAL.OVERCHARGE'R26,$':\<font color="black"></b>.</p>\
+            END
+            GOSUB PRINT.MRS.SHIPMENT.DETAILS
+            IF LCC.OVERCHARGE+0#0 THEN
+               GOSUB PRINT.LCC.SHIPMENT.DETAILS
+            END
+         END
+
+*****************************************************************
+* PRINT.EMAIL.END
+*****************************************************************
+         MESSAGE<1,-1>=\<p>Sincerely,<BR>\
+         MESSAGE<1,-1>=\Customer Service<BR>\
+         MESSAGE<1,-1>=\AFS Logistics, LLC<BR>\    ; * JMK09
+
+         MESSAGE<1,-1>=\877-531-2796 option 2<BR>\           ; * JMK08
+         MESSAGE<1,-1>=\FAX: 318-841-9286<BR>\     ; * JMK01
+         MESSAGE<1,-1>=\<A HREF="mailto:TEM@afs.net">TEM@afs.net</A></p>\
+
+         MESSAGE<1,-1>=SLS.REF
+         IF CARR.CHG.FLAG AND NUM.SHIPMENTS > 1 THEN
+            IF DETAIL THEN
+               MESSAGE<1,-1>=\<p >* The Approved Carrier has been changed.  Please use this carrier on all subsequent\
+               MESSAGE:=\ shipments.</p>\
+            END ELSE
+            END
+         END
+         IF EMAIL.TYPE='DM' AND TESTING=0 THEN
+            MESSAGE<1,-1>=\<p >***Please review and forward if necessary to \:TO_ADD:\ ***</p>\
+            TO_ADD=\Accounting@afs.net\
+         END
+         IF TESTING THEN
+            MESSAGE<1,-1>=\<p>Originally destined to: \:TO_ADD.ORG
+            IF CC_ADD.ORG#'' THEN
+               MESSAGE:=\<br>with copies to: \:CC_ADD.ORG
+            END
+            IF BCC_ADD.ORG#'' THEN
+               MESSAGE:=\<br>with blind copies to: \:BCC_ADD.ORG
+            END
+            MESSAGE:=\</p>\
+         END
+         MESSAGE<1,-1>=\</BODY>\
+         MESSAGE<1,-1>=\</HTML>\
+
+         EMAIL.OUT=''
+
+         IF TO_ADD='' AND BCC_ADD#'' THEN
+            TO_ADD=BCC_ADD
+            BCC_ADD=''
+         END
+         EMAIL.OUT<1>=TO_ADD
+         EMAIL.OUT<2>=CC_ADD
+         EMAIL.OUT<3>=BCC_ADD
+
+         IF CLIENT.REC<179>#'' AND ONCE=0 THEN     ; * JMK02
+            EMAIL.OUT<1>=TRIM(CLIENT.REC<179>)
+            EMAIL.OUT<2>=''
+            EMAIL.OUT<3>=''
+         END
+         EMAIL.OUT<4>=FROM_ADD
+         EMAIL.OUT<5>=SUBJECT
+         EMAIL.OUT<6>=MESSAGE
+         EMAIL.OUT<7>=1
+         IF MRS.ATTACH.ID#'' AND MRS.FLG THEN      ; *JMK07
+            EMAIL.OUT<11,-1>=PATH.ID:MRS.ATTACH.ID
+         END
+         IF LCC.ATTACH.ID#'' AND LCC.FLG THEN      ; *JMK07
+            EMAIL.OUT<11,-1>=PATH.ID:LCC.ATTACH.ID
+         END
+         EMAIL.OUT<8>='HTML'
+         EMAIL.OUT<8,-1>='NODEL'
+         EMAIL.OUT<8,-1>='HOLD'
+         IF CLIENT.ID='01706' AND DATE()=ICONV('10/14/10','D') ELSE
+            CALL SENDMAIL(EMAIL.OUT,RESULT)
+         END
+      END                                ; * JMK03
+      RETURN
+
+*****************************************************************
+PRINT.INSTRS:***
+*****************************************************************
+
+      MESSAGE<1,-1>=\<p >On subsequent shipments to \:CLIENT.NAME:\ in \:LOC.DESC:\, please use the approved carrier(s) listed above.\
+      MESSAGE:=\  These routing instructions are not to change any current terms or conditions regarding\
+      MESSAGE:=\ freight allowed shipments.  However, if \:CLIENT.NAME:\ in \:LOC.DESC:\, is to be charged for the\
+      MESSAGE:=\ freight, please route all shipments using the above-specified approved carrier(s).</p>\
+
+      MESSAGE<1,-1>=\<p >Thank you for your assistance in restructuring this process.  If for any reason you\
+
+      MESSAGE:=\ are unable to comply with these instructions, please call us at 877-531-2796 option 2.</p>\   ; * JMK08 ; * GRB01
+
+**tbs! Added per Dealers Manufacturing request!!!
+
+      IF CLIENT.ID = '00923' THEN
+         MESSAGE<1,-1>=\<p >Failure to conform to stated routings will result in excessive freight charges being\
+         MESSAGE:=\ deducted from your invoice and a $100 per incident administrative fee.</p>\
+      END ELSE
+         MESSAGE<1,-1>=\<p >Note: This is not a bill, but failure to conform to stated routings may result in excessive\
+         MESSAGE:=\ freight charges being deducted from your invoice.</p>\
+      END
+      RETURN
+
+
+*****************************************************************
+PRINT.INTRO:***
+*****************************************************************
+
+      IF DETAIL THEN
+         MESSAGE<1,-1>=\<p >\:VC.NAME:\<BR>\
+         MESSAGE<1,-1>=VC.ADDR1:\<BR>\
+         IF VC.ADDR2#'' THEN
+            MESSAGE<1,-1>=VC.ADDR2:\<BR>\
+         END
+         MESSAGE<1,-1>=VC.CITY:\, \:VC.ST:\ \:VC.ZIP:\</p>\
+
+         MESSAGE<1,-1>=\<p >RE: Client : \:CLIENT.NAME:\ at \:LOC.DESC:\</p>\
+      END ELSE
+
+         MESSAGE<1,-1>=\<p >RE: Client : \:CLIENT.NAME:\</p>\
+      END                                ; *JMK01
+      RETURN
+
+******************************************************************
+PRINT.MRS.SHIPMENT.DETAILS:***
+******************************************************************
+
+      MRS.SVC.DISCLAIM=0
+      MRS.REC=''
+      IF FB.LIST#'' THEN
+         DFVIN=''
+         DFVIN<1>=CLIENT.ID
+         DFVIN<2>='N'
+         DFVIN<3>='ALL'
+         DFVIN<4>=1
+         DFVIN<5>=2
+         DFVIN<6>=BEG.DATE
+         DFVIN<7>=END.DATE
+         DFVIN<8>=''
+         DFVIN<9>='I'
+         DFVIN<10>='N'
+         DFVIN<11>='N'
+         DFVIN<12>='N'
+         DFVIN<13>='677'
+         DFVIN<14>='STD'
+         DFVIN<15>=0
+         DFVIN<16>='ALL'
+         DFVIN<17>=SORT
+         DFVIN<18>=0
+         DFVIN<19>=''
+         DFVIN<20>=''
+         DFVIN<21>=USER
+         DFVIN<22>=CH.NUM
+         DFVIN<23>=0
+         DFVIN<24>=''
+         DFVIN<25>='FROM FB.SEND.MISROUTE.EMAILS'
+         DFVIN<26>=0
+         DFVIN<27>=0
+         DFVIN<28>=0
+         DFVIN<29>='N'
+         DFVIN<30>=FB.LIST
+         IF CLIENT.ID = "05267" THEN DFVIN<44>='C'    ; * NKH01
+         CALL BUILD.DF.SUB(F.CLIENTS,F.CARRIERS,F.TRANSPORT,F.TABLES,EMAILDATA,DFVIN,DFVOUT)
+         IF DFVOUT<1>#'' THEN
+            MRS.ATTACH.ID=DFVOUT<1>
+            READ MRS.REC FROM EMAILDATA,MRS.ATTACH.ID ELSE MRS.REC=''
+            MRS.REC=CHANGE(MRS.REC,CHAR(9),@VM)
+         END
+      END
+      NUM.MRS.SHIPMENTS=DCOUNT(MRS.REC,@AM)
+      MESSAGE<1,-1>=\<TABLE BORDER="2" \
+      IF DETAIL=1 THEN
+         BEGIN CASE                      ; * JMK06
+            CASE DARLING                 ; * JMK06
+               MESSAGE:=\COLS=9" \       ; * JMK06
+            CASE 1                       ; * JMK06
+               MESSAGE:=\COLS=8" \
+         END CASE                        ; * JMK06
+      END ELSE
+         BEGIN CASE                      ; * JMK06
+            CASE DARLING                 ; * JMK06
+               MESSAGE:=\COLS=11" \      ; * JMK06
+            CASE 1                       ; * JMK06
+               MESSAGE:=\COLS=10" \
+         END CASE                        ; * JMK06
+      END
+      MESSAGE:=\WIDTH="100%">\
+      MESSAGE<1,-1>=\<CAPTION>\
+      MESSAGE<1,-1>=\<B><BIG><font color="red">\:TOTAL.OVERCHARGE'R26,$':\<font color="black"> in Excessive Freight Expense for Unapproved Carriers..</BIG></B>\
+      MESSAGE<1,-1>=\</CAPTION>\
+      IF TOTAL.OVERCHARGE+0=0 THEN
+         MESSAGE<1,-1>=\</TABLE>\
+         MESSAGE<1,-1>=\<p><BIG><B>There were no shipments that resulted in Excessive Freight Expense using Unapproved Carriers for this reporting period!</B></BIG></p>\
+      END ELSE
+         IF DETAIL=1 THEN
+* HEADING ONE ROW
+            MESSAGE<1,-1>=\<TR>\
+            MESSAGE<1,-1>=\<TH>Unapproved<BR>Carrier Used\
+            MESSAGE<1,-1>=\<TH>Pro #\
+            MESSAGE<1,-1>=\<TH>BOL<BR>PO\
+            MESSAGE<1,-1>=\<TH>Billed<BR>Date\
+            MESSAGE<1,-1>=\<TH>Freight<BR>Charges\
+            MESSAGE<1,-1>=\<TH>Approved<BR>Charges\
+            MESSAGE<1,-1>=\<TH>Approved<BR>Carriers\
+            MESSAGE<1,-1>=\<TH>&nbsp;\
+            MESSAGE<1,-1>=\<TH>AFS<BR>BOL\         ; * JMK07
+            IF DARLING THEN              ; * JMK06
+               MESSAGE<1,-1>=\<TH>Carrier<BR>Charges\        ; * JMK06
+            END                          ; * JMK06
+
+            FOR X = 4 TO NUM.MRS.SHIPMENTS
+
+               MRS.LINE=MRS.REC<X>
+               IF MRS.LINE<1,5> LT 25 THEN
+                  CONTINUE
+               END
+               CONVERT '"' TO '' IN MRS.LINE<1,4>  ; * GRB
+               CONVERT '=' TO '' IN MRS.LINE<1,4>  ; * GRB
+               AFS.BOL=MRS.LINE<1,24>    ; * JMK07
+               MESSAGE<1,-1>=\<TR>\
+               MESSAGE<1,-1>=\<TD>\:MRS.LINE<1,1>
+               MESSAGE<1,-1>=\<TD>\:MRS.LINE<1,4>
+               MESSAGE<1,-1>=\<TD>\
+               MESSAGE<1,-1>=\<TD ALIGN="CENTER">\:MRS.LINE<1,3>'D2/'
+               MESSAGE<1,-1>=\<TD ALIGN="RIGHT">\:MRS.LINE<1,17>'R26,'
+               MESSAGE<1,-1>=\<TD ALIGN="RIGHT">\:MRS.LINE<1,19>'R26,'
+               MESSAGE<1,-1>=\<TD>\      ; * JMK06
+               MESSAGE<1,-1>=\<TD>\:MRS.LINE<5,X,1>
+               MESSAGE<1,-1>=\<TD>\      ; * JMK06
+               IF AFS.BOL='Y' THEN       ; * JMK07
+                  MESSAGE<1,-1>=\<TD ALIGN="CENTER">X\       ; * JMK07
+               END ELSE                  ; * JMK07
+                  MESSAGE<1,-1>=\<TD ALIGN="CENTER">&nbsp;\  ; * JMK07
+               END                       ; * JMK07
+               IF DARLING THEN           ; * JMK06
+                  MESSAGE<1,-1>=\<TD ALIGN="RIGHT">\:MRS.LINE<1,25>'R26,'        ; * JMK06
+               END                       ; * JMK06
+
+               IF X = NUM.SHIPMENTS AND CARR.CHG.FLAG AND NUM.SHIPMENTS GT 1 THEN
+                  MESSAGE<1,-1>=\<TD>*\
+               END ELSE
+                  MESSAGE<1,-1>=\<TD>\
+               END
+               NUM.APPR.CARR = DCOUNT(MRS.LINE<1,18>,@SVM)
+               IF NUM.APPR.CARR GT 1 THEN
+                  LINE = ''
+                  FOR X2 = 2 TO NUM.APPR.CARR
+                     MESSAGE<1,-1>=\<TR>\
+                     MESSAGE<1,-1>=\<TD>\
+                     MESSAGE<1,-1>=\<TD>\
+                     MESSAGE<1,-1>=\<TD>\
+                     MESSAGE<1,-1>=\<TD>\
+                     MESSAGE<1,-1>=\<TD>\
+                     MESSAGE<1,-1>=\<TD>\
+                     MESSAGE<1,-1>=\<TD>\
+                     MESSAGE<1,-1>=\<TD>\
+                     MESSAGE<1,-1>=\<TD>\          ; * JMK07
+                     IF DARLING THEN     ; * JMK06
+                        MESSAGE<1,-1>=\<TD>\       ; * JMK06
+                     END                 ; * JMK06
+                  NEXT X2
+               END
+            NEXT X
+         END ELSE
+* HEADING ONE ROW
+            MESSAGE<1,-1>=\<TR>\
+            MESSAGE<1,-1>=\<TH>Unapproved<BR>Carrier\
+            MESSAGE<1,-1>=\<TH>Approved<BR>Carrier\
+            MESSAGE<1,-1>=\<TH>Bill<BR> Date\
+            MESSAGE<1,-1>=\<TH>Pro #\
+            MESSAGE<1,-1>=\<TH>Excess<BR>Charges\
+            MESSAGE<1,-1>=\<TH>Customer Name<BR>Vendor Name\
+            MESSAGE<1,-1>=\<TH>Origin\
+            MESSAGE<1,-1>=\<TH>Destination\
+            MESSAGE<1,-1>=\<TH>Direction\
+            MESSAGE<1,-1>=\<TH>Service Day<BR>Advantage\
+            MESSAGE<1,-1>=\<TH>&nbsp;&nbsp;\
+            MESSAGE<1,-1>=\<TH>AFS<BR>BOL\         ; * JMK07
+            IF DARLING THEN              ; * JMK06
+               MESSAGE<1,-1>=\<TH>Carrier<BR>Charges\        ; * JMK06
+            END                          ; * JMK06
+
+            FOR X = 4 TO NUM.MRS.SHIPMENTS
+               MRS.LINE=MRS.REC<X>
+               CONVERT '"' TO '' IN MRS.LINE<1,4>  ; * GRB
+               CONVERT '=' TO '' IN MRS.LINE<1,4>  ; * GRB
+               BEGIN CASE
+                  CASE MRS.LINE<1,6>='I' ; MRS.DIR='Inbound'
+                  CASE MRS.LINE<1,6>='O' ; MRS.DIR='Outbound'
+                  CASE MRS.LINE<1,6>='T' ; MRS.DIR='Third Party'
+                  CASE 1 ; MRS.DIR='Unknown'
+               END CASE
+
+               MRS.SVC.VAR=MRS.LINE<1,22>
+               BEGIN CASE
+                  CASE MRS.LINE<1,20>+0=0 OR MRS.LINE<1,21>+0=0
+                     MRS.SVC.VAR='-'
+                     MRS.SVC.CHR='<span style="background : white" class="unicode">&#x2717;</span>'
+                  CASE MRS.SVC.VAR='N/A'
+                     MRS.SVC.VAR='-'
+                     MRS.SVC.CHR='<span style="background : white" class="unicode">&#x2717;</span>'
+                  CASE MRS.SVC.VAR<0
+                     MRS.SVC.CHR='<span style="background : red" class="unicode">&#x2717;</span>'
+                     MRS.SVC.DISCLAIM=1
+                  CASE MRS.SVC.VAR>0
+                     MRS.SVC.CHR='<span style="background : yellow" class="unicode">&#x2717;</span>'
+                     MRS.SVC.DISCLAIM=1
+                  CASE 1
+                     MRS.SVC.VAR='-'
+                     MRS.SVC.CHR='<span style="background : white" class="unicode">&#x2717;</span>'
+               END CASE
+               AFS.BOL=MRS.LINE<1,24>    ; * JMK07
+* DETAIL ONE ROW
+               MESSAGE<1,-1>=\<TR>\
+               MESSAGE<1,-1>=\<TD>\:MRS.LINE<1,1>
+               MESSAGE<1,-1>=\<TD>\:MRS.LINE<1,19>
+               MESSAGE<1,-1>=\<TD ALIGN="CENTER">\:ICONV(MRS.LINE<1,3>,'D')'D2/'
+               MESSAGE<1,-1>=\<TD ALIGN="LEFT">\:MRS.LINE<1,4>
+               MESSAGE<1,-1>=\<TD ALIGN="RIGHT">\:ICONV(MRS.LINE<1,23>,'MD2')'R26,'
+               MESSAGE<1,-1>=\<TD>\:MRS.LINE<1,15>
+               MESSAGE<1,-1>=\<TD>\:(MRS.LINE<1,9>:\ \:MRS.LINE<1,10>:\, \:MRS.LINE<1,11>)
+               MESSAGE<1,-1>=\<TD>\:(MRS.LINE<1,12>:\ \:MRS.LINE<1,13>:\, \:MRS.LINE<1,14>)
+               MESSAGE<1,-1>=\<TD>\:MRS.DIR
+               MESSAGE<1,-1>=\<TD ALIGN="RIGHT">\:MRS.SVC.VAR
+               IF MRS.SVC.CHR='' THEN
+                  MESSAGE<1,-1>=\<TD>\
+               END ELSE
+                  MESSAGE<1,-1>=\<TD ALIGN="CENTER">\:MRS.SVC.CHR
+               END
+               IF AFS.BOL='Y' THEN       ; * JMK07
+                  MESSAGE<1,-1>=\<TD ALIGN="CENTER">X\       ; * JMK07
+               END ELSE                  ; * JMK07
+                  MESSAGE<1,-1>=\<TD ALIGN="CENTER">&nbsp;\  ; * JMK07
+               END                       ; * JMK07
+               IF DARLING THEN           ; * JMK06
+                  MESSAGE<1,-1>=\<TD ALIGN="RIGHT">\:ICONV(MRS.LINE<1,24>,'MD2')'R26,'     ; * JMK06
+               END                       ; * JMK06
+
+            NEXT X
+            IF NUM.MRS.SHIPMENTS>4 THEN
+               MESSAGE<1,-1>=\<TR>\
+               MESSAGE<1,-1>=\<TH>Total Excess Expense\
+               MESSAGE<1,-1>=\<TH>\
+               MESSAGE<1,-1>=\<TH ALIGN="RIGHT">\:NUM.MRS.SHIPMENTS-3'R0,'
+               MESSAGE<1,-1>=\<TH>\
+               MESSAGE<1,-1>=\<TH ALIGN="RIGHT"><font color="red">\:TOTAL.OVERCHARGE'R26,$':\<font color="black">\
+               MESSAGE<1,-1>=\<TH>\
+               MESSAGE<1,-1>=\<TH>\
+               MESSAGE<1,-1>=\<TH>\
+               MESSAGE<1,-1>=\<TH>\
+               MESSAGE<1,-1>=\<TH>\
+               MESSAGE<1,-1>=\<TH>\
+               MESSAGE<1,-1>=\<TH>\      ; * JMK07
+               IF DARLING THEN           ; * JMK06
+                  MESSAGE<1,-1>=\<TH>\   ; * JMK06
+               END                       ; * JMK06
+            END
+            MESSAGE<1,-1>=\</TABLE>\
+
+            IF MRS.SVC.DISCLAIM THEN
+               MESSAGE<1,-1>=\<TABLE BORDER="0" COLS="2" WIDTH="100%">\
+               MESSAGE<1,-1>=\<TR>\
+               MESSAGE<1,-1>=\<TH WIDTH="5%" ALIGN="LEFT"><BIG>NOTE:<TH ALIGN="LEFT"><span style="background : red" class="unicode">&#x2717;</span><BIG> - Shipments that took longer AND cost more to deliver.\
+               MESSAGE<1,-1>=\<TR>\
+               MESSAGE<1,-1>=\<TH WIDTH="5%" ALIGN="LEFT"><BIG><TH ALIGN="LEFT"><span style="background : yellow" class="unicode">&#x2717;</span><BIG> - Shipments that cost more to deliver, but may have a service advantage.</BIG>\
+               MESSAGE<1,-1>=\</TABLE>\
+            END
+         END
+         IF MRS.ATTACH.ID#'' THEN
+            MESSAGE<1,-1>=\<p >Please review the attached file <b>"\:MRS.ATTACH.ID:\"</b> for further information regarding the AFS Approved Carriers.</p>\
+         END
+      END
+      RETURN
+*******************************************************************************
+PRINT.LCC.SHIPMENT.DETAILS:*
+*******************************************************************************
+      IF LCC.FLG THEN
+         LCC.SVC.DISCLAIM=0
+         LCC.REC=''
+         IF LCC.LIST#'' THEN
+            DFVIN=''
+            DFVIN<1>=CLIENT.ID
+            DFVIN<2>='N'
+            DFVIN<3>='ALL'
+            DFVIN<4>=1
+            DFVIN<5>=2
+            DFVIN<6>=BEG.DATE
+            DFVIN<7>=END.DATE
+            DFVIN<8>=''
+            DFVIN<9>='N'
+            DFVIN<10>='N'
+            DFVIN<11>='N'
+            DFVIN<12>='N'
+            DFVIN<13>='522'
+            DFVIN<14>='STD'
+            DFVIN<15>=0
+            DFVIN<16>='ALL'
+            DFVIN<17>=SORT
+            DFVIN<18>=0
+            DFVIN<19>=''
+            DFVIN<20>=''
+            DFVIN<21>=USER
+            DFVIN<22>=CH.NUM
+            DFVIN<23>=0
+            DFVIN<24>=''
+            DFVIN<25>='FROM FB.SEND.MISROUTE.EMAILS'
+            DFVIN<26>=0
+            DFVIN<27>=0
+            DFVIN<28>=0
+            DFVIN<29>='I'
+            DFVIN<30>=LCC.LIST
+            IF CLIENT.ID = "05267" THEN DFVIN<44>='C'    ; * NKH01            
+            CALL BUILD.DF.SUB(F.CLIENTS,F.CARRIERS,F.TRANSPORT,F.TABLES,EMAILDATA,DFVIN,DFVOUT)
+            IF DFVOUT<1>#'' THEN
+               LCC.ATTACH.ID=DFVOUT<1>
+            END
+            READ LCC.REC FROM EMAILDATA,LCC.ATTACH.ID ELSE LCC.REC=''
+            LCC.REC=CHANGE(LCC.REC,CHAR(9),@VM)
+         END
+         NUM.LCC.SHIPMENTS=DCOUNT(LCC.REC,@AM)
+
+         MESSAGE<1,-1>=\<p >The following freight was shipped from or returned to \:CLIENT.NAME
+
+         MESSAGE:=\ on a higher priced Approved Carrier when a lower priced Approved Carrier could have been chosen.  Choosing the higher priced Approved Carrier\
+         MESSAGE:=\ resulted in additional excessive charges of <b><font color="red">\:LCC.OVERCHARGE'R26,$':\<font color="black"></b>.</p>\
+
+         IF DARLING THEN                 ; * JMK06
+            MESSAGE<1,-1>=\<TABLE BORDER="2" RULES="GROUPS" COLS="11" WIDTH="100%">\       ; * JMK06
+         END ELSE                        ; * JMK06
+            MESSAGE<1,-1>=\<TABLE BORDER="2" RULES="GROUPS" COLS="10" WIDTH="100%">\
+         END                             ; * JMK06
+         MESSAGE<1,-1>=\<CAPTION>\
+         MESSAGE<1,-1>=\<B><BIG><font color="red">\:LCC.OVERCHARGE'R26,$':\<font color="black"> in Excessive Freight Expense for Approved Carriers</BIG></B>\
+         MESSAGE<1,-1>=\</CAPTION>\
+
+** HEADING ONE ROW
+         MESSAGE<1,-1>=\<TR ALIGN="CENTER">\
+         MESSAGE<1,-1>=\<TH>Carrier<BR>Used\
+         MESSAGE<1,-1>=\<TH>Preferred<BR>Carrier\
+         MESSAGE<1,-1>=\<TH>Bill<BR>Date\
+         MESSAGE<1,-1>=\<TH>Pro #\
+         MESSAGE<1,-1>=\<TH>Excess<BR>Charges\
+         MESSAGE<1,-1>=\<TH>Customer Name<BR>Vendor Name\
+         MESSAGE<1,-1>=\<TH>Origin\
+         MESSAGE<1,-1>=\<TH>Destination\
+         MESSAGE<1,-1>=\<TH>Direction\
+         MESSAGE<1,-1>=\<TH>Service Day<BR>Advantage\
+         MESSAGE<1,-1>=\<TH>&nbsp;&nbsp;\
+         MESSAGE<1,-1>=\<TH>AFS<BR>BOL\  ; * JMK07
+         IF DARLING THEN                 ; * JMK06
+            MESSAGE<1,-1>=\<TH>Carrier<BR>Charges\           ; * JMK06
+         END                             ; * JMK06
+
+         FOR X = 4 TO NUM.LCC.SHIPMENTS
+            LCC.LINE=LCC.REC<X>
+            CONVERT '"' TO '' IN LCC.LINE<1,4>     ; * GRB
+            CONVERT '=' TO '' IN LCC.LINE<1,4>     ; * GRB
+            * Begin GRB02
+            IF CLIENT.REC<310> GT "0" AND LCC.LINE<1,24> LT CLIENT.REC<310> THEN
+               CONTINUE
+            END
+            * End GRB02
+** DETAIL ONE ROW
+            BEGIN CASE
+               CASE LCC.LINE<1,6>='I' ; LCC.DIR='Inbound'
+               CASE LCC.LINE<1,6>='O' ; LCC.DIR='Outbound'
+               CASE LCC.LINE<1,6>='T' ; LCC.DIR='Third Party'
+               CASE 1 ; LCC.DIR='Unknown'
+            END CASE
+            LCC.SVC.VAR=LCC.LINE<1,23>
+            BEGIN CASE
+               CASE LCC.LINE<1,20>+0=0 OR LCC.LINE<1,22>+0=0
+                  LCC.SVC.VAR='-'
+                  LCC.SVC.CHR='<span style="background : white" class="unicode">&#x2717;</span>'
+               CASE LCC.SVC.VAR='N/A'
+                  LCC.SVC.VAR='-'
+                  LCC.SVC.CHR='<span style="background : white" class="unicode">&#x2717;</span>'
+               CASE LCC.SVC.VAR<0
+                  LCC.SVC.CHR='<span style="background : red" class="unicode">&#x2717;</span>'
+                  LCC.SVC.DISCLAIM=1
+               CASE LCC.SVC.VAR>0
+                  LCC.SVC.CHR='<span style="background : yellow" class="unicode">&#x2717;</span>'
+                  LCC.SVC.DISCLAIM=1
+               CASE 1
+                  LCC.SVC.VAR='-'
+                  LCC.SVC.CHR='<span style="background : white" class="unicode">&#x2717;</span>'
+            END CASE
+            MESSAGE<1,-1>=\<TR>\
+            MESSAGE<1,-1>=\<TD>\:LCC.LINE<1,1>
+            MESSAGE<1,-1>=\<TD>\:LCC.LINE<1,19>
+            MESSAGE<1,-1>=\<TD ALIGN="CENTER">\:ICONV(LCC.LINE<1,3>,'D')'D2/'
+
+            MESSAGE<1,-1>=\<TD ALIGN="LEFT">\:LCC.LINE<1,4>
+            MESSAGE<1,-1>=\<TD ALIGN="RIGHT">\:ICONV(LCC.LINE<1,24>,'MD2')'R26,'
+            MESSAGE<1,-1>=\<TD>\:LCC.LINE<1,15>
+            MESSAGE<1,-1>=\<TD>\:(LCC.LINE<1,9>:\ \:LCC.LINE<1,10>:\, \:LCC.LINE<1,11>)
+            MESSAGE<1,-1>=\<TD>\:(LCC.LINE<1,12>:\ \:LCC.LINE<1,13>:\, \:LCC.LINE<1,14>)
+            MESSAGE<1,-1>=\<TD>\:LCC.DIR
+            MESSAGE<1,-1>=\<TD ALIGN="RIGHT">\:LCC.SVC.VAR
+            IF LCC.SVC.CHR='' THEN
+               MESSAGE<1,-1>=\<TD>\
+            END ELSE
+               MESSAGE<1,-1>=\<TD ALIGN="CENTER">\:LCC.SVC.CHR
+            END
+            AFS.BOL=LCC.LINE<1,25>       ; * JMK07
+            IF AFS.BOL='Y' THEN          ; * JMK07
+               MESSAGE<1,-1>=\<TD ALIGN="CENTER">X\          ; * JMK07
+            END ELSE                     ; * JMK07
+               MESSAGE<1,-1>=\<TD ALIGN="CENTER">&nbsp;\     ; * JMK07
+            END                          ; * JMK07
+            IF DARLING THEN              ; * JMK06
+               MESSAGE<1,-1>=\<TD ALIGN="RIGHT">\:ICONV(LCC.LINE<1,25>,'MD2')'R26,'        ; * JMK06
+            END                          ; * JMK06
+
+         NEXT X
+         IF NUM.LCC.SHIPMENTS>4 THEN
+            MESSAGE<1,-1>=\<TR>\
+            MESSAGE<1,-1>=\<TH>Total Excess Expense\
+            MESSAGE<1,-1>=\<TH>\
+            MESSAGE<1,-1>=\<TH ALIGN="RIGHT">\:NUM.LCC.SHIPMENTS-3'R0,'
+            MESSAGE<1,-1>=\<TH>\
+            MESSAGE<1,-1>=\<TH ALIGN="RIGHT"><font color="red">\:LCC.OVERCHARGE'R26,$':\<font color="black">\
+            MESSAGE<1,-1>=\<TH>\
+            MESSAGE<1,-1>=\<TH>\
+            MESSAGE<1,-1>=\<TH>\
+            MESSAGE<1,-1>=\<TH>\
+            MESSAGE<1,-1>=\<TH>\
+            MESSAGE<1,-1>=\<TH>\
+            MESSAGE<1,-1>=\<TH>\         ; * JMK07
+            IF DARLING THEN              ; * JMK06
+               MESSAGE<1,-1>=\<TH>\      ; * JMK06
+            END                          ; * JMK06
+         END
+         MESSAGE<1,-1>=\</TABLE>\
+
+         IF LCC.SVC.DISCLAIM THEN
+            MESSAGE<1,-1>=\<TABLE BORDER="0" COLS="2" WIDTH="100%">\
+            MESSAGE<1,-1>=\ <TR>\
+            MESSAGE<1,-1>=\  <TH WIDTH="5%" ALIGN="LEFT"><BIG>NOTE:<TH ALIGN="LEFT"><span style="background : red" class="unicode">&#x2717;</span><BIG> - Shipments that took longer AND cost more to deliver.\
+            MESSAGE<1,-1>=\ <TR>\
+            MESSAGE<1,-1>=\  <TH WIDTH="5%" ALIGN="LEFT"><BIG><TH ALIGN="LEFT"><span style="background : yellow" class="unicode">&#x2717;</span><BIG> - Shipments that cost more to deliver, but may have a service advantage.</BIG>\
+            MESSAGE<1,-1>=\</TABLE>\
+         END
+
+         MESSAGE<1,-1>=\<p >Please review the attached file <b>"\:LCC.ATTACH.ID:\"</b> for further information\
+         MESSAGE:=" regarding AFS's recommendation of carriers to reduce your freight expense."
+
+      END
+      RETURN
+******************************************************************
+* PRINT.PRV.SHIPMENT.DETAILS
+******************************************************************
+PRINT.PRV.SHIPMENT.DETAILS:***
+      MESSAGE<1,-1>=\<TABLE BORDER="2" WIDTH="100%">\
+      MESSAGE<1,-1>=\   <CAPTION>\
+      MESSAGE<1,-1>=\      Previous Notifications\
+      MESSAGE<1,-1>=\   </CAPTION>\
+
+      MESSAGE<1,-1>=\ <TR>\
+      MESSAGE<1,-1>=\  <TH>Unapproved Carrier Used</TH>\
+      MESSAGE<1,-1>=\  <TH>Pro #</TH>\
+      MESSAGE<1,-1>=\  <TH>BOL/PO</TH>\
+      MESSAGE<1,-1>=\  <TH>Billed Date</TH>\
+      MESSAGE<1,-1>=\  <TH>Freight Charges</TH>\
+      MESSAGE<1,-1>=\  <TH>Approved Charges</TH>\
+      MESSAGE<1,-1>=\  <TH>Approved Carriers</TH>\
+      MESSAGE<1,-1>=\ </TR>\
+
+      FOR X = 1 TO NUM.SHIPMENTS
+         MESSAGE<1,-1>=\ <TR>\
+         MESSAGE<1,-1>=\  <TD>\:EMAIL.ARRAY<1,X>:\</TD>\
+         MESSAGE<1,-1>=\  <TD>\:EMAIL.ARRAY<2,X>:\</TD>\
+         MESSAGE<1,-1>=\  <TD>\:EMAIL.ARRAY<10,X>:\</TD>\
+         MESSAGE<1,-1>=\  <TD>\:EMAIL.ARRAY<3,X>'D2/':\</TD>\
+         MESSAGE<1,-1>=\  <TD ALIGN="RIGHT">\:EMAIL.ARRAY<4,X>'R26,':\</TD>\
+         MESSAGE<1,-1>=\  <TD ALIGN="RIGHT">\:EMAIL.ARRAY<6,X,1>'R26,':\</TD>\
+         MESSAGE<1,-1>=\  <TD>\:EMAIL.ARRAY<5,X,1>:\</TD>\
+         MESSAGE<1,-1>=\ </TR>\
+         NUM.APPR.CARR = DCOUNT(EMAIL.ARRAY<5,1>,@SVM)
+         IF NUM.APPR.CARR GT 1 THEN
+            LINE = ''
+            FOR X2 = 2 TO NUM.APPR.CARR
+               MESSAGE<1,-1>=\ <TR>\
+               MESSAGE<1,-1>=\  <TD></TD>\
+               MESSAGE<1,-1>=\  <TD></TD>\
+               MESSAGE<1,-1>=\  <TD></TD>\
+               MESSAGE<1,-1>=\  <TD></TD>\
+               MESSAGE<1,-1>=\  <TD></TD>\
+               MESSAGE<1,-1>=\  <TD ALIGN="RIGHT">\:EMAIL.ARRAY<6,X,X2>'R26,':\</TD>\
+               MESSAGE<1,-1>=\  <TD>\:EMAIL.ARRAY<5,X,X2>:\</TD>\
+               MESSAGE<1,-1>=\ </TR>\
+            NEXT X2
+         END
+      NEXT X
+      RETURN
+*******************************************************************************
+CALL.NET.ADMIN:*
+*******************************************************************************
+      CALL ELINE('CALL NETWORK ADMINISTRATOR!')
+      CALL ELINE('CALL NETWORK ADMINISTRATOR!!!')
+      RETURN

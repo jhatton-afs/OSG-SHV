@@ -1,0 +1,300 @@
+******************************************************************
+* MODIFICATIONS:
+* 030205 - JMK01 - ADD FIELDS TO EXPORT FILE
+* 051006 - JCW01 - CHANGES TO @SELECTED, CLEARSELECT, AND STMT<X>
+******************************************************************
+
+*  USER=OCONV(SYSTEM(19),'MCL')
+      CALL GET.USER(USER)
+      USER=OCONV(USER,'MCL')
+*
+      TAB=CHAR(9)
+      PROMPT''
+      ERRMSG=''
+      PROG.NAME='Build Cust Vend Export'
+      PROG.DESC="Build Export File of Cust.Vendor Information for PC Import"
+      PACK.NAME="Freight Billing"
+      CALL CHANNEL(CH.NUM)
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'VENDCUST.DF' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+
+      YN.ANSWER = ''
+      YN.MSG=''
+
+
+      OPEN 'CLIENTS' TO F.CLIENTS ELSE ABORT
+
+      BILLDATA.REC = ''
+      OPEN '','VOC' TO F.VOC ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE('UNABLE TO OPEN VOC FILE')
+         STOP
+      END
+
+      READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')
+         STOP
+      END
+
+      BILLDATA.REC<2>:='\':USER
+      WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE("YOUR USER NAME '":USER:"' IS NOT IN THE 'BILLDATA' FOLDER - PLEASE SEE JIM/OWEN")
+         STOP
+      END
+
+      OPEN '','BILLDATA.':USER TO BILLDATA ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE('UNABLE TO OPEN "BILLDATA.":USER')
+         STOP
+      END
+      RECORD.NAME=''                     ; * Dest record name for output file...
+
+
+
+      *---------------------------------------------
+      * Enter CLIENT number.
+      *---------------------------------------------
+      CLIENT.ID=''                       ; * Init default entry...
+
+ENTER.CLIENT:***
+      CALL AFS.SCR.HEAD(CO.ID, FILE.ID, '', PROG.NAME, PROG.DESC, PACK.NAME, CO.NAME, TIME.DATE, 1)
+      HELP="Enter client number. Word of name for search. ENTER for all. X=Exit. EX=Exit."
+      IF CLIENT.ID='' THEN
+         MASK='#####'
+      END ELSE
+         MASK=CLIENT.ID
+      END
+
+      CALL GEN.IN(0,6,'Enter Client Number :':MASK,'',Q,0,20,'','',2,-LEN(MASK),6,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=CLIENT.ID ; Q=CLIENT.ID
+
+      BEGIN CASE
+         CASE QI='' OR QI='ALL'
+            GOTO ENTER.CLIENT
+         CASE QI='EX' OR QI='X'
+            STOP
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO ENTER.CLIENT
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO ENTER.CLIENT
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO ENTER.CLIENT
+            END CASE
+         CASE NUM(QI)
+            Q=QI'R%5'
+         CASE 1
+            GOTO ENTER.CLIENT
+      END CASE
+
+      CLIENT.ID=Q
+      DF.ARRAY=''
+
+
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         CALL ELINE('UNABLE TO READ CLIENT RECORD ':CLIENT.ID:' - CALL JIM/OWEN')
+      END
+
+      CRT @(0,6):'      Client Number :':CLIENT.ID:@(-4):
+      CRT @(0,7):'               Name :':CLIENT.REC<2>:@(-4):
+      CRT @(0,8):'            Address :':CLIENT.REC<3>:@(-4):
+      CRT @(0,9):'      City, ST, Zip :':CLIENT.REC<4>:', ':CLIENT.REC<5>:' ':CLIENT.REC<6>:@(-4):
+
+      OPEN 'EXPENSE.CODE.XREF,':CLIENT.ID TO F.EXPENSE.XREF ELSE ABORT
+
+      YN.MSG = "Do you wish to download this client's Expense Xref codes?"
+      YN.MASK = 'Y '
+      GOSUB ASK.Y.OR.N
+      IF YN.ANSWER = 'Y' THEN GOTO ASK.COLUMN:
+      IF YN.ANSWER = 'EX' THEN STOP
+      GOTO ENTER.CLIENT
+
+ASK.COLUMN:
+      *---------------------------------------------
+      * Ask about a column header on the exported file....
+      *---------------------------------------------
+      YN.MSG = 'Do you wish to include a column header on the exported file?'
+      YN.MASK = 'Y '
+      GOSUB ASK.Y.OR.N
+      IF YN.ANSWER = 'Y' THEN GOSUB WRITE.HEADER
+      IF YN.ANSWER = 'X' THEN GOTO ENTER.CLIENT
+      IF YN.ANSWER = 'EX' THEN STOP
+
+      *---------------------------------------------
+      * Export File
+      *---------------------------------------------
+      CLIENT.ID=CLIENT.ID'R#5'
+      RECORD.NAME = 'EXPENSE.XREF.':CLIENT.ID:'.XLS'
+      GOSUB EXPORT.CLIENT
+
+      CRT @(0,16):"CLIENT File Export completed.":@(-4):
+      CRT @(0,17):@(-4):
+      CRT @(0,18):"The Exported file name is '":RECORD.NAME:"'":@(-4):
+      CRT @(0,19):@(-4):
+      CRT @(0,20):@(-4):
+
+      CALL ELINE('Done.')
+
+      CLIENT.ID='EX'
+      GOTO ENTER.CLIENT
+
+      STOP
+
+
+
+*--------------------------------------------------------------
+* EXPORT.CLIENT - Export all CLIENTs
+*--------------------------------------------------------------
+EXPORT.CLIENT:
+
+      STMT="SSELECT EXPENSE.CODE.XREF,":CLIENT.ID
+      EXECUTE STMT RTNLIST EXPENSE.CODE CAPTURING OUTPUT
+      CODE.ITEMS = @SELECTED
+*     IF NOT(@SELECTED) THEN ; * JCW01
+      IF @SELECTED < 1 THEN  ; * JCW01
+         CALL ELINE('ERROR - No Expense Xref Codes on file for client ':CLIENT.ID)
+         STOP
+      END
+
+      CODE.CNT=0
+      LOOP
+         READNEXT CODE.ID FROM EXPENSE.CODE ELSE CODE.ID='DONE'
+      UNTIL CODE.ID='DONE' DO
+         CODE.CNT+=1
+         READ CODE.REC FROM F.EXPENSE.XREF,CODE.ID ELSE
+            CODE.REC='*** Unable to read Code "':CODE.ID:'" - Notify Jim/Owen ***'
+         END
+
+         CRT @(0,16):CLIENT.ID:" ":CLIENT.REC<1>:" - Now Exporting Informaiton":@(-4):
+         CRT @(0,17):CODE.ID:" ":CODE.REC<1>:@(-4):
+         CALL PROG.BAR(20,CODE.CNT,CODE.ITEMS,PER.1)
+
+         GOSUB PROCESS.CUR.LINE
+
+      REPEAT
+
+      GOSUB WRITE.FILE
+
+      RETURN
+
+
+
+
+
+*--------------------------------------------------------------
+* PROCESS.CUR.LINE:
+*
+* hey! If you make a change in this arrangement, make
+* sure you update the WRITE.HEADER routine also!
+*
+*--------------------------------------------------------------
+PROCESS.CUR.LINE:
+
+*     CUR.LINE =CODE.ID :TAB             ; * Record Name ; * JMK01
+      CUR.LINE ="=":QUOTE(CODE.ID) :TAB  ; * Record Name ; * JMK01
+      CUR.LINE:=CODE.REC<1>:TAB          ; * Name
+*     CUR.LINE:=CODE.REC<2>:TAB          ; * Code ; * JMK01
+*DF      CUR.LINE:="=":QUOTE(CODE.REC<2>):TAB         ; * Code ; * JMK01
+      NUM.OF.ITEMS=DCOUNT(CODE.REC<2>,@VM)
+      CUR.LINE:=CODE.REC<2,NUM.OF.ITEMS>:TAB        ; * Address1
+      CUR.LINE:=OCONV(CODE.REC<3,NUM.OF.ITEMS>,'D2/'):TAB        ; * Address2
+      CUR.LINE:=CODE.REC<4,NUM.OF.ITEMS>:TAB          ; * City
+
+      DF.ARRAY<-1>=CUR.LINE
+
+      RETURN
+
+
+
+
+*--------------------------------------------------------------
+* WRITE.FILE
+*--------------------------------------------------------------
+WRITE.FILE:
+
+      WRITE DF.ARRAY ON BILLDATA,RECORD.NAME
+
+      RETURN
+
+
+*--------------------------------------------------------------
+* WRITE.HEADER:
+*--------------------------------------------------------------
+WRITE.HEADER:
+
+      CUR.LINE ='Expense Xref Code' :TAB
+      CUR.LINE:='Expense Code' :TAB
+      CUR.LINE:='Description' :TAB
+      CUR.LINE:='Date Updated' :TAB
+      CUR.LINE:='File Name' :TAB
+      DF.ARRAY<-1>=CUR.LINE
+
+      RETURN
+
+
+*--------------------------------------------------------------
+* CRITICAL ERROR HANDLER - GENERIC ROUTINE (TERMINATES PROGRAM)
+*--------------------------------------------------------------
+CALL.NET.ADMIN:***
+
+      CALL ELINE("CALL NETWORK ADMINISTRATOR!")
+      CALL ELINE("CALL NETWORK ADMINISTRATOR!!!!!")
+
+      RETURN
+
+
+
+*----------------------------------------------------------------------
+* ASK.Y.OR.N
+*
+* A General Yes No prompt routine.
+*
+*----------------------------------------------------------------------
+ASK.Y.OR.N:***
+
+      YN.ANSWER = ''
+
+Y.OR.N:
+
+      HELP = CHAR(7):"Entry Options: [Y]-Yes [N]-No [X]-Back"
+      CRT @(0,22):YN.MSG:@(-4)
+      MASK = YN.MASK
+      Q=''
+      CALL GEN.IN(LEN(YN.MSG)+1,22,MASK,'',Q,0,2,'','',2,LEN(YN.MSG)+1,22,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+
+      IF QI='' THEN QI=TRIM(MASK)
+      BEGIN CASE
+         CASE QI = '1'
+            QI='Y'
+         CASE QI = '0'
+            QI='N'
+         CASE QI = 'Y'
+         CASE QI = 'N'
+         CASE QI = 'X'
+         CASE QI = 'EX'
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO Y.OR.N
+      END CASE
+
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+      YN.ANSWER = QI
+
+      RETURN
+
+
+
+
+
+*
+*
+*

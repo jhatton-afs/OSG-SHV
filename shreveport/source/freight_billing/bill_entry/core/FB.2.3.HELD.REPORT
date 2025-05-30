@@ -1,0 +1,409 @@
+* Program FB.
+* Program to Print a list of the newway held reports
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: Tami Seago
+* DATE: January 4, 2001
+*
+*
+* 050806 - JCW01 - CHANGES TO '@SELECTED', 'CLEARSELECT', AND 'STMT<X>'
+***********************************************************************
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Initialize variables
+*
+*CH   COPIES=1
+*
+     PROMPT''
+     CALL CHANNEL(CH.NUM)
+     CALL GET.USER(USER.NAME)
+     STATUS=''
+     CALL CHANNEL(CH.NUM)
+
+     TAB=CHAR(9)
+     WIDTH=132
+     PROMPT''
+     ERRMSG=''
+     PROG.NAME = 'FB.2.3.HELD.REPORT'
+     PROG.DESC="Print a list of the newway held bills"
+     PACK.NAME="Freight Billing"
+     BACK.FLAG = 0
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.2.3.HELD.REPORT' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+     CLIENT = ""
+     MODE="D"
+     ESC=CHAR(27)
+
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+        CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      BILLDATA.REC = ''
+
+      OPEN '','VOC' TO F.VOC ELSE
+         CALL ELINE('UNABLE TO OPEN VOC FILE')
+         STOP
+      END
+
+      READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE
+         CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')
+         STOP
+      END
+
+        BILLDATA.REC<2>:='\':USER.NAME
+        WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER.NAME ELSE
+           CALL ELINE("YOUR USER NAME '":USER.NAME:"' IS NOT IN THE BILLDATA FOLDER - PLEASE SEE OWEN/TAMI/DAVID")
+           STOP
+        END
+        OPEN '','BILLDATA.':USER.NAME TO BILLDATA ELSE
+          CALL ELINE('UNABLE TO OPEN "BILLDATA.":USER')
+          STOP
+        END
+
+
+*
+*
+* Enter client number.
+*
+ENTER.CLIENT:***
+      CALL AFS.SCR.HEAD(CO.ID, FILE.ID, '', PROG.NAME, PROG.DESC, PACK.NAME, CO.NAME, TIME.DATE, 1)
+      HELP = "Enter client name/number or ALL to process. [X]=Back [EX] = Exit"
+      IF CLIENT = '' THEN
+        MASK = 'ALL  '
+      END ELSE
+        MASK = CLIENT'R%5'
+      END
+      CALL GEN.IN(0,3,'Enter Client Number       : ':MASK,'',Q,0,20,'','',2,-5,3,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX' ! QI='X'
+           STOP
+        CASE QI = '' OR QI = 'ALL'
+           Q='ALL'
+         CASE NOT(QI MATCHES "0N")
+              CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+              CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+              BEGIN CASE
+                CASE ITEM.LIST=''
+                  GOTO ENTER.CLIENT
+                CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO ENTER.CLIENT
+                CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO ENTER.CLIENT
+              END CASE
+         CASE NUM(QI)
+            Q=QI'R%5'
+         CASE 1
+              GOTO ENTER.CLIENT
+      END CASE
+      CLIENT=Q
+      IF CLIENT = 'ALL' THEN
+        CLIENT.NAME = 'All Clients'
+        CRT @(0,3):'Enter Client Number       : ':'ALL':
+        CRT ' ':CLIENT.NAME:@(-4):
+
+      END ELSE
+        READ CLIENT.REC FROM F.CLIENTS,CLIENT ELSE
+          CALL ELINE('ERROR - Client ':CLIENT:' not on file.')
+          GOTO ENTER.CLIENT
+        END
+        CLIENT.NAME=CLIENT.REC<2>
+        CLIENT.LINE = '~~~~ ':CLIENT'R%5':' ':CLIENT.NAME'L#20'
+        CRT @(0,3):'Enter Client Number       : ':CLIENT'R%5':
+        CRT ' ':CLIENT.NAME:@(-4):
+        AUDITOR = CLIENT.REC<71>
+        PAY.FREQ = CLIENT.REC<38>
+        STATUS = CLIENT.REC<30>
+        LAST.PROCESS = CLIENT.REC<82>
+                 
+        IF STATUS # 'A' THEN
+          CALL ELINE('CLIENT IS NOT ACTIVE, PLEASE TRY AGAIN')
+          GO ENTER.CLIENT
+        END
+      END
+
+
+*
+* Enter mode for type of process
+*
+ENTER.MODE:***
+     IF CLIENT = 'ALL' THEN
+      IF BACK.FLAG THEN
+       BACK.FLAG = 0
+       GO ENTER.CLIENT
+      END ELSE
+       GO VERIFY.SELECTION
+      END
+     END 
+      HELP="P=Print D=Download X=Back. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,5,'Enter type of report (Printer or Download). --','',Q,0,2,'','',0,-2,5,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,5):@(-3):
+            GOTO ENTER.CLIENT
+         CASE QI='EX'
+            STOP
+         CASE QI='P' OR QI = 'D'
+            MODE = QI
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be D, P, X, EX, or RETURN.')
+            GOTO ENTER.MODE
+      END CASE
+
+      CRT @(0,5):'Enter type of report (Printer or Download). ': MODE
+
+
+
+
+*
+* Verify selection criteria is correct.
+*
+VERIFY.SELECTION:***
+      HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            BACK.FLAG = 1
+            GOTO ENTER.MODE
+         CASE QI='EX'
+            STOP
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO VERIFY.SELECTION
+      END CASE
+
+
+      IF MODE = 'P' THEN
+        PRINTER ON
+        GOSUB SETUP.PTR        
+      END ELSE
+        GOSUB SETUP.COLUMN.HEADER
+      END
+     
+      IF CLIENT # 'ALL' THEN
+        CLIENT.ID = CLIENT
+        CLIENT.ITEMS = 1
+
+        OPEN '','FB.BILLS,':CLIENT.ID TO F.BILLS THEN
+          IF MODE = 'P' THEN 
+            GOSUB PRINT.HELD
+          END ELSE
+            GOSUB DOWNLOAD.HELD
+          END
+        END
+      END ELSE 
+        STMT="SSELECT VOC 'FB.BILLS.HIST' *A7"  
+        CRT @(0,10): STMT
+        EXECUTE STMT RTNLIST CLIENT.LIST CAPTURING OUTPUT
+        CLIENT.ITEMS = @SELECTED
+
+        IF CLIENT.ITEMS LE 0 THEN
+          CALL ELINE('ERROR - No clients on file.')
+          STOP
+        END
+        COUNTER.1=0
+        PER.1=0
+        ERRORS = ''
+        LINE = 2        
+        LOOP
+          READNEXT CLIENT.ID FROM CLIENT.LIST ELSE CLIENT.ID='DONE'
+        UNTIL CLIENT.ID='DONE' DO
+          IF CLIENT.ID GE '80000' THEN GO SKIP.CLIENT
+          IF CLIENT.ID EQ '00732' THEN GO SKIP.CLIENT
+          
+          COUNTER.1=COUNTER.1+1
+          READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID THEN
+            CLIENT.NAME = CLIENT.REC<2>
+            AUDITOR = CLIENT.REC<71>
+            PAY.FREQ = CLIENT.REC<38>
+            STATUS = CLIENT.REC<30>
+            IF STATUS # 'A' THEN   
+             GO SKIP.CLIENT
+            END
+            LAST.PROCESS = CLIENT.REC<82>
+          END ELSE 
+            CLIENT.NAME='*** Not On File ***'
+            AUDITOR = ' '
+            LAST.PROCESS = ''
+          END
+          CRT @(0,17):CLIENT.ID:" ":CLIENT.NAME:" - Now selecting held bills":@(-4)
+          CALL PROG.BAR(20,COUNTER.1,CLIENT.ITEMS,PER.1)
+          CLIENT.LINE = '~~~~ ':CLIENT.ID'R%5':' ':CLIENT.NAME'L#20'
+          OPEN '','FB.BILLS,':CLIENT.ID TO F.BILLS THEN
+            IF MODE = 'P' THEN 
+              GOSUB PRINT.HELD
+            END ELSE
+              GOSUB DOWNLOAD.HELD
+            END
+          END
+      
+SKIP.CLIENT:***      
+        REPEAT
+      END
+
+      IF MODE = 'P' THEN
+        PRINTER OFF
+      END ELSE
+        BILLDATA.ID = 'HELD.BILLS.REPORT.':CLIENT:'.XLS'
+        HELD.REPORT = CHANGE(HELD.REPORT,@VM,TAB)
+        WRITE HELD.REPORT ON BILLDATA,BILLDATA.ID
+      END    
+      STOP
+  
+        
+PRINT.HELD:***
+           STMT='SELECT FB.BILLS,':CLIENT.ID:' WITH STATUS # "O" AND WITH STATUS # "R" '
+           STMT:=' AND WITH 30 LE "':LAST.PROCESS'D2/':'"'
+           STMT:=" BY STATUS BY CARRIER BY PRO"
+           STMT:=' AND WITH VERSION = "0"'
+           CRT @(0,10):STMT
+
+           EXECUTE STMT RTNLIST HELD.LIST CAPTURING OUTPUT
+           IF @SELECTED > 0 THEN ; * JCW01
+             EXECUTE 'LIST FB.BILLS,':CLIENT.ID:' PRO CARRIER.SHORT.NAME TOTAL 7 TOTAL 8 STATUS 68 30 (IP'
+             CALL ELINE('')
+           END ELSE
+             CALL ELINE("All pro's have been verified and audited.")
+           END
+RETURN
+
+DOWNLOAD.HELD:***
+           STMT='SELECT FB.BILLS,':CLIENT.ID:' WITH STATUS # "O" AND WITH STATUS # "R" '
+           STMT:=' AND WITH 30 LE ':LAST.PROCESS'D2/'
+           STMT:=" BY STATUS BY CARRIER BY PRO"
+           STMT:=' AND WITH VERSION = "0"'           
+           CRT @(0,10):STMT
+           EXECUTE STMT RTNLIST HELD.LIST CAPTURING OUTPUT
+           HELD.ITEMS = @SELECTED
+           PER = 0
+*          IF HELD.ITEMS=0 THEN RETURN   ; * JCW01
+           IF HELD.ITEMS < 1 THEN RETURN ; * JCW01
+           COUNTER = 0
+           LOOP
+             READNEXT HELD.ID FROM HELD.LIST ELSE HELD.ID='DONE'
+           UNTIL HELD.ID='DONE' DO
+             COUNTER=COUNTER+1
+             READ HELD.REC FROM F.BILLS,HELD.ID ELSE GO SKIP.BILL             
+             CRT @(0,17):CLIENT.ID:" ":CLIENT.NAME:" - Now selecting held bills":@(-4)
+             CALL PROG.BAR(22,COUNTER,HELD.ITEMS,PER)            
+             LINE = ''
+             IF CLIENT = 'ALL' THEN
+               LINE = CLIENT.ID
+               LINE<1,CLIENT.NAME.POS> = CLIENT.NAME
+             END
+             CARRIER.ID = FIELD(HELD.ID,'*',0)
+             READV CARRIER.NAME FROM F.CARRIERS,CARRIER.ID,1 ELSE CARRIER.NAME = '~~ UNKNOWN ~~'
+             LINE<1,CARRIER.POS> = CARRIER.ID
+             LINE<1,CARRIER.NAME.POS> = CARRIER.NAME
+             PRO.NUM = FIELD(HELD.ID,'*',2)
+             LINE<1,PRO.POS> = PRO.NUM
+             LINE<1,CHARGE.POS> = HELD.REC<7>'R26#8'
+             LINE<1,ACTUAL.POS> = HELD.REC<8>'R26#8'
+             LINE<1,VER.POS> = HELD.REC<39>
+             LINE<1,STA.POS> = HELD.REC<68>
+             DATE.ENTERED = HELD.REC<30>
+             LINE<1,ENTRY.POS> = DATE.ENTERED'D2/'
+             DAYS.HELD = DATE() - DATE.ENTERED
+             LINE<1,HELD.POS> = DAYS.HELD
+             LINE<1,AUDITOR.POS> = AUDITOR
+             HELD.REPORT<-1> = LINE            
+SKIP.BILL:***
+           REPEAT
+
+RETURN
+
+
+
+SETUP.PTR:***
+      LASER = ''
+      LASER<1 >= 0                           ;* Portrait
+      LASER<2 >= 6                           ;* Lines per inch
+      LASER<3 >= 61                          ;* Page length
+      LASER<4 >= 16.7                        ;* Characters per inch
+      LASER<5 >= 0
+      LASER<6 >= 0
+      LASER<7 >= 1
+      LASER<8 >= 0
+      MARGIN = 0
+      PRINT ESC:"E"
+      PRINT ESC:"&l":LASER<1>:"O":           ;* Set portrait
+      PRINT ESC:"&l":LASER<2>:"D":           ;* Lines per inch
+      PRINT ESC:"&l":LASER<3>:"F":           ;* Page length
+      PRINT ESC:"(s":LASER<4>:"h":           ;* Set pitch
+      PRINT LASER<5>:"p":                    ;* Proportional printing
+      PRINT LASER<6>:"s":                    ;* Italics off
+      PRINT "0T":                            ;* Line Printer Font
+      PRINT ESC:"&l":LASER<7>:"H"            ;* Bin selection
+      PRINT ESC:"&a":MARGIN:"L"
+      PRINT ESC:'"g':LASER<8>:'F'                      ;* Paper output
+RETURN
+
+SETUP.COLUMN.HEADER:***
+      HELD.REPORT = 'Bills on Hold for the following client: ':CLIENT:' as of ':DATE()'D2/':'.'
+      IF CLIENT = 'ALL' THEN
+        HELD.REPORT<2,1> ="Client #"
+        CLIENT.POS = 1
+        HELD.REPORT<2,2> ="Client Name"
+        CLIENT.NAME.POS = 2
+        HELD.REPORT<2,3> ="Pro Number"
+        PRO.POS = 3
+        HELD.REPORT<2,4>="Carrier #"
+        CARRIER.POS = 4
+        HELD.REPORT<2,5>="Carrier"
+        CARRIER.NAME.POS = 5
+        HELD.REPORT<2,6>="Carrier Charge"
+        CHARGE.POS = 6
+        HELD.REPORT<2,7>="Actual Charge"
+        ACTUAL.POS = 7
+        HELD.REPORT<2,8>="Verified Code"
+        VER.POS = 8
+        HELD.REPORT<2,9>="Status code"
+        STA.POS = 9
+        HELD.REPORT<2,10>="Entry Date"
+        ENTRY.POS = 10
+        HELD.REPORT<2,11>="# Days Held"
+        HELD.POS = 11
+        HELD.REPORT<2,12>="Auditor"
+        AUDITOR.POS = 12
+
+
+      END ELSE
+        HELD.REPORT<2,1> ="Pro Number"
+        PRO.POS = 1
+        HELD.REPORT<2,2>="Carrier #"
+        CARRIER.POS = 2
+        HELD.REPORT<2,3>="Carrier"
+        CARRIER.NAME.POS = 3
+        HELD.REPORT<2,4>="Carrier Charge"
+        CHARGE.POS = 4
+        HELD.REPORT<2,5>="Actual Charge"
+        ACTUAL.POS = 5
+        HELD.REPORT<2,6>="Verified Code"
+        VER.POS = 6
+        HELD.REPORT<2,7>="Status code"
+        STA.POS = 7
+        HELD.REPORT<2,8>="Entry Date"
+        ENTRY.POS = 8
+        HELD.REPORT<2,9>="# Days Held"
+        HELD.POS = 9
+        HELD.REPORT<2,10>="Auditor"
+        AUDITOR.POS = 10
+     END
+      
+RETURN
+                    

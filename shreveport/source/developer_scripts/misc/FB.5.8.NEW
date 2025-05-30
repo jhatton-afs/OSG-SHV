@@ -1,0 +1,419 @@
+$OPTIONS HEADER.EJECT
+      ERRMSG=''
+*
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+*
+* PROGRAM TO ENTER MANUAL CHECKS TO BE PROCESSED AND WRITTEN
+*
+* FREIGHT BILLING PACKAGE
+* AUTHOR: David Friend
+* DATE: April 22, 1997
+* 122804 DRF   - Added a bank code field and stored it in attribute 24
+*                of the manual check file.
+* 050806 - JCW01 - CHANGES TO '@SELECTED', 'CLEARSELECT', AND 'STMT<X>'
+* 082906 - JMK01 - REFUSE BANK CODE OF "B" FOR BROKERAGE CONFLICTS
+************************************************************************
+* Initialize variables.
+*
+      PROMPT''
+      PROG.NAME='FB.5.8.NEW'
+      PROG.DESC="Manual Check Entry"
+      PACK.NAME="Freight Billing"
+*
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.5.8.NEW' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+* Open general files
+*
+      OPEN '','FB.MAN.CHECKS' TO F.MAN.CHECKS ELSE CALL OPEN.ABORT("FB.MAN.CHECKS",PROG.NAME)
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE CALL OPEN.ABORT("ZIPS",PROG.NAME)
+      OPEN '','FB.BANKS' TO F.BANK ELSE
+         CALL OPEN.ABORT("FB.BANKS",PROG.NAME)
+      END
+10:   GOSUB INIT.VAR
+      GOSUB DISPLAY.SCREEN
+*
+* Get sequence number
+*
+100:  HELP="Enter sequence number 'G'=Generate Next Number 'L'=List Manual Checks 'EX'=Exit"
+      CALL GEN.IN(0,3,'','',Q,0,6,'','',1,25,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X' ! QI='EX'
+            IF SEQ.NUM#'' THEN
+               IF MAN.CHECK.REC<15>='' THEN DELETE F.MAN.CHECKS,SEQ.NUM'R%6'
+            END
+            STOP
+         CASE QI=''
+            IF SEQ.NUM='' THEN
+               STOP
+            END ELSE
+               QI=SEQ.NUM
+            END
+         CASE QI='L'
+            EXECUTE 'SSELECT FB.MAN.CHECKS BY 15 BY 16' CAPTURING OUTPUT
+            IF @SELECTED > 0 THEN        ; * JCW01
+               NUM.ITMS = @SELECTED
+            END ELSE
+               CALL ELINE('No manual checks')
+               GOTO 100
+            END
+            GOSUB LIST.MAN.CHECKS
+            GOSUB DISPLAY.SCREEN
+            GOTO 100
+         CASE QI='G'
+            IF OLD.SEQ#'' THEN
+               IF MAN.CHECK.REC<15>='' THEN DELETE F.MAN.CHECKS,SEQ.NUM'R%6'
+            END
+            SEQ.NUM=1
+GET.NEXT.ITEM:***
+            READU DUMMY FROM F.MAN.CHECKS,SEQ.NUM'R%6' THEN
+               RELEASE F.MAN.CHECKS,SEQ.NUM'R%6'
+               SEQ.NUM=SEQ.NUM+1
+               GOTO GET.NEXT.ITEM
+            END ELSE
+               WRITE '' ON F.MAN.CHECKS,SEQ.NUM'R%6'
+            END
+            QI=SEQ.NUM
+         CASE NUM(QI)
+            IF OLD.SEQ#QI AND OLD.SEQ#'' THEN
+               IF MAN.CHECK.REC<15>='' THEN DELETE F.MAN.CHECKS,SEQ.NUM'R%6'
+            END
+         CASE 1
+            CALL ELINE('Invalid check number.')
+            GOTO 100
+      END CASE
+      SEQ.NUM=QI
+      OLD.SEQ=SEQ.NUM
+      CRT @(25,3):SEQ.NUM'R%6'
+      SEQ.ID=SEQ.NUM'R%6'
+*
+* Check to see if sequence is on file
+*
+      READU MAN.CHECK.REC FROM F.MAN.CHECKS,SEQ.ID ELSE
+         MAN.CHECK.REC=''
+         WRITE '' ON F.MAN.CHECKS,SEQ.ID
+         READU MAN.CHECK.REC FROM F.MAN.CHECKS,SEQ.ID ELSE MAN.CHECK.REC=''
+      END
+      GOSUB ASSIGN.VAR
+      GOSUB DISPLAY.SCREEN
+*
+* Ask if it needs to be deleted
+*
+      IF MAN.CHECK.REC<15>#'' THEN
+150:     HELP="Enter 'Y' to delete this record. 'X'=Back. 'EX'=Exit."
+         CALL GEN.IN(0,22,"Delete? N",'',Q,0,1,'','',0,-1,22,1,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='N' OR QI=''
+               NULL
+            CASE QI='Y'
+               DELETE F.MAN.CHECKS,SEQ.NUM'R%6'
+               GOTO 10
+            CASE QI='X'
+               GOTO 100
+            CASE QI='EX'
+               STOP
+            CASE 1
+               CALL ELINE('Invalid Entry')
+               GOTO 150
+         END CASE
+      END
+*
+* Get check amount
+*
+175:  HELP="Enter bank code. 'X'=Back. 'EX'=Exit."
+      CALL GEN.IN(0,5,'','',Q,0,13,'','',1,25,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      Q=OCONV(Q,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(25,5):BANK'L#1':
+            GOTO 100
+         CASE QI='EX'
+            IF MAN.CHECK.REC<15>='' THEN DELETE F.MAN.CHECKS,SEQ.NUM'R%6'
+            STOP
+         CASE QI=''
+            IF BANK='' THEN
+               CALL ELINE('Entry is required')
+               GOTO 175
+            END ELSE
+               Q=BANK
+            END
+         CASE QI='B'                     ; * JMK01
+            CALL ELINE('Brokerage bank code.')     ; * JMK01
+            GOTO 175                     ; * JMK01
+         CASE ALPHA(QI)
+            READ BANK.REC FROM F.BANK,'BANK*':QI ELSE
+               CALL ELINE('Invalid bank ID')
+               GOTO 175
+            END
+         CASE 1
+            CALL ELINE('Invalid bank code.')
+            GOTO 175
+      END CASE
+      BANK=Q
+      CRT @(25,5):BANK'L#1'
+*
+* Get check amount
+*
+200:  HELP="Enter amount of check. 'X'=Back to bank code. 'EX'=Exit."
+      CALL GEN.IN(0,7,'','AMT2',Q,0,13,'','',1,25,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(25,7):CHECK.AMT'L26,#13':
+            GOTO 175
+         CASE QI='EX'
+            IF MAN.CHECK.REC<15>='' THEN DELETE F.MAN.CHECKS,SEQ.NUM'R%6'
+            STOP
+         CASE QI=''
+            Q=CHECK.AMT
+         CASE NUM(QI)
+            NULL
+         CASE 1
+            CALL ELINE('Invalid check amount.')
+            GOTO 200
+      END CASE
+      CHECK.AMT=Q
+      CRT @(25,7):CHECK.AMT'L26,#13'
+300:  HELP="Enter the payee name as it should appear on the check. 'X'=Back. 'EX'=Exit"
+      PAYEE.MASK=PAYEE.NAME:STR('-',30-LEN(PAYEE.NAME))
+      CALL GEN.IN(25,9,PAYEE.MASK,'',Q,0,30,'','',2,25,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(25,9):PAYEE.NAME'L#30'
+            GOTO 200
+         CASE QI='EX'
+            IF MAN.CHECK.REC<15>='' THEN DELETE F.MAN.CHECKS,SEQ.NUM'R%6'
+            STOP
+         CASE QI=''
+            IF PAYEE.NAME='' THEN
+               CALL ELINE('Entry is required')
+               GOTO 300
+            END
+            Q=PAYEE.NAME
+      END CASE
+      PAYEE.NAME=Q
+      CRT @(25,9):PAYEE.NAME'L#30'
+400:  HELP="Enter the payee address as it should appear on the check. 'X'=Back. 'EX'=Exit"
+      ADDR.MASK=PAYEE.ADDR<1,1>:STR('-',30-LEN(PAYEE.ADDR<1,1>))
+      CALL GEN.IN(25,11,ADDR.MASK,'',Q,0,30,'','',2,25,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(25,11):PAYEE.ADDR<1,1>'L#30'
+            GOTO 300
+         CASE QI='EX'
+            IF MAN.CHECK.REC<15>='' THEN DELETE F.MAN.CHECKS,SEQ.NUM'R%6'
+            STOP
+         CASE QI=''
+            Q=PAYEE.ADDR<1,1>
+      END CASE
+      PAYEE.ADDR<1,1>=Q
+      CRT @(25,11):PAYEE.ADDR<1,1>'L#30'
+500:  HELP="Enter the payee address as it should appear on the check. 'X'=Back. 'EX'=Exit"
+      ADDR.MASK=PAYEE.ADDR<1,2>:STR('-',30-LEN(PAYEE.ADDR<1,2>))
+      CALL GEN.IN(25,12,ADDR.MASK,'',Q,0,30,'','',2,25,12,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(25,12):PAYEE.ADDR<1,2>'L#30'
+            GOTO 400
+         CASE QI='EX'
+            IF MAN.CHECK.REC<15>='' THEN DELETE F.MAN.CHECKS,SEQ.NUM'R%6'
+            STOP
+         CASE QI=''
+            Q=PAYEE.ADDR<1,2>
+      END CASE
+      PAYEE.ADDR<1,2>=Q
+      CRT @(25,12):PAYEE.ADDR<1,2>'L#30'
+600:  HELP="Enter the payee zip code as it should appear on the check. 'X'=Back. 'EX'=Exit"
+      IF PAYEE.ZIP#'' THEN
+         ZIP.MASK=PAYEE.ZIP:STR('#',10-LEN(PAYEE.ZIP))
+      END ELSE
+         ZIP.MASK='#####-####'
+      END
+      CALL GEN.IN(25,14,ZIP.MASK,'',Q,0,10,'','',2,25,14,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(25,14):PAYEE.ZIP'L#10'
+            GOTO 500
+         CASE QI='EX'
+            IF MAN.CHECK.REC<15>='' THEN DELETE F.MAN.CHECKS,SEQ.NUM'R%6'
+            STOP
+         CASE QI=''
+            Q=PAYEE.ZIP
+      END CASE
+      Q=TRIM(Q)
+      IF PAYEE.ZIP#Q AND Q#'' THEN
+         CODE=FIELD(Q,'-',1)
+         IF CODE#'' AND NUM(CODE) THEN
+            READ ZIP.REC FROM F.ZIPS,CODE THEN
+               PAYEE.CITY=ZIP.REC<1>
+               PAYEE.ST=ZIP.REC<2>
+            END
+         END
+      END
+      PAYEE.ZIP=Q
+      CRT @(25,14):PAYEE.ZIP'L#10'
+      CRT @(25,16):PAYEE.CITY'L#20'
+      CRT @(25,18):PAYEE.ST'L#2'
+700:  HELP="Enter the payee city as it should appear on the check. 'X'=Back. 'EX'=Exit"
+      CITY.MASK=PAYEE.CITY:STR('-',20-LEN(PAYEE.CITY))
+      CALL GEN.IN(25,16,CITY.MASK,'',Q,0,20,'','',2,25,16,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(25,16):PAYEE.CITY'L#20'
+            GOTO 600
+         CASE QI='EX'
+            IF MAN.CHECK.REC<15>='' THEN DELETE F.MAN.CHECKS,SEQ.NUM'R%6'
+            STOP
+         CASE QI=''
+            Q=PAYEE.CITY
+      END CASE
+      PAYEE.CITY=Q
+      CRT @(25,16):PAYEE.CITY'L#20'
+800:  HELP="Enter the payee state as it should appear on the check. 'X'=Back. 'EX'=Exit"
+      STATE.MASK=PAYEE.ST:STR('-',2-LEN(PAYEE.ST))
+      CALL GEN.IN(25,18,STATE.MASK,'',Q,0,2,'','',2,25,18,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(25,18):PAYEE.ST'L#2'
+            GOTO 700
+         CASE QI='EX'
+            IF MAN.CHECK.REC<15>='' THEN DELETE F.MAN.CHECKS,SEQ.NUM'R%6'
+            STOP
+         CASE QI=''
+            Q=PAYEE.ST
+      END CASE
+      PAYEE.ST=Q
+      CRT @(25,18):PAYEE.ST'L#2'
+900:  HELP="Enter the check stub description. 'X'=Back. 'EX'=Exit"
+      STUB.MASK=STUB.DESC:STR('-',79-LEN(STUB.DESC))
+      CALL GEN.IN(0,21,STUB.MASK,'',Q,0,79,'','',2,0,21,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,21):STUB.DESC'L#79'
+            GOTO 800
+         CASE QI='EX'
+            IF MAN.CHECK.REC<15>='' THEN DELETE F.MAN.CHECKS,SEQ.NUM'R%6'
+            STOP
+         CASE QI=''
+            IF STUB.DESC='' THEN
+               CALL ELINE('Entry is required')
+               GOTO 900
+            END
+            Q=STUB.DESC
+      END CASE
+      STUB.DESC=Q
+      CRT @(0,21):STUB.DESC'L#79'
+1000: HELP="Enter 'Y' to update check. 'N' not to update check. 'X'=Back. 'EX'=Exit."
+      CALL GEN.IN(0,22,"Update? Y",'',Q,0,1,'','',0,-1,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='' ! QI='Y'
+            MAN.CHECK.REC=''
+            MAN.CHECK.REC<3>='00000'
+            MAN.CHECK.REC<4>=CHECK.AMT
+            MAN.CHECK.REC<15>=PAYEE.NAME
+            MAN.CHECK.REC<16>=STUB.DESC
+            MAN.CHECK.REC<17>=PAYEE.ADDR
+            MAN.CHECK.REC<18>=PAYEE.CITY
+            MAN.CHECK.REC<19>=PAYEE.ST
+            MAN.CHECK.REC<20>=PAYEE.ZIP
+            MAN.CHECK.REC<24>=BANK
+            WRITE MAN.CHECK.REC ON F.MAN.CHECKS,SEQ.ID
+            GOTO 10
+         CASE QI='N'
+            DELETE F.MAN.CHECKS,SEQ.NUM'R%6'
+            GOTO 10
+         CASE QI='X'
+            GOTO 900
+         CASE QI='EX'
+            IF MAN.CHECK.REC<15>='' THEN DELETE F.MAN.CHECKS,SEQ.NUM'R%6'
+            STOP
+         CASE 1
+            CALL ELINE('Invalid Entry')
+            GOTO 1000
+      END CASE
+      STOP
+*-----------------------------------------------------------------------
+*
+* Internal subroutines
+*
+*-----------------------------------------------------------------------
+INIT.VAR:***
+      OLD.SEQ=''
+      SEQ.NUM=''
+      CHECK.AMT=''
+      PAYEE.NAME=''
+      PAYEE.ADDR=''
+      PAYEE.ZIP=''
+      PAYEE.CITY=''
+      PAYEE.ST=''
+      STUB.DESC=''
+      BANK=''
+      RETURN
+ASSIGN.VAR:***
+      CHECK.AMT=MAN.CHECK.REC<4>
+      PAYEE.NAME=MAN.CHECK.REC<15>
+      STUB.DESC=MAN.CHECK.REC<16>
+      PAYEE.ADDR=MAN.CHECK.REC<17>
+      PAYEE.CITY=MAN.CHECK.REC<18>
+      PAYEE.ST=MAN.CHECK.REC<19>
+      PAYEE.ZIP=MAN.CHECK.REC<20>
+      BANK=MAN.CHECK.REC<24>
+      RETURN
+DISPLAY.SCREEN:***
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,3):'Enter Sequence Number .: ':SEQ.NUM'R%6'
+      CRT @(0,5):'Enter Bank Code .......: ':BANK'L#1'
+      CRT @(0,7):'Enter Check Amount ....: ':CHECK.AMT'L26#13'
+      CRT @(0,9):'Enter Payee Name ......: ':PAYEE.NAME'L#30'
+      CRT @(0,11):'Enter Payee Address ...: ':PAYEE.ADDR<1,1>'L#30'
+      CRT @(25.12):PAYEE.ADDR<1,2>'L#30'
+      CRT @(0,14):'Enter Payee Zip Code ..: ':PAYEE.ZIP'L#10'
+      CRT @(0,16):'Enter Payee City ......: ':PAYEE.CITY'L#20'
+      CRT @(0,18):'Enter Payee State .....: ':PAYEE.ST'L#2'
+      CRT @(0,20):'Enter Stub Description : ':@(0,21):STUB.DESC'L#79'
+      RETURN
+LIST.MAN.CHECKS:***
+      CRT @(0,0):@(-1):' Seq     Payee Name            Amt      Description'
+      LINE.NO=2
+      LOOP
+         READNEXT ID ELSE ID=''
+         IF ID='' OR LINE.NO > 20 THEN
+99999:      HELP="Enter Sequence Number. ''=Next Page. 'X'=Exit"
+            CALL GEN.IN(0,22,'Enter Command --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+            QI=OCONV(QI,'MCU')
+            BEGIN CASE
+               CASE QI='X'
+                  ID = ''
+               CASE QI=''
+                  CRT @(0,2):@(-3):
+               CASE NUM(QI)
+                  READ DUMMY FROM F.MAN.CHECKS,QI'R%6' ELSE
+                     CALL ELINE(QI'R%6':" Is an invalid sequence number")
+                     GOTO 99999
+                  END
+                  DATA QI
+                  ID=''
+               CASE 1
+                  CALL ELINE('Invalid Entry')
+                  GOTO 99999
+            END CASE
+            LINE.NO=2
+         END
+      UNTIL ID='' DO
+         READ CHECKS.REC FROM F.MAN.CHECKS,ID THEN
+            CRT @(0,LINE.NO):ID'L#6':" ":CHECKS.REC<15>'L#20':" ":CHECKS.REC<4>'R26,#7':" ":CHECKS.REC<16>'L#42'
+            LINE.NO=LINE.NO+1
+         END
+      REPEAT
+      RETURN

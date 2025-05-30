@@ -1,0 +1,296 @@
+* PROGRAM FB.6.1
+* PROGRAM TO PROCESS EXPENSE CODE CHARGES BY DIVISION REPORT
+*
+* AUTHOR: BRIAN M. QUEEN
+* DATE: MARCH 25, 1993
+*
+* PACKAGE: FREIGHT BILLING
+*
+**********************************************************************
+*
+* Last updated by AFS.SOURCE (valerie) at 13:19:55 on 05/13/1994.
+*   ADDED NEW DIVISION CODES INSERT.
+* Last updated by AFS (valerie) at 09:59:02 on 04/06/1994.
+*   UPDATE FOR UNIVERSE AND ADD DIVISION NAMES.
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_DIVISION.CODES
+*
+* Initialize variables
+*
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='FB.6.1'
+      PROG.DESC='Expense Charges by Divisions'
+      PACK.NAME='FREIGHT BILLING'
+      DIV.TOT=''
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.6.1' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      GRAND.TOT=''
+      ERRMSG=''
+      DIV.NAME = ''
+      MAT DIV.REC = ''
+*
+* Open files
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+        CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+        CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '', 'ZIPS.CODES' TO ZIPS ELSE
+        CALL OPEN.ABORT('ZIPS',PROG.NAME)
+      END
+*
+* Display screen heading
+*
+30    CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+* Get client number to process
+*
+50    HELP="Enter the client number you want to process. 'X'=Exit."
+      CALL GEN.IN(0,3,'Enter Client Number #####','',Q,0,20,'','',2,-5,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI='EX' ! QI='X'
+          STOP
+        CASE QI=''
+          STOP
+        CASE NOT(QI MATCHES "0N")
+          CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+          CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+          BEGIN CASE
+            CASE ITEM.LIST=''
+              GOTO 50
+            CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+              GOTO 50
+            CASE ITEM.LIST NE ''
+              IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+              GOTO 50
+          END CASE
+        CASE NUM(QI)
+          Q=QI'R%5'
+        CASE 1
+          GOTO 100
+      END CASE
+      CLIENT.ID=Q
+      CLIENT.ID=CLIENT.ID'R%5'
+      CRT @(20,3):CLIENT.ID:@(-4)
+*
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+        CALL ELINE("ERROR - Client ":CLIENT.ID:" not on file.")
+        GOTO 50
+      END
+      CONAME.1=CLIENT.REC<2>
+      CRT @(27,3):CONAME.1
+*
+* Get current period beginning date
+*
+100   HELP='Enter the current period beginning date.'
+      CALL GEN.IN(0,5,'Current period beginning date.  ':DATE()'D2/','DATE',BEG.DATE,1,8,'','',1,-8,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI='X'
+          GOTO 50
+        CASE QI='EX'
+          STOP
+      END CASE
+      CRT @(32,5):BEG.DATE'D2/'
+*
+* Get current period ending date
+*
+200   END.DATE=DATE()
+      HELP='Enter the current period ending date.'
+      CALL GEN.IN(0,7,'Current period ending date.     ':END.DATE'D2/','DATE',Q,0,8,'','',1,-8,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI=''
+          Q=END.DATE
+        CASE QI='X'
+          GOTO 100
+        CASE QI='EX'
+          STOP
+      END CASE
+      END.DATE=Q
+      IF END.DATE LT BEG.DATE THEN
+        CALL ELINE('Invalid ending date.')
+        GOTO 200
+      END
+      CRT @(32,7):END.DATE'D2/'
+*
+* Open data file
+*
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.TRANS ELSE
+        CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,PROG.NAME)
+      END
+      OPEN '', 'DIVISION.CODES,':CLIENT.ID TO DIV.CODES ELSE
+         CALL OPEN.ABORT('DIVISION.CODES,':CLIENT.ID, PROG.NAME)
+      END
+*
+* Build report heading
+*
+      CALL FULL.DATE(BEG.DATE,ALPHA.BEG.DATE)
+      CALL FULL.DATE(END.DATE,ALPHA.END.DATE)
+      ODATE=ALPHA.BEG.DATE:' to ':ALPHA.END.DATE
+      CALL PAGE.HEAD('FB.6.1',CONAME.1,'','Expense Codes by Divisions',ODATE,132,HED)
+      HED:= "'L'Division   Carrier Name                       Pro Number             Pro Date    Expense Code         Approved $      Unapproved $'L'"
+*
+* Select data
+*
+      TEXT='Selecting data - please wait.'
+      CALL CENTER(TEXT,80)
+      CRT @(0,10):TEXT
+      PREC='SSELECT FB.BILLS.HIST,':CLIENT.ID:' BY 9 BY CARRIER.DESC'
+      PREC=PREC:' WITH 37 GE "':BEG.DATE'D2/':'"'
+      PREC=PREC:' AND WITH 37 LE "':END.DATE'D2/':'"'
+      PREC := ' AND WITH VERSION = "0"'
+      PREC := ' AND WITH 39 # "R"'
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+      NUM.ITMS = @SELECTED
+      IF SYSTEM(11) ELSE
+        CALL ELINE('No transactions on file with given criteria.')
+        STOP
+      END
+*
+* Process report
+*
+      VIN=''
+      VIN<3>='R'
+      CALL LASER.CODE(VIN,VOUT)
+      IF VOUT<1>#'' THEN
+        CALL ELINE(VOUT<1>)
+        STOP
+      END
+      IF VOUT<3>#'' THEN EXECUTE VOUT<3>
+      PRINTER ON
+      IF VOUT<2>#'' THEN PRINT VOUT<2>:
+      HEADING HED
+      PREV.DIV=''
+      COUNTER=0
+      DONE = 0
+*
+* Get transaction data
+*
+      LOOP
+        READNEXT ID ELSE DONE = 1
+      UNTIL DONE = 1 DO
+        COUNTER=COUNTER+1
+        CALL PROG.BAR(22,COUNTER,NUM.ITMS,PER)
+        READ REC FROM F.TRANS,ID THEN
+          DIV=REC<9>
+          IF DIV NE PREV.DIV THEN GOSUB 8000; * Division break
+          CARRIER=FIELD(ID,'*',1)
+          READV CARRIER.NAME FROM F.CARRIERS,CARRIER,1 ELSE
+            CARRIER.NAME=' ~~ Unknown ~~'
+          END
+          PRO=FIELD(ID,'*',2)
+          DATE=REC<1>
+          IF DATE NE '' THEN DATE=DATE'D2/' ELSE DATE=SPACE(8)
+          EXP.CODE=REC<31>
+          CHARGES=REC<8>
+          APROVED.FLAG=REC<47>
+*          LN = DIV'L#8':'   ':CARRIER.NAME'L#30':'     ':PRO'L#20'
+          LN = '        ':'   ':CARRIER.NAME'L#30':'     ':PRO'L#20'
+          LN := '   ':DATE:'    ':EXP.CODE'L#15':'   '
+          IF APROVED.FLAG='Y' ! APROVED.FLAG='' THEN
+            LN=LN:CHARGES'R26,#13'
+            DIV.TOT<1>=DIV.TOT<1>+CHARGES
+            DIV.TOT<2>=DIV.TOT<2>+CHARGES
+          END ELSE
+            LN=LN:SPACE(18):CHARGES'R26,#13'
+            DIV.TOT<1>=DIV.TOT<1>+CHARGES
+            DIV.TOT<3>=DIV.TOT<3>+CHARGES
+          END
+          IF REC<25> = REC<26> THEN
+            DIV.TOT<4> += 1
+            DIV.TOT<5> += CHARGES
+          END ELSE
+            DIV.TOT<6> += 1
+            DIV.TOT<7> += CHARGES
+          END
+          PRINT LN
+        END
+      REPEAT
+      GOSUB 8000; * Print division totals
+*
+* Print Grand Totals
+*
+      A.AVG=((GRAND.TOT<2>/GRAND.TOT<1>) + .005)*100
+      A.AVG = INT( A.AVG )
+*      D.AVG=((GRAND.TOT<3>/GRAND.TOT<1>) + .005)*100
+      D.AVG = 100 - A.AVG
+      D.AVG=D.AVG'R0'
+      PRINT SPACE(99) : STR('-',13) : '     ' : STR('-',13)
+      PRINT
+      PRINT SPACE(5) :
+      PRINT '% Approved = ' : A.AVG 'R#3' : '      % Unapproved = ' :
+      PRINT D.AVG 'R#3' : '         Total Charges = ' :
+      PRINT GRAND.TOT<1> 'R26,#13' : SPACE(16) : GRAND.TOT<2> 'R26,#13' :
+      PRINT '     ' : GRAND.TOT<3> 'R26,#13'
+      PRINT SPACE(5) : 'Intrastate Bills: ' : GRAND.TOT<4> 'R#5' :
+      PRINT '   ' : GRAND.TOT<5> 'R26,#13' : SPACE(10) :
+      PRINT 'Interstate Bills: ' : GRAND.TOT<6> 'R#5' : '   ' :
+      PRINT GRAND.TOT<7> 'R26,#13' :
+      PRINT SPACE(6) : STR('=',13) : '     ' : STR('=',13)
+      PRINTER OFF
+      PRINTER CLOSE
+      STOP
+*----------------------------------------------------------------------
+*
+* INTERNAL SUBROUTINES
+*
+*----------------------------------------------------------------------
+*
+* Print divison break totals
+*
+8000  IF PREV.DIV EQ '' ELSE
+        GRAND.TOT<1>=GRAND.TOT<1>+DIV.TOT<1>
+        GRAND.TOT<2>=GRAND.TOT<2>+DIV.TOT<2>
+        GRAND.TOT<3>=GRAND.TOT<3>+DIV.TOT<3>
+        GRAND.TOT<4> += DIV.TOT<4>
+        GRAND.TOT<5> += DIV.TOT<5>
+        GRAND.TOT<6> += DIV.TOT<6>
+        GRAND.TOT<7> += DIV.TOT<7>
+        A.AVG=((DIV.TOT<2>/DIV.TOT<1>) + .005)*100
+        A.AVG = INT( A.AVG )
+*        D.AVG=((DIV.TOT<3>/DIV.TOT<1>) + .005)*100
+        D.AVG = 100 - A.AVG
+        D.AVG=D.AVG'R0'
+        PRINT SPACE(99) : STR('-',13) : '     ' : STR('-',13)
+        PRINT SPACE(5) :
+        PRINT '% Approved = ' : A.AVG 'R#3' : '      % Unapproved = ' :
+        PRINT D.AVG 'R#3' : '      Division Charges = ' :
+        PRINT DIV.TOT<1> 'R26,#13' : SPACE(16) : DIV.TOT<2> 'R26,#13' :
+        PRINT '     ' : DIV.TOT<3> 'R26,#13'
+        PRINT SPACE(5) : 'Intrastate Bills: ' : DIV.TOT<4> 'R#5' :
+        PRINT '   ' : DIV.TOT<5> 'R26,#13' : SPACE(10) :
+        PRINT 'Interstate Bills: ' : DIV.TOT<6> 'R#5' : '   ' :
+        PRINT DIV.TOT<7> 'R26,#13'
+        PRINT
+        PRINT
+        DIV.TOT=''
+      END
+*
+      PREV.DIV=DIV
+*
+      MATREAD DIV.REC FROM DIV.CODES, DIV THEN
+         READ ZIPS.REC FROM ZIPS, DIV.ZIP THEN
+            DIV.NAME = ZIPS.REC<1>
+            IF ZIPS.REC<1> AND ZIPS.REC<2> THEN
+               DIV.NAME := ', ' : ZIPS.REC<2>
+            END ELSE
+               DIV.NAME := ' ' : ZIPS.REC<2>
+            END
+         END ELSE
+            DIV.NAME = DIV.ZIP : ' ' : 'NOT ON FILE'
+         END
+      END ELSE
+         DIV.NAME = 'NOT ON FILE'
+      END
+      PRINT DIV : '  ' : DIV.NAME
+*
+      RETURN
+*
+**********************************************************************
+*
+   END

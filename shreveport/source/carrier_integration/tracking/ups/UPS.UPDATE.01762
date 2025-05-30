@@ -1,0 +1,668 @@
+******************************************************************************
+* PROGRAM NAME : AFS.EBILL.UPDATE
+* AUTHOR       : JMK
+* DATE         : 03/31/08
+* PURPOSE      : TO UPDATE THE UPS ELECTRONIC BILLING FILE WITH AFS COMM. AMTS
+******************************************************************************
+* MAINTENANCE  :
+* 081913 - JMK01 - SysAid#6808 - Please remove DNeal@doorcontrolservices.com
+******************************************************************************
+*
+* INITIALIZE VARIABLES
+*
+      EQU TB TO CHAR(9)
+      PROG.NAME='AFS.EBILL.UPDATE'
+      TYPE='CSV'
+      CLIENT.ID='01762'
+      PLAN.ID='00000676KW'
+      EMAIL.PATH='E:\ARDENT\PUBLIC\EMAILDATA\'
+      CALL GET.USER(USER)
+      CALL CHANNEL(CH.NUM)
+*
+* OPEN FILES
+*
+      OPEN '','CLIENTS' TO F.CLIENT ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      OPEN '','EMAILDATA' TO F.EMAILDATA ELSE
+         CALL OPEN.ABORT('EMAILDATA',PROG.NAME)
+      END
+      OPEN '','FB.BILLS.HIST,01762' TO F.BILLS ELSE
+         CALL OPEN.ABORT('FB.BILLS.HIST,01762',PROG.NAME)
+      END
+      OPEN '','FB.UNPROCESS,01762' TO F.UNPROCESS ELSE
+         CALL OPEN.ABORT('FB.UNPROCESS,01762',PROG.NAME)
+      END
+      OPEN '','BILLDATA.EBILL.DATA' TO F.BILLDATA.DATA ELSE
+         CALL OPEN.ABORT('BILLDATA.EBILL.DATA',PROG.NAME)
+      END
+      OPEN '','BILLDATA.MKERBOW' TO F.BILLDATA.MKERBOW ELSE
+         CALL OPEN.ABORT('BILLDATA.MKERBOW',PROG.NAME)
+      END
+      OPEN '','AR-BRIDGE' TO F.ARBRIDGE ELSE
+         CALL OPEN.ABORT('AR-BRDIGE',PROG.NAME)
+      END
+      OPEN '','AR.BRIDGE.LAST' TO F.ARBRIDGE.LAST ELSE
+         CALL OPEN.ABORT('AR.BRIDGE.LAST',PROG.NAME)
+      END
+      OPEN '','EBILL.CONVERT' TO F.EBILL.CONVERT ELSE
+         CALL OPEN.ABORT('EBILL.CONVERT',PROG.NAME)
+      END
+      READ CLIENT.REC FROM F.CLIENT,CLIENT.ID ELSE CLIENT.REC=''
+      READ DUPSBILL.CODES FROM F.TABLES,'UPSBILL.CODES' ELSE DUPSBILL.CODES=''
+      READ PROCESS.DATES FROM F.UNPROCESS,'PROCESS.DATES' THEN
+         BEG.DATE=PROCESS.DATES<1>
+         END.DATE=PROCESS.DATES<2>
+      END
+*
+* START BY GATHERING THE FB COMMISSION INFORMATION
+*
+      COMM.ARRAY=''
+      STMT='SELECT FB.UNPROCESS,01762 WITH FILE.NAME = "FB.BILLS,':CLIENT.ID:'" ITEM.NAME'
+      EXECUTE STMT CAPTURING RESULTS
+      EOF=0
+      CNT=0
+      LOOP
+         READNEXT PRO.ID ELSE EOF=1
+      UNTIL EOF DO
+         CNT+=1
+         READ PRO.REC FROM F.BILLS,PRO.ID THEN
+            CARRIER.ID=FIELD(PRO.ID,'*',1)
+            IF CARRIER.ID#'00041' THEN GO NEXT.BILL
+            PRO.NO=FIELD(PRO.ID,'*',2)
+            IOT=FIELD(PRO.NO,'-',3)
+            SEQ=FIELD(PRO.ID,'*',3)
+            IF SEQ#"0" THEN GO NEXT.BILL
+            SHIPPER.NO=PRO.NO[1,3]:PRO.NO[5,3]
+            SHIPPER.NO=SHIPPER.NO'R%10'
+            UPS.DATE=PRO.NO[8,6]
+            ACTUAL.CHG=PRO.REC<8>
+            DISC.COMM.AMT=PRO.REC<42>
+            OVCHG.COMM.AMT=PRO.REC<43>
+            CONS.COMM.AMT=PRO.REC<44>
+            MGMT.SVC.FEE=PRO.REC<165>
+            AFS.FEE.AMT=DISC.COMM.AMT+OVCHG.COMM.AMT+CONS.COMM.AMT+MGMT.SVC.FEE
+            LOCATE SHIPPER.NO IN COMM.ARRAY<1> BY 'AR' SETTING SPOS ELSE
+               INS SHIPPER.NO BEFORE COMM.ARRAY<1,SPOS>
+               FOR ATT=2 TO 17
+                  INS 0 BEFORE COMM.ARRAY<ATT,SPOS>
+               NEXT ATT
+            END
+            BEGIN CASE
+               CASE IOT='I'
+                  COMM.ARRAY<2,SPOS>+=ACTUAL.CHG
+                  COMM.ARRAY<3,SPOS>+=AFS.FEE.AMT
+               CASE IOT='T'
+                  COMM.ARRAY<6,SPOS>+=ACTUAL.CHG
+                  COMM.ARRAY<7,SPOS>+=AFS.FEE.AMT
+               CASE IOT='O'
+                  COMM.ARRAY<10,SPOS>+=ACTUAL.CHG
+                  COMM.ARRAY<11,SPOS>+=AFS.FEE.AMT
+            END CASE
+NEXT.BILL: *
+         END
+      REPEAT
+*
+* GET THE NON-SHIPMENT FEES AND APPLY TO THE UPDATE INVOICE AMOUNTS
+*
+      READ AR.REC FROM F.ARBRIDGE,CLIENT.ID ELSE
+         READ AR.REC FROM F.ARBRIDGE.LAST,CLIENT.ID:'*':END.DATE ELSE AR.REC=''
+      END
+      FEES.TTL=0
+      NVAL=DCOUNT(AR.REC<1>,@VM)
+      FOR VAL=1 TO NVAL
+         SCODE=AR.REC<1,VAL>
+         IF INDEX(SCODE,'-',1) THEN
+            SCODE=FIELD(SCODE,'-',1)
+         END
+         SCODE.AMT=AR.REC<3,VAL>
+         BEGIN CASE
+            CASE SCODE='1'
+            CASE SCODE='4'
+            CASE SCODE='6'
+            CASE SCODE='10'
+            CASE SCODE='11'
+            CASE SCODE='17'
+            CASE SCODE='18'
+            CASE SCODE='21'
+            CASE SCODE='22'
+            CASE SCODE>='25' AND SCODE<='37'
+            CASE SCODE>='50' AND SCODE<='63'
+            CASE SCODE>='140' AND SCODE<='149'
+            CASE SCODE='201'
+            CASE SCODE='221'
+            CASE SCODE='222'
+            CASE SCODE='1001'
+            CASE SCODE='1004'
+            CASE SCODE='1006'
+            CASE SCODE='1010'
+            CASE SCODE='1011'
+            CASE SCODE='1017'
+            CASE SCODE='1018'
+            CASE SCODE='1021'
+            CASE SCODE='1022'
+            CASE SCODE>='1025' AND SCODE<='1037'
+            CASE SCODE>='1050' AND SCODE<='1063'
+            CASE SCODE>='1140' AND SCODE<='1149'
+            CASE SCODE='1201'
+            CASE SCODE='1221'
+            CASE SCODE='1222'
+            CASE SCODE='3001'
+            CASE SCODE='3004'
+            CASE SCODE='3006'
+            CASE SCODE='3010'
+            CASE SCODE='3011'
+            CASE SCODE='3017'
+            CASE SCODE='3018'
+            CASE SCODE='3021'
+            CASE SCODE='3022'
+            CASE SCODE>='3025' AND SCODE<='3037'
+            CASE SCODE>='3050' AND SCODE<='3063'
+            CASE SCODE>='3140' AND SCODE<='3149'
+            CASE SCODE='3201'
+            CASE SCODE='3221'
+            CASE SCODE='3222'
+            CASE 1
+               FEES.TTL+=SCODE.AMT
+         END CASE
+      NEXT VAL
+      FEES.TTL=0                         ; * JUST USE THE ASSOCIATED COMMISSION AMOUNTS (NO FEES) FOR UPS
+      UPS.TTL=SUM(COMM.ARRAY<2>)+SUM(COMM.ARRAY<6>)+SUM(COMM.ARRAY<10>)
+      FEES.APPLY=0
+      NVAL=DCOUNT(COMM.ARRAY<1>,@VM)
+      FOR VAL=1 TO NVAL
+         SHIPPER.NO=COMM.ARRAY<1,VAL>
+         IAMT.SHIPPER=COMM.ARRAY<2,VAL>
+         TAMT.SHIPPER=COMM.ARRAY<6,VAL>
+         OAMT.SHIPPER=COMM.ARRAY<10,VAL>
+         UPS.SHIPPER=IAMT.SHIPPER+TAMT.SHIPPER+OAMT.SHIPPER
+         IF UPS.TTL+0=0 THEN
+            FEES.SHIPPER=0
+         END ELSE
+            FEES.SHIPPER=(FEES.TTL*UPS.SHIPPER/UPS.TTL)'R0'
+         END
+         FEES.APPLY+=FEES.SHIPPER
+         IF VAL=NVAL THEN
+            IF FEES.APPLY#FEES.TTL THEN
+               FEES.ADD.APPLY=FEES.TTL-FEES.APPLY
+               FEES.SHIPPER+=FEES.ADD.APPLY
+            END
+         END
+         APPLY.SHIPPER=0
+         IF UPS.SHIPPER+0=0 THEN
+            IFEES.SHIPPER=0
+         END ELSE
+            IFEES.SHIPPER=(FEES.SHIPPER*IAMT.SHIPPER/UPS.SHIPPER)'R0'
+         END
+         APPLY.SHIPPER+=IFEES.SHIPPER
+         IF UPS.SHIPPER+0=0 THEN
+            TFEES.SHIPPER=0
+         END ELSE
+            TFEES.SHIPPER=(FEES.SHIPPER*TAMT.SHIPPER/UPS.SHIPPER)'R0'
+         END
+         APPLY.SHIPPER+=TFEES.SHIPPER
+         IF UPS.SHIPPER+0=0 THEN
+            OFEES.SHIPPER=0
+         END ELSE
+            OFEES.SHIPPER=(FEES.SHIPPER*OAMT.SHIPPER/UPS.SHIPPER)'R0'
+         END
+         APPLY.SHIPPER+=OFEES.SHIPPER
+         IF APPLY.SHIPPER#FEES.SHIPPER THEN
+            ADD.APPLY.SHIPPER=FEES.SHIPPER-APPLY.SHIPPER
+            OFEES.SHIPPER+=ADD.APPLY.SHIPPER
+         END
+         COMM.ARRAY<3,VAL>+=IFEES.SHIPPER
+         COMM.ARRAY<7,VAL>+=TFEES.SHIPPER
+         COMM.ARRAY<11,VAL>+=OFEES.SHIPPER
+         COMM.ARRAY<20,VAL>=FEES.SHIPPER
+      NEXT VAL
+      UPS.TTL=SUM(COMM.ARRAY<2>)+SUM(COMM.ARRAY<6>)+SUM(COMM.ARRAY<10>)
+      SHP.TTL=SUM(COMM.ARRAY<20>)
+      AFS.TTL=SUM(COMM.ARRAY<3>)+SUM(COMM.ARRAY<7>)+SUM(COMM.ARRAY<11>)
+*
+* NOW GET THE UPS EBILL RECORD FOR THIS WEEK.
+*
+      ERR.ARRAY=''
+      UPS.EBILL.ID='Invoice_':PLAN.ID'R%10':'_':UPS.DATE[1,2]:UPS.DATE[3,2]:UPS.DATE[5,2]:'.csv'
+      READ UPS.EBILL.REC FROM F.BILLDATA.DATA,UPS.EBILL.ID THEN
+         EXP.REC=''
+         NATT=DCOUNT(UPS.EBILL.REC,@AM)
+         FOR ATT=1 TO NATT
+            IN.LINE=''
+            OUT.LINE=UPS.EBILL.REC<ATT>
+            CALL CONVERT.STRING(IN.LINE,OUT.LINE,TYPE)
+            EBILL.LINE=IN.LINE
+            MV.LINE=EBILL.LINE
+            SHIPPER.NO=EBILL.LINE<1,3>
+            INV.AMT=EBILL.LINE<1,6>
+            TRACK.NO=EBILL.LINE<1,7>
+            AFS.LINE=''
+            TCODE.REC=''                 ; * JMK05
+            GOSUB GET.TCODE
+            AFS.LINE<1,20>=TRIM(TCODE.REC<1>'L#3')
+            IF MV.LINE<1,36>='VOID' THEN
+               VCODE.REC=''              ; * JMK05
+               GOSUB GET.VCODE
+               IF VCODE.REC#'' THEN
+                  AFS.LINE<1,21>=TRIM(VCODE.REC<1>'L#24')
+               END
+            END ELSE
+               SCODE.REC=''              ; * JMK05
+               GOSUB GET.SCODE
+               AFS.LINE<1,21>=TRIM(SCODE.REC<1>'L#24')
+               IF SCODE.REC<3>#'' THEN
+                  AFS.LINE<1,20>=TRIM(FIELD(SCODE.REC<3>,':',2)'L#24')
+               END
+            END
+            BCODE.REC=''                 ; * JMK05
+            GOSUB GET.BCODE
+            AFS.LINE<1,22>=BCODE.REC<1>
+            IF TCODE.REC<2>#'' THEN
+               AFS.LINE<1,22>=TCODE.REC<2>
+            END
+            IF SCODE.ID="SCODE*ACC*SED*Export Declaration Fee" THEN
+               AFS.LINE<1,22>=''
+            END
+            BEGIN CASE
+               CASE AFS.LINE<1,22>='1' OR AFS.LINE<1,22>='4'
+                  IOT='O'
+               CASE AFS.LINE<1,22>='2'
+                  IOT='I'
+               CASE AFS.LINE<1,22>='3'
+                  IOT='T'
+               CASE AFS.LINE<1,22>=''
+                  LOCATE AFS.LINE<1,20> IN DUPSBILL.CODES<1> BY 'AL' SETTING XX.POS THEN
+                     IOT=DUPSBILL.CODES<3,XX.POS>
+                  END
+            END CASE
+            UPS.AMT=ICONV(EBILL.LINE<1,53>,'MD2')
+            LOCATE SHIPPER.NO IN COMM.ARRAY<1> SETTING SPOS THEN
+               IN.CHG=COMM.ARRAY<2,SPOS>
+               IN.FEE=COMM.ARRAY<3,SPOS>
+               IN.ALLOC=COMM.ARRAY<5,SPOS>
+               TP.CHG=COMM.ARRAY<6,SPOS>
+               TP.FEE=COMM.ARRAY<7,SPOS>
+               TP.ALLOC=COMM.ARRAY<9,SPOS>
+               OUT.CHG=COMM.ARRAY<10,SPOS>
+               OUT.FEE=COMM.ARRAY<11,SPOS>
+               OUT.ALLOC=COMM.ARRAY<13,SPOS>
+               SPLIT.ALLOC=COMM.ARRAY<15,SPOS>
+               BEGIN CASE
+                  CASE IOT='I'
+                     COMM.ARRAY<4,SPOS>+=UPS.AMT
+                  CASE IOT='T'
+                     COMM.ARRAY<8,SPOS>+=UPS.AMT
+                  CASE IOT='O'
+                     COMM.ARRAY<12,SPOS>+=UPS.AMT
+                  CASE IOT='S'
+                     COMM.ARRAY<16,SPOS>+=UPS.AMT
+               END CASE
+            END
+         NEXT ATT
+         NVAL=DCOUNT(COMM.ARRAY<1>,@VM)
+         FOR VAL=1 TO NVAL
+            IF COMM.ARRAY<16,VAL>+0#0 THEN
+               IF COMM.ARRAY<2,VAL>#COMM.ARRAY<4,VAL> THEN
+                  SPLIT.AMT=COMM.ARRAY<4,VAL>-COMM.ARRAY<2,VAL>
+                  IF SPLIT.AMT>=0 THEN
+                     COMM.ARRAY<14,VAL>+=SPLIT.AMT
+                     COMM.ARRAY<2,VAL>-=SPLIT.AMT
+                  END ELSE
+                     COMM.ARRAY<14,VAL>-=SPLIT.AMT
+                     COMM.ARRAY<2,VAL>+=SPLIT.AMT
+                  END
+               END
+               IF COMM.ARRAY<6,VAL>#COMM.ARRAY<8,VAL> THEN
+                  SPLIT.AMT=COMM.ARRAY<8,VAL>-COMM.ARRAY<6,VAL>
+                  IF SPLIT.AMT>=0 THEN
+                     COMM.ARRAY<14,VAL>+=SPLIT.AMT
+                     COMM.ARRAY<6,VAL>-=SPLIT.AMT
+                  END ELSE
+                     COMM.ARRAY<14,VAL>-=SPLIT.AMT
+                     COMM.ARRAY<6,VAL>+=SPLIT.AMT
+                  END
+               END
+               IF COMM.ARRAY<10,VAL>#COMM.ARRAY<12,VAL> THEN
+                  SPLIT.AMT=COMM.ARRAY<12,VAL>-COMM.ARRAY<10,VAL>
+                  IF SPLIT.AMT>=0 THEN
+                     COMM.ARRAY<14,VAL>+=SPLIT.AMT
+                     COMM.ARRAY<10,VAL>-=SPLIT.AMT
+                  END ELSE
+                     COMM.ARRAY<14,VAL>-=SPLIT.AMT
+                     COMM.ARRAY<10,VAL>+=SPLIT.AMT
+                  END
+               END
+            END
+         NEXT VAL
+         OUT.EBILL.REC=''
+*         OUT.EBILL.HDR=''
+*         OUT.EBILL.HDR<1,1>='1'
+*         OUT.EBILL.HDR<1,2>=PLAN.ID
+*         OUT.EBILL.HDR<1,6>='0.00'
+*         OUT.EBILL.HDR<1,12>='0'
+*         OUT.EBILL.HDR<1,20>='IDD'
+*         OUT.EBILL.HDR<1,21>='INVOICE DATE'
+*         OUT.EBILL.HDR<1,23>=UPS.DATE[1,4]:'20':UPS.DATE[5,2]
+*         OUT.EBILL.HDR<1,53>='0.00'
+*         OUT.EBILL.HDR<1,38>='0.00'
+*         OUT.EBILL.HDR<1,63>=''
+*         IN.LINE=OUT.EBILL.HDR
+*         OUT.LINE=''
+*         CALL CONVERT.STRING(IN.LINE,OUT.LINE,TYPE)
+*         OUT.EBILL.HDR=OUT.LINE
+         EBILL.LINE=''
+         NXT.EBILL.LINE=''
+         FOR ATT=1 TO NATT
+            IN.LINE=''
+            OUT.LINE=UPS.EBILL.REC<ATT>
+            CALL CONVERT.STRING(IN.LINE,OUT.LINE,TYPE)
+            EBILL.LINE=IN.LINE
+            IN.LINE=''
+            OUT.LINE=UPS.EBILL.REC<ATT+1>
+            CALL CONVERT.STRING(IN.LINE,OUT.LINE,TYPE)
+            NXT.EBILL.LINE=IN.LINE
+            SHIPPER.NO=EBILL.LINE<1,3>
+            NXT.SHIPPER.NO=NXT.EBILL.LINE<1,3>
+            INV.AMT=EBILL.LINE<1,11>
+            TRACK.NO=EBILL.LINE<1,21>
+            AFS.LINE=''
+            TCODE.REC=''                 ; * JMK05
+            GOSUB GET.TCODE
+            AFS.LINE<1,20>=TRIM(TCODE.REC<1>'L#3')
+            IF MV.LINE<1,36>='VOID' THEN
+               VCODE.REC=''              ; * JMK05
+               GOSUB GET.VCODE
+               IF VCODE.REC#'' THEN
+                  AFS.LINE<1,21>=TRIM(VCODE.REC<1>'L#24')
+               END
+            END ELSE
+               SCODE.REC=''              ; * JMK05
+               GOSUB GET.SCODE
+               AFS.LINE<1,21>=TRIM(SCODE.REC<1>'L#24')
+               IF SCODE.REC<3>#'' THEN
+                  AFS.LINE<1,20>=TRIM(FIELD(SCODE.REC<3>,':',2)'L#24')
+               END
+            END
+            BCODE.REC=''                 ; * JMK05
+            GOSUB GET.BCODE
+            AFS.LINE<1,22>=BCODE.REC<1>
+            IF TCODE.REC<2>#'' THEN
+               AFS.LINE<1,22>=TCODE.REC<2>
+            END
+            IF SCODE.ID="SCODE*ACC*SED*Export Declaration Fee" THEN
+               AFS.LINE<1,22>=''
+            END
+            BEGIN CASE
+               CASE AFS.LINE<1,22>='1' OR AFS.LINE<1,22>='4'
+                  IOT='O'
+               CASE AFS.LINE<1,22>='2'
+                  IOT='I'
+               CASE AFS.LINE<1,22>='3'
+                  IOT='T'
+               CASE AFS.LINE<1,22>=''
+                  LOCATE AFS.LINE<1,20> IN DUPSBILL.CODES<1> BY 'AL' SETTING XX.POS THEN
+                     IOT=DUPSBILL.CODES<3,XX.POS>
+                  END
+            END CASE
+            UPS.AMT=ICONV(EBILL.LINE<1,53>,'MD2')
+            LOCATE SHIPPER.NO IN COMM.ARRAY<1> SETTING SPOS THEN
+               ADJ.IN.AMT=COMM.ARRAY<2,SPOS>+COMM.ARRAY<3,SPOS>
+               ADJ.TP.AMT=COMM.ARRAY<6,SPOS>+COMM.ARRAY<7,SPOS>
+               ADJ.OUT.AMT=COMM.ARRAY<10,SPOS>+COMM.ARRAY<11,SPOS>
+               ADJ.SPLT.AMT=COMM.ARRAY<14,SPOS>+COMM.ARRAY<15,SPOS>
+               ADJ.INV.AMT=ADJ.IN.AMT+ADJ.TP.AMT+ADJ.OUT.AMT+ADJ.SPLT.AMT
+               IF ADJ.INV.AMT'R26'#INV.AMT THEN
+                  EBILL.LINE<1,6>=ADJ.INV.AMT'R26'
+                  COMM.ARRAY<18,SPOS>=ADJ.INV.AMT
+                  BEGIN CASE
+                     CASE IOT='I'
+                        ORG.AMT=COMM.ARRAY<2,SPOS>
+                        IF ORG.AMT+0=0 THEN
+                           ADJ.UPS.AMT=0
+                        END ELSE
+                           ADJ.UPS.AMT=(ADJ.IN.AMT*UPS.AMT/ORG.AMT)'R0'
+                        END
+                        IF ADJ.IN.AMT-COMM.ARRAY<5,SPOS><ADJ.UPS.AMT THEN
+                           ADJ.UPS.AMT=ADJ.IN.AMT-COMM.ARRAY<5,SPOS>
+                        END
+                        IF NXT.SHIPPER.NO#SHIPPER.NO THEN
+                           APPLY.INV.AMT=COMM.ARRAY<19,SPOS>+ADJ.UPS.AMT
+                           ADJ.UPS.AMT+=COMM.ARRAY<18,SPOS>-APPLY.INV.AMT
+                        END
+                        COMM.ARRAY<5,SPOS>+=ADJ.UPS.AMT
+                        COMM.ARRAY<19,SPOS>+=ADJ.UPS.AMT
+                        EBILL.LINE<1,53>=ADJ.UPS.AMT'R26'
+                     CASE IOT='T'
+                        ORG.AMT=COMM.ARRAY<6,SPOS>
+                        IF ORG.AMT+0=0 THEN
+                           ADJ.UPS.AMT=0
+                        END ELSE
+                           ADJ.UPS.AMT=(ADJ.TP.AMT*UPS.AMT/ORG.AMT)'R0'
+                        END
+                        IF ADJ.TP.AMT-COMM.ARRAY<9,SPOS><ADJ.UPS.AMT THEN
+                           ADJ.UPS.AMT=ADJ.TP.AMT-COMM.ARRAY<9,SPOS>
+                        END
+                        IF NXT.SHIPPER.NO#SHIPPER.NO THEN
+                           APPLY.INV.AMT=COMM.ARRAY<19,SPOS>+ADJ.UPS.AMT
+                           ADJ.UPS.AMT+=COMM.ARRAY<18,SPOS>-APPLY.INV.AMT
+                        END
+                        COMM.ARRAY<9,SPOS>+=ADJ.UPS.AMT
+                        COMM.ARRAY<19,SPOS>+=ADJ.UPS.AMT
+                        EBILL.LINE<1,53>=ADJ.UPS.AMT'R26'
+                     CASE IOT='O'
+                        ORG.AMT=COMM.ARRAY<10,SPOS>
+                        IF ORG.AMT+0=0 THEN
+                           ADJ.UPS.AMT=0
+                        END ELSE
+                           ADJ.UPS.AMT=(ADJ.OUT.AMT*UPS.AMT/ORG.AMT)'R0'
+                        END
+                        IF ADJ.OUT.AMT-COMM.ARRAY<13,SPOS><ADJ.UPS.AMT THEN
+                           ADJ.UPS.AMT=ADJ.OUT.AMT-COMM.ARRAY<13,SPOS>
+                        END
+                        IF NXT.SHIPPER.NO#SHIPPER.NO THEN
+                           APPLY.INV.AMT=COMM.ARRAY<19,SPOS>+ADJ.UPS.AMT
+                           ADJ.UPS.AMT+=COMM.ARRAY<18,SPOS>-APPLY.INV.AMT
+                        END
+                        COMM.ARRAY<13,SPOS>+=ADJ.UPS.AMT
+                        COMM.ARRAY<19,SPOS>+=ADJ.UPS.AMT
+                        EBILL.LINE<1,53>=ADJ.UPS.AMT'R26'
+                     CASE IOT='S'
+                        ORG.AMT=COMM.ARRAY<14,SPOS>
+                        IF ORG.AMT+0=0 THEN
+                           ADJ.UPS.AMT=0
+                        END ELSE
+                           ADJ.UPS.AMT=(ADJ.SPLT.AMT*UPS.AMT/ORG.AMT)'R0'
+                        END
+                        IF ADJ.SPLT.AMT-COMM.ARRAY<17,SPOS><ADJ.UPS.AMT THEN
+                           ADJ.UPS.AMT=ADJ.SPLT.AMT-COMM.ARRAY<17,SPOS>
+                        END
+                        IF NXT.SHIPPER.NO#SHIPPER.NO THEN
+                           APPLY.INV.AMT=COMM.ARRAY<19,SPOS>+ADJ.UPS.AMT
+                           ADJ.UPS.AMT+=COMM.ARRAY<18,SPOS>-APPLY.INV.AMT
+                        END
+                        COMM.ARRAY<17,SPOS>+=ADJ.UPS.AMT
+                        COMM.ARRAY<19,SPOS>+=ADJ.UPS.AMT
+                        EBILL.LINE<1,53>=ADJ.UPS.AMT'R26'
+                  END CASE
+               END
+            END
+            IN.LINE=EBILL.LINE
+            OUT.LINE=''
+            CALL CONVERT.STRING(IN.LINE,OUT.LINE,TYPE)
+            OUT.EBILL.REC<ATT>=OUT.LINE
+         NEXT ATT
+*        INS OUT.EBILL.HDR BEFORE OUT.EBILL.REC<1>
+         WRITE OUT.EBILL.REC ON F.EMAILDATA,UPS.EBILL.ID
+         EMAIL.OUT=''
+*        EMAIL.OUT<1,-1>='dneal@doorcontrolservices.com'     ; * JMK01
+         EMAIL.OUT<1,-1>='knations@doorcontrolsusa.com'
+         EMAIL.OUT<2,-1>='bsmith@afs.net'
+         EMAIL.OUT<2,-1>='jkatz@afs.net'
+         EMAIL.OUT<3,-1>='mkerbow@afs.net'
+         IF CLIENT.REC<179>#'' THEN
+            EMAIL.OUT<1>=CLIENT.REC<179>
+            EMAIL.OUT<2>=''
+            EMAIL.OUT<3>=''
+         END
+         EMAIL.OUT<4>='Reports@afs.net'  ; * From Email address
+         EMAIL.OUT<5,1>='01762 - Door Control Update UPS Ebill'        ; * Subject of Email
+
+* Email body
+         EMAIL.OUT<6,-1>='AFS Logistics, LLC.                                        Phone: 318-798-2111'
+*DF         EMAIL.OUT<6,-1>='330 Marshall Street, Suite 400                               FAX: 318-797-3628'
+         EMAIL.OUT<6,-1>='670 Emberwood Drive                                          FAX: 318-797-3628'
+*DF         EMAIL.OUT<6,-1>='Shreveport, LA 71101                                               www.afs.net'      ; * JMK74
+         EMAIL.OUT<6,-1>='Shreveport, LA 71106                                               www.afs.net'      ; * JMK74
+         EMAIL.OUT<6,-1>=' '
+         EMAIL.OUT<6,-1>=' '
+         EMAIL.OUT<6,-1>='This file includes the updated UPS Ebill information.'
+         EMAIL.OUT<6,-1>='------------------------------------------------------------------------------'
+         EMAIL.OUT<7>='1'
+         EMAIL.OUT<11,-1>=EMAIL.PATH:UPS.EBILL.ID
+
+         VIN=EMAIL.OUT
+         VOUT=''
+         CALL SENDMAIL(VIN,VOUT)         ; * This is the regular client email
+         STOP
+      END
+GET.TCODE: *
+      TCODE=MV.LINE<1,36>
+      TCODE.ID='TCODE*':TCODE
+      READ TCODE.REC FROM F.EBILL.CONVERT,TCODE.ID THEN
+         IF TCODE.REC<1>='ConvertError' THEN
+            ERROR=UPS.EBILL.ID:'-Line ':ATT:', Transaction Code ':TCODE:' does not have a translation setup.'
+            ERR.ARRAY<1,-1>=ERROR
+         END
+         IF TCODE='CLB' THEN
+            CCODE=MV.LINE<1,45>
+            BEGIN CASE
+               CASE CCODE='ADS' ; TCODE.REC<1>='ASR'
+               CASE CCODE='ANS' ; TCODE.REC<1>='ANS'
+               CASE CCODE='COD' ; TCODE.REC<1>='COD'
+               CASE CCODE='DCR' ; TCODE.REC<1>='DCR'
+               CASE CCODE='DCS' ; TCODE.REC<1>='DCS'
+               CASE CCODE='DNS' ; TCODE.REC<1>='DNS'
+               CASE CCODE='HRS' ; TCODE.REC<1>='RES'
+               CASE CCODE='SAT' ; TCODE.REC<1>='SAT'
+               CASE CCODE='SPU' ; TCODE.REC<1>='SPU'
+            END CASE
+         END
+      END ELSE
+         ERROR=UPS.EBILL.ID:'-Line ':ATT:', Transaction Code ':TCODE:' does not have a translation setup.'
+         ERR.ARRAY<1,-1>=ERROR
+      END
+      IF TCODE='RTS' AND MV.LINE<1,179>='' THEN
+         MV.LINE<1,181>='UNDELIVERABLE'
+      END
+      RETURN
+GET.BCODE: *
+      BCODE=MV.LINE<1,18>
+      IF TCODE='TP' AND BCODE#'T/P' THEN BCODE='T/P'
+      IF TCODE='FC' AND BCODE#'F/C' THEN BCODE='F/C'
+      BCODE.ID='BCODE*':BCODE:'*':TCODE
+      READ BCODE.REC FROM F.EBILL.CONVERT,BCODE.ID ELSE
+         BCODE.ID='BCODE*':BCODE:'*ALL'
+         READ BCODE.REC FROM F.EBILL.CONVERT,BCODE.ID THEN
+            IF BCODE.REC<1>='ConvertError' THEN
+               ERROR=UPS.EBILL.ID:'-Line ':ATT:', Bill Option Code ':BCODE:' does not have a translation setup.'
+               ERR.ARRAY<1,-1>=ERROR
+            END
+         END ELSE
+            ERROR=UPS.EBILL.ID:'-Line ':ATT:', Bill Option Code ':BCODE:' does not have a translation setup.'
+            ERR.ARRAY<1,-1>=ERROR
+         END
+      END
+      RETURN
+GET.SCODE: *
+      CHG.CLS.CD=MV.LINE<1,44>
+      CHG.DESC.CD=MV.LINE<1,45>
+      CHG.DESC=MV.LINE<1,46>
+      SCODE.ID='SCODE*':CHG.CLS.CD:'*':CHG.DESC.CD:'*':CHG.DESC
+      READ SCODE.REC FROM F.EBILL.CONVERT,SCODE.ID THEN
+         BEGIN CASE
+            CASE SCODE.ID[1,37]='SCODE*MSC**Billing Adjustment for w/e'
+               SCODE.REC='CREDIT ADJUSTMENTS'
+            CASE SCODE.ID[1,33]='SCODE*MSC**Credit Balance for w/e'
+               SCODE.REC='CREDIT ADJUSTMENTS'
+            CASE SCODE.ID[1,33]='SCODE*MSC**Rebill Charge  for w/e'
+               SCODE.REC='CREDIT ADJUSTMENTS'
+               LOCATE MV.LINE IN REBILL.ARRAY SETTING RPOS ELSE        ; * JMK08
+                  REBILL.ARRAY<-1>=MV.LINE         ; * JMK08
+                  REBILL.AMT+=ICONV(MV.LINE<1,37>,'MD2')     ; * JMK08
+               END                       ; *JMK08
+            CASE SCODE.ID='SCODE*FRT**' AND MV.LINE<1,53>='2.00' AND MV.LINE<1,175>#''
+               SCODE.REC='MISCELLANEOUS ADJUSTMENT'
+               IF MV.LINE<1,176>='' THEN
+                  MV.LINE<1,176>=MV.LINE<1,175>
+                  MV.LINE<1,175>='WEEKLY PRINTER SERVICE FEE'
+               END
+            CASE SCODE.ID='SCODE*FRT**' AND MV.LINE<1,36>='FPOD'
+               SCODE.REC='PROOF OF DELIVERY'
+            CASE SCODE.ID='SCODE*FRT**' AND MV.LINE<1,35>='MIS' AND MV.LINE<1,36>='MISC'
+               SCODE.REC='MISCELLANEOUS ADJUSTMENT'
+            CASE CHG.CLS.CD='FRT' AND CHG.DESC[1,16]='ZONE ADJUSTMENT '
+               SCODE.REC='CREDIT ADJUSTMENTS'
+               IF MV.LINE<1,176>='' THEN
+                  MV.LINE<1,176>=MV.LINE<1,175>
+                  MV.LINE<1,175>=CHG.DESC
+               END
+            CASE 1
+               IF SCODE.REC<1>='ConvertError' THEN
+                  ERROR=UPS.EBILL.ID:'-Line ':ATT:', Service Description ':SCODE.ID:' does not have a translation setup.'
+                  ERR.ARRAY<1,-1>=ERROR
+               END
+         END CASE
+      END ELSE
+         BEGIN CASE
+            CASE SCODE.ID[1,37]='SCODE*MSC**Billing Adjustment for w/e'
+               SCODE.REC='CREDIT ADJUSTMENTS'
+            CASE SCODE.ID[1,33]='SCODE*MSC**Credit Balance for w/e'
+               SCODE.REC='CREDIT ADJUSTMENTS'
+            CASE SCODE.ID[1,33]='SCODE*MSC**Rebill Charge  for w/e'
+               SCODE.REC='CREDIT ADJUSTMENTS'
+               LOCATE MV.LINE IN REBILL.ARRAY SETTING RPOS ELSE        ; * JMK08
+                  REBILL.ARRAY<-1>=MV.LINE         ; * JMK08
+                  REBILL.AMT+=ICONV(MV.LINE<1,37>,'MD2')     ; * JMK08
+               END                       ; *JMK08
+            CASE SCODE.ID='SCODE*FRT**' AND MV.LINE<1,53>='2.00' AND MV.LINE<1,175>#''
+               SCODE.REC='MISCELLANEOUS ADJUSTMENT'
+               IF MV.LINE<1,176>='' THEN
+                  MV.LINE<1,176>=MV.LINE<1,175>
+                  MV.LINE<1,175>='WEEKLY PRINTER SERVICE FEE'
+               END
+            CASE SCODE.ID='SCODE*FRT*003*ZONE ADJUSTMENT Ground'
+               SCODE.REC='CREDIT ADJUSTMENTS'
+               IF MV.LINE<1,176>='' THEN
+                  MV.LINE<1,176>=MV.LINE<1,175>
+                  MV.LINE<1,175>=CHG.DESC
+               END
+            CASE SCODE.ID[1,10]='SCODE*INF*'
+               SCODE.REC='(roll-up)'
+            CASE SCODE.ID[1,10]='SCODE*ACC*'
+               SCODE.REC='(roll-up)'
+            CASE SCODE.ID='SCODE*FRT**' AND MV.LINE<1,36>='FPOD'
+               SCODE.REC='PROOF OF DELIVERY'
+            CASE SCODE.ID='SCODE*FRT**' AND MV.LINE<1,35>='MIS' AND MV.LINE<1,36>='MISC'
+               SCODE.REC='MISCELLANEOUS ADJUSTMENT'
+            CASE 1
+               ERROR=UPS.EBILL.ID:'-Line ':ATT:', Service Description ':SCODE.ID:' does not have a translation setup.'
+               ERR.ARRAY<1,-1>=ERROR
+         END CASE
+      END
+      RETURN
+GET.VCODE: *
+      SRC=MV.LINE<1,37>
+      VCODE.ID='VOID*':SRC
+      READ VCODE.REC FROM F.EBILL.CONVERT,VCODE.ID THEN
+         IF VCODE.REC<1>='ConvertError' THEN
+            ERROR=UPS.EBILL.ID:'-Line ':ATT:', Void Description Code ':VCODE.ID:' does not have a translation setup.'
+            ERR.ARRAY<1,-1>=ERROR
+         END
+      END ELSE
+         ERROR=UPS.EBILL.ID:'-Line ':ATT:', Transaction Code ':VCODE.ID:' does not have a translation setup.'
+         ERR.ARRAY<1,-1>=ERROR
+      END
+      RETURN

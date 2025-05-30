@@ -1,0 +1,420 @@
+*************************************************************************
+* Program : IMPORT.MAIL.CONS
+*           Import Newgistics text file and update brokerage and freight
+*           payment files.
+* Author  : David R. Friend
+* Date    : November 29, 2011
+*
+* Copyright (c) 2002 by AFS Logistics, LLC. - All Rights Reserved
+*************************************************************************
+*     -----------------------------------------------------------------
+* 100314 - DRF01 - SysAid 11706 - Added KShelton to the emails.
+*************************************************************************
+
+* Initialize general variables
+      PROMPT''
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='IMPORT.MAIL.CONS'
+      PROG.DESC='Import Mail Cons Invoices From Text File'
+      PACK.NAME='Freight Billing'
+      MASK.CHAR='-'
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'IMPORT.MAIL.CONS' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+
+* Write screen header
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+
+* Restrict program usage
+      VALID.USER=1
+      BEGIN CASE
+         CASE USER.NAME='OWEN'
+         CASE USER.NAME='DAVID'
+         CASE USER.NAME='MKERBOW'        ; * JMK01
+         CASE USER.NAME='LCORKERN'
+         CASE USER.NAME='NRATH'
+         CASE 1
+            VALID.USER=0
+      END CASE
+
+      IF NOT(VALID.USER) THEN
+         TEMP='**  This is a restricted access application  **'
+         CALL CENTER(TEMP,80)
+         CRT @(0,12):TEMP
+         GOTO THE.END
+      END
+
+* Remind/Ask the user about the file being saved and ready to go
+      CRT @(8,6):'Have you already saved your MAIL CONS file to the directory'
+      CRT @(8,7):'named U:\':USER.NAME:' ?'
+      CRT @(8,9):'Answer :'
+
+ASK.ABOUT.FILE:***
+      MASK=STR(MASK.CHAR,2)
+      HELP='Entry Options: [Y]es [N]o [EX]it'
+      CALL GEN.IN(17,9,MASK,'',Q,0,2,'','',2,17,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='N'
+            CALL ELINE('Please save your file in U:\':USER.NAME:' before running this program.')
+            GOTO THE.END
+         CASE QI='Y'
+            NULL
+         CASE 1
+            GOTO ASK.ABOUT.FILE
+      END CASE
+
+* Initialize program variables
+      FILENAME=''
+      MAIL.CONS.IMPORT=''
+
+* Open Files
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+         CALL OPEN.ABORT('BILLDATA.':USER.NAME,PROG.NAME)
+      END
+      OPEN '','BILLDATA.MAIL.CONS.HIST' TO F.MAIL.HIST ELSE
+         CALL OPEN.ABORT('BILLDATA.MAIL.CONS.HIST',PROG.NAME)
+      END
+      OPEN '','EDI.CAR.ACNT.XREF' TO F.XREF ELSE
+         CALL OPEN.ABORT('EDI.CAR.ACNT.XREF', PROG.NAME)
+      END
+      OPEN '','FED.INV.XREF' TO F.INV.XREF ELSE
+         CALL OPEN.ABORT("FED.INV.XREF",PROG.NAME)
+      END
+      OPEN '','MAIL.CONS.DATA' TO F.MAIL.CONS ELSE
+         CALL OPEN.ABORT("MAIL.CONS.DATA",PROG.NAME)
+      END
+      OPEN '','MAIL.CONS.BM' TO F.MAIL.CONS.BM ELSE
+         CALL OPEN.ABORT("MAIL.CONS.BM",PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT("FB.TABLES",PROG.NAME)
+      END
+       OPEN '','VCI.USERS' TO F.USERS ELSE
+          CALL SET.FILE("VCI-MAIN","VCI.USERS")
+          OPEN '','VCI.USERS' TO F.USERS ELSE CALL OPEN.ABORT("VCI.USERS",PROG.NAME)
+       END
+       D.USER=''
+       D.USER<1>='1000'
+       D.USER<2>='1'
+       WRITE D.USER ON F.USERS,'USER':CH.NUM
+      READ CARRIER.REC FROM F.CARRIERS,'24446' ELSE CARRIER.REC=''
+      DATE.ADD=CARRIER.REC<23>
+      CARRIER.NAME=CARRIER.REC<1>
+      TRANS.MODE=CARRIER.REC<44>
+      PREV.CLIENT='*'
+
+* Enter name of file to import
+GET.FILENAME:***
+      CRT @(0,3):@(-3)
+*DF      MASK=FILENAME:STR(MASK.CHAR,35-LEN(FILENAME))
+*DF      HELP='Enter name of Mail Cons text file located in U:\':USER.NAME:'. [EX]it'
+*DF      CALL GEN.IN(8,6,'File Name : ':MASK,'',Q,0,35,'','',2,20,6,0,QI,HELP,0,23)
+*DF      QI=OCONV(QI,'MCU')
+*DF      IF QI='' THEN QI=FILENAME
+*DF      BEGIN CASE
+*DF         CASE QI='EX'
+*DF            GOTO THE.END
+*DF         CASE QI=''
+*DF            GOTO ENTER.FILENAME
+*DF      END CASE
+*DF      FILENAME=QI
+*DF      READ MAIL.CONS.IMPORT FROM F.BILLDATA,FILENAME ELSE
+*DF         CALL ELINE('This file does not exist.')
+*DF         GOTO ENTER.FILENAME
+*DF      END
+      STMT='SSELECT BILLDATA.':USER.NAME:' WITH @ID = "[billing_detail]" AND WITH @ID = "[.csv" '
+      EXECUTE STMT CAPTURING OUTPUT
+      NUM.FILES=@SELECTED
+      IF NUM.FILES < 1 THEN
+         CALL ELINE('There are no file to select. Make sure you placed the files in your U-drive')
+         GOTO THE.END
+      END
+      FILENAME.LIST=''
+      DONE=0
+      LOOP
+         READNEXT FILENAME ELSE DONE=1
+      UNTIL DONE=1
+         FILENAME.LIST<-1>=FILENAME
+      REPEAT
+      NUM.FILES=DCOUNT(FILENAME.LIST,@AM)
+      FOR Z = 1 TO NUM.FILES
+         BEGIN CASE
+            CASE Z LE 13
+               CRT @(0,3+Z):FILENAME.LIST<Z>'L#35'
+            CASE Z GT 13  AND Z LE 26
+               CRT @(40,3+Z-13):FILENAME<Z>'L#35'
+         END CASE
+      NEXT Z
+
+CONFIRM:***
+      MASK=STR(MASK.CHAR,2)
+      HELP='Entry Options: [Y]es [N]o [X]=Back [EX]it'
+      CALL GEN.IN(0,21,'Are the file above correct and you are ready to begin? ':MASK,'',Q,0,2,'','',2,-2,21,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X' OR QI='N'
+*DF            GOTO ENTER.FILENAME
+            GOTO THE.END
+         CASE QI='Y'
+            NULL
+         CASE 1
+            GOTO CONFIRM
+      END CASE
+
+
+
+      FOR Z=1 TO NUM.FILES
+         FILENAME=FILENAME.LIST<Z>
+         READ MAIL.CONS.IMPORT FROM F.BILLDATA,FILENAME ELSE
+            CALL ELINE(FILENAME:' file does not exist.')
+*DF            GOTO ENTER.FILENAME
+         END
+* Prepare the import file for processing
+         TOTAL.WEIGHT=0
+         TOTAL.HANDLING.UNITS=0
+         TOTAL.CUST.CHRG=0
+         TOTAL.CARRIER.CHRG=0
+         MAIL.CONS.CONV=''
+         NATT=DCOUNT(MAIL.CONS.IMPORT,@AM)
+         FOR ATT = 1 TO NATT
+             OUT=MAIL.CONS.IMPORT<ATT>
+             IN=''
+             CALL CONVERT.STRING(IN,OUT,'CSV')
+             IF ATT=1 THEN
+                FOR X = 1 TO 13
+                   MAIL.CONS.CONV<ATT,X>=IN<1,X>
+                NEXT X
+                MAIL.CONS.CONV<ATT,14>=IN<1,21>
+                MAIL.CONS.CONV<ATT,15>=IN<1,22>
+             END ELSE
+*DFCALL    ELINE('PRESS BREAK')
+                FOR X = 1 TO 4
+                   MAIL.CONS.CONV<ATT,X>=IN<1,X>
+                NEXT X
+                FOR X = 5 TO 7
+                   MAIL.CONS.CONV<ATT,X>="'":IN<1,X>
+                NEXT X
+                FOR X = 8 TO 13
+                   MAIL.CONS.CONV<ATT,X>=IN<1,X>
+                NEXT X
+                IF ATT=2 THEN
+                   MANIFEST.DATE=ICONV(MAIL.CONS.CONV<ATT,3>,'D')
+                   CUST.NO=MAIL.CONS.CONV<ATT,1>
+                   XREF.ID='24475*':CUST.NO
+                   READ ACNT.REC FROM F.XREF,XREF.ID THEN
+                      CLIENT.ID = ACNT.REC<1>
+                      DIVISION.CODE = ACNT.REC<2>
+                      UPS.VEND.CUST = ACNT.REC<5>
+                      IF PREV.CLIENT='*' THEN PREV.CLIENT=CLIENT.ID
+                   END ELSE
+                      CALL ELINE('Cannot find customer number':MAIL.CONS.CONV<ATT,1>)
+                      IF PREV.CLIENT#'*' THEN
+                         DELETE F.TABLES,'MAIL.CONS*':PREV.CLIENT
+                      END
+                      STOP
+                   END
+                   BM.ID=CLIENT.ID:'*':CUST.NO
+                   READ BM.REC FROM F.MAIL.CONS.BM,BM.ID ELSE
+                      BM.ID=CLIENT.ID
+                      READ BM.REC FROM F.MAIL.CONS.BM,BM.ID ELSE
+                         CALL ELINE('There are no benchmark setup for this client')
+                         STOP
+                      END
+                   END
+                   IF PREV.CLIENT # CLIENT.ID THEN
+                      IF PREV.CLIENT#'*' THEN
+                         DELETE F.TABLES,'MAIL.CONS*':PREV.CLIENT
+                      END
+                      PREV.CLIENT=CLIENT.ID
+                   END
+*
+*    Open Client Records
+*
+                   UPS.VEND.CUST.NAME=''
+                   UPS.VEND.CODE=''
+                   UPS.VEND.TYPE=''
+                   READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+                      CALL ELINE("Client ID Number is not setup!  Please make sure the Client ID is setup!")
+                      STOP
+                   END
+                   IF CLIENT.REC<20>='Y' OR CLIENT.REC<21>='Y' THEN
+                      OPEN '','VEND.CUST,':CLIENT.ID TO F.VEND.CUST ELSE
+                         CALL OPEN.ABORT("VEND.CUST,":CLIENT.ID,PROG.NAME)
+                      END
+                      IF UPS.VEND.CUST#'' THEN
+                         READ DUPS.VEND.CUST FROM F.VEND.CUST,UPS.VEND.CUST ELSE DUPS.VEND.CUST=''
+                         UPS.VEND.CUST.NAME=DUPS.VEND.CUST<1>
+                         UPS.VEND.CODE=DUPS.VEND.CUST<2>
+                         UPS.VEND.TYPE=DUPS.VEND.CUST<4>
+                      END
+                   END
+                   IF CLIENT.REC<13>='Y' THEN
+                      EXP.CODE=1
+                   END ELSE
+                      EXP.CODE=0
+                   END
+                   IF CLIENT.REC<12>='Y' THEN
+                      OPEN '','DIVISION.CODES,':CLIENT.ID TO F.DIVISION.CODES ELSE
+                         CALL OPEN.ABORT("DIVISION.CODES,":CLIENT.ID,PROG.NAME)
+                      END
+                      READ DIVISION.REC FROM F.DIVISION.CODES,DIVISION.CODE THEN
+                         IF DIVISION.REC<7>='I' THEN
+                            CALL ELINE(DIVISION.CODE:' Is marked inactive')
+                         END
+                      END ELSE
+                         CALL ELINE('No division is setup using division 99999')
+                         DIVISION.CODE='99999'
+                      END
+                   END
+                   INVOICE.YEAR=FIELD(MAIL.CONS.CONV<ATT,4>,'/',3)
+                   INVOICE.MONTH=FIELD(MAIL.CONS.CONV<ATT,4>,'/',1)
+                   INVOICE.DAY=FIELD(MAIL.CONS.CONV<ATT,4>,'/',2)
+                   INVOICE.NO=CUST.NO:'-':INVOICE.YEAR:INVOICE.MONTH:INVOICE.DAY
+                   READ DUMMY FROM F.INV.XREF,INVOICE.NO THEN
+                      CALL ELINE('Invoice ':INVOICE.NO:' is already on file')
+                      STOP
+                   END
+                END
+                TOTAL.WEIGHT=TOTAL.WEIGHT+MAIL.CONS.CONV<ATT,12>
+                TOTAL.HANDLING.UNITS=TOTAL.HANDLING.UNITS+1
+*DF                MAIL.CONS.CONV<ATT,14>=OCONV(IN<1,21>*1.09*100,'MR2')
+*DFCALL ELINE('PRESS BREAK')
+                MAIL.CONS.CONV<ATT,14>=OCONV(IN<1,21>*100,'MR2') + OCONV(IN<1,21>*BM.REC<1>/100,'MR2')
+                TOTAL.CUST.CHRG=TOTAL.CUST.CHRG+MAIL.CONS.CONV<ATT,14>
+                TOTAL.CARRIER.CHRG=TOTAL.CARRIER.CHRG+IN<1,21>
+                MAIL.CONS.CONV<ATT,15>=IN<1,22>
+             END
+         NEXT ATT
+         MAIL.CONS.CONV=CHANGE(MAIL.CONS.CONV,@VM,TAB)
+*DF         NEW.FILENAME=CHANGE(FILENAME,'csv','xls')
+         NEW.FILENAME=CLIENT.ID:'*':INVOICE.YEAR:INVOICE.MONTH:INVOICE.DAY
+         WRITE MAIL.CONS.CONV ON F.MAIL.CONS,NEW.FILENAME
+         IF CLIENT.REC<12>='Y' THEN
+            NEW.FILENAME=CLIENT.ID:'_':DIVISION.CODE:'*':INVOICE.YEAR:INVOICE.MONTH:INVOICE.DAY:'.xls'
+            WRITE MAIL.CONS.CONV ON F.MAIL.CONS,NEW.FILENAME
+         END
+         WRITE MAIL.CONS.IMPORT ON F.MAIL.HIST,FILENAME
+         DELETE F.BILLDATA,FILENAME
+         BEGIN CASE
+            CASE CLIENT.ID='01703'
+               IF TOTAL.HANDLING.UNITS <= 50 THEN
+                  TOTAL.CUST.CHRG=TOTAL.CUST.CHRG+75
+                  TOTAL.CARRIER.CHRG=TOTAL.CARRIER.CHRG+75
+               END
+         END CASE
+         TOTAL.CUST.CHRG=ICONV(TOTAL.CUST.CHRG,'MR2')
+         TOTAL.CARRIER.CHRG=ICONV(TOTAL.CARRIER.CHRG,'MR2')
+         MULTI.EXP.CODE=EXP.CODE
+         MULTI.AMT=TOTAL.CUST.CHRG
+*DFCALL    ELINE('PRESS BREAK')
+*DF         DUE.DATE=MANIFEST.DATE+DATE.ADD
+         DUE.DATE=DATE()+DATE.ADD
+         VIN=''
+         VOUT=''
+         VIN<1>=CLIENT.ID
+         VIN<2>='24475'
+         VIN<3>=MANIFEST.DATE
+         VIN<4>=TOTAL.CUST.CHRG
+         VIN<5>=TOTAL.CARRIER.CHRG
+         VIN<6>='140'
+         VIN<7>=INVOICE.NO
+         VIN<8>=DUE.DATE
+         CALL BUILD.BR.REC(VIN,VOUT)
+*DF         VOUT<1>='4-99999'
+         LOAD.NO=VOUT<1>
+         MVIN=''
+         SUBJ='Newgistics bills has been imported ':LOAD.NO
+         TEXT=USER.NAME:' has imported a Newgistics bills ':LOAD.NO
+         MVIN=''
+         MVIN<1>='DCurtis@afs.net'
+         MVIN<1,-1>='DGarrett@afs.net'
+         MVIN<1,-1>='KShelton@afs.net'     ; * DRF01
+         MVIN<2>='DFriend@afs.net'
+         MVIN<4>='Reports@AFS.net'
+         MVIN<5>=SUBJ
+         MVIN<6>=TEXT
+         CALL SENDMAIL(MVIN,MVOUT)
+         LOAD.NUM=FIELD(LOAD.NO,'-',2)
+         LOAD.NO=LOAD.NO[1,2]:LOAD.NUM'R%7'
+         VIN=''
+         VOUT=''
+         VIN<1>=CLIENT.ID
+         VIN<2>='24446'
+         VIN<3>=LOAD.NO
+         VIN<4>=MANIFEST.DATE
+         VIN<5>='O'
+         VIN<6>=EXP.CODE
+         VIN<7>='99999'
+         VIN<8>='99999'
+         VIN<9>=TOTAL.WEIGHT
+         VIN<10>=TOTAL.CUST.CHRG
+         VIN<11>=TOTAL.CUST.CHRG
+         VIN<12>=DIVISION.CODE
+         VIN<13>=0
+         VIN<14>=0
+         VIN<15>=0
+         VIN<16>=LOAD.NO
+         VIN<17>=UPS.VEND.CUST
+         VIN<18>=0
+         VIN<19>=TRANS.MODE
+         VIN<20>='ZZ'
+         VIN<21>='ZZ'
+         VIN<22>='Mail Cons'
+         VIN<23>='Mail Cons'
+         VIN<24>=MULTI.EXP.CODE
+         VIN<25>=MULTI.AMT
+         VIN<26>=DUE.DATE
+         VIN<27>='EDI:':USER.NAME
+         VIN<28>='EDI'
+         VIN<29>=CLIENT.ID:'*24475*':INVOICE.NO:'*0'
+         VIN<30>=INVOICE.NO
+         VIN<31>='US'
+         VIN<32>='US'
+         VIN<33>=TOTAL.HANDLING.UNITS
+         VIN<34>=USER.NAME
+         VIN<35>=UPS.VEND.CUST.NAME
+         VIN<36>=UPS.VEND.CODE
+         VIN<37>=UPS.VEND.TYPE
+         IF DIVISION.CODE#'' THEN
+            VIN<38>=DIVISION.REC<8>
+            VIN<39>=DIVISION.REC<45>
+            VIN<40>=DIVISION.REC<11>
+            VIN<41>=CARRIER.NAME
+         END
+
+         CALL BUILD.FB.REC(VIN,VOUT)
+         IF PREV.CLIENT#CLIENT.ID THEN
+            IF PREV.CLIENT#'*' THEN
+               DELETE F.TABLES,'MAIL.CONS*':PREV.CLIENT
+               PREV.CLIENT=CLIENT.ID
+            END
+         END
+      NEXT Z
+      IF PREV.CLIENT#'*' THEN
+         DELETE F.TABLES,'MAIL.CONS*':PREV.CLIENT
+      END
+* Process import file and build export file
+
+      CRT @(0,5):'Processing...Done':@(-3)
+
+      CALL ELINE(''); * To hold the screen for viewing
+    
+*************************************************************************
+
+THE.END:***
+      CRT @(0,23):
+      END

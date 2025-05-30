@@ -1,0 +1,523 @@
+********************************************************************************
+*  Program : FB.ASSIGN.BATCH.ACH
+*  Author  : Jeff Walton
+*  Date    : February 19, 2007
+********************************************************************************
+*
+*      COPYRIGHT (C) 2002 by AFS LOGISTICS, LLC. - ALL RIGHTS RESERVED
+*
+*  This program is the sole property of AFS Logistics, LLC (AUTOMATED FREIGHT
+*  SYSTEMS) and may not be used, copied, or modified without the express
+*  written consent of Brian Barker of AFS Logistics, LLC.
+********************************************************************************
+* 080707 - JMK01 - T070085   RE: Freight Payment ACH
+* 100208 - JMK02 - T082250 - Need ACH Batch removed from ProComm
+* 040714 - DRF01 - SysAid 9293 - Added KSHELTON access as she is Dina's
+*                  back up.
+* 081314 - JMK03 - SysAid#11359 - Mary Ann Rose access 
+* Includes
+      $INCLUDE FILE.DEFS INC_ADDS60.CODES; * These require specific PROCOMM settings
+
+* Equates
+      EQU REVERSE.BLINK.ON TO TERM.ESC.SEQ:CHAR(TERM.REV+TERM.BLINK)   ; * Reverse Blinking text ON
+      EQU REVERSE.ON TO TERM.ESC.SEQ:CHAR(TERM.REV)          ; * Reverse text ON
+      EQU REVERSE.OFF TO TERM.ESC.SEQ:CHAR(TERM.NORMAL)      ; * Reverse text OFF
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+      CONF.REC=''
+
+* Initialize general program variables
+      PROMPT''
+      PORT.NUM=SYSTEM(19)
+      CALL GET.USER(USER.NAME)
+      PROG.NAME='FB.ASSIGN.BATCH.ACH'
+      PROG.DESC='Assign Batch Reference for ACH'
+      PACK.NAME='USER : ':USER.NAME
+      CO.NAME='AFS Logistics, LLC'
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.ASSIGN.BATCH.ACH' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      EDIT.MASK.CHAR='-'
+      PLACE.HOLDER='~~ PLACE*HOLDER ~~'
+      AFN.MSG=''
+      AFN.MIN=''
+      AFN.MAX=''
+      AFN.MASK=''
+
+* Open Files
+      OPEN '','FB.CHECKS.HDR' TO F.CHECKS ELSE
+         CALL OPEN.ABORT('FB.CHECKS.HDR')
+         STOP
+      END
+      OPEN '','FB.PEND.ACH.FILE' TO F.PEND.ACH.FILE ELSE
+         CALL OPEN.ABORT('FB.PEND.ACH.FILE')
+         STOP
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS')
+         STOP
+      END
+      OPEN '','FB.ACH.HIST' TO F.ACH.HIST ELSE
+         CALL OPEN.ABORT('FB.ACH.HIST')
+         STOP
+      END
+      OPEN '','FB.ACH.XREF' TO F.ACH.XREF ELSE
+         CALL OPEN.ABORT('FB.ACH.XREF')
+         STOP
+      END
+
+* Initialize operating variables
+      PAGE.SIZE=18                       ; * Number of lines per page
+      START.Y=2                          ; * Starting y-position on the screen minus one
+      LAST.EDIT.MASK=1                   ; * Last item edited or deleted
+      WIDTH=80                           ; * Print width for printing table of includes/excludes
+      CTR=INT(WIDTH/2)                   ; * Center of the table width
+
+
+      CONTROL.REC=''
+      OLD.CONTROL.REC=''
+* Display initial screen
+      GOSUB DISPLAY.SCREEN
+
+      EXECUTE 'SSELECT FB.PEND.ACH.FILE BY 4' CAPTURING XXX
+      ITEM=''
+      XREF.ITEM=''
+      IF @SELECTED < 1 THEN
+         CALL ELINE('NO PENDING ACH BATCHES !!!')
+         STOP
+      END
+      STAT=1
+      LOOP
+         READNEXT ID ELSE STAT=0
+      WHILE STAT DO
+         READ CREC FROM F.PEND.ACH.FILE,ID ELSE CREC=''
+         READ TEST FROM F.CHECKS,ID THEN ; * JMK02
+            LOCATE CREC<11> IN ITEM<1>,1 SETTING XX ELSE
+               XX=0
+               LOOP XX=XX+1 UNTIL ITEM<1,XX>='' DO REPEAT
+               ITEM<1,XX>=CREC<11>
+            END
+            ITEM<2,XX>+=1
+            ITEM<3,XX>+=CREC<5>
+            IF FIELD(CREC<11>,'*',3)='PENNY' THEN
+               ITEM<4,XX>='PENNY'
+            END ELSE
+               IF ITEM<4,XX>='' THEN ITEM<4,XX>=CREC<4>
+               ITEM<5,XX>=CREC<4>
+            END
+            XREF.ITEM<XX,-1>=ID
+         END ELSE                        ; * JMK02
+            DELETE F.PEND.ACH.FILE,ID    ; * JMK02
+         END                             ; * JMK02
+      REPEAT
+      CONF.REC=ITEM
+      OLD.CONF.REC=CONF.REC
+
+* Restrict access
+      BEGIN CASE
+         CASE USER.NAME='OWEN'
+*        CASE USER.NAME='RCASON'
+         CASE USER.NAME='KAREN'
+         CASE USER.NAME='MKERBOW'        ; * JMK01
+         CASE USER.NAME='JWALTON'        ; * JTW01
+         CASE USER.NAME='RWHITT'         ; * DRF01
+         CASE USER.NAME='DGARRETT'       ; * Ticket 082407 DRF 10/29/08
+*        CASE USER.NAME='KCHAUVIN'       ; * Matt 9/17/07
+         CASE USER.NAME='KSHELTON'       ; * DRF01
+         CASE USER.NAME='MROSE'          ; * JMK03
+         CASE 1
+            CALL FB.PRINT.CENT(1,80,12,'! Restricted Access Application !')
+            CALL FB.PRINT.CENT(1,80,14,'Access Denied')
+            CALL ELINE('')
+            GOTO THE.END
+      END CASE
+
+*   Calculate number of items and number of pages and set page number
+      NUM.RULES=DCOUNT(CONF.REC<1>,@VM)
+      IF NUM.RULES=0 THEN
+         NUM.PAGES=0
+         PAGE.NUMBER=0
+      END ELSE
+         NUM.PAGES=INT(NUM.RULES/PAGE.SIZE)
+         IF REM(NUM.RULES,PAGE.SIZE) THEN NUM.PAGES+=1
+         PAGE.NUMBER=1
+      END
+      GOSUB DISPLAY.PAGE
+
+MAIN.START: ***
+      CRT @(0,22):'Enter Option : ---            [B]ack Page [F]orward Page [T]op Page [L]ast Page'
+      EDIT.MASK=STR(EDIT.MASK.CHAR,3)
+      HELP='Line#  [U]pdate [X]=Back [EX]it'
+      CALL GEN.IN(15,22,EDIT.MASK,'',Q,0,3,'','',2,15,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'                    ; * Exit
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'                     ; * Back to client
+            IF CONF.REC#OLD.CONF.REC THEN
+               YN.MSG='You have unsaved changes. Save before exiting?'
+               YN.MASK=''
+               GOSUB ASK.Y.OR.N
+               IF YN.ANSWER='Y' THEN
+                  GOSUB FAILSAFE.CHECK
+                  IF FAILSAFE.OK THEN
+                     GOSUB SAVE.CONTROL.REC
+                     STOP
+                  END ELSE
+                     STOP
+                  END
+               END
+            END
+            RETURN
+         CASE QI='U'                     ; * Update (and exit)
+            IF CONF.REC#OLD.CONF.REC THEN
+               GOSUB FAILSAFE.CHECK
+               IF FAILSAFE.OK THEN
+                  GOSUB SAVE.CONTROL.REC
+                  STOP
+               END ELSE
+                  STOP
+               END
+            END ELSE
+               CRT @(0,22):'No changes to save.':@(-3)
+               SLEEP 1
+            END
+            STOP
+         CASE QI='L' OR QI='LP'          ; * Last Page
+            IF NUM.PAGES#0 AND PAGE.NUMBER#NUM.PAGES THEN
+               PAGE.NUMBER=NUM.PAGES
+               GOSUB DISPLAY.PAGE
+            END ELSE
+               CALL ELINE('** LAST PAGE **')
+            END
+            GOTO MAIN.START
+         CASE QI='T' OR QI='TP'          ; * Top Page
+            IF NUM.PAGES#0 AND PAGE.NUMBER#1 THEN
+               PAGE.NUMBER=1
+               GOSUB DISPLAY.PAGE
+            END ELSE
+               CALL ELINE('** FIRST PAGE **')
+            END
+            GOTO MAIN.START
+         CASE QI='F' OR QI='FP'          ; * Forward a page
+            IF NUM.PAGES#0 AND PAGE.NUMBER<NUM.PAGES THEN
+               PAGE.NUMBER+=1
+               GOSUB DISPLAY.PAGE
+            END ELSE
+               CALL ELINE('** LAST PAGE **')
+            END
+            GOTO MAIN.START
+         CASE QI='B' OR QI='BP'          ; * Backward a page
+            IF NUM.PAGES#0 AND PAGE.NUMBER>1 THEN
+               PAGE.NUMBER-=1
+               GOSUB DISPLAY.PAGE
+            END ELSE
+               CALL ELINE('** FIRST PAGE **')
+            END
+            GOTO MAIN.START
+         CASE QI MATCHES '0N'
+            IF QI+0=0 THEN GOTO MAIN.START
+            IF NUM.RULES<1 THEN
+               CALL ELINE('No ACH Accounts to EDIT.')
+            END ELSE
+               EDIT.ENTRY=QI
+               GOSUB EDIT.CARRIER.RULE
+               GOSUB DISPLAY.PAGE
+            END
+            GOTO MAIN.START
+         CASE QI='*'                     ; * Show contents of CONTROL.REC for debugging purposes
+            CRT @(-1)
+            CRT @(0,0):CONF.REC
+            CALL ELINE('Viewing DEBUG Screen.')
+            GOSUB DISPLAY.SCREEN
+            GOSUB DISPLAY.PAGE
+            GOTO MAIN.START
+         CASE 1
+            GOTO MAIN.START
+      END CASE
+
+********************************************************************************
+* Start of internal subroutines
+********************************************************************************
+
+DISPLAY.SCREEN: ***
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):REVERSE.ON:'##  Batch/Date  Batch/Time  #Checks   Total/Amount    Check/Range      ML/Batch#':REVERSE.OFF
+      CRT @(0,21):REVERSE.ON:SPACE(80):REVERSE.OFF:
+      RETURN
+
+********************************************************************************
+
+DISPLAY.PAGE: ***
+*   This routine displays a given page.
+*   Input:  PAGE.NUMBER
+
+      STR.OUT='Page ':PAGE.NUMBER:' of ':NUM.PAGES:' '
+      CRT @(60,21):REVERSE.ON:STR.OUT'R#20':REVERSE.OFF:
+      Y=1                                ; * Screen position
+      IF PAGE.NUMBER=0 THEN
+         LINE.NUM=1
+      END ELSE
+         LINE.NUM=(PAGE.NUMBER-1)*PAGE.SIZE+1
+      END
+      LOOP WHILE Y<=(PAGE.SIZE)
+         SCREEN.LINE2=''
+         BEGIN CASE
+            CASE LINE.NUM>NUM.RULES
+* Print nothing - actually clears line
+               SCREEN.LINE=LINE.NUM'R%2'
+            CASE CONF.REC<1,LINE.NUM>=''
+               SCREEN.LINE=LINE.NUM'R%2'
+            CASE 1
+               GOSUB FORMAT.LINE
+               SCREEN.LINE=FORMATTED.LINE
+         END CASE
+         CRT @(0,START.Y+Y):SCREEN.LINE:@(-4)      ; * Draw screen line
+         Y+=1                            ; * Inc screen position
+         LINE.NUM+=1
+      REPEAT
+      RETURN
+
+********************************************************************************
+
+FORMAT.LINE: ***
+      IF LEN(LINE.NUM)>2 THEN
+         FORMATTED.LINE =LINE.NUM'L#3':' '
+      END ELSE
+         FORMATTED.LINE =LINE.NUM'R%2':SPACE(2)    ; * JMK01
+      END
+      FORMATTED.LINE:=FIELD(CONF.REC<1,LINE.NUM>,'*',1)'D4/':'  '
+      FORMATTED.LINE:=OCONV(FIELD(CONF.REC<1,LINE.NUM>,'*',2),'MTHS'):'  '
+      FORMATTED.LINE:=CONF.REC<2,LINE.NUM>'R#7':'  '
+      FORMATTED.LINE:=CONF.REC<3,LINE.NUM>'R26,#13':'    '
+      IF CONF.REC<4,LINE.NUM>='' THEN RANGE = '' ELSE
+         IF CONF.REC<4,LINE.NUM>='PENNY' THEN RANGE='PENNY TEST' ELSE
+            RANGE=CONF.REC<4,LINE.NUM>:'-':CONF.REC<5,LINE.NUM>
+         END
+      END
+      FORMATTED.LINE:=RANGE'L#16':' '
+      FORMATTED.LINE:=CONF.REC<6,LINE.NUM>'L#9'
+      RETURN
+
+********************************************************************************
+
+
+EDIT.CARRIER.RULE: ***
+      EDIT.NUMBER=QI
+      LAST.EDIT.MASK=1
+
+      PAGE.NUMBER=INT(EDIT.NUMBER/PAGE.SIZE)
+      IF PAGE.NUMBER*PAGE.SIZE<EDIT.NUMBER THEN PAGE.NUMBER+=1
+      EDIT.Y=EDIT.NUMBER-(PAGE.NUMBER*PAGE.SIZE)+PAGE.SIZE
+      GOSUB DISPLAY.PAGE
+      Y.POS=(START.Y)+(EDIT.Y)
+
+      GOSUB PROCESS.DATA
+      RETURN
+
+********************************************************************************
+
+
+
+PROCESS.DATA: ***
+      DONE=FALSE
+      FIELD.POS=1
+      LOOP WHILE NOT(DONE)
+         BEGIN CASE
+            CASE FIELD.POS=0             ; * Done
+               DONE=TRUE
+            CASE FIELD.POS=1             ; * ML Batch#
+               GOSUB GET.ML.BATCH
+               IF BACK.FLAG THEN DONE=TRUE
+            CASE FIELD.POS=2             ; * Person Confirming
+               DONE=TRUE                 ; * JMK01
+         END CASE
+         IF BACK.FLAG THEN
+            FIELD.POS-=1
+         END ELSE
+            FIELD.POS+=1
+         END
+      REPEAT
+      RETURN
+
+********************************************************************************
+
+GET.ML.BATCH: ***
+      BACK.FLAG=FALSE
+      X.POS=71
+      CRT @(0,22):'Enter Bank Reference Number.':@(-4)
+      IF CONF.REC<6,EDIT.NUMBER> THEN
+         SAVE.REF=CONF.REC<6,EDIT.NUMBER>'L#9'
+         EDIT.MASK=CONF.REC<6,EDIT.NUMBER>'L#9'
+      END ELSE
+         SAVE.MASK=SPACE(9)
+         EDIT.MASK='---------'
+      END
+      HELP='OPTIONS: [X]=Back [EX]it [DEL]ete'
+      CALL GEN.IN(X.POS,Y.POS,EDIT.MASK,'',Q,0,9,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF CONF.REC<6,EDIT.NUMBER> AND QI='' THEN QI=CONF.REC<6,EDIT.NUMBER>
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'
+            BACK.FLAG=TRUE
+            CRT @(X.POS,Y.POS):SAVE.REF
+            RETURN
+         CASE QI='DEL'
+            CONF.REC<6,EDIT.NUMBER>=''
+            BACK.FLAG=TRUE
+            RETURN
+         CASE 1
+            REF=QI
+            CRT @(X.POS,Y.POS):REF'L#9'
+            CONF.REC<6,EDIT.NUMBER>=REF
+            RETURN
+      END CASE
+
+
+FAILSAFE.CHECK: ***
+* There are no failsafe conditions to check currently.
+      FAILSAFE.OK=TRUE                   ; * Assume no problems and try to find problems
+      RETURN
+
+********************************************************************************
+
+SAVE.CONTROL.REC: ***
+
+      I=0
+      LOOP
+         I=I+1
+      UNTIL I>DCOUNT(CONF.REC<1>,@VM) DO
+         IF CONF.REC<6,I> # '' THEN
+            II=0
+            MAX=DCOUNT(XREF.ITEM<I>,@VM)
+            FOR II=1 TO MAX
+               READ CREC FROM F.CHECKS,XREF.ITEM<I,II> THEN
+                  CREC<27>=CONF.REC<6,I>
+                  WRITE CREC ON F.CHECKS,XREF.ITEM<I,II>
+               END
+               READ AREC FROM F.PEND.ACH.FILE,XREF.ITEM<I,II> THEN
+                  AREC<12>=CONF.REC<6,I>
+                  WRITE AREC ON F.ACH.HIST,XREF.ITEM<I,II>
+                  DELETE F.PEND.ACH.FILE,XREF.ITEM<I,II>
+               END
+            NEXT II
+*           WRITEV XREF.ITEM<I> ON F.ACH.XREF,CONF.REC<6,I>,1          ; * JMK01
+            READU XREF.REC FROM F.ACH.XREF,CONF.REC<6,I> ELSE XREF.REC=''        ; * JMK01
+            XREF.REC<1,-1>=XREF.ITEM<I>  ; * JMK01
+            WRITE XREF.REC ON F.ACH.XREF,CONF.REC<6,I>       ; * JMK01
+            RELEASE F.ACH.XREF,CONF.REC<6,I>       ; * JMK01
+         END
+      REPEAT
+
+      RETURN
+
+********************************************************************************
+
+DISPLAY.CONTROL.RECORDS: ***
+      CRT @(0,0):@(-1)
+      EXECUTE 'SORT FB.CAR.CTRL 1 2 3 4'
+      CALL ELINE('')
+      RETURN
+
+********************************************************************************
+
+ASK.FOR.NUM: ***
+* A general number prompt routine
+* Inputs:
+*    AFN.MSG  - message to display
+*    AFN.MASK - default value
+*    AFN.MIN  - min value allowed
+*    AFN.MAX  - max value allowed
+* Outputs:
+*    AFN.ANSWER
+
+      AFN.ANSWER=''
+
+AFN.1:
+      CRT @(0,22):AFN.MSG:@(-4)
+      HELP='Entry Options: [':AFN.MIN:'-':AFN.MAX:'] [X]=Back'
+      EDIT.MASK=AFN.MASK:' '
+      CALL GEN.IN(LEN(AFN.MSG)+1,22,EDIT.MASK,'',Q,0,LEN(AFN.MAX),'','',2,LEN(AFN.MSG)+1,22,0,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      IF QI='' THEN QI=TRIM(EDIT.MASK)
+      BEGIN CASE
+         CASE QI='X'
+         CASE QI>=AFN.MIN AND QI<=AFN.MAX
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO AFN.1
+      END CASE
+      AFN.ANSWER=QI
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+      RETURN
+
+********************************************************************************
+
+ASK.Y.OR.N: ***
+* This is a general Yes/No prompt routine.
+* Inputs:
+*    YN.MSG, YN.MASK
+* Outputs:
+*    YN.ANSWER
+
+      YN.ANSWER=''
+
+Y.OR.N:
+      CRT @(0,22):YN.MSG:@(-4)
+      HELP='Entry Options: [Y]es [N]o'
+      EDIT.MASK=YN.MASK'L#1'
+      CALL GEN.IN(LEN(YN.MSG)+1,22,EDIT.MASK,'',Q,0,1,'','',2,LEN(YN.MSG)+1,22,0,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      IF QI='' THEN QI=TRIM(EDIT.MASK)
+      BEGIN CASE
+         CASE QI='Y'
+         CASE QI='N'
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO Y.OR.N
+      END CASE
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+      YN.ANSWER=QI
+      RETURN
+
+********************************************************************************
+
+
+LOAD.CARRIER.NAMES: ***
+      NUM.CARRIERS=DCOUNT(CONTROL.REC<2>,@VM)
+      CARRIER.NAMES=''
+      FOR X=1 TO NUM.CARRIERS
+         CARRIER.ID=CONTROL.REC<2,X>
+         READV CARRIER.NAME FROM F.CARRIERS,CARRIER.ID,1 ELSE CARRIER.NAME='Not on File'
+         CARRIER.NAMES<X>=CARRIER.NAME
+      NEXT X
+      RETURN
+
+********************************************************************************
+
+LAST.CHANCE.TO.SAVE: ***
+      IF CONF.REC#OLD.CONF.REC THEN
+         YN.MSG='You have unsaved changes. Save before exiting?'
+         YN.MASK=''
+         GOSUB ASK.Y.OR.N
+         IF YN.ANSWER='Y' THEN
+            GOSUB FAILSAFE.CHECK
+            IF FAILSAFE.OK THEN
+               GOSUB SAVE.CONTROL.REC
+               RETURN
+            END ELSE
+               RETURN
+            END
+         END
+         RETURN
+      END
+
+********************************************************************************
+
+THE.END: ***
+      CRT @(0,22):@(-3):
+      STOP
+      END

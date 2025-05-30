@@ -1,0 +1,661 @@
+***********************************************************************
+*
+*
+* PROGRAM TO PROCESS THE PRECENTAGES OF REVENUE EACH CLIENT REPRESENTS
+*
+*
+* AUTHOR: Owen Holman
+*
+*                           EDIT HISTORY
+*                           ------------
+*    DATE  : NAME : DESCRIPTION
+*  ---------------------------------------------------
+*  04/25/00 OWEN Create version to analize Audit Status data
+*  04/20/06 : JCW01 : ADD FB.PROC.DATE.XREF FOR PERFORMANCE
+*  05/08/06 : JCW02 : CHANGES TO '@SELECTED', 'CLEARSELECT', AND 'STMT<X>'
+* 031208 - JMK01 - T080799 - Remove duplicates in FB History Reporting
+***********************************************************************
+*
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Initialize variables
+*
+      COPIES=1
+       CARRIERS=0
+       OWEN.ERRORS=0
+*
+      PROMPT''
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)
+AUDITOR.MODE=1
+      STATUS=''
+      PROG.NAME='FB.3.20.9'
+      PROG.DESC='Freight Bill Audit Status Analysis - NON CORE CARRIERS'
+      PACK.NAME='Freight Billing'
+      NO.DIV.FLAG=0
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.3.20.9' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      ERRMSG=''
+      REC.COUNT=''
+      AUDIT.CODES=''
+*
+      AUDIT.CODES<1,1>=1
+      AUDIT.CODES<2,1>='Bill went through OLA OK'
+      AUDIT.CODES<3,1>='OLA OK'
+*
+      AUDIT.CODES<1,2>=2
+      AUDIT.CODES<2,2>='OLA OK Aud Check Class'
+      AUDIT.CODES<3,2>='Aud Chk cls'
+*
+      AUDIT.CODES<1,3>=3
+      AUDIT.CODES<2,3>='OLA but charges didnt match'
+      AUDIT.CODES<3,3>='Aud Chk chg'
+*
+      AUDIT.CODES<1,4>=4
+      AUDIT.CODES<2,4>='NO OLA for the bill'
+      AUDIT.CODES<3,4>='Aud No OLA '
+*
+      AUDIT.CODES<1,5>='N'
+      AUDIT.CODES<2,5>='No Code on the bill'
+      AUDIT.CODES<3,5>='No Code'
+*
+* Open files
+*
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+        EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+        OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+          CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+        END
+      END
+      OPEN 'DICT','FBWORK':CH.NUM TO F.DICT.WORK ELSE
+        CALL OPEN.ABORT('DICT FBWORK':CH.NUM,PROG.NAME)
+      END
+      OPEN 'FB.BILLS.CRX' TO F.CRX ELSE
+        CALL OPEN.ABORT('FB.BILLS.CRX',PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+        CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+*
+* Create work file dictionary items
+*
+      TEMP=''
+      TEMP<1>='S'
+      TEMP<2>=3
+      TEMP<3>='Carr $'
+      TEMP<7>='MR2'
+      TEMP<8>=''
+      TEMP<9>='R'
+      TEMP<10>=10
+      WRITE TEMP ON F.DICT.WORK,'CAR.DOL'
+      TEMP<3>=''
+      TEMP<2>=1 ; WRITE TEMP ON F.DICT.WORK,1
+      TEMP<2>=2 ; WRITE TEMP ON F.DICT.WORK,2
+      TEMP<2>=5 ; WRITE TEMP ON F.DICT.WORK,5
+      TEMP<2>=7 ; WRITE TEMP ON F.DICT.WORK,7
+      TEMP<2>=4
+      TEMP<3>='Bills'
+      TEMP<7>=''
+      TEMP<9>='R'
+      TEMP<10>=6
+      WRITE TEMP ON F.DICT.WORK,'BILLS'
+      TEMP='S'
+      TEMP<2>=0
+      TEMP<3>='Client Name'
+      TEMP<8>='F0;(G0*1);(TCLIENTS;X;;2)'
+      TEMP<9>='L'
+      TEMP<10>='30'
+      WRITE TEMP ON F.DICT.WORK,'CLIENT.NAME'
+      TEMP='S'
+      TEMP<2>=0
+      TEMP<3>='Auditor Name'
+      TEMP<8>='G0*1'
+      TEMP<9>='L'
+      TEMP<10>='30'
+      WRITE TEMP ON F.DICT.WORK,'AUDITOR.NAME'
+      TEMP<3>='Core Carrier'
+      TEMP<8>='G2*1'
+      TEMP<9>='L'
+      TEMP<10>='1'
+      WRITE TEMP ON F.DICT.WORK,'CORE.CARRIER'
+      TEMP='A'
+      TEMP<2>=0
+      TEMP<3>='Client'
+      TEMP<8>='G0*1'
+      TEMP<9>='R'
+      TEMP<10>='5'
+      WRITE TEMP ON F.DICT.WORK,'CLIENT#'
+      TEMP='A'
+      TEMP<2>=0
+      TEMP<3>='Code'
+      TEMP<8>='G1*1'
+      TEMP<9>='L'
+      TEMP<10>='1'
+      WRITE TEMP ON F.DICT.WORK,'CODE'
+*
+*  WORK FILE CONSISTS OF ITEMS WITH THE FOLLOWING DETAIL
+*  Variable Attribute Description.....................................
+*               ID    Client*AUDIT.STATUS*Core Carrier (Y/N/B) Yes, No, Both
+*                1    Overcharge amount (Discount Var + Overchg Var)
+*                2    Logistics Markup - Consulting Variance
+*                3    Amout Paid    - Adjusted bill amout
+*                4    Bill Count    - Number of bills for client
+*                5    BalDueAmt     - Balance Due Amount (PAID)
+*                6    BalDueCnt     - Number of Balance dues
+*                7    AddDueAmt     - Additional Due Amount (PAID)
+*                8    AddDueCnt     - Number of Additional dues
+*
+*
+* Display screen heading
+*
+30    CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+
+*
+* Get current period beginning and ending dates
+*
+100   HELP='Enter the data processed beginning date.'
+      CALL GEN.IN(0,5,'Data processed beginning date.  ':DATE()'D2/','DATE',BEG.DATE,0,8,'','',1,-8,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN STOP
+      IF QI='EX' THEN STOP
+      IF QI='' THEN BEG.DATE=DATE()
+      CRT @(32,5):BEG.DATE'D2/'
+*
+* Get current period ending date
+*
+200   HELP='Enter the data processed ending date.'
+      CALL GEN.IN(0,7,'Data processed ending date.     ':DATE()'D2/','DATE',END.DATE,0,8,'','',1,-8,7,0,QI,HELP,0,23)
+      IF QI='X' THEN GOTO 100
+      IF QI='EX' THEN STOP
+      IF QI='' THEN END.DATE=DATE()
+      IF END.DATE LT BEG.DATE THEN
+        CALL ELINE('Invalid ending date.')
+        GOTO 200
+      END
+*
+*  Verify date entry range
+*
+      CRT @(32,7):END.DATE'D2/'
+300:  HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            GO 200
+         CASE QI='EX'
+            STOP
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO 300
+      END CASE
+*
+* Start processing
+*
+400:  TEXT="Processing Date Range - Please Wait ... May Take Several Hours."
+      CALL CENTER(TEXT,80)
+      CRT @(0,13):@(-3):TEXT
+*
+* Clear work file
+*
+*      GOTO OWEN
+ 
+      CLEARFILE F.WORK
+*
+* Select data for current client
+*
+
+*************************************************************************
+*
+* SELECT CLIENT FILE
+*
+      TEXT='Selecting Clients.'
+      CALL CENTER(TEXT,80)
+      CRT @(0,10):TEXT
+*
+      EXECUTE "SELECT VOC 'FB.BILLS.HIST' *A7" RTNLIST CLIENT.LIST CAPTURING OUTPUT
+      ITEMS = @SELECTED
+      IF @SELECTED < 1 THEN ; * JCW02
+        CALL ELINE('ERROR - No clients on file.')
+        STOP
+      END
+      COUNTER.1=0
+      PER.1=0
+      PER.2=0
+      LOOP
+        READNEXT CLIENT.ID FROM CLIENT.LIST ELSE CLIENT.ID='DONE'
+      UNTIL CLIENT.ID='DONE' DO
+        COUNTER.1=COUNTER.1+1
+        IF CLIENT.ID='FB.BILLS.HIST' OR CLIENT.ID[1,2]='99' OR CLIENT.ID='00000' THEN GO SKIP.CLIENT
+        READV CLIENT.NAME FROM F.CLIENTS,CLIENT.ID,2 ELSE
+          CLIENT.NAME='*** Not On File ***'
+        END
+          CRT @(0,17):CLIENT.ID:" ":CLIENT.NAME:" - Now selecting freight bills":@(-4):
+        CALL PROG.BAR(20,COUNTER.1,ITEMS,PER.1)
+        STMT='SSELECT FB.PROC.DATE.XREF,':CLIENT.ID:' WITH DATE >= "':OCONV(BEG.DATE,'D2/'):'" AND WITH DATE <= "':OCONV(END.DATE,'D2/'):'"'          ; * JCW 01        
+        EXECUTE STMT RTNLIST CAPTURING RESULTS  ; * JCW 01
+        IF @SELECTED > 0 THEN  ; * JCW01
+          STMT = 'QSELECT FB.PROC.DATE.XREF,':CLIENT.ID  ; * JCW01
+          EXECUTE STMT PASSLIST RTNLIST CAPTURING RESULTS  ; * JCW01
+        END ELSE  ; * JCW01
+          GOTO SKIP.CLIENT  ; * JCW01
+        END  ; * JCW01
+        OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS THEN
+          STMT='SELECT FB.BILLS.HIST,':CLIENT.ID
+          STMT:=' WITH VERSION = "0"'
+          STMT:=' AND WITH 11 LE "-.01"'
+*         STMT:=' SAVING UNIQUE @ID'     ; * JMK01
+          EXECUTE STMT PASSLIST RTNLIST BILLS.LIST CAPTURING OUTPUT
+          NUM.BILLS = @SELECTED
+          OLA.FILE='FB.AUDIT,':CLIENT.ID
+          APPROVED.CARRIERS=''
+          OPEN OLA.FILE TO NULL THEN
+            OLA.STMT='SELECT ':OLA.FILE:' WITH 13 = "Y"'
+            EXECUTE OLA.STMT RTNLIST OLA.LIST CAPTURING OLA.OUTPUT
+            DONE=0
+            LOOP
+              READNEXT OLA.CARRIER.ID FROM OLA.LIST ELSE DONE=1
+            UNTIL DONE=1 DO
+              LOCATE OLA.CARRIER.ID IN APPROVED.CARRIERS BY 'AR' SETTING OLA.POS ELSE
+                INS OLA.CARRIER.ID BEFORE APPROVED.CARRIERS<OLA.POS>
+              END
+            REPEAT
+          END
+          CRT @(0,17):CLIENT.ID:" ":CLIENT.NAME:" - Now processing ":NUM.BILLS:" Freight Bills":@(-4):
+          COUNTER.2=0
+          LOOP
+            DONE=0
+            READNEXT PRO.ID FROM BILLS.LIST ELSE DONE=1
+          UNTIL DONE=1 DO
+            COUNTER.2=COUNTER.2+1
+*           CRT @(0,17):CLIENT.ID:' ':PRO.ID:@(-4):
+            IF NUM.BILLS>0 THEN CALL PROG.BAR(22,COUNTER.2,NUM.BILLS,PER.2)
+            READ DBILL FROM F.BILLS,PRO.ID THEN
+              CARRIER.ID=FIELD(PRO.ID,"*",1)
+              LOCATE CARRIER.ID IN APPROVED.CARRIERS BY 'AR' SETTING POS THEN
+                APP.CAR.FLAG='Y'
+              END ELSE
+                APP.CAR.FLAG='N'
+              END
+              IF APP.CAR.FLAG#'N' THEN GO SKIP.BILL
+              STACK.CODE=DBILL<68>
+              CODE=STACK.CODE
+              BEGIN CASE
+                CASE STACK.CODE=''
+                  CODE='N' ; * No Audit Code stored on the bill
+                CASE STACK.CODE=1 ; * Nobody looked at the bill
+                CASE STACK.CODE=2 ; * Bill went through OLA but Class could be less
+                CASE STACK.CODE=3 ; * Bill went through OLA but charges didn't match
+                CASE STACK.CODE=4 ; * No OLA Setup
+                CASE 1
+                  CODE='I' ; * Invalid Code
+*                 IF USER.NAME='OWEN' THEN
+*                   OPEN 'TEMP' TO F.TEMP THEN
+*                     OWEN.ERRORS=1
+*                     READ DBAD FROM F.TEMP,'BAD.CODES' ELSE DBAD=''
+*                     DBAD<-1>=CLIENT.ID:"*":PRO.ID
+*                   END
+*                 END
+              END CASE
+              AUDITOR=DBILL<89>
+*IF STACK.CODE=1 AND AUDITOR='' AND DBILL<11><-1 AND DBILL<41,2>[1,3]#'FSC' AND DBILL<41,2>[1,3]#'Ser' AND DBILL<41,2>#'No POD'THEN
+*  CALL ELINE('Stk 1, No Aud, Ovchg, Client: ':CLIENT.ID:' Pro: ':PRO.ID)
+*END
+              AUDITOR=CHANGE(AUDITOR,'*','')
+              IF AUDITOR='' THEN AUDITOR='No Auditor on Bill'
+*
+              IF AUDITOR.MODE THEN
+                WORK.ID=AUDITOR:'*ALL'
+              END ELSE
+                WORK.ID=CLIENT.ID:'*ALL'
+              END
+              READ WORK.REC FROM F.WORK,WORK.ID ELSE WORK.REC=''
+*
+              IF AUDITOR.MODE THEN
+                WORK.ID.DET=AUDITOR:'*':CODE
+              END ELSE
+                WORK.ID.DET=CLIENT.ID:'*':CODE
+              END
+              READ WORK.REC.DET FROM F.WORK,WORK.ID.DET ELSE WORK.REC.DET=''
+*
+              TOT.WORK.ID='ZZZTOTAL*ALL'
+              READ TOT.WORK.REC FROM F.WORK,TOT.WORK.ID ELSE
+                TOT.WORK.REC=''
+              END
+*
+              TOT.WORK.ID.DET='ZZZTOTAL*':CODE
+              READ TOT.WORK.REC.DET FROM F.WORK,TOT.WORK.ID.DET ELSE
+                TOT.WORK.REC.DET=''
+              END
+*
+* Update carrier total record in work file
+*
+              PRO=FIELD(PRO.ID,'*',2)
+              START=LEN(PRO)-1
+              BEGIN CASE
+                *
+                * Balance Due
+                *
+                CASE PRO[START,2]='BD'
+                  ATT=5 ; VALUE=DBILL<8> ; GOSUB 8000 ; * Amount pd/due
+                  ATT=6 ; VALUE=1 ; GOSUB 8000 ; * Inc bill count
+                *
+                * Amount Due (paid)
+                *
+                CASE PRO[START,2]='AD'
+                  ATT=7 ; VALUE=DBILL<8> ; GOSUB 8000 ; * Amount pd/due
+                  ATT=8 ; VALUE=1 ; GOSUB 8000 ; * Inc bill count
+                *
+                * Amount Billed & Paid
+                *
+                CASE 1
+*                 ATT=1 ; VALUE=DBILL<10>+DBILL<11> ; GOSUB 8000 ; * Discount+Overcharge
+                  ATT=1 ; VALUE=DBILL<11> ; GOSUB 8000 ; * Overcharge
+                  ATT=2 ; VALUE=DBILL<12> ; GOSUB 8000 ; * Logistics
+                  ATT=3 ; VALUE=DBILL<8> ; GOSUB 8000 ; * Amount paid
+                  ATT=4 ; VALUE=1 ; GOSUB 8000 ; * Inc Bill Count
+              END CASE
+
+*
+* Update totals
+*
+              WRITE WORK.REC ON F.WORK,WORK.ID
+              WRITE WORK.REC.DET ON F.WORK,WORK.ID.DET
+              WRITE TOT.WORK.REC ON F.WORK,TOT.WORK.ID
+              WRITE TOT.WORK.REC.DET ON F.WORK,TOT.WORK.ID.DET
+            END
+SKIP.BILL:***
+          REPEAT
+        END
+SKIP.CLIENT:***
+      REPEAT
+*************************************************************************
+OWEN:
+
+*
+* Print report
+*
+* Set-up printer
+*
+*      WIDTH=134
+*DF      WIDTH=175
+      WIDTH=150
+      EXECUTE "TERM ,,,,,,":WIDTH:",79"
+      CTR=INT(WIDTH/2)
+**************************************************************
+ESC=CHAR(27)
+*WIDTH=175
+*CTR=77
+*CALL FB.LASER.SET('S',WIDTH,64,8)
+LASER.STR=''
+LASER.STR:= ESC:'E'
+LASER.STR:= ESC:'&l0O' ; * Portrait
+LASER.STR:= ESC:'&l8D'
+LASER.STR:= ESC:'&l88F' ; ** 88 Lines on a Page
+LASER.STR:= ESC:'(8U'
+LASER.STR:= ESC:'(s0p'
+LASER.STR:= '19h'
+LASER.STR:= '0s'
+LASER.STR:= '0b'
+LASER.STR:= '4102T'
+**************************************************************
+*     EXECUTE 'SP-ASSIGN F15,':COPIES ; * Default to IBM 4039-16L+ Laser
+      PRINTER ON
+      PRINT LASER.STR ; * Configure Laser Printer
+
+*
+** Get next division code
+*
+*
+*
+      L.TAB=CTR-(LEN(PROG.DESC)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):PROG.DESC
+      R.TAB=WIDTH-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE())
+      HEAD1=PROG.NAME:SPACE(L.TAB):PROG.DESC:SPACE(R.TAB):TIMEDATE():"'L'"
+*
+*     TITLE='Bills processed from ':BEG.DATE'D2/':' to ':END.DATE'D2/'
+      TITLE='Overcharge Bills processed from ':BEG.DATE'D2/':' to ':END.DATE'D2/'
+      L.TAB=CTR-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+*     R.TAB=(WIDTH-LEN(TEMP))-9
+*     HEAD2=TEMP:SPACE(R.TAB):"PAGE 'PL'"
+      R.TAB=(WIDTH-LEN(TEMP))-20
+      HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )':"PAGE 'PL'"
+      HEAD3="'L'"
+*
+      HEAD4=""
+      HEAD5=STR('-',WIDTH):"'L'"
+*
+      HEAD6='  % of''L#8'
+      HEAD7=' Revenue''L#8'
+*
+      HEAD6:=SPACE(1):'Client Name''L#23'
+      HEAD7:=SPACE(1):' ''L#23'
+*
+      HEAD6:='Audit Code''L#11'
+      HEAD7:=' ''L#11'
+*
+      HEAD6:=SPACE(1):'    Num ''L#9'
+      HEAD7:=SPACE(1):'   Bills ''L#9'
+*
+      HEAD6:=SPACE(1):' % Of''L#6'
+      HEAD7:=SPACE(1):' Bills''L#6'
+*
+      HEAD6:=SPACE(1):'Cumml''L#6'
+      HEAD7:=SPACE(1):'  %''L#6'
+*
+      HEAD6:=SPACE(2):'  Amount''R#10'
+      HEAD7:=SPACE(2):'   Paid ''R#10'
+*
+      HEAD6:=SPACE(2):'  OvrChg''R#9'
+      HEAD7:=SPACE(2):'  Amount''R#9'
+*
+      HEAD6:=SPACE(2):'  %''L#6'
+      HEAD7:=SPACE(2):'OvrChg''L#6'
+*
+      HEAD6:=SPACE(2):'  Logist''R#9'
+      HEAD7:=SPACE(2):'  Amount''R#9'
+*
+      HEAD6:=SPACE(2):'  %''L#6'
+      HEAD7:=SPACE(2):'Logist''L#6'
+*
+      HEAD6:=SPACE(2):'  BD  ''R#7'
+      HEAD7:=SPACE(2):'Amount''R#7'
+*
+      HEAD6:=SPACE(2):' BD''L#5'
+      HEAD7:=SPACE(2):'Bills''L#5'
+*
+      HEAD6:=SPACE(2):'  AD  ''R#7'
+      HEAD7:=SPACE(2):'Amount''R#7'
+*
+      HEAD6:=SPACE(2):' AD  ''L#5'
+      HEAD7:=SPACE(2):'Bills''L#5'
+*
+*DF      HEAD6:=SPACE(2):'Bill'
+*DF      HEAD7:=SPACE(2):'Type'
+*
+
+      HEAD6:="'L'"
+      HEAD7:="'L'"
+*
+      HEAD8=STR('-',WIDTH):"'L'"
+*
+      HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6:HEAD7:HEAD8
+      HEADING HED
+*     PAGE 0
+*
+** Select data
+*
+      COUNTER=0
+      SUB4=0
+      PREC='SSELECT FBWORK':CH.NUM
+      IF AUDITOR.MODE THEN
+        PREC:=' BY AUDITOR.NAME'
+      END ELSE
+        PREC:=' BY CLIENT.NAME'
+        PREC:=' BY CLIENT#'
+      END
+      PREC:=' BY CODE'
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+      READ TOTAL.REC FROM F.WORK,'ZZZTOTAL*ALL' ELSE
+        TOTAL.REC=''
+      END
+      ORIG.TOT.REC=TOTAL.REC
+*
+      DONE = 0
+      OLD.CLIENT='-FIRST-'
+      LOOP
+        READNEXT TEMP ELSE DONE = 1
+        CLIENT=FIELD(TEMP,'*',1)
+        CODE=FIELD(TEMP,'*',2)
+      UNTIL DONE = 1 DO
+        IF CODE='ALL' ELSE
+          IF CLIENT#OLD.CLIENT THEN
+            IF OLD.CLIENT#'-FIRST-' THEN
+              PRINT STR('-',WIDTH)
+              REC=CL.TOT.REC
+              CODE='ALL'
+              GOSUB BUILD.DET.LINE
+              PRINT LINE
+              CODE=FIELD(TEMP,'*',2) ; * Restore code for the one your on
+              PRINT ''
+            END
+            IF CLIENT='ZZZTOTAL' THEN CLIENT.NAME = "Report Totals" ELSE
+              IF AUDITOR.MODE THEN CLIENT.NAME=CLIENT ELSE
+                READV CLIENT.NAME FROM F.CLIENTS, CLIENT,2 ELSE
+                  CLIENT.NAME="'":CLIENT:"' ** Not On File **"
+                END
+              END
+            END
+            READ CL.TOT.REC FROM F.WORK,CLIENT:'*ALL' ELSE CL.TOT.REC=''
+            OLD.CLIENT=CLIENT
+          END
+  *
+          READ REC FROM F.WORK,TEMP ELSE REC=''
+            TOTAL.REC=CL.TOT.REC
+            GOSUB BUILD.DET.LINE
+            PRINT LINE
+         END
+      REPEAT
+      PRINT STR('=',WIDTH)
+      REC=CL.TOT.REC
+      CODE='ALL'
+      GOSUB BUILD.DET.LINE
+      PRINT LINE
+
+*
+** END OF APPLICATION'
+*
+     IF OWEN.ERRORS THEN
+       CALL ELINE('Errors Found!  Look in TEMP BAD.CODES')
+     END
+      EXECUTE "TERM ,,,,,,,60"
+      STOP
+
+
+8000 * Update Arrays
+      WORK.REC<ATT>        +=VALUE
+      WORK.REC.DET<ATT>    +=VALUE
+      TOT.WORK.REC<ATT>    +=VALUE
+      TOT.WORK.REC.DET<ATT>+=VALUE
+      RETURN
+
+BUILD.DET.LINE:***
+*     TOTAL.REC=ORIG.TOT.REC
+      LINE=''
+      *
+      * PRECENTAGE OF REVENUE
+      *
+      IF REC<3>+0=0 THEN VAR=0 ELSE
+        VAR=(REC<3>*100/TOTAL.REC<3>)
+      END
+      LINE:=VAR'R44,#8':' '
+      *
+      * CARRIER NAME
+      *
+      LINE:=CLIENT.NAME'L#22':' '
+      *
+      * CODE OF BILL
+      *
+      LOCATE CODE IN AUDIT.CODES<1> SETTING POS THEN
+        CODE.DESC=AUDIT.CODES<3,POS>
+      END ELSE
+        CODE.DESC=CODE:' NOF'
+      END
+      IF CODE='ALL' THEN CODE.DESC=''
+      LINE:=CODE.DESC'L#11'
+      *
+      * BILL COUNT
+      *
+      LINE:=REC<4>'R04,#9':' '
+      *
+      * PRECENTAGE OF GROSS BILLS
+      *
+      IF TOTAL.REC<4>+0=0 THEN VAR=0 ELSE
+        VAR=(REC<4>*100/TOTAL.REC<4>)
+      END
+      LINE:=VAR'R24,#6':' '
+      *
+      * Accuml %
+      *
+      TOTAL.REC=ORIG.TOT.REC
+      IF CODE#'ALL' THEN
+        SUB4+=REC<4>
+      END
+      IF TOTAL.REC<4>+0=0 THEN VAR=0 ELSE
+        VAR=SUB4*100/TOTAL.REC<4>
+      END
+      LINE:=VAR'R24,#6':'  '
+      *
+      * AMMOUNT BILLED
+      *
+      LINE:=REC<3>'R06,#10':'  '
+       *
+       * AMOUNT OVER CHARGED
+       *
+       LINE:=-REC<1>'R06,#9':'  '
+       *
+       * PERCENTAGE OF OVERCHARGE
+       *
+       IF REC<3>+0=0 THEN VAR=0 ELSE
+        VAR=(-REC<1>)*100/REC<3>
+       END
+       LINE:=VAR'R24,#6':'  '
+       *
+       * LOGISTICS MARKUP AMOUNT
+       *
+       LINE:=-REC<2>'R06,#9':'  '
+       *
+       * PERCENTAGE OF LOGISTICS
+       *
+       IF REC<3>+0=0 THEN VAR=0 ELSE
+        VAR=(-REC<2>)*100/REC<3>
+       END
+       LINE:=VAR'R24,#6':'  '
+       *
+       * BALANCE DUE AMOUNT
+       *
+       LINE:=REC<5>'R06,#7':'  '
+       *
+       * BALANCE DUE COUNT
+       *
+       LINE:=REC<6>'R04,#5':'  '
+       *
+       * ADDITIONAL DUE
+       *
+       LINE:=REC<7>'R06,#7':'  '
+       *
+       * ADDITIONAL DUE COUNT
+       *
+       LINE:=REC<8>'R04,#5':'  '
+       *
+       * BILL CODE
+       *
+*DF       LINE:=REC<71>'C':'  '
+      RETURN

@@ -1,0 +1,808 @@
+* PROGRAM: FB.4.1
+* PROGRAM TO REBUILD YTD FIGURES
+*
+* FREIGHT BILL PACKAGE
+*
+* AUTHOR: BRIAN M. QUEEN
+* DATE: APRIL 27, 1990
+*
+* FORMATTING MODS:
+* Cody Henderson - October 18, 1996
+* Cody Henderson - March 19, 1997
+*    Changed ending date format to be last date processed.
+* 091203 - JMK01 - ADD MISROUTE INFORMATION FOR SOC REPORTS
+* 050806 : JCW01 : CHANGES TO '@SELECTED', 'CLEARSELECT', AND 'STMT<X>'
+* 060508 - JMK02 - C081315 - Mixing Voucher and Freight Payment in one account
+* 033109 - JMK03 - ADD REGION REBUILD FOR REXEL (01706)
+* 110611 - JMK04 - SysAid#269 - 1977 Processing unapproved FB 11-1-11
+* 010412 - PKB01 - SYSAID 1236 - Per Scott Matthews, grant Mary McKay access to run this program
+* 071019 - DRF01 - Ticket ACCU-397 - Added Analytics fee
+***********************************************************************
+*
+* Last updated by AFS.SOURCE (valerie) at 09:36:13 on 05/11/1994.
+*   ADDED NEW DIVISION CODES INSERT.
+***********************************************************************
+*
+      $INCLUDE PROG.ADMIN INC_OPTIONS
+      $INCLUDE FILE.DEFS INC_DIVISION.CODES
+      $INCLUDE FILE.DEFS INC_REGION.CODES  ; * JMK03
+*
+* Initialize variables
+*
+      CALL GET.USER(USER)
+      PROG.NAME='FB.4.1'
+      PROG.DESC='REBUILD CLIENT YTD TOTALS'
+      PACK.NAME='FREIGHT BILLING'
+*
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.4.1' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,PACK.NAME,"AFS Logistics, LLC",TIME.DATE,1)
+      PROMPT''
+      CLIENT.YTD=''
+      ERRMSG=''
+      COMM.ARR=''
+      DISC.VAR=0
+      OVRCHG.VAR=0
+      CONSLT.VAR=0
+      MAT DIV.REC = ''
+      MAT REG.CODE.REC = ''                   ; * JMK03
+*
+* Open general files
+*
+      OPEN 'CLIENTS' TO CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+         CALL OPEN.ABORT("FB.TRANSPORT",PROG.NAME)
+      END
+      BEGIN CASE
+*
+* Authorized Users
+*
+         CASE USER = 'OWEN'
+         CASE USER = 'DAVID'
+         CASE USER = 'GBINO'
+         CASE USER = 'JAMES'
+         CASE USER = 'AMY'
+         CASE USER = 'AMANDA'
+         CASE USER = 'TINA'
+         CASE USER = 'MYRA'
+         CASE USER = 'KRISTY'
+         CASE USER = 'MKERBOW' ; * JMK01
+         CASE USER = 'DSPEARS'
+         CASE USER = 'MARY'  ; * PKB01           
+*
+* Restrict the other MoFo's
+*
+         CASE 1
+            CALL FB.PRINT.CENT(1,80,10,USER:' DOES NOT HAVE ACCESS TO PROCESS!')
+            CALL FB.PRINT.CENT(1,80,12,'Restricted Access Application')
+            CALL ELINE('Access Denied! - See David')
+            STOP
+      END CASE
+*
+* Enter client ID
+*
+500:  HELP='Enter number of client to rebuild YTD amounts.'
+      CALL GEN.IN(0,3,'Enter Client Number     #####','',CLIENT,1,5,'R','0',2,-5,3,0,QI,HELP,0,23)
+      IF QI='EX' OR QI='X' THEN GO 9999
+*
+      READ CLIENT.REC FROM CLIENTS,CLIENT ELSE
+         CALL ELINE(' Client ':CLIENT:' not on file!')
+         GOTO 500
+      END
+      DIVISION=CLIENT.REC<12>
+      EXPENSE=CLIENT.REC<13>
+      VARIANCE=CLIENT.REC<7>
+      CRT @(30,3):CLIENT.REC<2>:@(-4):
+      NUM.COMM=DCOUNT(CLIENT.REC<84>,CHAR(253))
+      FOR I=NUM.COMM TO 1 STEP -1
+         COMM.ARR<-1>=CLIENT.REC<84,I>
+      NEXT I
+*
+* Open client files
+*
+      OPEN 'FB.BILLS.HIST,':CLIENT TO F.HIST ELSE
+         CALL ELINE('Cannot open FB.BILLS.HIST,':CLIENT:' file!')
+         GOTO 500
+      END
+*
+      OPEN '','FB.BILLS.YTD' TO F.BILLS.YTD ELSE
+         CALL ELINE('Cannot open FB.BILLS.YTD file!')
+         GOTO 500
+      END
+*
+      READ YTD.TEMP FROM F.BILLS.YTD,CLIENT ELSE
+         CALL ELINE('No year to date on file.')
+         YTD.TEMP=''
+      END
+*
+      POSTAGE=YTD.TEMP<31>
+      PROCESS.FEES=YTD.TEMP<32>
+      SERVICE.FEES=YTD.TEMP<33>
+      WKLY.POSTAGE.FEES=YTD.TEMP<50>
+      UPS.SER.FEES=YTD.TEMP<53>
+      ANALYTICS.FEES=YTD.TEMP<85>    ; * DRF01
+      LOGIS.FEES=YTD.TEMP<30>
+      OVCH.FEES=YTD.TEMP<29>
+      DISC.FEES=YTD.TEMP<28>
+      PRE.AUDIT.FEES=YTD.TEMP<75>
+*
+*      OPEN 'FB.ORIGIN.YTD' TO F.YTD.ORIGIN ELSE
+*        CALL ELINE('Cannot open FB.ORIGIN.YTD file!')
+*        GOTO 500
+*      END
+*
+      IF DIVISION='Y' THEN
+         OPEN 'DIVISION.CODES,':CLIENT TO F.DIV ELSE
+            CALL ELINE("Cannot open DIVISION.CODES,":CLIENT:" file!")
+            GOTO 500
+         END
+         OPEN 'REGION.CODES,':CLIENT TO F.REG ELSE ; * JMK03
+            CALL ELINE("Cannot open REGION.CODES,":CLIENT:" file!")    ; * JMK03
+            GOTO 500                  ; * JMK03
+         END                          ; * JMK03
+      END
+      IF EXPENSE='Y' THEN
+         OPEN '','EXPENSE.CODES,':CLIENT TO F.EXP ELSE
+            CALL ELINE("Cannot open EXPENSE.CODES,":CLIENT:" file!")
+            GOTO 500
+         END
+      END
+      IF VARIANCE='Y' OR VARIANCE='A' THEN
+         OPEN '','VARIANCE.CODES,':CLIENT TO F.VAR ELSE
+            CALL ELINE("Cannot open VARIANCE.CODES,":CLIENT:" file!")
+            GOTO 500
+         END
+      END
+*
+* FIND LAST PROCESS DATE
+*
+      OPEN '','FB.UNPROCESS,':CLIENT TO F.UP ELSE
+         CALL ELINE("Cannot open FB.UNPROCESS,":CLIENT:'  "Last" option not available!')
+         GO 500
+      END
+      READ DDATES FROM F.UP,'PROCESS.DATES' ELSE
+         CALL ELINE('FB.UNPROCESS,':CLIENT:' PROCESS.DATES not on file  "Last" option not available')
+         GO 500
+      END
+      END.DATE=DDATES<2>
+*
+* Enter ending date
+*
+      HELP='Enter the last date to include in the year to date figures.'
+      IF END.DATE#'' THEN MASK=END.DATE ELSE MASK='DD/MM/YY'
+      CALL GEN.IN(0,5,'Enter Ending Date    ':MASK'D2/','DATE',END.DATE,0,8,'','',0,-8,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN GOTO 500
+      IF QI='EX' THEN GO 9999
+      IF QI='' THEN QI=END.DATE
+      CRT @(21,5):END.DATE'D2/'
+*
+* Calculate fiscal year beginning date
+*
+      END.MONTH=OCONV(END.DATE,'DM')
+      END.DAY=OCONV(END.DATE,'DD')
+      END.YEAR=OCONV(END.DATE,'DY')
+      BEG.DATE=CLIENT.REC<29>:'.':END.YEAR
+      X=ICONV(BEG.DATE,'D2.')
+      IF X>END.DATE THEN BEG.DATE=CLIENT.REC<29>:'.':END.YEAR-1
+      BEG.DATE=ICONV(BEG.DATE,'D2.')
+      CRT @(0,7):'Fiscal year begins   ':BEG.DATE'D2/'
+*
+* Start process
+*
+      CALL FB.YTD.CLEAR(CLIENT,ERROR)
+      IF ERROR THEN GOTO 500
+*
+** Select freight bill history file with given criteria.
+*
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,"AFS Logistics, LLC",TIME.DATE,1)
+      CRT @(0,3):'Enter Client Number     ':CLIENT:' ':CLIENT.REC<2>:@(-3)
+      CRT @(0,22):"Now Selecting Freight Bill History File.":@(-4):
+      PREC='SELECT FB.BILLS.HIST,':CLIENT:' WITH 37 GE "':BEG.DATE'D2/'
+      PREC=PREC:'" AND WITH 37 LE "':END.DATE'D2/':'"'
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+
+      NUM.ITMS = @SELECTED
+      IF @SELECTED < 1 THEN ; * JCW01
+         CALL ELINE('No items on file for the given period!')
+         GO 9999
+      END
+      COUNTER=0
+*
+* Get next bill item
+*
+1000: READNEXT BILL.ID ELSE GOTO 2000
+      COUNTER=COUNTER+1
+      CALL PROG.BAR(22,COUNTER,NUM.ITMS,PER)
+      READ BILL.REC FROM F.HIST,BILL.ID ELSE GOTO 1000
+      IF BILL.REC<39>='P' THEN GOTO 1000           ; * JMK04
+*
+      CARRIER=FIELD(BILL.ID,'*',1)
+      PRO.NO=FIELD(BILL.ID,'*',2)
+      VERSION=FIELD(BILL.ID,'*',3) ; * JMK01
+      PRO.LENGTH=LEN(PRO.NO)
+      IF PRO.NO[PRO.LENGTH-1,2] = 'BD' THEN BAL.DUE = 1 ELSE BAL.DUE = 0
+      IF PRO.NO[PRO.LENGTH-1,2] = 'AD' THEN ADD.DUE = 1 ELSE ADD.DUE = 0
+      IF PRO.NO[PRO.LENGTH-1,2] = 'CM' THEN CR.MEMO = 1 ELSE CR.MEMO = 0
+*
+      BILL.DATE=BILL.REC<1>
+      IN.OUT=BILL.REC<2>
+      WEIGHT=BILL.REC<6>
+      IF WEIGHT='LX' THEN WEIGHT=1
+      CARRIER.CHG=BILL.REC<7>
+      ACTUAL.CHG=BILL.REC<8>
+      CAR.DIV=BILL.REC<9>
+      DISC.VAR=BILL.REC<10>
+      OVRCHG.VAR=BILL.REC<11>
+      CONSLT.VAR=BILL.REC<12>
+      BD.DISC=BILL.REC<34>
+      BD.OVRCHG=BILL.REC<35>
+      BD.CONSLT=BILL.REC<36>
+      PROC.DATE=BILL.REC<37>
+      BILL.BANK=BILL.REC<40>    ; * JMK02
+      MISROUTE.CHG=BILL.REC<63> ; * JMK01
+      OVR.CHG=ACTUAL.CHG-MISROUTE.CHG ; * JMK01
+      IF OVR.CHG < 0 THEN OVR.CHG = 0 ; * JMK01
+      IF VERSION#'0' THEN OVR.CHG=0 ; * JMK01
+      IF MISROUTE.CHG+0=0 THEN OVR.CHG=0
+
+*
+* Rejected bill counter/amount updates
+*
+      REJ.FLAG = (BILL.REC<39>="R")      ; * REJECTED - NeverPay or Eventually
+      NP.FLAG = (BILL.REC<66>="N")       ; * NeverPay Bill
+      EP.FLAG = (BILL.REC<66>="E")       ; * EventuallyPay Bill
+
+*
+* Eventually Pay Bills
+*
+      IF EP.FLAG THEN
+         CLIENT.YTD<44>+=1               ; * Hold Bill Count
+         CLIENT.YTD<45>+=CARRIER.CHG     ; * Amount Hold for Payment
+      END
+
+*
+* Never Pay Bills
+*
+      IF NP.FLAG THEN
+         CLIENT.YTD<48>+=1
+         CLIENT.YTD<49>+=CARRIER.CHG
+      END
+
+*
+* Rejected Bills - do not update
+*
+      IF (REJ.FLAG) THEN GO 1910
+
+*
+* Update year to date items
+*
+      YTD.ID=CLIENT'R%5':'*':CARRIER'R%5'
+*DF      READ CARRIER.YTD FROM F.BILLS.YTD,YTD.ID ELSE CARRIER.YTD=''
+*
+*      YTD.ORIGIN.ID=IN.OUT:'*':CLIENT'R%5':'*':BILL.REC<3>:'*':BILL.REC<4>
+*      READ ORIGIN.YTD FROM F.YTD.ORIGIN,YTD.ORIGIN.ID ELSE ORIGIN.YTD=''
+*
+      DUP=FIELD(BILL.ID,'*',3)
+
+      IF DUP > 0 THEN
+*DF        CARRIER.YTD<13>=CARRIER.YTD<13>+1
+         CLIENT.YTD<13>=CLIENT.YTD<13>+1
+*DF        CARRIER.YTD<14>=CARRIER.YTD<14>+CARRIER.CHG
+         CLIENT.YTD<14>=CLIENT.YTD<14>+CARRIER.CHG
+         GOTO 1900
+      END
+
+
+*
+** Update carrier ytd item
+*
+*DF      CARRIER.YTD<6>=CARRIER.YTD<6>+WEIGHT
+*DF      CARRIER.YTD<7>=CARRIER.YTD<7>+CARRIER.CHG
+*DF      CARRIER.YTD<8>=CARRIER.YTD<8>+ACTUAL.CHG
+*DF      CARRIER.YTD<10>=CARRIER.YTD<10>+DISC.VAR
+*DF      CARRIER.YTD<11>=CARRIER.YTD<11>+OVRCHG.VAR
+*DF      CARRIER.YTD<12>=CARRIER.YTD<12>+CONSLT.VAR
+*DF      IF BAL.DUE THEN CARRIER.YTD<38>=CARRIER.YTD<38>+ACTUAL.CHG
+*DF      IF ADD.DUE THEN CARRIER.YTD<39>=CARRIER.YTD<39>+ACTUAL.CHG
+*
+** Update client ytd item
+*
+      CLIENT.YTD<6>=CLIENT.YTD<6>+WEIGHT
+      CLIENT.YTD<7>=CLIENT.YTD<7>+CARRIER.CHG
+      CLIENT.YTD<8>=CLIENT.YTD<8>+ACTUAL.CHG
+      DONE=0
+      FOR I=1 TO NUM.COMM UNTIL DONE
+         IF PROC.DATE GE COMM.ARR<I,1> ! I=NUM.COMM THEN
+            IF NOT(BAL.DUE) THEN
+               COMM.ARR<I,2>=COMM.ARR<I,2>+DISC.VAR
+               COMM.ARR<I,3>=COMM.ARR<I,3>+OVRCHG.VAR
+               COMM.ARR<I,4>=COMM.ARR<I,4>+CONSLT.VAR
+            END ELSE
+               COMM.ARR<I,3>=COMM.ARR<I,3>+ACTUAL.CHG
+            END
+            DONE=1
+         END
+      NEXT I
+      CLIENT.YTD<10>=CLIENT.YTD<10>+DISC.VAR
+      IF CARRIER # "00041" THEN
+         CLIENT.YTD<11>=CLIENT.YTD<11>+OVRCHG.VAR
+      END ELSE
+         CLIENT.YTD<51>=CLIENT.YTD<51>+OVRCHG.VAR
+      END
+      CLIENT.YTD<12>=CLIENT.YTD<12>+CONSLT.VAR
+      CLIENT.YTD<34>=CLIENT.YTD<34>+BD.DISC
+      IF CARRIER # "00041" THEN
+         CLIENT.YTD<35>=CLIENT.YTD<35>+BD.OVRCHG
+      END ELSE
+         CLIENT.YTD<52>=CLIENT.YTD<52>+BD.OVRCHG
+      END
+      CLIENT.YTD<36>=CLIENT.YTD<36>+BD.CONSLT
+      IF BAL.DUE THEN CLIENT.YTD<38>=CLIENT.YTD<38>+ACTUAL.CHG
+      IF ADD.DUE THEN CLIENT.YTD<39>=CLIENT.YTD<39>+ACTUAL.CHG
+      DISC.VAR=0
+      OVRCHG.VAR=0
+      CONSLT.VAR=0
+*
+*      ORIGIN.YTD<1>=ORIGIN.YTD<1>+ACTUAL.CHG
+*      ORIGIN.YTD<2>=ORIGIN.YTD<2>+WEIGHT
+*      ORIGIN.YTD<3>=ORIGIN.YTD<3>+1
+
+      COMMISSION=BILL.REC<42>+BILL.REC<43>+BILL.REC<44>+BILL.REC<165>
+      BEGIN CASE
+         CASE IN.OUT='O'
+            IF BILL.REC<88>#'' OR BILL.REC<53>[1,12]='EBILL.IMPORT' THEN
+               CLIENT.YTD<42>=CLIENT.YTD<42>+1
+            END ELSE
+               IF NOT(CR.MEMO) THEN
+                  CLIENT.YTD<15>=CLIENT.YTD<15>+1
+               END
+            END
+            CLIENT.YTD<20>=CLIENT.YTD<20>+ACTUAL.CHG
+            CLIENT.YTD<68>+=COMMISSION   ; * build ytd outbound commission
+            CLIENT.YTD<71>=CLIENT.YTD<71>+OVR.CHG ; * JMK01
+         CASE IN.OUT='I'
+            IF BILL.REC<88>#'' OR BILL.REC<53>[1,12]='EBILL.IMPORT' THEN
+               CLIENT.YTD<43>=CLIENT.YTD<43>+1
+            END ELSE
+               IF NOT(CR.MEMO) THEN
+                  CLIENT.YTD<17>=CLIENT.YTD<17>+1
+               END
+            END
+            CLIENT.YTD<21>=CLIENT.YTD<21>+ACTUAL.CHG
+            CLIENT.YTD<67>+=COMMISSION   ; * build ytd inbound commission
+            CLIENT.YTD<72>=CLIENT.YTD<72>+OVR.CHG ; * JMK01
+         CASE 1
+            IF BILL.REC<88>#'' OR BILL.REC<53>[1,12]='EBILL.IMPORT' THEN
+               CLIENT.YTD<65>=CLIENT.YTD<65>+1
+            END ELSE
+               IF NOT(CR.MEMO) THEN
+                  CLIENT.YTD<60>=CLIENT.YTD<60>+1
+               END
+            END
+            CLIENT.YTD<62>=CLIENT.YTD<62>+ACTUAL.CHG
+            CLIENT.YTD<69>+=COMMISSION   ; * build ytd third party commission
+            CLIENT.YTD<73>=CLIENT.YTD<73>+OVR.CHG ; * JMK01
+      END CASE
+
+*DF      CARRIER.YTD<25>=CARRIER.YTD<25>+(CARRIER.CHG-ACTUAL.CHG)
+      CLIENT.YTD<25>=CLIENT.YTD<25>+(CARRIER.CHG-ACTUAL.CHG)
+********************************************************************
+**                                                                **
+**  Recalculate commission from the bills file                    **
+**                                                                **
+********************************************************************
+      CLIENT.YTD<30>=CLIENT.YTD<30>+BILL.REC<44>
+      IF CARRIER # "00041" THEN
+         CLIENT.YTD<29>=CLIENT.YTD<29>+BILL.REC<43>
+      END ELSE
+         CLIENT.YTD<54>=CLIENT.YTD<54>+BILL.REC<43>
+      END
+      CLIENT.YTD<28>=CLIENT.YTD<28>+BILL.REC<42>
+      CLIENT.YTD<74>=CLIENT.YTD<74>+BILL.REC<165>
+      IF BILL.BANK#'F' THEN              ; * JMK02
+         CLIENT.YTD<76>+=1               ; * JMK02
+         CLIENT.YTD<77>+=BILL.REC<8>     ; * JMK02
+      END                                ; * JMK02
+*
+* Update division totals *
+*
+      IF DIVISION='Y' THEN
+         IF CAR.DIV NE '' THEN
+            MATREADU DIV.REC FROM F.DIV,CAR.DIV ELSE MAT DIV.REC=''
+            BEGIN CASE
+               CASE IN.OUT='O'
+*DF              DIV.O.YTD += ACTUAL.CHG
+                  DIV.O.YTD += ACTUAL.CHG+BILL.REC<42>+BILL.REC<43>+BILL.REC<44>+BILL.REC<165>
+               CASE IN.OUT='I'
+*DF              DIV.I.YTD += ACTUAL.CHG
+                  DIV.I.YTD += ACTUAL.CHG+BILL.REC<42>+BILL.REC<43>+BILL.REC<44>+BILL.REC<165>
+               CASE 1
+*DF              DIV.T.YTD += ACTUAL.CHG
+                  DIV.T.YTD += ACTUAL.CHG+BILL.REC<42>+BILL.REC<43>+BILL.REC<44>+BILL.REC<165>
+            END CASE
+            MATWRITE DIV.REC ON F.DIV,CAR.DIV
+            REG.ID = DIV.REC(45)      ; * JMK03
+            MATREADU REG.CODE.REC FROM F.REG,REG.ID ELSE MAT REG.CODE.REC=''  ; * JMK03
+            BEGIN CASE                ; * JMK03
+               CASE IN.OUT='O'        ; * JMK03
+                  REG.O.YTD += ACTUAL.CHG+BILL.REC<42>+BILL.REC<43>+BILL.REC<44>+BILL.REC<165>    ; * JMK03
+               CASE IN.OUT='I'        ; * JMK03
+                  REG.I.YTD += ACTUAL.CHG+BILL.REC<42>+BILL.REC<43>+BILL.REC<44>+BILL.REC<165>    ; * JMK03
+               CASE 1                 ; * JMK03
+                  REG.T.YTD += ACTUAL.CHG+BILL.REC<42>+BILL.REC<43>+BILL.REC<44>+BILL.REC<165>    ; * JMK03
+            END CASE                  ; * JMK03
+            MATWRITE REG.CODE.REC ON F.REG,REG.ID    ; * JMK03
+         END ELSE
+            CRT @(0,17) : 'NO DIVISION CODE FOR PRO ' : PRO.NO
+         END
+      END
+*
+* Update expense codes
+*
+      IF EXPENSE='Y' THEN
+         EXP.COUNT=DCOUNT(BILL.REC<31>,CHAR(253))
+         IF EXP.COUNT = 0 THEN
+            CRT @(0,17) : 'NO EXPENSE CODE FOR PRO ' : PRO.NO
+         END
+         FOR I=1 TO EXP.COUNT STEP 1
+            EXPENSE.CODE=BILL.REC<31,I>
+*DF          EXPENSE.AMT=BILL.REC<33,I>
+            EXPENSE.AMT=BILL.REC<33,I>+BILL.REC<32,I>
+            READU EXP.REC FROM F.EXP,EXPENSE.CODE ELSE EXP.REC=''
+            BEGIN CASE
+               CASE IN.OUT='O'
+                  EXP.REC<2>=EXP.REC<2>+EXPENSE.AMT
+               CASE IN.OUT='I'
+                  EXP.REC<3>=EXP.REC<3>+EXPENSE.AMT
+               CASE 1
+                  EXP.REC<4>=EXP.REC<4>+EXPENSE.AMT
+            END CASE
+            WRITE EXP.REC ON F.EXP,EXPENSE.CODE
+         NEXT I
+      END
+*
+* Update logistics variance totals
+*
+      IF VARIANCE='Y' OR VARIANCE='A' THEN
+         IF BILL.REC<21> NE '' THEN
+            VAR.CODE=BILL.REC<21>
+            IF USER = 'TAMI' OR USER = 'tami' AND VAR.CODE = 15 THEN CALL ELINE(VAR.CODE)
+            VAR.AMT=0-BILL.REC<12>
+            READU VAR.REC FROM F.VAR,VAR.CODE ELSE
+               VAR.REC=''
+               READV DESC FROM F.TRANSPORT,VAR.CODE,1 ELSE DESC='Unknown'
+               VAR.REC<1> = DESC
+            END
+            VAR.REC<2>=VAR.REC<2>+VAR.AMT
+            WRITE VAR.REC ON F.VAR,VAR.CODE
+         END
+      END
+*tbs        IF BILL.REC<51> NE '' THEN
+*tbs          TIMES=DCOUNT(BILL.REC<51>,CHAR(253))
+*tbs          FOR I=1 TO TIMES STEP 1
+*tbs            VAR.CODE=BILL.REC<51,I>
+*tbs            VAR.AMT=BILL.REC<52,I>
+*DF            READU VAR.REC FROM F.VAR,VAR.CODE ELSE VAR.REC=''
+*tbs            READU VAR.REC FROM F.VAR,VAR.CODE ELSE
+*tbs               READ CARRIER.REC FROM F.CARRIERS,CARRIER ELSE CARRIER.REC=''
+*tbs               READ VAR.REC FROM F.TRANSPORT,CARRIER.REC<44> ELSE VAR.REC=''
+*tbs            END
+*tbs            VAR.REC<2>=VAR.REC<2>+VAR.AMT
+*tbs            WRITE VAR.REC ON F.VAR,VAR.CODE
+*tbs          NEXT I
+*tbs        END
+*tbs      END
+*
+* Update inbound/outbound totals
+*
+1900: BEGIN CASE
+         CASE IN.OUT='O'
+            CLIENT.YTD<16>=CLIENT.YTD<16>+CARRIER.CHG
+            CLIENT.YTD<27>=CLIENT.YTD<27>+WEIGHT
+         CASE IN.OUT='I'
+            CLIENT.YTD<18>=CLIENT.YTD<18>+CARRIER.CHG
+            CLIENT.YTD<26>=CLIENT.YTD<26>+WEIGHT
+         CASE 1
+            CLIENT.YTD<61>=CLIENT.YTD<61>+CARRIER.CHG
+            CLIENT.YTD<64>=CLIENT.YTD<64>+WEIGHT
+      END CASE
+
+1910:
+*
+* Update files
+*
+*      WRITE ORIGIN.YTD ON F.YTD.ORIGIN,YTD.ORIGIN.ID
+*DF*     CARRIER.YTD<28>=(-CARRIER.YTD<10>*(CLIENT.REC<34>/100))'R0'
+*DF*     CARRIER.YTD<29>=(-CARRIER.YTD<11>*(CLIENT.REC<33>/100))'R0'
+*DF*     CARRIER.YTD<30>=(-CARRIER.YTD<12>*(CLIENT.REC<35>/100))'R0'
+*DF*     WRITE CARRIER.YTD ON F.BILLS.YTD,YTD.ID
+      GOTO 1000
+*
+* Post client incidental charges and stop
+*
+2000: ***
+      YTD.TEMP<54>=CLIENT.YTD<54>
+      YTD.TEMP<30>=CLIENT.YTD<30>
+      YTD.TEMP<29>=CLIENT.YTD<29>
+      YTD.TEMP<28>=CLIENT.YTD<28>
+      LOGIS.FEES=YTD.TEMP<30>
+      OVCH.FEES=YTD.TEMP<29>
+      UPS.OVCH.FEES=YTD.TEMP<54>
+      DISC.FEES=YTD.TEMP<28>
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,"AFS Logistics, LLC",TIME.DATE,1)
+      CRT @(0,3):'Enter Client Number     ':CLIENT:' ':CLIENT.REC<2>:@(-3)
+      CRT @(0,5):'Enter year to date postage charge.   :':POSTAGE'R26,#12'
+      CRT @(0,7):'Enter year to date processing fees.  :':YTD.TEMP<32>'R26,#12'
+      CRT @(0,9):'Enter year to date service fees.     :':YTD.TEMP<33>'R26,#12'
+      CRT @(0,10):'Enter year to date wk prc & hnd fees :':YTD.TEMP<50>'R26,#12'
+      CRT @(0,11):'Enter year to date UPS service fees. :':YTD.TEMP<53>'R26,#12'
+      CRT @(0,13):'Enter year to date logistic comm.    :':YTD.TEMP<30>'R26,#12'
+      CRT @(0,15):'Enter year to date overcharge comm.  :':YTD.TEMP<29>'R26,#12'
+      CRT @(0,17):'Enter year to date UPS ovrchg comm.  :':YTD.TEMP<54>'R26,#12'
+      CRT @(0,19):'Enter year to date discount comm.    :':YTD.TEMP<28>'R26,#12'
+      CRT @(0,21):'Enter year to date pre audit fees    :':YTD.TEMP<75>'R26,#12'
+2010: HELP='Enter year to date amount of postage charged.'
+      CALL GEN.IN(38,5,POSTAGE'R26,#12','AMT2',Q,0,12,'R','',2,38,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE Q=''
+            Q=POSTAGE
+         CASE NUM(Q)
+            IF Q < 0 THEN
+               CALL ELINE('Invalid entry. Cannot be negative.')
+               GO 2010
+            END
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GO 2010
+      END CASE
+      CRT @(38,5):Q'R26,#12'
+      POSTAGE=Q
+*
+2050: HELP='Enter the year to date amount of processing fees charged. X=Back to Postage.'
+      CALL GEN.IN(38,7,PROCESS.FEES'R26,#12','AMT2',Q,0,12,'R','',2,38,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE Q='X'
+            CRT @(38,7):PROCESS.FEES'R26,#12'
+            GO 2010
+         CASE Q=''
+            Q=PROCESS.FEES
+         CASE NUM(Q)
+            IF Q < 0 THEN
+               CALL ELINE('Invalid entry. Cannot be negative.')
+               GO 2050
+            END
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GO 2050
+      END CASE
+      CRT @(38,7):Q'R26,#12'
+      PROCESS.FEES=Q
+*
+2060: HELP='Enter the year to date amount of service fees. X=Back to Processing Fees.'
+      CALL GEN.IN(38,9,SERVICE.FEES'R26,#12','AMT2',Q,0,12,'R','',2,38,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE Q='X'
+            CRT @(38,9):SERVICE.FEES'R26,#12'
+            GO 2050
+         CASE Q=''
+            Q=SERVICE.FEES
+         CASE NUM(Q)
+            IF Q < 0 THEN
+               CALL ELINE('Invalid entry. Cannot be negative.')
+               GO 2060
+            END
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GO 2060
+      END CASE
+      CRT @(38,9):Q'R26,#12'
+      SERVICE.FEES=Q
+*
+2065: HELP='Enter the year to date amount of wkly proc & hndlg fees. X=Bck to Srv Fees.'
+      CALL GEN.IN(38,10,WKLY.POSTAGE.FEES'R26,#12','AMT2',Q,0,12,'R','',2,38,10,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE Q='X'
+            CRT @(38,10):WKLY.POSTAGE.FEES'R26,#12'
+            GO 2060
+         CASE Q=''
+            Q=WKLY.POSTAGE.FEES
+         CASE NUM(Q)
+            IF Q < 0 THEN
+               CALL ELINE('Invalid entry. Cannot be negative.')
+               GO 2065
+            END
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GO 2065
+      END CASE
+      CRT @(38,10):Q'R26,#12'
+      WKLY.POSTAGE.FEES=Q
+*
+2070: HELP='Enter the year to date amount of UPS service fees. X=Back to Wkly Prc Fees.'
+      CALL GEN.IN(38,11,UPS.SER.FEES'R26,#12','AMT2',Q,0,12,'R','',2,38,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE Q='X'
+            CRT @(38,11):UPS.SER.FEES'R26,#12'
+            GO 2065
+         CASE Q=''
+            Q=UPS.SER.FEES
+         CASE NUM(Q)
+            IF Q < 0 THEN
+               CALL ELINE('Invalid entry. Cannot be negative.')
+               GO 2070
+            END
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GO 2070
+      END CASE
+      CRT @(38,11):Q'R26,#12'
+      UPS.SER.FEES=Q
+*
+2075: HELP='Enter the year to date amount of Analytics fees. X=Back to UPS Srv Fees.'    ; * DRF01
+      CALL GEN.IN(38,12,ANALYTICS.FEES'R26,#12','AMT2',Q,0,12,'R','',2,38,12,0,QI,HELP,0,23)    ; * DRF01
+      QI=OCONV(QI,'MCU')    ; * DRF01
+      BEGIN CASE    ; * DRF01
+         CASE Q='X'    ; * DRF01
+            CRT @(38,12):ANALYTICS.FEES'R26,#12'    ; * DRF01
+            GO 2070    ; * DRF01
+         CASE Q=''    ; * DRF01
+            Q=ANALYTICS.FEES    ; * DRF01
+         CASE NUM(Q)    ; * DRF01
+            IF Q < 0 THEN    ; * DRF01
+               CALL ELINE('Invalid entry. Cannot be negative.')    ; * DRF01
+               GO 2075    ; * DRF01
+            END    ; * DRF01
+         CASE 1    ; * DRF01
+            CALL ELINE('Invalid entry.')    ; * DRF01
+            GO 2075    ; * DRF01
+      END CASE    ; * DRF01
+      CRT @(38,12):Q'R26,#12'    ; * DRF01
+      ANALYTICS.FEES=Q    ; * DRF01
+*
+2080: HELP='Enter the year to date amount of logistic comm. X=Back to Analytics Fees.'    ; * DRF01
+      CALL GEN.IN(38,13,LOGIS.FEES'R26,#12','AMT2',Q,0,12,'R','',2,38,13,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE Q='X'
+            CRT @(38,13):LOGIS.FEES'R26,#12'
+            GO 2075    ; * DRF01
+         CASE Q=''
+            Q=LOGIS.FEES
+         CASE NUM(Q)
+            IF Q < 0 THEN
+               CALL ELINE('Invalid entry. Cannot be negative.')
+               GO 2080
+            END
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GO 2080
+      END CASE
+      CRT @(38,13):Q'R26,#12'
+      LOGIS.FEES=Q
+*
+2090: HELP='Enter the year to date amount of overcharge comm. X=Back to Logistic Fees.'
+      CALL GEN.IN(38,15,OVCH.FEES'R26,#12','AMT2',Q,0,12,'R','',2,38,15,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE Q='X'
+            CRT @(38,15):OVCH.FEES'R26,#12'
+            GO 2080
+         CASE Q=''
+            Q=OVCH.FEES
+         CASE NUM(Q)
+            IF Q < 0 THEN
+               CALL ELINE('Invalid entry. Cannot be negative.')
+               GO 2090
+            END
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GO 2090
+      END CASE
+      CRT @(38,15):Q'R26,#12'
+      OVCH.FEES=Q
+*
+2100: HELP='Enter the year to date amount of UPS overcharge comm. X=Back to Logistic Fees.'
+      CALL GEN.IN(38,17,UPS.OVCH.FEES'R26,#12','AMT2',Q,0,12,'R','',2,38,17,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE Q='X'
+            CRT @(38,17):UPS.OVCH.FEES'R26,#12'
+            GO 2090
+         CASE Q=''
+            Q=UPS.OVCH.FEES
+         CASE NUM(Q)
+            IF Q < 0 THEN
+               CALL ELINE('Invalid entry. Cannot be negative.')
+               GO 2100
+            END
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GO 2100
+      END CASE
+      CRT @(38,17):Q'R26,#12'
+      UPS.OVCH.FEES=Q
+*
+2110: HELP='Enter the year to date amount of discount comm. X=Back to Logistic Fees.'
+      CALL GEN.IN(38,19,DISC.FEES'R26,#12','AMT2',Q,0,12,'R','',2,38,19,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE Q='X'
+            CRT @(38,19):DISC.FEES'R26,#12'
+            GO 2100
+         CASE Q=''
+            Q=DISC.FEES
+         CASE NUM(Q)
+            IF Q < 0 THEN
+               CALL ELINE('Invalid entry. Cannot be negative.')
+               GO 2110
+            END
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GO 2110
+      END CASE
+      CRT @(38,19):Q'R26,#12'
+      DISC.FEES=Q
+*
+2120: HELP='Enter the year to date amount of pre audit fees charged. X=Back to Discount.'
+      CALL GEN.IN(38,21,PRE.AUDIT.FEES'R26,#12','AMT2',Q,0,12,'R','',2,38,21,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE Q='X'
+            CRT @(38,21):PRE.AUDIT.FEES'R26,#12'
+            GO 2110
+         CASE Q=''
+            Q=PRE.AUDIT.FEES
+         CASE NUM(Q)
+            IF Q < 0 THEN
+               CALL ELINE('Invalid entry. Cannot be negative.')
+               GO 2120
+            END
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GO 2120
+      END CASE
+      CRT @(38,21):Q'R26,#12'
+      PRE.AUDIT.FEES=Q
+*
+      CLIENT.YTD<40>=END.DATE
+*
+* Update year to date commissions
+*
+      CLIENT.YTD<28>=DISC.FEES
+      CLIENT.YTD<29>=OVCH.FEES
+      CLIENT.YTD<30>=LOGIS.FEES
+      CLIENT.YTD<31>=POSTAGE
+      CLIENT.YTD<32>=PROCESS.FEES
+      CLIENT.YTD<33>=SERVICE.FEES
+      CLIENT.YTD<50>=WKLY.POSTAGE.FEES
+      CLIENT.YTD<53>=UPS.SER.FEES
+      CLIENT.YTD<85>=ANALYTICS.FEES    ; * DRF01
+      CLIENT.YTD<54>=UPS.OVCH.FEES
+      CLIENT.YTD<75>=PRE.AUDIT.FEES
+*
+*     CLIENT.YTD<28>=0
+*     CLIENT.YTD<29>=0
+*     CLIENT.YTD<30>=0
+*     FOR I=1 TO NUM.COMM
+*     CLIENT.YTD<28>=(-CLIENT.YTD<10>*(CLIENT.REC<34>/100))'R0'
+*     CLIENT.YTD<29>=(-CLIENT.YTD<11>*(CLIENT.REC<33>/100))'R0'
+*     CLIENT.YTD<30>=(-CLIENT.YTD<12>*(CLIENT.REC<35>/100))'R0'
+*       CLIENT.YTD<28>=CLIENT.YTD<28>-(COMM.ARR<I,2>*(CLIENT.REC<34,NUM.COMM+1-I>/100))'R0'
+*       CLIENT.YTD<29>=CLIENT.YTD<29>-(COMM.ARR<I,3>*(CLIENT.REC<33,NUM.COMM+1-I>/100))'R0'
+*       CLIENT.YTD<30>=CLIENT.YTD<28>-(COMM.ARR<I,4>*(CLIENT.REC<85,NUM.COMM+1-I>/100))'R0'
+*     NEXT I
+      WRITE CLIENT.YTD ON F.BILLS.YTD,CLIENT
+      GO 9999
+9999: * EXIT PROGRAM
+      STOP

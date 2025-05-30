@@ -1,0 +1,595 @@
+$OPTIONS HEADER.EJECT
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+ERRMSG=''
+* PROGRAM UPD.EXCHANGE.RATES
+*
+* Routine to maintain Daily Currency rates 
+*
+* FREIGHT BILLING PACKAGE
+*
+* May 2009  BY N PRATT
+*
+* 081809 - NPR01 - T091057 - Replace Sandra Long with Stacy Rittenbach wherever the former occurs
+*
+* Initialize variables
+*
+5
+*
+      PROMPT''
+      PROG.NAME='UPD.EXCHANGE.RATES'
+      PROG.DESC = "Enter Exchange rates"
+      PACK.NAME='FREIGHT BILLING'
+*
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'UPD.EXCHANGE.RATES' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      CALL AFS.SCR.HEAD(CO.ID,"",'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+
+      CALL GET.USER(USER)
+      SUPERUSER = 0
+      IF USER = "NPRATT" THEN SUPERUSER = 1
+
+      BEGIN CASE
+        *
+        * Authorized users
+        *
+        CASE USER = 'DAVID'
+        CASE USER = 'OWEN'
+        CASE USER = 'NPRATT'
+        CASE USER = 'BRIAN'
+        CASE USER = 'MKERBOW'
+        CASE USER = 'KAREN'
+*NPR01        CASE USER = 'SANDRA'
+        CASE USER = 'SRITTENBACH'
+        CASE USER = 'CBEASLEY'
+        CASE USER = 'DEBBIE'
+        *
+        * Restrict everyone else
+        *
+        CASE 1
+          SUBJ="Unauthorized Program Access by ":USER
+          TEXT=''
+          TEXT<1,-1>=USER:' ':DATE()'D2/':' ':OCONV(TIME(),'MTHS'):' ':PROG.NAME
+          TEXT<1,-1>='User ':USER:' tried to access ':PROG.DESC
+          TEXT<1,-1>="(This user's name was not included in the program to allow access)"
+          MVIN=''
+*          MVIN<1>='Owen@afs.net':@VM:'SMatthews@afs.net'
+******          MVIN<1> = "npratt@afs.net"
+          MVIN<2>=''
+          MVIN<4>='AFS'
+          MVIN<5>=SUBJ
+          MVIN<6>=TEXT
+*zz          CALL SENDMAIL(MVIN,MVOUT)
+
+          CALL FB.PRINT.CENT(1,80,12,'Restricted Access Application...')
+          CALL FB.PRINT.CENT(1,80,14,'Access Denied! Contact the IS Help Desk for Access')
+          CALL ELINE('')
+          STOP
+      END CASE
+
+*
+* Open files
+*
+      OPEN '','BCTRL' TO F.BCTRL ELSE CALL OPEN.ABORT('BCTRL',PROG.NAME)
+      OPEN '','FB.TABLES' TO F.TABLES ELSE CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      OPEN '','FB.CURRENCY.RATES' TO  F.CURRENCY.RATES ELSE CALL OPEN.ABORT('FB.CURRENCY.RATES',PROG.NAME)
+      OPEN '','FB.COUNTRIES' TO F.COUNTRIES ELSE CALL OPEN.ABORT('FB.CURRENCY.RATES',PROG.NAME)
+
+10 :
+ 
+        CURRENCY.CD       = ""
+        CURRENCY.CD.HOLD  = ""
+
+        TODAY = DATE()
+        EFF.DATE      = ""
+        EFF.DATE.HOLD = EFF.DATE
+
+        EXCHR.REC         = ""
+
+        EXCHG.RATE        = ""
+        EXCHG.RATE.HOLD   = ""
+
+        CURRENCY.CODE.DISPLAY = ""
+
+        ID.TAB = "CURRENCY.CODES"
+        READ CCODES.REC FROM F.TABLES, ID.TAB ELSE CCODES.REC = ""          ;* Particular currencies of interest to AFS as at 07/31/09
+
+        READ CURR.XREF.REC FROM F.TABLES, "EXCHR.CURR.CD.XREF" ELSE         ;* All currencies as at 07/31/09
+           CALL ELINE("Cant open FB.TABLES  - Item 'EXCHR.CURR.CD.XREF'")
+           STOP
+        END
+
+*
+* Select and display available options
+*
+20 :  * Enter Currency Code
+*
+        CALL SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+        GOSUB 5000
+
+        HELP = "Enter Currency Code, 'L'ist 'X'=Back or 'EX'=Exit."
+
+        IF CURRENCY.CD.HOLD = "" THEN 
+           MASK = ""
+        END ELSE
+           MASK = CURRENCY.CD.HOLD
+        END
+
+        CALL GEN.IN(30,3,MASK,'',Q,0,0,'','',0,30,3,0,QI,HELP,0,23)
+        QI = OCONV(QI,'MCU')
+
+        IF QI = '' AND CURRENCY.CD.HOLD = '' THEN
+           IF USER NE "NPRATT" THEN CHAIN "G" ELSE STOP
+        END ELSE
+           IF QI = "" AND CURRENCY.CD.HOLD NE '' THEN QI = CURRENCY.CD.HOLD
+        END
+*
+        BEGIN CASE
+           CASE QI = "L"
+              GOSUB DISPLAY.CODES
+              CALL ELINE("")
+              GOTO 20
+           CASE QI = "X" OR QI = "EX" OR QI = ''
+              IF USER NE "NPRATT" THEN CHAIN "G" ELSE STOP
+           CASE 1
+              LOCATE QI IN CCODES.REC<1> SETTING CD.POS THEN
+                 CURRENCY.DESC = CCODES.REC<2,CD.POS>
+                 COUNTRIES = CCODES.REC<2,CD.POS>
+                 N.CTR = DCOUNT(CCODES.REC<2,CD.POS>,@SVM)
+*                 CRT @(40,6):"Code":" ":"Country used in"
+*                 CRT @(40,7):"----":" ":STR("-",25)
+                 FOR IC = 1 TO N.CTR
+                    CTRY.CD = CCODES.REC<2,CD.POS,IC>
+                    READV CTRY.NAME FROM F.COUNTRIES, CTRY.CD,1 ELSE CTRY.NAME = ''
+*                    CRT @(40,IC+7):CTRY.CD:" ":CTRY.NAME
+                 NEXT IC
+                 CURRENCY.CD = QI
+                 CURRENCY.CODE.DISPLAY = QI:" ":OCONV(CURRENCY.DESC,"MCT")
+              END ELSE
+                 CALL ELINE('Invalid Currency code - Please select from the list below.')
+                 GOTO 20
+              END
+        END CASE
+*
+        CRT @(30,3) : CURRENCY.CODE.DISPLAY
+
+       CURRENCY.CD.HOLD = QI
+
+        CRT @(0,6):@(-3)
+
+*
+30:* Enter Effective Date for rate
+
+      HELP="Enter Effective Date for rate , [CR/Return] - For today's date"
+
+      IF EFF.DATE # '' THEN
+         EFF.DATE.HOLD = EFF.DATE
+         MASK = EFF.DATE'D2/'
+         EFF.DATE.HOLD = EFF.DATE
+      END ELSE
+         MASK = DATE() 'D2/'
+      END
+
+      CALL GEN.IN(30,4,MASK,'DATE',Q,0,8,'','',0,30,4,0,QI,HELP,0,23)
+
+      QI = OCONV(QI,'MCU')
+      
+      BEGIN CASE
+         CASE QI='EX'
+              IF USER NE "NPRATT" THEN CHAIN "G" ELSE STOP
+         CASE QI='X'
+            CRT @(30,4) : SPACE(8)
+            GOTO 20
+         CASE QI = '' AND EFF.DATE.HOLD NE ''
+            Q = EFF.DATE.HOLD
+         CASE Q GT DATE()
+            CALL ELINE('ERROR - Date may not be in the future')
+            GOTO 30            
+         CASE NOT(NUM(Q)) ! Q = ''
+            IF Q = "" THEN
+               Q = DATE()
+            END ELSE
+               CALL ELINE('ERROR - Invalid Date.')
+               GOTO 30
+            END
+      END CASE
+
+      IF Q GT TODAY+365 THEN
+         CALL ELINE("Date may not be more than a year in the future")
+         GOTO 30
+      END
+
+      EFF.DATE = Q
+
+      CRT @(30,4):EFF.DATE'D2/'
+
+      ERR.FLAG = 0
+      GOSUB CHECK.LAST.ENTRY
+      CRT @(0,22):@(-3)
+
+      GOSUB 5000
+
+      IF ERR.FLAG AND NOT(SUPERUSER) THEN
+         CALL ELINE("Missing or erroneous data has been detected - Please check with your supervisor")
+         GOTO 30
+      END
+
+      CRT @(30,4):EFF.DATE'D2/'
+
+      ID.EXCHR = CURRENCY.CD:"*":EFF.DATE 
+      READU EXCHR.REC FROM F.CURRENCY.RATES, ID.EXCHR ELSE
+         EXCHR.REC = ''
+*         CRT @(50,3):">>NEW RATE<<"
+      END
+
+      RATE1       = EXCHR.REC<1>
+      RATE2       = EXCHR.REC<2>
+      ENTERED.BY1 = EXCHR.REC<3>
+      ENTERED.ON1 = EXCHR.REC<4>
+      ENTERED.AT1 = EXCHR.REC<5>
+      ENTERED.BY2 = EXCHR.REC<6>
+      ENTERED.ON2 = EXCHR.REC<7>
+      ENTERED.AT2 = EXCHR.REC<8>
+
+      IF SUPERUSER THEN
+         GOSUB DISPLAY.ALL
+         GOTO 40   ;* Super Users may change rates
+      END
+
+      BEGIN CASE
+         CASE RATE1 GT 0 AND RATE2 GT 0
+            CALL ELINE("Rate entered and checked - Changes may not be made")
+            CRT @(30,5) : OCONV(RATE1,"MR4")
+            RELEASE F.CURRENCY.RATES, ID.EXCHR
+            GOTO 10
+         CASE RATE2 = 0 OR RATE2 = ""
+            NULL
+         CASE 1            
+      END CASE
+
+      IF RATE1 GT 0 AND USER = ENTERED.BY1 THEN
+         CRT @(30,5) : OCONV(RATE1,"MR4")
+         RELEASE F.CURRENCY.RATES, ID.EXCHR
+         CALL ELINE("Please check with your supervisor if you need to change this rate")
+         GOTO 10
+      END
+
+*
+40 :  * Enter Exchange rate
+*
+        HELP = "Enter Exchange rate for converting TO... US Dollars  ,X'=Back, 'EX'=Exit."
+
+        EXCHG.RATE = EXCHR.REC<1>
+        IF EXCHG.RATE # '' THEN
+*           MASK = EXCHG.RATE'R46(#12)'
+           MASK = OCONV(EXCHG.RATE,"MR4")
+           EXCHG.RATE.HOLD = EXCHG.RATE
+        END ELSE
+           MASK = ''
+        END
+
+       CALL GEN.IN(30,5,MASK 'R4#12','AMT4',Q,0,12,'','',2,30,5,0,QI,HELP,0,23)
+*         CALL GEN.IN(30,5,MASK 'R26#9','AMT2',Q,0,12,'','',2,30,5,0,QI,HELP,0,23)
+
+*        IF FIELD(Q,".",2) NE '' THEN QI = ICONV(Q,"MR4") ELSE QI = Q
+
+        QI = TRIM(OCONV(QI,'MCU'))
+
+        IF QI= '' AND EXCHG.RATE.HOLD = '' THEN
+           CALL ELINE('Invalid Entry.')
+           GOTO 40
+        END ELSE
+           IF Q= '' AND EXCHG.RATE.HOLD NE '' THEN
+              QI = EXCHG.RATE.HOLD
+              Q = EXCHG.RATE.HOLD
+           END
+        END
+*
+        BEGIN CASE
+          CASE QI = "X"
+             CALL SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+             GOSUB 5000
+             GOTO 30
+          CASE QI = "EX"
+             IF USER NE "NPRATT" THEN CHAIN "G" ELSE STOP
+          CASE NUM(QI) AND QI GT "0"
+*             EXCHG.RATE = QI
+             EXCHG.RATE = Q 'R0'
+             CRT @(30,5) :OCONV(EXCHG.RATE,"MR4")
+* IF USER = "NPRATT" THEN CRT @(0,22):" ":;DEBUG
+             IF T.RATE1 NE "" THEN
+                CRT @(50,5) :"Previous Rate : ":OCONV(T.RATE1,"MR4")
+                RATE.DIFF = ABS(T.RATE1 - EXCHG.RATE)
+                PERC.DIFF = ((RATE.DIFF/T.RATE1) * 100)
+                IF PERC.DIFF GT "50" THEN
+                   HELP = "Over 50% diff. in this rate vs last rate, Cont.? [Y]es, [N]o , [X]=Back [EX]it"
+                   MASK = ' N'
+
+                   CRT @(0,22):"Select an option : ":@(-4)
+                   CALL GEN.IN(20,22,MASK,'',QI,0,2,'','',2,20,22,0,QI,HELP,0,23)
+                   QI = TRIM(OCONV(QI,'MCU'))
+                  IF QI = '' THEN QI=TRIM(MASK)
+                     BEGIN CASE
+                        CASE QI = 'EX'
+                           IF USER NE "NPRATT" THEN CHAIN "G" ELSE STOP
+                        CASE QI = 'X'
+                           GOTO 30
+                        CASE QI = 'N'
+                           GOTO 40
+                        CASE QI = 'Y'
+                           NULL
+                        CASE 1
+                           CALL ELINE("Invalid response")
+                           GOTO 40
+                     END CASE
+                END
+             END
+          CASE 1
+             CALL ELINE("A positive value must be entered")
+             GOTO 40
+        END CASE
+
+        CRT @(30,5) :OCONV(EXCHG.RATE,"MR4")
+
+
+60 :  * Ask if Update to be performed
+       
+        HELP = "Update record?  [Y]es, [N]o , [X]=Back [EX]it"
+        MASK = ' N'
+
+        CRT @(0,22):"Select an option : ":@(-4)
+        CALL GEN.IN(20,22,MASK,'',QI,0,2,'','',2,20,22,0,QI,HELP,0,23)
+        QI = TRIM(OCONV(QI,'MCU'))
+        IF QI = '' THEN QI=TRIM(MASK)
+        BEGIN CASE
+           CASE QI = 'EX'
+              IF USER NE "NPRATT" THEN CHAIN "G" ELSE STOP
+           CASE QI = 'X'
+              GOTO 40
+           CASE QI = 'N'
+           CASE QI = 'Y'
+              BACK.FLAG = "N"
+              GOSUB 6000 ;* Update the record
+              IF BACK.FLAG = "Y" THEN GOTO 40
+           CASE 1
+              CALL ELINE("Invalid response")
+              GOTO 60
+        END CASE
+*
+      GOTO 10
+*
+*------------------------------------------------------------------------
+* INTERNAL SUBROUTINES
+*------------------------------------------------------------------------
+*
+5000 * Display Main Screen
+*
+        DISP.SCREEN   = @(5, 3) : "Currency Code    .... "
+        DISP.SCREEN  := @(5 ,4) : "Effective Date   .... "
+        DISP.SCREEN  := @(5, 5) : "Exchange Rate    .... "
+
+
+        CRT DISP.SCREEN
+        CRT @(30,3) : CURRENCY.CODE.DISPLAY
+        CRT @(30,4) : OCONV(EFF.DATE,"D2/")
+        CRT @(30,5) : "   "
+        CRT @(30,5) : OCONV(EXCHG.RATE,"MR4")
+
+*        GOSUB DISPLAY.CODES
+
+*
+RETURN
+
+6000 * Update the record
+*
+
+      BACK.FLAG = "N"
+*
+      BEGIN CASE
+         CASE SUPERUSER
+            EXCHR.REC<1> = EXCHG.RATE 
+            EXCHR.REC<3> = USER
+            EXCHR.REC<4> = TODAY
+            EXCHR.REC<5> = TIME()
+            EXCHR.REC<2> = EXCHG.RATE 
+            EXCHR.REC<6> = USER
+            EXCHR.REC<7> = TODAY
+            EXCHR.REC<8> = TIME()
+            HELP = "OVERIDE rates with rate entered [YES], [N]o , [X]=Back [EX]it"
+            MASK = ' N'
+
+            CRT @(0,22):"Select an option : ":@(-4)
+            CALL GEN.IN(20,22,MASK,'',QI,0,3,'','',2,20,22,0,QI,HELP,0,23)
+            QI = TRIM(OCONV(QI,'MCU'))
+            IF QI = '' THEN QI=TRIM(MASK)
+            BEGIN CASE
+               CASE QI = 'EX'
+                 IF USER NE "NPRATT" THEN CHAIN "G" ELSE STOP
+               CASE QI = 'X'
+                  BACK.FLAG = "Y"
+               CASE QI = 'N'
+                  RETURN
+               CASE QI = 'YES'
+                  WRITEU EXCHR.REC ON F.CURRENCY.RATES, ID.EXCHR
+            END CASE
+         CASE RATE1 = "" AND RATE2 = ""
+            EXCHR.REC<1> = EXCHG.RATE 
+            EXCHR.REC<3> = USER
+            EXCHR.REC<4> = TODAY
+            EXCHR.REC<5> = TIME()
+            WRITEU EXCHR.REC ON F.CURRENCY.RATES, ID.EXCHR
+         CASE RATE1 NE 0 AND RATE2 = ""
+            EXCHR.REC<2> = EXCHG.RATE 
+            EXCHR.REC<6> = USER
+            EXCHR.REC<7> = TODAY
+            EXCHR.REC<8> = TIME()
+            WRITEU EXCHR.REC ON F.CURRENCY.RATES, ID.EXCHR
+         CASE 1            
+      END CASE
+
+      RELEASE F.CURRENCY.RATES, ID.EXCHR
+*
+RETURN
+
+DISPLAY.CODES:
+
+CRT @(5,10): "Code":" ":
+*CRT "Description" "L#25":"  ":
+CRT "Country" "L#25"
+
+CRT @(5,11): "====":" ":
+*CRT STR("=",25):"  ":
+CRT STR("=",25)
+
+N.CDS = DCOUNT(CCODES.REC<1>,@VM)
+FOR CD = 1 TO N.CDS
+   CRT @(5,11+CD):CCODES.REC<1,CD> "R#3":"  ":
+*   CRT CCODES.REC<2,CD>[1,25] "L#25" :"  ":
+   CRT CCODES.REC<3,CD>[1,25] "L#25"
+NEXT CD
+
+RETURN
+
+DISPLAY.ALL:
+
+READV NAME1 FROM F.BCTRL, ENTERED.BY1,13 ELSE NAME1 = ENTERED.BY1
+READV NAME2 FROM F.BCTRL, ENTERED.BY2,13 ELSE NAME2 = ENTERED.BY2
+
+CRT @(5,10):@(-3)
+CRT @(5,10):"FIRST ENTRY"
+CRT @(40,10):"SECOND ENTRY"
+CRT @(5,11): STR("=",70)
+
+CRT @( 5,12):"Rate Entered  : ":OCONV(RATE1,"MR4")
+CRT @( 5,13):"Entered   By  : ":NAME1
+CRT @( 5,14):"          On  : ":OCONV(ENTERED.ON1,"D2/")
+CRT @( 5,15):"          At  : ":OCONV(ENTERED.AT1,"MTS")
+
+CRT @(40,12) : OCONV(RATE2,"MR4")
+CRT @(40,13) : NAME2
+CRT @(40,14) : OCONV(ENTERED.ON2,"D2/")
+CRT @(40,15) : OCONV(ENTERED.AT2,"MTS")
+
+RETURN
+
+CHECK.LAST.ENTRY :
+*
+CRT @(0,22):@(-3):"Checking prior data entered  "
+
+DVIN=''
+DVOUT=''
+
+MISSING.ARRAY = ""
+
+*FROM.DT = EFF.DATE-7
+FROM.DT = EFF.DATE-4
+* TO.DATE = DATE()-1
+TO.DATE =  EFF.DATE
+T.RATE1 = ''
+
+*FOR BD = 7 TO 1 STEP -1
+FOR BD = 4 TO 1 STEP -1   
+   DVIN<1>=EFF.DATE-BD
+
+   TEST.BEG.DATE=''
+   CALL NEXT.BUSINESS.DAY(TEST.BEG.DATE,TEST.NEXT.BUS.DATE,DSTATUS,DVIN,DVOUT)
+
+   NEXT.BUS.DAY     = DVOUT<1>
+   NEXT.BUS.DAY.TXT = DVOUT<2>
+
+   IF NEXT.BUS.DAY NE DATE() THEN
+      ID.TST = CURRENCY.CD:"*":NEXT.BUS.DAY
+      READ TST.REC FROM F.CURRENCY.RATES, ID.TST ELSE TST.REC = ""
+
+      T.RATE1 = TST.REC<1>
+      T.RATE2 = TST.REC<2>
+      
+      BEGIN CASE
+         CASE TST.REC = ""
+            LOCATE NEXT.BUS.DAY IN MISSING.ARRAY<1> SETTING POSX ELSE
+               MISSING.ARRAY<1,-1> = NEXT.BUS.DAY
+               MISSING.ARRAY<2,-1> = CURRENCY.CD
+               MISSING.ARRAY<3,-1> = CURRENCY.CODE.DISPLAY
+               MISSING.ARRAY<4,-1> = "No Exchange rates set up"
+            END
+         CASE T.RATE2 = ""
+            LOCATE NEXT.BUS.DAY IN MISSING.ARRAY<1> SETTING POSX ELSE
+               MISSING.ARRAY<1,-1> = NEXT.BUS.DAY
+               MISSING.ARRAY<2,-1> = CURRENCY.CD
+               MISSING.ARRAY<3,-1> = CURRENCY.CODE.DISPLAY
+               MISSING.ARRAY<4,-1> = "Exchange rate was not checked"
+            END
+         CASE T.RATE1 = "" AND T.RATE2 = ""
+            LOCATE NEXT.BUS.DAY IN MISSING.ARRAY<1> SETTING POSX ELSE
+               MISSING.ARRAY<1,-1> = NEXT.BUS.DAY
+               MISSING.ARRAY<2,-1> = CURRENCY.CD
+               MISSING.ARRAY<3,-1> = CURRENCY.CODE.DISPLAY
+               MISSING.ARRAY<4,-1> = "No Exchange rates set up"
+            END
+         CASE T.RATE1 NE T.RATE2
+            IF T.RATE1 = "" OR T.RATE2 = "" THEN
+               NULL
+            END ELSE
+               LOCATE NEXT.BUS.DAY IN MISSING.ARRAY<1> SETTING POSX ELSE
+                  MISSING.ARRAY<1,-1> = NEXT.BUS.DAY
+                  MISSING.ARRAY<2,-1> = CURRENCY.CD
+                  MISSING.ARRAY<3,-1> = CURRENCY.CODE.DISPLAY
+                  MISSING.ARRAY<4,-1> = "Exchange rates do not match ": OCONV(T.RATE1,"MR4"):" versus ":  OCONV(T.RATE2,"MR4")
+               END      
+            END
+      END CASE
+   END
+
+NEXT BD
+
+IF MISSING.ARRAY NE "" THEN
+   GOSUB SEND.NOTIFICATION
+   ERR.FLAG = 1
+END
+*
+RETURN
+
+SEND.NOTIFICATION :
+
+EMAIL.OUT = ''
+VOUT      = ''
+
+******EMAIL.OUT<1>='npratt@afs.net'
+
+*ZZ EMAIL.OUT<2>='karen@afs.net'
+*ZZ EMAIL.OUT<2,2>='slong@afs.net'
+*ZZ EMAIL.OUT<2,3>='DGarrett@afs.net'
+
+*         EMAIL.OUT<3>='MKerbow@afs.net'
+
+*FROM.DT = EFF.DATE-7
+*TO.DATE = DATE()-1
+
+EMAIL.OUT<4>='AccountsReceivable@afs.net'
+EMAIL.OUT<5>=\Exchange Rate Errors for \:CURRENCY.CODE.DISPLAY:\ for the period \:OCONV(FROM.DT,"D2/"):\ to \:OCONV(TO.DATE,"D2/")
+EMAIL.OUT<6>="  "
+EMAIL.OUT<6,2>=\Exchange Rate Errors for \:CURRENCY.CODE.DISPLAY:\ for the period : \
+EMAIL.OUT<6,3>=" "
+EMAIL.OUT<6,4>= OCONV(FROM.DT,"D2/"):\ to \:OCONV(TO.DATE,"D2/")
+EMAIL.OUT<6,-1>=" "
+
+N.ERRS = DCOUNT(MISSING.ARRAY<1>,@VM)
+FOR I.ERR = 1 TO N.ERRS
+   W.DATE = OCONV(MISSING.ARRAY<1,I.ERR>,"D2/")
+   EMAIL.OUT<6,-1> = W.DATE:"  --- ":MISSING.ARRAY<4,I.ERR>
+NEXT I.ERR    
+
+EMAIL.OUT<6,-1>=" "
+EMAIL.OUT<6,-1>="Please be sure to check that all rates have been entered and checked : "
+EMAIL.OUT<6,-1>=" "
+EMAIL.OUT<6,-1>=" "
+EMAIL.OUT<6,-1>=SPACE(40):" Created via the UPD.EXCHANGE.RATES program in FBBP"
+
+
+*EMAIL.OUT<11>='E:\ARDENT\PUBLIC\EMAILDATA\'
+*EMAIL.OUT<11>:=ID.XLS
+
+VIN=EMAIL.OUT
+CALL SENDMAIL(VIN,VOUT)
+
+RETURN

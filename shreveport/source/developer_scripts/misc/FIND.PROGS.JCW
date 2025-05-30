@@ -1,0 +1,309 @@
+* FIND.PROGS.JCW
+*
+* WRITTEN BY JAY WEBERT, AFS LOGISTICS, 05/15/06
+*
+* THIS PROGRAM BUILDS A FILE (LIVE.JCW) OF "LIVE" PROGRAMS. FIRST,
+* LIVE.JCW IS "SEEDED" WITH THE NAME OF A PROGRAM THAT IS EXECUTED
+* WHEN A LOGTO COMMAND IS EXECUTED. THAT PROGRAM IS SCANNED FOR 
+* CALLS TO OTHER PROGRAMS, WHICH ARE THEN STORED IN LIVE.JCW. THE
+* RECORD FOR SEED PROGRAM IS THEN MARKED AS SCANNED. THEN THE
+* PROGRAM CAN SELECT THE UNSCANNED PROGRAM NAMES FROM LIVE.JCW
+* AND CONTINUE THE PROCESS UNTIL NO NEW PROGRAM NAMES ARE FOUND.
+**************************************************
+*** OPEN FILES
+      OPEN 'VOC' TO F.VOC ELSE
+        CALL OPEN.ABORT('VOC','FIND.PROGS.JCW')
+      END
+      OPEN 'LIVE.JCW' TO F.LIVE ELSE
+        CALL OPEN.ABORT('BMENU','FIND.PROGS.JCW')
+      END
+GOTO 10
+*-------------------------------
+* RESET 'SCAND' FIELD FOR ALL RECORDS IN LIVE.JCW
+* THIS IS PART OF PROCESS TO GO BACK AND LOOK FOR $INCLUDE FILES.
+*-------------------------------
+      STMT = 'SELECT LIVE.JCW WITH FNAME NE "BP"'
+      EXECUTE STMT 
+      DONE = 0
+      LOOP UNTIL DONE DO
+        READNEXT LIVE.ID THEN
+          READ LIVE.REC FROM F.LIVE, LIVE.ID THEN
+            LIVE.REC<3> = 0
+            WRITE LIVE.REC ON F.LIVE, LIVE.ID
+          END
+        END ELSE
+          DONE = 1
+        END
+      REPEAT
+      STOP
+*******
+10:
+*******
+      *** SELECT LIVE.JCW PROGRAMS TO SCAN
+      STMT = 'SELECT LIVE.JCW WITH SCAND = "0"'
+      EXECUTE STMT
+      IF SYSTEM(11) = 0 THEN
+        CRT 'NO LIVE.JCW RECORDS SELECTED; PROGRAM STOPPED.'
+        STOP
+      END
+*** SCAN EACH PROGRAM
+      DONE = 0
+      LOOP UNTIL DONE DO
+        READNEXT LIVE.ID THEN
+          READ LIVE.REC FROM F.LIVE, LIVE.ID ELSE
+            CRT 'COULD NOT READ LIVE.JCW RECORD ':LIVE.ID:'; PROGRAM STOPPED.'
+            STOP
+          END
+          FNAME = LIVE.REC<1>
+          *** IF LIVE PROGRAM HAS MORE THAN ONE FILE NAME...
+          FCNT = LIVE.REC<2>
+          IF FCNT > 1 THEN
+            CRT 'THIS PROGRAM CANNOT YET HANDLE LIVE PROGRAMS WITH MORE THAN ONE FILE NAME.'
+            CRT 'SEE LIVE.JCW RECORD ':LIVE.ID
+            CRT 'PROGRAM STOPPED.'
+            STOP
+          END
+          *** OPEN PROGRAM FILE
+          OPEN FNAME TO F.PROG ELSE
+            CRT 'COULD NOT OPEN ':FNAME:' FILE TO READ ':LIVE.ID:'; PROGRAM STOPPED.'
+            STOP
+          END
+          *** READ LIVE SOURCE CODE RECORD
+          READ PROG.REC FROM F.PROG, LIVE.ID ELSE
+            CRT 'COULD NOT READ ':LIVE.ID:' RECORD FROM ':FNAME:' FILE; PROGRAM STOPPED.'
+            STOP
+          END
+*** SCAN EACH PROGRAM LINE
+          FLD.CNT = DCOUNT(PROG.REC,CHAR(254))
+          FOR I = 1 TO FLD.CNT
+            STRING = TRIM(PROG.REC<I>)
+            IF STRING[1,1] NE '*' THEN
+              CONVERT ' ' TO CHAR(254) IN STRING
+              *** SEARCH FOR '$INCLUDE' STATEMENTS
+              LOCATE '$INCLUDE' IN STRING SETTING POS THEN
+                IF STRING<POS + 2> = 'FROM' THEN
+                  PROG.NAME = STRING<POS + 1>
+                END ELSE
+                  PROG.NAME = STRING<POS + 2>
+                END
+                GOSUB CHECK.PROG.NAME
+              END
+              LOCATE '#INCLUDE' IN STRING SETTING POS THEN
+                IF STRING<POS + 2> = 'FROM' THEN
+                  PROG.NAME = STRING<POS + 1>
+                END ELSE
+                  PROG.NAME = STRING<POS + 2>
+                END
+                GOSUB CHECK.PROG.NAME
+              END
+              LOCATE 'INCLUDE' IN STRING SETTING POS THEN
+                IF STRING<POS + 2> = 'FROM' THEN
+                  PROG.NAME = STRING<POS + 1>
+                END ELSE
+                  PROG.NAME = STRING<POS + 2>
+                END
+                GOSUB CHECK.PROG.NAME
+              END
+* GOTO 20
+              *** SEARCH FOR 'CALL' STATEMENTS
+              LOCATE 'CALL' IN STRING SETTING POS THEN
+                PROG.NAME = STRING<POS + 1>
+                PROG.NAME = FIELD(PROG.NAME,'(',1)
+                GOSUB CHECK.PROG.NAME
+              END
+              *** SEARCH FOR 'CHAIN' STATEMENTS
+              LOCATE 'CHAIN' IN STRING SETTING POS THEN
+                HOLD.PROG.NAME = STRING<POS + 1>
+                BEGIN CASE
+                  CASE HOLD.PROG.NAME[1,6] = "'LOGTO"
+                  CASE HOLD.PROG.NAME[1,6] = '"LOGTO'
+                  CASE 1
+                    PROG.NAME = FIELD(HOLD.PROG.NAME,"'",2)
+                    GOSUB CHECK.PROG.NAME
+                    PROG.NAME = FIELD(HOLD.PROG.NAME,'"',2)
+                    GOSUB CHECK.PROG.NAME
+                END CASE
+              END
+              *** SEARCH FOR 'EXECUTE' STATEMENTS
+              LOCATE 'EXECUTE' IN STRING SETTING POS THEN
+                PROG.NAME = STRING<POS + 1>
+                *** SKIP THESE STRINGS
+                BEGIN CASE
+                  CASE PROG.NAME[1,5] = "'GET-"
+                  CASE PROG.NAME[1,6] = "'SAVE-"
+                  CASE PROG.NAME[1,4] = "STMT"
+                  CASE PROG.NAME[1,6] = "'SSELE"
+                  CASE PROG.NAME[1,5] = "'SORT"
+                  CASE PROG.NAME[1,7] = "'SELECT"
+                  CASE PROG.NAME[1,7] = "'CREATE"
+                  CASE PROG.NAME[1,6] = '"SSELE'
+                  CASE PROG.NAME[1,5] = '"SELE'
+                  CASE PROG.NAME[1,5] = '"SORT'
+                  CASE PROG.NAME[1,5] = "'TERM"
+                  CASE PROG.NAME[1,6] = 'SENTEN'
+                  CASE PROG.NAME[1,4] = 'PREC'
+                  CASE PROG.NAME[1,7] = "'SP-ASS"
+                  CASE PROG.NAME[1,4] = 'MAIL'
+                  CASE PROG.NAME[1,5] = "'MAIL"
+                  CASE PROG.NAME[1,5] = "'mail"
+                  CASE PROG.NAME[1,4] = 'VOUT'
+                  CASE PROG.NAME[1,5] = '"TERM'
+                  CASE PROG.NAME[1,5] = "'TERM"
+                  CASE PROG.NAME[1,7] = "'DELETE"
+                  CASE PROG.NAME[1,6] = "'CLEAR"
+                  CASE PROG.NAME[1,6] = "'CLEAR"
+                  CASE PROG.NAME[1,5] = "'COPY"
+                  CASE PROG.NAME[1,3] = "'T-"
+                  CASE PROG.NAME[1,5] = "'LIST"
+                  CASE PROG.NAME[1,4] = "'SET"
+                  CASE PROG.NAME[1,4] = '"SET'
+                  CASE PROG.NAME[1,6] = 'EX.REC'
+                  CASE PROG.NAME[1,7] = '"CLEAR-'
+                  CASE PROG.NAME[1,7] = "'CLEAR-"
+                  CASE PROG.NAME[1,7] = '"PCCTRL'
+                  CASE PROG.NAME[1,7] = "'PCCTRL"
+                  CASE PROG.NAME[1,4] = '"SUM'
+                  CASE PROG.NAME[1,7] = '"SETPTR'
+                  CASE PROG.NAME[1,7] = "'SETPTR"
+                  CASE PROG.NAME[1,4] = 'CMND'
+                  CASE PROG.NAME[1,3] = '"SP'
+                  CASE PROG.NAME[1,3] = "'SP"
+                  CASE 1
+                    HOLD.PROG.NAME = PROG.NAME
+                    PROG.NAME = FIELD(HOLD.PROG.NAME,"'",2)
+                    GOSUB CHECK.PROG.NAME
+                    PROG.NAME = FIELD(HOLD.PROG.NAME,'"',2)
+                    GOSUB CHECK.PROG.NAME
+                END CASE
+              END
+*********
+20:
+*********
+            END
+          NEXT I  
+          *** CLOSE PROGRAM FILE
+          CLOSE F.PROG ON ERROR
+            CRT 'ERROR CLOSING THE ':FNAME:' FILE; PROGRAM STOPPED.'
+            STOP
+          END
+          *** UPDATE LIVE.JCW RECORD
+          LIVE.REC<3> = 1
+          WRITE LIVE.REC ON F.LIVE, LIVE.ID ELSE
+            CRT 'COULD NOT UPDATE SCANNED LIVE.JCW RECORD ':LIVE.ID:'; PROGRAM STOPPED.'
+            STOP
+          END
+        END ELSE
+          DONE = 1
+        END
+      REPEAT
+      STOP
+*------------------------------
+CHECK.PROG.NAME:
+*------------------------------
+* THIS SUBROUTINE DETERMINES IF THE STRING "PROG.NAME" IS REALLY A PROGRAM NAME.
+* IF SO, THE NAME OF THE FILE THAT IT RESIDES IN IS PARSED FROM THE VOC RECORD.
+* IF THE PROGRAM NAME DOES NOT EXIST IN LIVE.JCW, A NEW RECORD WILL BE ADDED, 
+* OTHERWISE THE EXISTING RECORD WILL BE UPDATED IF NECESSARY.
+*------------------------------
+      *** IGNORE WHEN A PROGRAM CALLS ITSELF
+      IF LIVE.ID = PROG.NAME THEN RETURN
+      *** IS PROG.NAME IN THE VOC FILE?
+      READ VOC.REC FROM F.VOC, PROG.NAME THEN
+        *** IS VOC ITEM A 'VERB'?
+        IF VOC.REC<1>[1,1] = 'V' THEN
+*** PARSE THE FILE NAME FROM THE VOC ITEM FOR THE PROGRAM NAME
+          STRING = OCONV(VOC.REC<2>,'MCU')
+          *** CASE 1: E:\stuff\stuff\stuff/FNAME.O/stuff
+          FSTRING = FIELD(STRING,'/',2)
+          GOSUB GET.FNAME
+          FNAME1 = FNAME
+          TEST1 = TEST
+          *** CASE 2: E:\stuff\stuff\stuff\FNAME.O/stuff
+          FSTRING = FIELD(STRING,'\',5)
+          FSTRING = FIELD(FSTRING,'/',1)
+          GOSUB GET.FNAME
+          FNAME2 = FNAME
+          TEST2 = TEST
+          *** CASE 3: FNAME.O/stuff
+          FSTRING = FIELD(STRING,'/',1)
+          GOSUB GET.FNAME
+          FNAME3 = FNAME
+          TEST3 = TEST
+          *** CASE 4: ../stuff/FNAME.O/stuff
+          FSTRING = FIELD(STRING,'/',3)
+          GOSUB GET.FNAME
+          FNAME4 = FNAME
+          TEST4 = TEST
+          BEGIN CASE
+            CASE TEST1
+              FNAME = FNAME1
+            CASE TEST2
+              FNAME = FNAME2
+            CASE TEST3
+              FNAME = FNAME3
+            CASE TEST4
+              FNAME = FNAME4
+            CASE 1
+              FNAME = ''
+          END CASE
+*** ONCE A VALID PROGRAM NAME AND FILE NAME HAVE BEEN FOUND,
+*** UPDATE LIVE.JCW AS NECESSARY.
+          IF FNAME NE '' THEN
+            READ CURR.REC FROM F.LIVE, PROG.NAME THEN
+              *** RECORD ALREADY EXISTS
+              CURR.FNAME = CURR.REC<1>
+              LOCATE FNAME IN CURR.FNAME SETTING POS ELSE
+                CURR.FNAME<1,-1> = FNAME
+                FCNT = CURR.REC<2>
+                FCNT = FCNT + 1
+                CURR.REC<2> = FCNT
+                WRITE CURR.REC ON F.LIVE, PROG.NAME THEN
+                  CRT 'LIVE.JCW RECORD ':PROG.NAME:' HAS MULTIPLE FILE NAMES!'
+                END ELSE
+                  CRT 'COULD NOT UPDATE LIVE.JCW RECORD ':PROG.NAME:'; PROGRAM STOPPED.'
+                  STOP
+                END
+              END
+            END ELSE
+              *** NEW LIVE.JCW RECORD NEEDED
+IF TRIM(FNAME) = '' THEN
+CRT PROG.NAME:' FROM ':LIVE.ID:', FILE NAME = *':FNAME:'*'
+END
+              NEW.REC = ''
+              NEW.REC<1> = FNAME
+              NEW.REC<2> = 1
+              NEW.REC<3> = 0
+              WRITE NEW.REC ON F.LIVE, PROG.NAME ELSE
+                CRT 'COULD NOT WRITE NEW LIVE.JCW RECORD ':PROG.NAME:'; PROGRAM STOPPED.'
+                STOP
+              END
+            END
+           END
+        END
+      END
+      RETURN
+*------------------------------
+GET.FNAME:
+*------------------------------
+      *** EXTRACT THE FILE NAME FROM THE 'FNAME' STRING, EITHER ONE OR TWO WORDS LONG
+      TEST = 0
+      FNAME = ''
+      F1 = FIELD(FSTRING,'.',1)
+      F2 = FIELD(FSTRING,'.',2)
+      T1 = F2
+      T2 = FIELD(FSTRING,'.',3)
+      IF T1 = 'O' THEN
+        FNAME = F1
+        TEST = 1
+      END ELSE
+        IF T2 = 'O' THEN
+          FNAME = F1:'.':F2
+          TEST = 1
+        END
+      END
+      FNAME = TRIM(FNAME)
+      IF TEST AND (FIELD(FNAME,'/',2) NE '' OR FIELD(FNAME,'\',2) NE '') THEN 
+        TEST = 0
+        FNAME = ''
+      END
+      RETURN

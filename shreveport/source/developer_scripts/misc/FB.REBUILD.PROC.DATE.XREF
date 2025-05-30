@@ -1,0 +1,116 @@
+*******************************************************
+* Program name : FB.REBUILD.PROC.DATE.XREF
+* Author       : UNKNOWN
+* Date written : UNKNOWN
+* Library      : FBBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 09:22:51 on 04/03/2019.
+*
+* Start modification history
+* 010406 - JMK01 - REMOVE REJECTS FROM INDEX LIST
+* 051006 - JCW01 - CHANGES TO @SELECTED, CLEARSELECT, AND STMT<X>
+* 04/03/19 : NKH01 : ACCU-316 Modified CREATE-FILE file sizes
+* End modification history
+*
+*******************************************************
+      CRT @(-1):
+      PROG.NAME='FB.REBUILD.PROC.DATE.XREF'
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      PRINT 'WARNING! This process CLEARS and REBUILDS the FB.PROC.DATE.XREF,nnnnn Files!'
+      PRINT 'No Freight Bills should be processed until this process in complete!'
+      PRINT 'Do not select bills for payment while this program is running'
+      PRINT 'Press [Enter] to begin or any other key to terminate'
+      INPUT NUL,1
+      IF NUL='' ELSE STOP
+**************************************** Clear Part ********************
+      CRT @(0,17):"Now Selecting FB.PROC.DATE.XREF Data Files to be Cleared":@(-4):
+      STMT="SELECT VOC 'FB.PROC.DATE.XREF' *A7"
+      STMT='GET-LIST CLIENTS.JMK'
+      EXECUTE STMT RTNLIST CLEAR.LIST CAPTURING OUTPUT
+      FIRST.ITEMS = @SELECTED
+*     IF NOT( @SELECTED ) THEN GO REBUILD ; * JCW01
+      IF @SELECTED < 1 THEN GO REBUILD    ; * JCW01
+      COUNTER.1=0
+      PER=0
+      LOOP
+         READNEXT CLEAR.LIST.ID FROM CLEAR.LIST ELSE CLEAR.LIST.ID='DONE'
+      UNTIL CLEAR.LIST.ID='DONE' DO
+         COUNTER.1=COUNTER.1+1
+         READV CLIENT.NAME FROM F.CLIENTS,CLEAR.LIST.ID,2 ELSE
+            CLIENT.NAME='*** Not On File ***'
+         END
+         CRT @(0,15):"Now Clearing Processed Bill Xref for ":CLEAR.LIST.ID:" ":CLIENT.NAME:@(-4):
+         CALL PROG.BAR(18,COUNTER.1,FIRST.ITEMS,PER.1)
+*DF         IF CLEAR.LIST.ID#'10356' THEN
+         EXECUTE "CLEAR-FILE DATA FB.PROC.DATE.XREF,":CLEAR.LIST.ID CAPTURING OUTPUT
+*DF         END
+      REPEAT
+**************************************** Rebuild Part ******************
+*CALL ELINE('PRESS BREAK')
+REBUILD: *** Select and Rebuild File
+      CRT @(0,17):"Now Selecting FB.BILLS.HIST Data Files to be rebuilt":@(-4):
+      STMT="SELECT VOC 'FB.BILLS.HIST' *A7"
+      STMT='GET-LIST CLIENTS.JMK'
+      EXECUTE STMT RTNLIST BUILD.LIST CAPTURING OUTPUT
+      FIRST.ITEMS = @SELECTED
+*     IF NOT( @SELECTED ) THEN STOP ; * JCW01
+      IF @SELECTED < 1 THEN STOP    ; * JCW01
+      COUNTER.1=0
+      PROC.LIST=''
+      LAST.DATE=''
+      PER=0
+      LOOP
+         READNEXT BUILD.LIST.ID FROM BUILD.LIST ELSE BUILD.LIST.ID='DONE'
+      UNTIL BUILD.LIST.ID='DONE' DO
+         COUNTER.1=COUNTER.1+1
+         READV CLIENT.NAME FROM F.CLIENTS,BUILD.LIST.ID,2 ELSE
+            CLIENT.NAME='*** Not On File ***'
+            GO SKIP.CLIENT
+         END
+         PROC.LIST=''
+         LAST.DATE=''
+         CRT @(0,15):"Now Rebuilding Processed Bill Xref for ":BUILD.LIST.ID:" ":CLIENT.NAME:@(-4):
+         CALL PROG.BAR(20,COUNTER.1,FIRST.ITEMS,PER.1)
+*DF         IF BUILD.LIST.ID='10356' THEN GO SKIP.CLIENT
+         OPEN '','FB.PROC.DATE.XREF,':BUILD.LIST.ID TO F.PROC.DATE.XREF ELSE
+            EXECUTE 'CREATE-FILE DATA FB.PROC.DATE.XREF,':BUILD.LIST.ID:' 503,1' CAPTURING OUTPUT     ; * NKH01
+            OPEN '','FB.PROC.DATE.XREF,':BUILD.LIST.ID TO F.PROC.DATE.XREF ELSE
+               CALL ELINE("Cannot Create FB.PROC.DATE.XREF,":BUILD.LIST.ID:" Bill Skipped ")
+               GO SKIP.CLIENT
+            END
+         END
+         OPEN '','FB.BILLS.HIST,':BUILD.LIST.ID TO F.HIST ELSE GO SKIP.CLIENT
+         CRT @(0,17):"Now Selecting FB.BILLS.HIST to Rebuild FB.PROC.DATE.XREF files....":@(-4):
+*        STMT='SELECT FB.BILLS.HIST,':BUILD.LIST.ID:' BY 37' ; * JMK01
+         STMT='SELECT FB.BILLS.HIST,':BUILD.LIST.ID:' BY 37 WITH 37 # "" AND WITH VERSION = "0" AND WITH 39 # "R"' ; * JMK01
+         EXECUTE STMT RTNLIST DO.LIST CAPTURING OUTPUT
+         SECOND.ITEMS = @SELECTED
+         COUNTER.2=0
+         LOOP
+            DONE=0
+            READNEXT HIST.ID FROM DO.LIST ELSE DONE=1
+         UNTIL DONE=1 DO
+            COUNTER.2=COUNTER.2+1
+            IF SECOND.ITEMS>0 THEN CALL PROG.BAR(22,COUNTER.2,SECOND.ITEMS,PER.2)
+            READ DBILL FROM F.HIST,HIST.ID THEN
+               PROC.DATE=DBILL<37>
+               IF PROC.DATE='' THEN GO SKIP.BILL
+               IF PROC.DATE#LAST.DATE THEN
+                  IF PROC.LIST#'' THEN
+                     WRITE PROC.LIST ON F.PROC.DATE.XREF,LAST.DATE
+                  END
+                  PROC.LIST=''
+                  LAST.DATE=PROC.DATE
+               END
+               PROC.LIST<-1>=HIST.ID
+            END
+SKIP.BILL: ***
+         REPEAT
+         IF PROC.LIST#'' THEN
+            WRITE PROC.LIST ON F.PROC.DATE.XREF,LAST.DATE
+         END
+SKIP.CLIENT: ***
+      REPEAT

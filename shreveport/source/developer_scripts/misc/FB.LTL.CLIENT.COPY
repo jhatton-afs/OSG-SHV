@@ -1,0 +1,579 @@
+* Routine to copy LTL Audit Items from Client to Client
+*
+* The following files are involved
+*
+* From FB.AUDIT,CLIENT1           to    FB.AUDIT,CLIENT2
+* From FB.AUDIT.TABLES,CLIENT1    to    FB.AUDIT.TABLES,CLIENT2
+* From FB.AUDIT.ZIPS,CLIENT1      to    FB.AUDIT.ZIPS,CLIENT2
+*
+*
+* Written
+*
+*======================================================================
+* PROGRAM : FB.LTL.CLIENT.COPY  ---  COPIED FROM FB.LTL.COPY (Jan 2010 by N.C.G. Pratt.)
+*
+* PROGRAMMER : David R Friend
+*
+*
+*======================================================================
+*   COPYRIGHT (C) 1996 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED
+*       ----------------------------------------------------
+*  This program is sole property of AFS Logistics, LLC (AUTOMATED
+*  FREIGHT SYSTEMS) and may not be used, copied, or modified without
+*  the express written consent of Brian Barker of AFS Logistics, LLC.
+*======================================================================
+*
+*
+* 123009 NPR01 - T091182 - Add option for Copying ALL tables from client to client.
+* 110110 NPR02 - T999999 - Copying a specifica Carrier was not working for the FB.AUDIT file.
+* 101413 - JMK01 - SysAid#7365 - FBBP FB.LTL.CLIENT.COPY has an error in line 564
+*
+      $INCLUDE PROG.ADMIN INC_OPTIONS
+
+      PROMPT''
+      CALL GET.USER(USER.NAME)
+      PROG.NAME='FB.LTL.CLIENT.COPY'
+      PROG.DESC='LTL Audit Client to Client Copy'
+      PACK.NAME='User :':USER.NAME
+      CO.NAME='AFS Logistics, LLC'
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.LTL.CLIENT.COPY' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                   ;* NPR_UPL 04/23/2010
+
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+
+10    :
+
+      GOSUB DSP.SCREEN
+      ORGIN.CLIENT.ID = ''
+      ORGIN.CARRIER.ID = ''
+      DEST.CLIENT.ID=''
+      DEST.CARRIER.ID=''
+      ORGIN.CARRIER.NAME = ''
+      ORGIN.CARRIER.CITY = ''
+      ORGIN.CARRIER.STATE = ''
+      DEST.CARRIER.NAME = ''
+      DEST.CARRIER.CITY = ''
+      DEST.CARRIER.STATE = ''
+
+
+50:
+      HELP = "Enter client name or number to copy from. [EX] = Exit"
+      IF ORGIN.CLIENT.ID='' THEN
+         MASK = '#####'
+         CRT @(20, 3):@(-4)
+         CRT @(20, 4):@(-4)
+         CRT @(20, 5):@(-4)
+      END ELSE
+         MASK = ORGIN.CLIENT.ID
+      END
+      CALL GEN.IN(20,3,MASK,'',Q,0,20,'','',2,-5,3,1,QI,HELP,0,23)
+      IF QI='' THEN QI=ORGIN.CLIENT.ID
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX' OR QI='X'
+            STOP
+         CASE QI='' AND ORGIN.CLIENT.ID=''
+            STOP
+         CASE NUM(QI) AND QI # ''
+            ORGIN.CLIENT.ID = QI'R%5'
+         CASE NOT(QI MATCHES "0N") AND QI # ''
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            GOSUB DSP.SCREEN
+            BEGIN CASE
+               CASE ITEM.LIST = ''
+                  GOTO 50                            ;* START OVER
+               CASE DCOUNT(ITEM.LIST,@AM) GT 1
+                  GOTO 50                            ;* START OVER
+               CASE 1
+                  DATA ITEM.LIST
+                  GOTO 50                            ;* START OVER
+            END CASE
+         CASE 1
+            CALL ELINE('Invalid Client Name, Try Again.')
+            GOTO 50
+      END CASE
+
+*
+* Open Client Records
+*
+      READ ORGIN.CLIENT.REC FROM F.CLIENTS,ORGIN.CLIENT.ID ELSE
+         CALL ELINE("Client number ":ORGIN.CLIENT.ID:" is not a valid client #")
+         GOTO 50
+      END
+
+      ORGIN.CLIENT.NAME=ORGIN.CLIENT.REC<2>
+      CRT @(20, 3):ORGIN.CLIENT.ID:', ':ORGIN.CLIENT.NAME:@(-4)
+      CRT @(20, 4):ORGIN.CLIENT.REC<3,1>:' ':ORGIN.CLIENT.REC<3,2>:@(-4)
+      CRT @(20, 5):ORGIN.CLIENT.REC<4>:', ':ORGIN.CLIENT.REC<5>:' ':ORGIN.CLIENT.REC<6>:@(-4)
+
+*
+* Open Client Audit File
+*
+
+      OPEN '', 'FB.AUDIT,':ORGIN.CLIENT.ID TO F.ORGIN.AUDIT ELSE
+         CALL ELINE('Error ':ORGIN.CLIENT.ID:' is not setup for audit.')
+         GOTO 50
+      END
+
+
+*------------------------------------------
+* ASK FOR CARRIER
+*------------------------------------------
+150:
+
+* NPR01   HELP="Enter carrier number, 'name' for search, [L]ist, [EX]it."
+      HELP="Enter carrier number, [ALL], 'name' for search, [L]ist, [EX]it."   ;* NPR01
+      IF ORGIN.CARRIER.ID THEN
+         MASK = ORGIN.CARRIER.ID
+      END ELSE
+         MASK = '#####'
+         CRT @(20, 7):@(-4)
+         CRT @(20, 8):@(-4)
+      END
+
+200:
+      CALL GEN.IN(20,7,MASK,'',Q,0,20,'','',2,20,7,0,QI,HELP,0,23)
+      IF QI='' THEN QI=MASK
+      QI=OCONV(QI,'MCU')
+
+      BEGIN CASE
+         CASE QI='X'
+            GOSUB DSP.DATA
+            GOTO 50
+
+         CASE QI='EX'
+            STOP
+
+         CASE QI EQ 'L'
+            EXECUTE 'SORT FB.AUDIT,':ORGIN.CLIENT.ID:' BY CARRIER# CARRIER.NAME CARRIER.CITY CARRIER.STATE'
+            CALL ELINE('')
+            GOSUB DSP.SCREEN
+            GOSUB DSP.DATA
+            GOTO 200
+
+         CASE NUM(QI)
+            ORGIN.CARRIER.ID=QI'R%5'
+            CRT @(20,7):ORGIN.CARRIER.ID
+         CASE QI = "ALL"                  ;* NPR01
+            ORGIN.CARRIER.ID = QI         ;* NPR01
+            GOTO 450                      ;* NPR01
+         CASE 1
+            CALL SOUNDEX.DISPLAY(Q,'CARRIERS','SDX.CARRIER,NAME','1,3,4',QX)
+            CT=DCOUNT(QX<1>,@VM)
+            IF CT=1 THEN
+               DATA QX<1,1>
+            END
+            GOSUB DSP.SCREEN
+            GOSUB DSP.DATA
+            GOTO 200
+
+         CASE 1
+            CALL ELINE('Invalid Entry.')
+      END CASE
+*
+* Open Carrier Records
+*
+      READ ORGIN.CARRIER.REC FROM F.CARRIERS,ORGIN.CARRIER.ID ELSE
+         CALL ELINE('"':ORGIN.CARRIER.ID:'" is an invalid Carrier Number. Try Again.')
+         GOTO 150
+      END
+
+      ORGIN.CARRIER.NAME  = ORGIN.CARRIER.REC<1>
+      ORGIN.CARRIER.CITY  = ORGIN.CARRIER.REC<3>
+      ORGIN.CARRIER.STATE = ORGIN.CARRIER.REC<4>
+      GOSUB DSP.DATA
+
+
+450:
+      HELP = "Enter client name or number to copy to. [EX] = Exit"
+      IF DEST.CLIENT.ID='' THEN
+         MASK = '#####'
+         CRT @(20, 13):@(-4)
+         CRT @(20, 14):@(-4)
+         CRT @(20, 15):@(-4)
+      END ELSE
+         MASK = DEST.CLIENT.ID
+      END
+      CALL GEN.IN(20,13,MASK,'',Q,0,20,'','',2,-5,13,1,QI,HELP,0,23)
+      IF QI='' THEN QI=DEST.CLIENT.ID
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GOSUB DSP.DATA
+            GOTO 150
+         CASE NUM(QI) AND QI # ''
+            DEST.CLIENT.ID = QI'R%5'
+         CASE NOT(QI MATCHES "0N") AND QI # ''
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            GOSUB DSP.SCREEN
+            GOSUB DSP.DATA
+            BEGIN CASE
+               CASE ITEM.LIST = ''
+                  GOTO 450                            ;* START OVER
+               CASE DCOUNT(ITEM.LIST,@AM) GT 1
+                  GOTO 450                            ;* START OVER
+               CASE 1
+                  DATA ITEM.LIST
+                  GOTO 450                            ;* START OVER
+            END CASE
+         CASE 1
+            CALL ELINE('Invalid Client Name, Try Again.')
+            GOTO 450
+      END CASE
+
+*
+* Open Client Records
+*
+      READ DEST.CLIENT.REC FROM F.CLIENTS,DEST.CLIENT.ID ELSE
+         CALL ELINE("Client number ":DEST.CLIENT.ID:" is not a valid client #")
+         GOTO 450
+      END
+
+      DEST.CLIENT.NAME=DEST.CLIENT.REC<2>
+      CRT @(20, 13):DEST.CLIENT.ID:', ':DEST.CLIENT.NAME:@(-4)
+      CRT @(20, 14):DEST.CLIENT.REC<3,1>:' ':DEST.CLIENT.REC<3,2>:@(-4)
+      CRT @(20, 15):DEST.CLIENT.REC<4>:', ':DEST.CLIENT.REC<5>:' ':DEST.CLIENT.REC<6>:@(-4)
+
+*
+* Open Client Audit File
+*
+
+      OPEN '', 'FB.AUDIT,':DEST.CLIENT.ID TO F.DEST.AUDIT ELSE
+         CALL ELINE('Error ':DEST.CLIENT.ID:' is not setup for audit.')
+         GOTO 450
+      END
+
+*------------------------------------------
+* ASK FOR CARRIER
+*------------------------------------------
+550:
+      HELP="Enter carrier number, 'name' for search, [L]ist, [EX]it."
+      IF DEST.CARRIER.ID='' THEN
+         DEST.CARRIER.ID=ORGIN.CARRIER.ID
+         CRT @(20, 17):@(-4)
+         CRT @(20, 18):@(-4)
+      END
+
+      IF ORGIN.CARRIER.ID = "ALL" THEN                ;* NPR01
+         DEST.CARRIER.ID = 'ALL'
+         CRT @(20,17):'ALL'
+         GOTO 800                                     ;* Must be ALL carriers to ALL Carriers
+      END
+
+      MASK=DEST.CARRIER.ID
+
+600:
+      CALL GEN.IN(20,17,MASK,'',Q,0,20,'','',2,20,17,0,QI,HELP,0,23)
+      IF QI='' THEN QI=MASK
+      QI=OCONV(QI,'MCU')
+
+      BEGIN CASE
+         CASE QI='X'
+            GOSUB DSP.DATA
+            GOTO 450
+
+         CASE QI='EX'
+            STOP
+
+         CASE QI EQ 'L'
+            EXECUTE 'SORT FB.AUDIT,':DEST.CLIENT.ID:' BY CARRIER# CARRIER.NAME CARRIER.CITY CARRIER.STATE'
+            CALL ELINE('')
+            GOSUB DSP.SCREEN
+            GOSUB DSP.DATA
+            GOTO 600
+
+         CASE NUM(QI)
+            DEST.CARRIER.ID=QI'R%5'
+            CRT @(20,17):DEST.CARRIER.ID
+
+         CASE 1
+            CALL SOUNDEX.DISPLAY(Q,'CARRIERS','SDX.CARRIER,NAME','1,3,4',QX)
+            CT=DCOUNT(QX<1>,@VM)
+            IF CT=1 THEN
+               DATA QX<1,1>
+            END
+            GOSUB DSP.SCREEN
+            GOSUB DSP.DATA
+            GOTO 600
+
+         CASE 1
+            CALL ELINE('Invalid Entry.')
+      END CASE
+
+*
+* Open Carrier Records
+*
+      READ DEST.CARRIER.REC FROM F.CARRIERS,DEST.CARRIER.ID ELSE
+         CALL ELINE('"':DEST.CARRIER.ID:'" is an invalid Carrier Number. Try Again.')
+         GOTO 550
+      END
+
+      DEST.CARRIER.NAME  = DEST.CARRIER.REC<1>
+      DEST.CARRIER.CITY  = DEST.CARRIER.REC<3>
+      DEST.CARRIER.STATE = DEST.CARRIER.REC<4>
+      GOSUB DSP.DATA
+
+
+800:
+
+      CRT @(0,20):"NOTE !! Existing Tables and pricing will NOT be overwritten on client - ":DEST.CLIENT.ID
+
+      HELP='[C]opy, [X]-back, or [EX]it'
+      CALL GEN.IN(0,22,'Enter Option: --','',Q,0,4,'','',2,-2,22,1,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'EX'
+            STOP
+         CASE QI = 'X'
+            GOTO 550
+         CASE QI = 'C'
+            GOSUB COPY.ITEMS
+         CASE 1
+            CALL ELINE('Invalid Entry - Please Try Again')
+            GOTO 800
+      END CASE
+
+      GOTO 10
+
+      STOP
+
+*----------------------------------------------------------------------
+* Display Screen
+*----------------------------------------------------------------------
+DSP.SCREEN: ***
+
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('-',79);
+      CRT @(0, 3):'Copy From: Client :':@(-4)
+      CRT @(11, 7):'Carrier:':@(-4)
+
+      CRT @(0, 13):'Copy To: Client :':@(-4)
+      CRT @(9, 17):'Carrier:':@(-4)
+
+      RETURN
+
+
+*----------------------------------------------------------------------
+* Display Screen Data
+*----------------------------------------------------------------------
+DSP.DATA: ***
+
+      IF ORGIN.CLIENT.ID THEN
+         CRT @(20, 3):ORGIN.CLIENT.ID:', ':ORGIN.CLIENT.NAME:@(-4)
+         CRT @(20, 4):ORGIN.CLIENT.REC<3,1>:' ':ORGIN.CLIENT.REC<3,2>:@(-4)
+         CRT @(20, 5):ORGIN.CLIENT.REC<4>:', ':ORGIN.CLIENT.REC<5>:' ':ORGIN.CLIENT.REC<6>:@(-4)
+      END
+      IF ORGIN.CARRIER.ID THEN
+         IF ORGIN.CARRIER.ID = 'ALL' THEN
+            CRT @(20, 7):ORGIN.CARRIER.ID
+         END ELSE
+            CRT @(20, 7):ORGIN.CARRIER.ID:', ':ORGIN.CARRIER.NAME:@(-4)
+            CRT @(20, 8):ORGIN.CARRIER.CITY:', ':ORGIN.CARRIER.STATE:@(-4)
+         END
+      END ELSE
+         CRT @(20, 7):@(-4)
+         CRT @(20, 8):@(-4)
+      END
+
+      IF DEST.CLIENT.ID THEN
+         CRT @(20, 13):DEST.CLIENT.ID:', ':DEST.CLIENT.NAME:@(-4)
+         CRT @(20, 14):DEST.CLIENT.REC<3,1>:' ':DEST.CLIENT.REC<3,2>:@(-4)
+         CRT @(20, 15):DEST.CLIENT.REC<4>:', ':DEST.CLIENT.REC<5>:' ':DEST.CLIENT.REC<6>:@(-4)
+      END
+      IF DEST.CARRIER.ID THEN
+         IF DEST.CARRIER.ID = 'ALL' THEN
+            CRT @(20,17):DEST.CARRIER.ID
+         END ELSE
+            CRT @(20, 17):DEST.CARRIER.ID:', ':DEST.CARRIER.NAME:@(-4)
+            CRT @(20, 18):DEST.CARRIER.CITY:', ':DEST.CARRIER.STATE:@(-4)
+         END
+      END ELSE
+         CRT @(20, 17):@(-4)
+         CRT @(20, 18):@(-4)
+      END
+
+      RETURN
+
+COPY.ITEMS: *
+
+*
+      OPEN '', 'FB.AUDIT.TABLES,':ORGIN.CLIENT.ID TO F.ORGIN.AUDIT.TABLES ELSE
+         CALL ELINE('Cannot Open FB.AUDIT.TABLES,':ORGIN.CLIENT.ID)
+         RETURN
+      END
+*
+      OPEN '', 'FB.AUDIT.ZIPS,':ORGIN.CLIENT.ID TO F.ORGIN.AUDIT.ZIPS ELSE
+         CALL ELINE('Cannot Open FB.AUDIT.ZIPS,':ORGIN.CLIENT.ID)
+         RETURN
+      END
+
+      OPEN '', 'FB.AUDIT.TABLES,':DEST.CLIENT.ID TO F.DEST.AUDIT.TABLES ELSE
+         CALL ELINE('Cannot Open FB.AUDIT.TABLES,':DEST.CLIENT.ID)
+         RETURN
+      END
+*
+      OPEN '', 'FB.AUDIT.ZIPS,':DEST.CLIENT.ID TO F.DEST.AUDIT.ZIPS ELSE
+         CALL ELINE('Cannot Open FB.AUDIT.ZIPS,':DEST.CLIENT.ID)
+         RETURN
+      END
+*
+*** Copy Audit items
+*
+      EOF = "N"
+*
+      CRT
+      CRT \Selecting FB.AUDIT,\ : ORGIN.CLIENT.ID : \ items \
+*
+      IF ORGIN.CARRIER.ID = 'ALL' THEN
+         W.STMT = \SSELECT FB.AUDIT,\:ORGIN.CLIENT.ID
+      END ELSE
+*NPR02   W.STMT = \SSELECT FB.AUDIT,\:ORGIN.CLIENT.ID:\ WITH @ID = "\:ORGIN.CARRIER.ID:\*]"\
+         W.STMT = \SSELECT FB.AUDIT,\:ORGIN.CLIENT.ID:\ WITH @ID = "\:ORGIN.CARRIER.ID:\"\          ;*NPR02
+      END
+      EXECUTE W.STMT CAPTURING RESULTS
+*
+*** CRT ; CRT RESULTS   ; INPUT RP
+*
+      LOOP
+         READNEXT ORGIN.AUD.ID ELSE EOF = "Y"
+      UNTIL EOF = "Y" DO
+***   DEST.AUD.ID = ORGIN.AUD.ID
+         DEST.AUD.ID = DEST.CARRIER.ID
+         IF DEST.CARRIER.ID='ALL' THEN
+            DEST.AUD.ID=ORGIN.AUD.ID
+         END
+* Added the above 3 lines as all was being copied to FB.AUDIT instead of
+* all of the individual carriers. DRF 12/30/13
+         READ ORGIN.AUDIT.REC FROM F.ORGIN.AUDIT, ORGIN.AUD.ID THEN
+            READ DEST.AUDIT.REC FROM F.DEST.AUDIT, DEST.AUD.ID THEN
+               CRT ; CRT "Carrier ":ORGIN.AUD.ID "L#10" : " exists on client " : DEST.CLIENT.ID : " NOT copied. [CR] " : ; INPUT RESP
+            END ELSE
+               WRITE ORGIN.AUDIT.REC ON F.DEST.AUDIT, DEST.AUD.ID
+               CRT "Carrier ":ORGIN.AUD.ID "L#10":" copied to Client ":DEST.CLIENT.ID
+            END
+         END ELSE
+            CRT ; CRT 'Carrier ':ORGIN.AUD.ID "L#10":' NOT on Client ':ORGIN.CLIENT.ID:' file - NOT copied. [CR]' : ; INPUT RESP
+         END
+      REPEAT
+*
+*** Copy Audit Tables
+*
+      EOF = "N"
+*
+      CRT
+      CRT \Selecting FB.AUDIT.TABLES,\ : ORGIN.CLIENT.ID : \ items \
+*
+      IF ORGIN.CARRIER.ID = 'ALL' THEN
+         W.STMT = \SSELECT FB.AUDIT.TABLES,\:ORGIN.CLIENT.ID
+      END ELSE
+         W.STMT = \SSELECT FB.AUDIT.TABLES,\:ORGIN.CLIENT.ID:\ WITH @ID = "\:ORGIN.CARRIER.ID:\*]"\
+      END
+
+      EXECUTE W.STMT CAPTURING RESULTS
+*
+***CRT ; CRT RESULTS   ; INPUT RP
+*
+      LOOP
+         READNEXT ORGIN.AUD.TAB ELSE EOF = "Y"
+      UNTIL EOF = "Y" DO
+
+         W.CARRIER = FIELD(ORGIN.AUD.TAB,"*",1)
+         TABLE.NO  = FIELD(ORGIN.AUD.TAB,"*",2)
+
+         IF DEST.CARRIER.ID = 'ALL' THEN
+            NEW.AUD.TAB.ID = ORGIN.AUD.TAB
+         END ELSE
+            NEW.AUD.TAB.ID = DEST.CARRIER.ID:"*":TABLE.NO
+         END
+
+
+         READ ORGIN.AUD.TAB.REC FROM F.ORGIN.AUDIT.TABLES, ORGIN.AUD.TAB THEN
+            READ DEST.AUDIT.REC FROM F.DEST.AUDIT.TABLES, NEW.AUD.TAB.ID THEN
+               CRT ; CRT "Table " : TABLE.NO "R#5" : " for Carrier " : W.CARRIER : " exists on client " : DEST.CLIENT.ID : " NOT copied. [CR] " : ; INPUT RESP
+            END ELSE
+               WRITE ORGIN.AUD.TAB.REC ON F.DEST.AUDIT.TABLES, NEW.AUD.TAB.ID
+               CRT "Table " : TABLE.NO "R#5" : " for Carrier " : W.CARRIER : " copied to client " : DEST.CLIENT.ID
+            END
+         END ELSE
+            CRT ; CRT "Table " : TABLE.NO "R#5" : " for Carrier " : W.CARRIER : " NOT on client " : DEST.CLIENT.ID : " NOT copied. [CR] " : ; INPUT RESP
+         END
+      REPEAT
+*
+      CRT
+      CRT \Done copying FB.AUDIT.TABLES,\ : ORGIN.CLIENT.ID : \ items \
+*
+*** Copy Audit zips
+*
+      EOF = "N"
+*
+      CRT
+      CRT \Selecting FB.AUDIT.ZIPS,\ : ORGIN.CLIENT.ID : \ items \
+*
+      IF ORGIN.CARRIER.ID = 'ALL' THEN
+         W.STMT = \SSELECT FB.AUDIT.ZIPS,\:ORGIN.CLIENT.ID
+      END ELSE
+         W.STMT = \SSELECT FB.AUDIT.ZIPS,\:ORGIN.CLIENT.ID:\ WITH @ID = "\:ORGIN.CARRIER.ID:\*]"\
+      END
+
+      EXECUTE W.STMT CAPTURING RESULTS
+*
+***CRT ; CRT RESULTS   ; INPUT RP
+*
+      LOOP
+         READNEXT ORGIN.AUD.ZIP ELSE EOF = "Y"
+      UNTIL EOF = "Y" DO
+
+         W.FROM.CARRIER = FIELD(ORGIN.AUD.ZIP,"*",1)
+         W.FROM.ZIP     = FIELD(ORGIN.AUD.ZIP,"*",2)
+         W.FROM.DATE    = FIELD(ORGIN.AUD.ZIP,"*",3)
+         W.FROM.TYPE    = FIELD(ORGIN.AUD.ZIP,"*",4)
+         W.FROM.IO      = FIELD(ORGIN.AUD.ZIP,"*",5)
+         W.FROM.EQUIP   = FIELD(ORGIN.AUD.ZIP,"*",6)
+         W.FROM.STR = W.FROM.CARRIER:" Zip : ": W.FROM.ZIP "L#6" : "   " : OCONV(W.FROM.DATE,"D2/") : " Type : " : W.FROM.TYPE "L#7" : " " : W.FROM.IO  : " "
+         IF W.FROM.EQUIP NE '' THEN W.FROM.STR := " Equip ":W.FROM.EQUIP
+
+         SUFFIX = FIELD(ORGIN.AUD.ZIP,"*",2,99)
+         IF DEST.CARRIER.ID = 'ALL' THEN
+            NEW.AUD.ZIP.ID = ORGIN.AUD.ZIP
+         END ELSE
+            NEW.AUD.ZIP.ID = DEST.CARRIER.ID:"*":SUFFIX
+         END
+
+         W.TO.CARRIER = FIELD(NEW.AUD.ZIP.ID,"*",1)
+         W.TO.ZIP     = FIELD(NEW.AUD.ZIP.ID,"*",2)
+         W.TO.DATE    = FIELD(NEW.AUD.ZIP.ID,"*",3)
+         W.TO.TYPE    = FIELD(NEW.AUD.ZIP.ID,"*",4)
+         W.TO.IO      = FIELD(NEW.AUD.ZIP.ID,"*",5)
+         W.TO.EQUIP   = FIELD(NEW.AUD.ZIP.ID,"*",6)
+         W.TO.STR = W.TO.CARRIER:" Zip : ": W.TO.ZIP "L#6" : "   " : OCONV(W.TO.DATE,"D2/") : " Type : " : W.TO.TYPE "L#7" : " " : W.TO.IO  : " "
+         IF W.TO.EQUIP NE '' THEN W.TO.STR := " Equip ":W.TO.EQUIP
+
+         READ ORGIN.AUD.ZIP.REC FROM F.ORGIN.AUDIT.ZIPS, ORGIN.AUD.ZIP THEN
+            READ DEST.AUDIT.REC FROM F.DEST.AUDIT.ZIPS, NEW.AUD.ZIP.ID THEN
+               CRT
+               CRT 'Copy From ':W.FROM.STR
+               CRT 'To        ':W.TO.STR : ' FAILED [CR] ' : ; INPUT RESP
+            END ELSE
+               WRITE ORGIN.AUD.ZIP.REC ON F.DEST.AUDIT.ZIPS, NEW.AUD.ZIP.ID
+               CRT 'Copy From ' : W.FROM.STR
+               CRT 'To        ' : W.TO.STR : ' COMPLETED'
+            END
+         END ELSE
+            CRT
+*     CRT 'Copy From ':W.FROM.STR ' FAILED !! [CR] ' : ; INPUT RESP    ; * JMK01
+            CRT 'Copy From ':W.FROM.STR:' FAILED !! [CR] ' : ; INPUT RESP    ; * JMK01
+         END
+      REPEAT
+*
+      CRT ; CRT ; CRT
+** CRT \Done copying FB.AUDIT.ZIPS,\ : ORGIN.CLIENT.ID : \ items \
+      CALL ELINE("Done copying tables and pricing")
+*
+      RETURN

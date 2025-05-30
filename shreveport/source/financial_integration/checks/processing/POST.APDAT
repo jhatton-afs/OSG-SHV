@@ -1,0 +1,205 @@
+****************************************************
+* Program name : POST.APDAT
+* Author       : Greg Bino
+* Date written : 06-06-2016
+* Library      : FBBP
+* COPYRIGHT (C) 1998 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* Post brokerage transactions into FB.BILLS.HIST,00000
+*
+* Last updated by AFS (gbino) at 07:57:18 on 06/06/2016.
+*
+* Start modification history
+* 082117 - NKH01 - Replaced Tom Gorton with Nicole Meddaugh
+* End modification history
+*
+*******************************************************
+      CALL GET.USER(USER)
+      PROG.NAME = 'POST.APDAT'
+      VIN1=""
+      VIN1<1> = PROG.NAME
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "S"
+      CALL PROGTRACK(VIN1,VOUT1)
+
+      OPEN 'ADV.IN' TO FILE.IN ELSE CALL OPEN.ABORT("ADV.IN",PROG.NAME)
+*******      OPEN 'BILLDATA.GBINO' TO FILE.GB ELSE STOP
+      OPEN 'ADVDAT' TO FILE.INV ELSE CALL OPEN.ABORT("ADVDAT",PROG.NAME)
+      OPEN "FB.BILLS.HIST,00000" TO F.BILLS ELSE CALL OPEN.ABORT("FB.BILLS.HIST,00000",PROG.NAME)
+      OPEN "FB.BILLS.CRX" TO F.CRX ELSE CALL OPEN.ABORT("FB.BILLS.CRX",PROG.NAME)
+      OPEN 'ADV.IN.P' TO FILE.INP ELSE CALL OPEN.ABORT("ADV.IN.P",PROG.NAME)
+      TAB = "|"
+      STR = OCONV(DATE(),"D4-")
+      STR = STR[7,4]:STR[1,2]:STR[4,2]
+      STR = "AP_":STR
+      AM = CHAR(254)
+      CNT = 0
+      WRT.CNT = 0
+      VER = 0
+      WINDOW = OCONV(DATE() - 20,'D4-')
+      WINDOW = WINDOW[7,4]:WINDOW[1,2]:WINDOW[4,2]
+      WINDOW = WINDOW * 1
+      CMD = 'SSELECT ADV.IN  WITH DT GE "' : WINDOW : '"'
+      ****     CMD = 'SELECT ADV.IN = "' : STR : ']"'
+      EXECUTE CMD CAPTURING STUFF RETURNING JUNK
+**      EXECUTE "GET-LIST ADVAP"
+      IF @SELECTED THEN
+         EOJ = 0
+         LOOP
+            READNEXT ID ELSE EOJ = 1
+         UNTIL EOJ DO
+            IF ID[1,3] # "AP_" AND ID[1,3] # "ap_" THEN
+               CONTINUE
+            END
+            READV TST FROM FILE.INP,ID,1 THEN
+               CONTINUE
+            END
+            *
+            READ DAT FROM FILE.IN,ID THEN
+               CNT = CNT + 1
+               LINE.CNT = DCOUNT(DAT,AM)
+               FOR I = 1 TO LINE.CNT
+                  DATA = DAT<I>
+                  IF DATA # "" THEN
+                     X = DCOUNT(DATA,TAB)
+                     CARRIER = FIELD(DATA,TAB,1)[1,5]
+                     IF NOT(NUM(CARRIER)) THEN CONTINUE
+                     INV.DT = ICONV(FIELD(DATA,TAB,2),"D")
+                     SS.CODE = FIELD(DATA,TAB,3)
+                     PRO.NUM = TRIM(FIELD(DATA,TAB,4))
+                     PRO.NUM = OCONV(PRO.NUM,'MCU')
+                     LOAD.ID = FIELD(DATA,TAB,5)
+                     IF LOAD.ID[1,4] = "5-SM" THEN
+                        CONVERT "5-" TO "" IN LOAD.ID
+                     END
+                     CARRIER.INV.DT = ICONV( FIELD(DATA,TAB,6),"D")
+                     CARRIER.INV.RCV.DT = ICONV( FIELD(DATA,TAB,7),"D")
+                     CARRIER.APPV.DT = ICONV(FIELD(DATA,TAB,8),"D")
+                     SLS.REP.CD = FIELD(DATA,TAB,9)
+                     BANK.CD = FIELD(DATA,TAB,10)
+                     INV.AMT = TRIM(FIELD(DATA,TAB,11))
+                     CONVERT "," TO "" IN INV.AMT
+                     INV.AMT = INV.AMT * 100
+                     TRAN.TYP = FIELD(DATA,TAB,12)
+
+                     NEW.REC = ""
+                     NEW.REC<1> = CARRIER
+                     NEW.REC<2> = INV.DT
+                     NEW.REC<3> = SS.CODE
+                     NEW.REC<4> = PRO.NUM
+                     NEW.REC<5> = LOAD.ID
+                     NEW.REC<6> = CARRIER.INV.DT
+                     NEW.REC<7> = CARRIER.INV.RCV.DT
+                     NEW.REC<8> = CARRIER.APPV.DT
+                     NEW.REC<9> = SLS.REP.CD
+                     NEW.REC<10> = BANK.CD
+                     NEW.REC<11> = INV.AMT
+                     NEW.REC<12> = TRAN.TYP
+                     NEW.REC<30> = DATE()
+
+                     GOSUB UPD.FILE
+                     IF UPDATE = 0 THEN  ; * already in FB.BILLS.HIST,00000 file
+                        IF DUP = 1 THEN
+                           NEW.REC<31> = "DUP"
+                        END
+                        READV TD FROM FILE.INV,CARRIER:"*":PRO.NUM:"*":VER,1 THEN
+
+                        END ELSE
+                           WRITE NEW.REC ON FILE.INV,CARRIER:"*":PRO.NUM:"*":VER
+                        END
+                     END
+
+                  END
+               NEXT I
+            END
+            WRITEV DATE() ON FILE.INP,ID,1
+         REPEAT
+      END
+      EXECUTE "POST.APCHECK"
+      CRT "FILE COUNT ":CNT
+      CRT "WRITES ":WRT.CNT
+      CRT "THAT'S ALL FOLKS"
+
+      VIN1=""
+      VIN1<1> = PROG.NAME
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "E"
+      CALL PROGTRACK(VIN1,VOUT1)
+
+      STOP
+      **********************************************
+UPD.FILE:
+      *********************************************
+      PRO.REC=''
+      PRO.REC<1>=INV.DT
+      PRO.REC<7>=INV.AMT
+      PRO.REC<8>=INV.AMT
+      PRO.REC<16>=LOAD.ID
+      PRO.REC<20>=CARRIER
+      PRO.REC<38>=CARRIER.INV.DT
+      PRO.REC<30>=INV.DT
+      PRO.REC<37>=INV.DT
+      PRO.REC<53>="AUTO"
+      PRO.REC<84>="AUTO"
+      PRO.REC<85>=TIME()
+      PRO.REC<86>=DATE()
+
+      UPDATE = 0
+      DUP = 0
+      PRO.ID = CARRIER:"*":PRO.NUM:"*":VER
+      READ FB.CRX FROM F.CRX,PRO.ID THEN
+         IF FB.CRX<1> # "00000" THEN
+            DUP = 1
+            GOSUB SEND.EMAIL
+            RETURN
+         END
+      END
+      READ TST FROM F.BILLS,PRO.ID THEN
+         IF TST<39> = "R" THEN
+            UPDATE = 1
+         END
+         REV.CHK = INDEX(ID,"REVISED",1)
+         IF REV.CHK GT 0 THEN
+            UPDATE = 1
+         END
+         IF TST # "" AND REV.CHK LT 1 THEN
+            DUP =1
+         END
+      END ELSE
+         UPDATE = 1
+      END
+      IF UPDATE THEN
+         WRITE PRO.REC ON F.BILLS,PRO.ID
+         CRX.REC = ""
+         CRX.REC<1>='00000'              ; * Default to brokerage client
+         CRX.REC<2>=INV.DT
+         CRX.REC<7>=PRO.REC<7>
+         CRX.REC<8>=PRO.REC<8>
+         CRX.REC<30>=INV.DT
+         CRX.REC<37>=INV.DT
+         CRX.REC<41>=PRO.REC<41>
+         WRITE CRX.REC ON F.CRX,PRO.ID
+         WRT.CNT = WRT.CNT + 1
+      END
+
+      RETURN
+********************************************************************
+SEND.EMAIL:
+********************************************************************
+      SUBJ='VOUCHER POSTING ERROR! ':PRO.ID:'    is already in FB.BILLS.CRX file'
+      TEXT=PRO.ID:' is already on file for client ':FB.CRX<1>
+      TEXT<1,-1>='Client: ':FB.CRX<1>
+      TEXT<1,-1>='PRO ID ':PRO.ID
+      TEXT<1,-1>='File ID ':ID
+      MVIN=''
+*       MVIN<1,-1>='gbino@afs.net'
+      MVIN<1,-1>='DFriend@afs.net'
+      MVIN<1,-1>='nmeddaugh@afs.net'   ;* NKH01
+
+      MVIN<5>=SUBJ
+      MVIN<6>=TEXT
+      CALL SENDMAIL(MVIN,MVOUT)
+
+   END

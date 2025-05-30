@@ -1,0 +1,160 @@
+*-----------------------
+* MODIFICATIONS
+* 05/09/06 : JCW01 : CHANGES TO @SELECTED, CLEARSELECT, AND STMT<X>
+*-----------------------
+* ADD FB.PAY TO THE LIST...
+      CRT @(-1):
+      OPEN 'CLIENTS' TO F.CLIENTS ELSE ABORT
+
+
+      OPEN 'FB.BILLS.CRX' TO F.BILLS.CRX ELSE ABORT
+      OPEN 'CLIENT.CARRIER.XREF' TO F.CLI.CAR.XREF ELSE ABORT
+      OPEN 'BILLDATA.DAVID' TO F.BD ELSE ABORT
+      CALL GET.USER(USER)
+      TESTING=0
+      PER.1=1
+      PER.2=1
+
+     CARRIER.ID='00015'
+************************************************************************
+
+************************************************************************
+      ERROR.ARRAY=''
+      TEXT='Selecting Clients.'
+      CALL CENTER(TEXT,80)
+      CRT @(0,10):TEXT
+*
+      STMT= "SELECT VOC 'FB.BILLS.HIST' *A7"
+*DFSTMT="SELECT CLIENTS '01044'"
+      PRINT STMT
+      EXECUTE STMT RTNLIST CLIENT.LIST CAPTURING OUTPUT
+      ITEMS = @SELECTED
+      IF @SELECTED < 1 THEN    ; * JCW01
+         CALL ELINE('ERROR - No clients on file.')
+         STOP
+      END
+      COUNTER.1=0
+      PER=0
+      LOOP
+         READNEXT CLIENT.ID FROM CLIENT.LIST ELSE CLIENT.ID='DONE'
+      UNTIL CLIENT.ID='DONE' DO
+         COUNTER.1=COUNTER.1+1
+         IF CLIENT.ID='FB.BILLS.HIST' THEN GO SKIP.CLIENT
+*       Check to see if the carrier has been used for this client... if not then skip it...
+         READ DXREF FROM F.CLI.CAR.XREF,CLIENT.ID THEN
+            LOCATE CARRIER.ID IN DXREF SETTING POS ELSE GO SKIP.CLIENT
+         END
+         IF CLIENT.ID[1,2]='99' THEN GO SKIP.CLIENT
+         READV CLIENT.NAME FROM F.CLIENTS,CLIENT.ID,2 ELSE
+            CLIENT.NAME='*** Not On File ***'
+         END
+         CRT @(0,16):CLIENT.ID:" ":CLIENT.NAME:" - Now selecting freight bills":@(-4):
+         CALL PROG.BAR(18,COUNTER.1,ITEMS,PER.1)
+         EDI=0
+         OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS.HIST THEN
+*****************************************************************************
+            STMT='SELECT FB.BILLS.HIST,':CLIENT.ID
+            TIMES=DCOUNT(CARRIER.ID,@AM)
+            STMT:=' WITH CARRIER# = '
+            FOR X = 1 TO TIMES
+               STMT:='"':CARRIER.ID<X>:'"'
+            NEXT X
+*         STMT:=' WITH CARRIER# = "':CARRIER.ID:'"'
+            STMT:=' AND WITH @ID = "[AD]" "[BD]" "[/]"'
+            PRINT @(0,10):STMT
+            EXECUTE STMT RTNLIST BILLS.LIST CAPTURING OUTPUT
+            NUM.BILLS = @SELECTED
+*         IF SYSTEM(11) ELSE GO SKIP.CLIENT ; * No Bills
+            CRT @(0,16):CLIENT.ID:" ":CLIENT.NAME:" - Now processing ":NUM.BILLS:" Freight Bills":@(-4):
+            COUNTER.2=0
+            LOOP
+               DONE=0
+               READNEXT PRO.ID FROM BILLS.LIST ELSE DONE=1
+            UNTIL DONE=1 DO
+               PRO=FIELD(PRO.ID,"*",2)
+               VERSION=FIELD(PRO.ID,"*",3)
+               IF VERSION#"0" THEN GOTO SKIP.BILL
+
+*DFIF PRO='699180584156AD' THEN CALL ELINE('PRESS BREAK')
+               READ DBILLS FROM F.BILLS.HIST,PRO.ID ELSE GOTO SKIP.BILL
+               IF DBILLS<39>='R' THEN GOTO SKIP.BILL
+               IF DBILLS<8>=0 THEN GOTO SKIP.BILL
+
+*******************************************************************************************
+* Strip out AD, BD, and / to get at "Base Pro Number"
+*******************************************************************************************
+
+               RAW.PRO=PRO
+
+FIND.NEXT.PRO.VERSION:***
+               CHANGE.OCCUR=0
+               IF NOT(CHANGE.OCCUR) AND RAW.PRO[LEN(RAW.PRO)-1,2]='BD' THEN
+                  RAW.PRO=RAW.PRO[1,LEN(RAW.PRO)-2]
+                  CHANGE.OCCUR=1
+               END
+               IF NOT(CHANGE.OCCUR) AND RAW.PRO[LEN(RAW.PRO)-1,2]='AD' THEN
+                  RAW.PRO=RAW.PRO[1,LEN(RAW.PRO)-2]
+                  CHANGE.OCCUR=1
+               END
+               IF NOT(CHANGE.OCCUR) AND RAW.PRO[LEN(RAW.PRO)-1,1]='/' THEN
+                  SLASH.NUM=RAW.PRO[LEN(RAW.PRO),1]
+                  IF SLASH.NUM=1 THEN
+                     RAW.PRO=RAW.PRO[1,LEN(RAW.PRO)-2]
+                  END ELSE
+                     RAW.PRO=RAW.PRO[1,LEN(RAW.PRO)-1]:SLASH.NUM-1
+                  END
+                  CHANGE.OCCUR=1
+               END
+
+
+*DF               IF RAW.PRO = PRO ELSE GOTO SKIP.BILL
+               IF NOT(CHANGE.OCCUR) THEN GOTO SKIP.BILL
+               RAW.PRO.ID=CARRIER.ID:'*':RAW.PRO:'*':FIELD(PRO.ID,"*",3)
+               READ DRAW.BILLS FROM F.BILLS.HIST,RAW.PRO.ID ELSE
+                  READ DRAW.BILLS FROM F.BILLS.CRX,RAW.PRO.ID ELSE
+                     ERROR='Cannot find pro id ':RAW.PRO.ID
+                     ERROR.ARRAY<-1>=ERROR
+                     GOTO FIND.NEXT.PRO.VERSION
+                  END
+               END
+               IF DRAW.BILLS<39>='R' THEN GOTO FIND.NEXT.PRO.VERSION
+               IF DRAW.BILLS<8>=DBILLS<8> THEN
+                  ERROR=CLIENT.ID:@VM:CLIENT.NAME:@VM:PRO.ID:@VM:OCONV(DBILLS<37>,'D2/'):@VM:DBILLS<8>'R26':@VM:RAW.PRO.ID:@VM:OCONV(DRAW.BILLS<37>,'D2/')
+                  ERROR.ARRAY<-1>=ERROR
+               END
+               GOTO FIND.NEXT.PRO.VERSION
+
+*******************************************************************************************
+*
+*******************************************************************************************
+
+
+
+************************************************************************
+* New Pro format goes Here
+************************************************************************
+               LOOKPRO=PRO
+************************************************************************
+
+SKIP.BILL:***
+            REPEAT
+         END
+SKIP.CLIENT:***
+      REPEAT
+      IF ERROR.ARRAY#'' THEN
+         ERROR.ARRAY=CHANGE(ERROR.ARRAY,@VM,CHAR(9))
+         ERROR.ID='CHANGE_PRO_ERRORS-':CARRIER.ID:'.XLS'
+TRY.AGAIN:***
+         WRITE ERROR.ARRAY ON F.BD,ERROR.ID ELSE
+            CALL ELINE('Close your Spreadseet ':ERROR.ID)
+            GO TRY.AGAIN
+         END
+         CRT @(0,23)
+         FOR X = 1 TO 5
+            CRT
+         NEXT X
+         CRT "Errors Written to BILLDATA.DAVID ":ERROR.ID
+         CRT
+         CRT "Press [Enter] to Acknowledge: ":
+         INPUT NUL
+      END

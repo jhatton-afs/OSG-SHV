@@ -1,0 +1,566 @@
+SUBROUTINE FB.CLIENT.ACH(CLIENT.ID,CLIENT.NAME,ITEM)
+********************************************************************************
+*  Program : FB.PROCESS.NOTIFY.SUB
+*  Author  : Jeff Walton
+*  Date    : August 20, 2007
+********************************************************************************
+*
+*      COPYRIGHT (C) 2002 by AFS LOGISTICS, LLC. - ALL RIGHTS RESERVED
+*
+*  This program is the sole property of AFS Logistics, LLC (AUTOMATED FREIGHT
+*  SYSTEMS) and may not be used, copied, or modified without the express
+*  written consent of Brian Barker of AFS Logistics, LLC.
+********************************************************************************
+* Includes
+$INCLUDE FILE.DEFS INC_ADDS60.CODES; * These require specific PROCOMM settings
+
+* Equates
+      EQU REVERSE.BLINK.ON TO TERM.ESC.SEQ:CHAR(TERM.REV+TERM.BLINK)   ; * Reverse Blinking text ON
+      EQU REVERSE.ON TO TERM.ESC.SEQ:CHAR(TERM.REV)          ; * Reverse text ON
+      EQU REVERSE.OFF TO TERM.ESC.SEQ:CHAR(TERM.NORMAL)      ; * Reverse text OFF
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+
+* Initialize general program variables
+      PROMPT''
+      PORT.NUM=SYSTEM(19)
+      CALL GET.USER(USER.NAME)
+      PROG.NAME='FB.PROCESS.NOTIFY.SUB'
+      PROG.DESC='Process Notification Entry'
+      PACK.NAME='USER : ':USER.NAME
+      CO.NAME='AFS Logistics, LLC'
+      EDIT.MASK.CHAR='-'
+      PLACE.HOLDER='~~ PLACE*HOLDER ~~'
+
+* Initialize operating variables
+      PAGE.SIZE=12                       ; * Number of lines per page
+      START.Y=8                          ; * Starting y-position on the screen minus one
+      LAST.EDIT.MASK=1                   ; * Last item edited or deleted
+      WIDTH=80                           ; * Print width for printing table of includes/excludes
+      CTR=INT(WIDTH/2)                   ; * Center of the table width
+
+
+
+
+      BEGIN.DATE=''
+
+      END.DATE=''
+
+      OLD.ITEM=ITEM
+* Display initial screen
+      GOSUB DISPLAY.SCREEN
+      CHANGE=0
+
+      IF ITEM='' THEN GOSUB PROCESS.DATA
+
+MAIN.START:***
+      CRT @(0,22):'Enter Option : --           [##]=LN to Chg [U]pdate [D]elete [X]=Back [EX]it'
+      EDIT.MASK=STR(EDIT.MASK.CHAR,2)
+      HELP=''
+      CALL GEN.IN(15,22,EDIT.MASK,'',Q,0,2,'','',2,15,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'                    ; * Exit
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='D'
+            YN.MSG='Do you wish to delete this notification?'
+            YN.MASK=''
+            GOSUB ASK.Y.OR.N
+            IF YN.ANSWER='Y' THEN
+               ITEM=''
+               RETURN
+            END
+         CASE QI='X'                     ; * Back to client
+            IF ITEM#OLD.ITEM THEN
+               YN.MSG='You have unsaved changes. Save before entering new client?'
+               YN.MASK=''
+               GOSUB ASK.Y.OR.N
+               IF YN.ANSWER='Y' THEN
+                  GOSUB FAILSAFE.CHECK
+                  IF FAILSAFE.OK THEN
+                     GOSUB SAVE.CONTROL.REC
+                     RETURN
+                  END ELSE
+                     ITEM=OLD.ITEM
+                     RETURN
+                  END
+               END
+            END
+            RETURN
+         CASE QI='U'                     ; * Update (and exit)
+            IF ITEM#OLD.ITEM THEN
+               GOSUB FAILSAFE.CHECK
+               IF FAILSAFE.OK THEN
+                  GOSUB SAVE.CONTROL.REC
+                  RETURN
+               END ELSE
+                  ITEM=OLD.ITEM
+                  RETURN
+               END
+            END ELSE
+               CRT @(0,22):'No changes to save.':@(-3)
+               SLEEP 1
+            END
+            RETURN
+         CASE QI='*'                     ; * Show contents of CONTROL.REC for debugging purposes
+            CRT @(-1)
+            CRT @(0,0):ITEM
+            CALL ELINE('Viewing DEBUG Screen.')
+            GOSUB DISPLAY.SCREEN
+            GOTO MAIN.START
+         CASE QI MATCHES '0N'
+            IF QI GE 1 AND QI LE 7 THEN
+               FIELD.POS=QI
+               CHANGE=1
+               GOSUB CHANGE.DATA
+               CHANGE=0
+            END
+            GOTO MAIN.START
+         CASE 1
+            GOTO MAIN.START
+      END CASE
+
+********************************************************************************
+* Start of internal subroutines
+********************************************************************************
+
+DISPLAY.SCREEN:***
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,3):'  Client...................'
+      CRT @(0,5):'1 Begin Date...............'
+      CRT @(0,6):'2 End Date.................'
+      CRT @(0,7):'3 Message Active (Y/N).....'
+      CRT @(0,8):'4 Notify Processor (Y/N)...'
+      CRT @(0,9):'5 Send Weekly Email (Y/N)..'
+      CRT @(0,10):'6 Email Address............'
+      CRT @(0,11):'7 Message'
+      CRT @(0,13):'  Last Updated.............'
+      CRT @(28,3):CLIENT.ID:' ':CLIENT.NAME
+      CRT @(28,5):ITEM<2>'D2-'
+      CRT @(28,6):ITEM<3>'D2-'
+      CRT @(28,7):ITEM<4> 'L#10'
+      CRT @(28,8):ITEM<5> 'L#10'
+      CRT @(28,9):ITEM<6> 'L#10'
+      CRT @(28,10):ITEM<7> 'L#52'
+      CRT @(2,12):ITEM<8> 'L#75'
+      CRT @(28,13):OCONV(ITEM<9>,'D2/'):' ':OCONV(ITEM<10>,'MTS'):' ':ITEM<11>
+      RETURN
+
+********************************************************************************
+
+
+PROCESS.DATA:***
+      DONE=FALSE
+      FIELD.POS=1
+      LOOP WHILE NOT(DONE)
+CHANGE.DATA:***
+         BEGIN CASE
+            CASE FIELD.POS=0             ; * Done
+               DONE=TRUE
+            CASE FIELD.POS=1             ; * Begin Date
+               GOSUB GET.BEGIN.DATE
+               IF BACK.FLAG THEN DONE=TRUE
+            CASE FIELD.POS=2             ; * End Date
+               GOSUB GET.END.DATE
+            CASE FIELD.POS=3             ; * Active 
+               GOSUB GET.ACTIVE
+            CASE FIELD.POS=4             ; * Notify
+               GOSUB GET.NOTIFY
+            CASE FIELD.POS=5             ; * Send Weekly Email
+               GOSUB GET.SEND.EMAIL
+            CASE FIELD.POS=6             ; * EMAIL
+               GOSUB GET.EMAIL
+            CASE FIELD.POS=7             ; * MESSAGE
+               GOSUB GET.NOTES
+            CASE FIELD.POS=8             ; * Done  ; * JMK01
+               DONE=TRUE                 ; * JMK01
+         END CASE
+         IF CHANGE THEN RETURN
+         IF BACK.FLAG THEN
+            FIELD.POS-=1
+         END ELSE
+            FIELD.POS+=1
+         END
+      REPEAT
+      RETURN
+
+********************************************************************************
+
+
+GET.BEGIN.DATE:***
+      BACK.FLAG=FALSE
+      X.POS=28
+      Y.POS=5
+      CRT @(0,22):'Enter a beginning date.':@(-4)
+      IF ITEM<2> THEN
+         SAVE.BEGIN.DATE=ITEM<2>'D2-'
+         EDIT.MASK=ITEM<2>'D2-'
+      END ELSE
+         SAVE.BEGIN.DATE=SPACE(8)
+         EDIT.MASK='MM/DD/YY'
+      END
+      HELP='OPTIONS: [T]oday [X]=Back [EX]it'
+      CALL GEN.IN(X.POS,Y.POS,EDIT.MASK,'DATE',Q,0,8,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF ITEM<2> AND QI='' THEN QI=ITEM<2>
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'
+            BACK.FLAG=TRUE
+            CRT @(X.POS,Y.POS):SAVE.BEGIN.DATE
+            RETURN
+         CASE QI='T'
+            BEGIN.DATE=DATE()
+            IF ITEM<3>#'' AND BEGIN.DATE > ITEM<3> THEN
+               PRINT @(X.POS,Y.POS):BEGIN.DATE'D2-'
+               CALL ELINE('Begin Date cannot be past existing ending date!!')
+               GOTO GET.BEGIN.DATE
+            END
+            CRT @(X.POS,Y.POS):BEGIN.DATE'D2-'
+            ITEM<2>=BEGIN.DATE
+            RETURN
+         CASE NUM(Q) AND QI#''
+            IF OLD.ITEM='' THEN
+            IF Q<DATE() THEN
+               PRINT @(X.POS,Y.POS):Q 'D2-'
+               CALL ELINE('Warning: This date is in the past.')
+               GOTO GET.BEGIN.DATE
+            END
+            END
+            IF ITEM<3>#'' AND Q > ITEM<3> THEN
+               PRINT @(X.POS,Y.POS):Q 'D2-'
+               CALL ELINE('Begin Date cannot be past existing ending date!!')
+               GOTO GET.BEGIN.DATE
+            END
+            BEGIN.DATE=Q
+            CRT @(X.POS,Y.POS):BEGIN.DATE'D2-'
+            ITEM<2>=BEGIN.DATE
+            RETURN
+         CASE 1
+            CALL ELINE('Invalid date. Try again.')
+            GOTO GET.BEGIN.DATE
+      END CASE
+
+********************************************************************************
+
+GET.END.DATE:***
+      BACK.FLAG=FALSE
+      X.POS=28                           ; * JMK01
+      Y.POS=6
+      CRT @(0,22):'Enter an ending date.':@(-4)
+      IF ITEM<3> THEN
+         SAVE.ITEM=ITEM<3>'D2-'
+         EDIT.MASK=ITEM<3>'D2-'
+      END ELSE
+         SAVE.ITEM=SPACE(8)
+         EDIT.MASK='MM/DD/YY'
+      END
+      HELP='OPTIONS: [T]oday [X]=Back [EX]it'
+      CALL GEN.IN(X.POS,Y.POS,EDIT.MASK,'DATE',Q,0,8,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF ITEM<3> AND QI='' THEN QI=ITEM<3>
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'
+            BACK.FLAG=TRUE
+            CRT @(X.POS,Y.POS):SAVE.ITEM 'D2-'
+            RETURN
+         CASE (NUM(Q) AND QI#'') OR Q='T'
+            IF Q='T' THEN Q=DATE()
+            IF Q<BEGIN.DATE THEN
+               PRINT @(X.POS,Y.POS):Q 'D2-'
+               CALL ELINE('The closing date ':Q'D2-':' is before ':BEGIN.DATE'D2-':'. Try again.')
+               GOTO GET.END.DATE
+            END
+            IF OLD.ITEM='' THEN
+            IF Q<DATE() THEN
+               PRINT @(X.POS,Y.POS):Q 'D2-'
+               CALL ELINE('Warning: This date is in the past.')
+            END
+            END
+            ITEM<3>=Q
+            CRT @(X.POS,Y.POS):ITEM<3>'D2-'
+            RETURN
+         CASE 1
+            CALL ELINE('Invalid date. Try again.')
+            GOTO GET.END.DATE
+      END CASE
+
+********************************************************************************
+
+GET.ACTIVE:***
+      BACK.FLAG=FALSE
+      X.POS=28                           ; * JMK01
+      Y.POS=7
+      CRT @(0,22):'Is this Message Active?':@(-4):
+      IF ITEM<4>#'' THEN
+         SAVE.ITEM=ITEM<4>
+         EDIT.MASK=ITEM<4>:' '
+      END ELSE
+         SAVE.ITEM=''
+         EDIT.MASK='_'
+      END
+      HELP='OPTIONS: [Y]es [N]o [X]=Back [EX]it'
+      CALL GEN.IN(X.POS,Y.POS,EDIT.MASK,'',Q,0,2,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF ITEM<4>#'' AND QI='' THEN QI=ITEM<4>
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'
+            BACK.FLAG=TRUE
+            CRT @(X.POS,Y.POS):SAVE.ITEM 
+            RETURN
+         CASE QI='Y' OR QI='N'
+            ITEM<4>=QI
+            CRT @(X.POS,Y.POS):QI'L#10'
+            RETURN
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO GET.ACTIVE
+      END CASE
+
+********************************************************************************
+
+GET.NOTIFY:***
+      BACK.FLAG=FALSE
+      X.POS=28                           ; * JMK01
+      Y.POS=8
+      CRT @(0,22):'Notify the Person Processing?':@(-4):
+      IF ITEM<5>#'' THEN
+         SAVE.ITEM=ITEM<5>
+         EDIT.MASK=ITEM<5>:' '
+      END ELSE
+         SAVE.ITEM=''
+         EDIT.MASK='_'
+      END
+      HELP='OPTIONS: [Y]es [N]o [X]=Back [EX]it'
+      CALL GEN.IN(X.POS,Y.POS,EDIT.MASK,'',Q,0,2,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF ITEM<5>#'' AND QI='' THEN QI=ITEM<5>
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'
+            BACK.FLAG=TRUE
+            CRT @(X.POS,Y.POS):SAVE.ITEM 
+            RETURN
+         CASE QI='Y' OR QI='N'
+            ITEM<5>=QI
+            CRT @(X.POS,Y.POS):QI'L#10'
+            RETURN
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO GET.NOTIFY
+      END CASE
+
+********************************************************************************
+
+GET.SEND.EMAIL:***
+      BACK.FLAG=FALSE
+      X.POS=28                           ; * JMK01
+      Y.POS=9
+      CRT @(0,22):'Send Weekly Email?':@(-4):
+      IF ITEM<6>#'' THEN
+         SAVE.ITEM=ITEM<6>
+         EDIT.MASK=ITEM<6>:' '
+      END ELSE
+         SAVE.ITEM=''
+         EDIT.MASK='_'
+      END
+      HELP='OPTIONS: [Y]es [N]o [X]=Back [EX]it'
+      CALL GEN.IN(X.POS,Y.POS,EDIT.MASK,'',Q,0,2,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF ITEM<6>#'' AND QI='' THEN QI=ITEM<6>
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'
+            BACK.FLAG=TRUE
+            CRT @(X.POS,Y.POS):SAVE.ITEM 
+            RETURN
+         CASE QI='Y' OR QI='N'
+            ITEM<6>=QI
+            CRT @(X.POS,Y.POS):QI'L#10'
+            RETURN
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO GET.SEND.EMAIL
+      END CASE
+
+********************************************************************************
+GET.EMAIL:***
+         VIN='' ; VOUT=''
+         HDG.TXT='Process Notify Email Address'
+         E.VOUT=ITEM<7>
+         VOUT=CHANGE(E.VOUT,@SVM,@VM)
+         VIN<1>=PROG.DESC
+         VIN<2>=PACK.NAME
+         VIN<3>=HDG.TXT
+         VIN<4>=0                        ; * DISPLAY MODE
+         VIN<5>=1                        ; * PROC LVL 1=TO 2=CC 3=BCC
+         CALL FB.EMAIL(VIN,VOUT)
+         E.VOUT=VOUT
+         ITEM<7>=CHANGE(E.VOUT,@VM,@SVM)
+         GOSUB DISPLAY.SCREEN
+         RETURN
+
+***********************************************************************************
+GET.NOTES:***
+      BACK.FLAG=FALSE
+      X.POS=2                           ; * JMK01
+      Y.POS=12
+      CRT @(0,22):'Message':@(-4):
+      IF ITEM<8>#'' THEN
+         SAVE.ITEM=ITEM<8>
+         EDIT.MASK=ITEM<8>
+      END ELSE
+         SAVE.ITEM=''
+         EDIT.MASK='_'
+      END
+      HELP='OPTIONS: [X]=Back [EX]it'
+      CALL GEN.IN(X.POS,Y.POS,EDIT.MASK,'',Q,0,75,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+!     QI=OCONV(QI,'MCU')
+      IF ITEM<8>#'' AND QI='' THEN QI=ITEM<8>
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'
+            BACK.FLAG=TRUE
+            CRT @(X.POS,Y.POS):SAVE.ITEM 
+            RETURN
+         CASE QI#''
+            ITEM<8>=QI
+            CRT @(X.POS,Y.POS):QI'L#75'
+            RETURN
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO GET.NOTES
+      END CASE
+      RETURN
+
+********************************************************************************
+
+
+***********************************************************************************
+FAILSAFE.CHECK:***
+* There are no failsafe conditions to check currently.
+      FAILSAFE.OK=TRUE                   ; * Assume no problems and try to find problems
+      RETURN
+
+********************************************************************************
+
+SAVE.CONTROL.REC:***
+
+      DIFF=0
+      FOR M=1 TO 8
+        IF ITEM<M>=OLD.ITEM<M> THEN NULL ELSE DIFF=1
+      NEXT M
+      IF DIFF THEN
+         ITEM<9>=DATE()
+         ITEM<10>=TIME()
+         ITEM<11>=USER.NAME
+      END
+
+      RETURN
+
+********************************************************************************
+
+DISPLAY.CONTROL.RECORDS:***
+      CRT @(0,0):@(-1)
+      EXECUTE 'SORT FB.CAR.CTRL 1 2 3 4'
+      CALL ELINE('')
+      RETURN
+
+********************************************************************************
+
+ASK.FOR.NUM:***
+* A general number prompt routine
+* Inputs:
+*    AFN.MSG  - message to display
+*    AFN.MASK - default value
+*    AFN.MIN  - min value allowed
+*    AFN.MAX  - max value allowed
+* Outputs:
+*    AFN.ANSWER
+
+      AFN.ANSWER=''
+
+AFN.1:
+      CRT @(0,22):AFN.MSG:@(-4)
+      HELP='Entry Options: [':AFN.MIN:'-':AFN.MAX:'] [X]=Back'
+      EDIT.MASK=AFN.MASK:' '
+      CALL GEN.IN(LEN(AFN.MSG)+1,22,EDIT.MASK,'',Q,0,LEN(AFN.MAX),'','',2,LEN(AFN.MSG)+1,22,0,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      IF QI='' THEN QI=TRIM(EDIT.MASK)
+      BEGIN CASE
+         CASE QI='X'
+         CASE QI>=AFN.MIN AND QI<=AFN.MAX
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO AFN.1
+      END CASE
+      AFN.ANSWER=QI
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+      RETURN
+
+********************************************************************************
+
+ASK.Y.OR.N:***
+* This is a general Yes/No prompt routine.
+* Inputs:
+*    YN.MSG, YN.MASK
+* Outputs:
+*    YN.ANSWER
+
+      YN.ANSWER=''
+
+Y.OR.N:
+      CRT @(0,22):YN.MSG:@(-4)
+      HELP='Entry Options: [Y]es [N]o'
+      EDIT.MASK=YN.MASK'L#1'
+      CALL GEN.IN(LEN(YN.MSG)+1,22,EDIT.MASK,'',Q,0,1,'','',2,LEN(YN.MSG)+1,22,0,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      IF QI='' THEN QI=TRIM(EDIT.MASK)
+      BEGIN CASE
+         CASE QI='Y'
+         CASE QI='N'
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO Y.OR.N
+      END CASE
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+      YN.ANSWER=QI
+      RETURN
+
+********************************************************************************
+
+
+
+LAST.CHANCE.TO.SAVE:***
+      IF ITEM#OLD.ITEM THEN
+         YN.MSG='You have unsaved changes. Save before exiting?'
+         YN.MASK=''
+         GOSUB ASK.Y.OR.N
+         IF YN.ANSWER='Y' THEN
+            GOSUB FAILSAFE.CHECK
+            IF FAILSAFE.OK THEN
+               GOSUB SAVE.CONTROL.REC
+               RETURN
+            END ELSE
+               RETURN
+            END
+         END
+         RETURN
+      END
+
+********************************************************************************
+
+THE.END:***
+      CRT @(0,22):@(-3):
+      RETURN
+END

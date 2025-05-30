@@ -1,0 +1,199 @@
+SUBROUTINE CALC.COMMODITY.RATE(VIN,VOUT,DTL.REC,ERRORS)
+*
+ UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'CALC.COMMODITY.RATE' ; UPL.VOUT = ''                    ;* NPR_UPL 04/22/2010
+ CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/22/2010
+**Calculate Commodity rates base on data supplied - Originally for FedEx
+
+OPEN '','FB.COMMRATES.HDR' TO F.FB.COMMRATES.HDR ELSE ERRORS = 'CANT OPEN FB.COMMRATES.HDR'  ; RETURN
+OPEN '','FB.COMMRATES.DTL' TO F.FB.COMMRATES.DTL ELSE ERRORS = 'CANT OPEN FB.COMMRATES.DTL'  ; RETURN
+OPEN '','FB.TABLES' TO F.TABLES ELSE ERRORS = 'CANT OPEN FB.TABLES' ; RETURN 
+OPEN '','ZIPS.CODES' TO F.ZIPS ELSE ERRORS = 'CANT OPEN ZIPS.CODES' ; RETURN
+
+CALL GET.USER(USER)
+
+ID.CARRIER       = VIN<1>
+ORIG.ZIP         = VIN<2>
+DEST.ZIP         = VIN<3>
+EFF.DATE         = VIN<4>
+WEIGHT           = VIN<5>
+HDR.EFF.DATE     = VIN<6>
+
+ID.IDX = ID.CARRIER
+
+ADD.CHARGE = 0
+
+VOUT   = ""
+ERRORS = ""
+
+IF WEIGHT LT "1" THEN
+   ERRORS = "Rates available for 1 lb. and up only!!"
+   RETURN
+END
+
+WT.TEST = WEIGHT
+
+IF NUM(WT.TEST) THEN
+   NULL
+END ELSE
+   WT.TEST = "0" ; * Prevent non numeric data error
+END
+
+IF NUM(WT.TEST) AND WT.TEST GT "0" THEN
+   NULL
+END ELSE
+   ERRORS = "Invalid weight (":WEIGHT:") -- Weight Should be a positive value!!"
+   RETURN
+END
+
+READ ORIG.REC FROM F.ZIPS , ORIG.ZIP THEN
+   ORIG.CITY = ORIG.REC<1>
+   ORIG.STATE = ORIG.REC<2>
+END ELSE
+   ORIG.CITY = "Not Available"
+   ORIG.STATE = "??"
+   ERRORS = "Invalid Origination ZIP ":ORIG.ZIP
+   RETURN
+END
+
+READ DEST.REC FROM F.ZIPS , DEST.ZIP THEN
+   DEST.CITY = DEST.REC<1>
+   DEST.STATE = DEST.REC<2>
+END ELSE
+   DEST.CITY = "Not Available"
+   DEST.STATE = "??"
+   ERRORS = "Invalid Destination ZIP ":DEST.ZIP
+   RETURN
+END
+
+DTL.REC = ''
+
+GOSUB GET.DETAIL
+
+IF DTL.REC NE "" THEN
+   GOSUB GET.RATE
+END ELSE
+   ERRORS = "Cant read detail record ":ID.DTL
+END
+
+RETURN
+
+*
+GET.DETAIL :
+
+   ID.DTL = ID.CARRIER:"*":HDR.EFF.DATE:"*":ORIG.ZIP:"*":DEST.ZIP
+
+   READ DTL.REC FROM F.FB.COMMRATES.DTL, ID.DTL ELSE 
+      DTL.REC = ""
+      RETURN
+   END
+
+   WEIGHT.STRING        = DTL.REC<1>
+   W.RATE.ARRAY         = DTL.REC<2>
+   ABS.MIN.CHARGE       = DTL.REC<3>
+   ORIG.AIRPORT.CD      = DTL.REC<4>
+   DEST.AIRPORT.CD      = DTL.REC<5>
+   ALL.RATES            = DTL.REC<6>
+   ALL.ABS.MIN.CHARGES  = DTL.REC<7>
+   ORIG.FXF.DOCK        = DTL.REC<8>
+   DEST.FXF.DOCK        = DTL.REC<9>
+  
+   RETURN
+
+GET.RATE :
+
+   CONVERT @SVM TO @AM IN W.RATE.ARRAY
+
+   CONVERT @SVM TO @AM IN WEIGHT.STRING
+   N.WTS1 = DCOUNT(WEIGHT.STRING,@AM)
+
+   WT.POS1       = ""
+   RATE          = ""
+   NEXT.RATE     = ""
+   AMOUNT1       = ""
+   AMOUNT2       = ""
+   WGHT.DEFICIT  = "0"
+   RATE.TO.USE   = ""
+   AMOUNT.TO.USE = ""
+
+   MAX.WEIGHT = WEIGHT.STRING<N.WTS1>
+   IF WEIGHT GT MAX.WEIGHT THEN
+      ERRORS = WEIGHT: " lbs. exceeds the maximum rateable weight "
+      RETURN
+   END
+
+*   LOCATE WEIGHT IN WEIGHT.STRING BY 'AR' SETTING WT.POS1 ELSE NULL
+
+   FOR XX = 1 TO N.WTS1
+      W.WEIGHT = WEIGHT.STRING<XX>
+      IF WEIGHT LE W.WEIGHT THEN
+         WT.POS1 = XX
+         EXIT
+      END
+   NEXT XX
+
+
+*CRT @(-1)
+*CRT "WEIGHT         ":WEIGHT
+*CRT
+*CRT "W.WEIGHT       ":W.WEIGHT
+*CRT
+*CRT "WEIGHT.STRING  ":WEIGHT.STRING
+*CRT
+*CRT "WT.POS1        ":WT.POS1
+
+   IF WT.POS1 = "" THEN
+      ERRORS = "Could not determine weight bracket for weight (":WEIGHT:")"
+      RETURN
+   END
+
+   RATE = W.RATE.ARRAY<WT.POS1>
+   AMOUNT1 = (WEIGHT * RATE)/100      ;* Rates are per 100 weight
+   RATE.TO.USE = RATE
+   AMOUNT.TO.USE = AMOUNT1
+
+   IF RATE NE "" THEN
+      IF WT.POS1 LT N.WTS1 THEN
+         NEXT.WEIGHT = WEIGHT.STRING<WT.POS1> + 1        
+         NEXT.RATE   = W.RATE.ARRAY<WT.POS1 + 1>         
+      END
+   END ELSE
+      ERRORS = "No rate could be determined "
+      RETURN
+   END
+
+   IF NEXT.RATE NE "" THEN
+      AMOUNT2 = (NEXT.WEIGHT * NEXT.RATE)/100      ;* Rates are per 100 weight
+      WGHT.DEFICIT = NEXT.WEIGHT - WEIGHT
+      IF AMOUNT2 LT AMOUNT1 AND WGHT.DEFICIT GT "0" THEN
+         RATE.TO.USE = NEXT.RATE
+         AMOUNT.TO.USE = AMOUNT2
+      END ELSE
+          WGHT.DEFICIT  = "0"  ;* Next weight bracket produces higher quote - Reset Deficit as it does not apply
+      END
+   END
+
+   MIN.STR = ""
+   IF AMOUNT.TO.USE LT ABS.MIN.CHARGE THEN
+      AMOUNT.TO.USE = ABS.MIN.CHARGE
+      MIN.STR = "(Minimum Charge)"
+      WGHT.DEFICIT  = "0"  ;* Reset Deficit as it does not apply
+   END
+
+   VOUT<1> = RATE.TO.USE
+   VOUT<2> = AMOUNT.TO.USE
+   VOUT<3> = WGHT.DEFICIT
+
+   VOUT<4> = ORIG.CITY
+   VOUT<5> = ORIG.STATE
+
+   VOUT<6> = DEST.CITY
+   VOUT<7> = DEST.STATE
+
+   VOUT<8> = ABS.MIN.CHARGE
+
+   VOUT<9> = ORIG.AIRPORT.CD
+   VOUT<10> = DEST.AIRPORT.CD
+
+*
+RETURN
+

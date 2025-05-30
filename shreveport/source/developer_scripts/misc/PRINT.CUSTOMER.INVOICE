@@ -1,0 +1,525 @@
+      SUBROUTINE PRINT.CUSTOMER.INVOICE(INVOICE.FORM,AFS.LOGO,VIN,VOUT,F.PDF)
+*=============================================================================
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'PRINT.CUSTOMER.INVOICE' ; UPL.VOUT = ''   ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+*  SUBROUTINE : PRINT.CUSTOMER.INVOICE
+*  This is called from FB.3.1.NEW to print customer invoices
+*
+*  PROGRAMMER : James M. Barberousse
+*
+*  DATE : October 2001
+*
+*  PARAMETERS IN:
+*    INVOICE.FORM - Image for invoice to print
+*                   See AFS INVOICE README.DOC in BILLDATA\FORMS for info on
+*                   creating/modifying this
+*    AFS.LOGO     - Image for AFS logo to print
+*                   See AFS INVOICE README.DOC in BILLDATA\FORMS for info on
+*                   creating/modifying this
+*    VIN <1> = Client ID
+*        <2> = Client Name
+*        <3> = Client Address
+*        <4> = Client City
+*        <5> = Client State
+*        <6> = Client ZIP
+*        <7> = Division ID (if there is one)
+*        <8> = Division Description (if there is one)
+*        <9> = Beginning Date for bills processed
+*       <10> = Ending Date for bills processed
+*       <11> = Total Amount Due $
+*       <12> = Message print flag (1=print, 0=don't print)
+*              (The message is hard-coded into this program at the moment)
+*       <13> = Previous Total                ; * JMK01
+*       <14> = Unapplied Credit Amount       ; * JMK01
+*       <15> = Unapplied Credit Invoice Nos  ; * JMK01
+*       <16> = Unapplied Credit Amounts      ; * JMK01
+*       <17> = Grand Total after credits     ; * JMK01
+*
+*  PARAMETERS OUT:
+*    VOUT <> - Nothing at this time
+*=============================================================================
+* 091813 - JMK01 - Adjsut the Rate column in the body to 3 decimal places
+* 052214 - JMK02 - Proposed changes for SLC Freight Payemnt Body Details
+* 061614 - JMK03 - Add Quantity and Rate back in for SLC billing transactions
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+*  Equates
+*
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+      EQU LF TO CHAR(10)
+      EQU TOF TO CHAR(12)
+      EQU CR TO CHAR(13)
+      EQU ESC TO CHAR(27)
+      LPI = 6
+      CPI = 12
+      BODY.MAX=12                        ; * JMK02
+      CALL GET.USER(USER)
+
+      EXECUTE 'SETPTR' CAPTURING PRT.RESULTS
+      PRT.NAME=''
+      PRT.NATT=DCOUNT(PRT.RESULTS,@AM)
+      FOR PRT.ATT=1 TO PRT.NATT
+         IF INDEX(PRT.RESULTS<PRT.ATT>,'Destination printer   :',1) THEN
+            PRT.NAME=TRIM(FIELD(PRT.RESULTS<PRT.ATT>,':',2))
+         END
+      NEXT PRT.ATT
+
+
+*
+*  Process passed values
+*
+      CLIENT.ID=VIN<1>
+      CLIENT.BLOCK=VIN<2>                    ; * Client Block of info
+      DIVISION.ID=VIN<3,1>
+      DIVISION.DESC=VIN<3,2>
+      INFO.LABEL=VIN<4>                   ; * Client Address (may be multivalued)
+      INFO.TEXT=VIN<5>                         ; * Client City
+      BODY.DESC=VIN<6>                               ; * Client State
+      BODY.QTY=VIN<7>                                    ; * Client ZIP
+      BODY.RATE=VIN<8>
+      BODY.AMT=VIN<9>
+      REMIT.LEFT=VIN<10>
+      REMIT.CENTER=VIN<11>
+      REMIT.RIGHT=VIN<12>
+      BEG.DATE=VIN<13>
+      END.DATE=VIN<14>
+      TOTAL.DUE=VIN<15>
+      PRINT.MESSAGE=VIN<16>
+      GRAND.TOTAL=VIN<17>+0
+      TOT.SAV.LBL=VIN<18>
+      PCL.SAVINGS=VIN<19>
+      PRT.FLG=VIN<20>
+
+* Setup beginning dates needed for writing reports to EMAILDATA
+      OUT.BEG.DATE=OCONV(BEG.DATE,'D2/')
+      BEG.MONTH=FIELD(OUT.BEG.DATE,'/',1)
+      BEG.DAY=FIELD(OUT.BEG.DATE,'/',2)
+      BEG.YEAR=FIELD(OUT.BEG.DATE,'/',3)
+
+* Setup ending dates needed for writing reports to EMAILDATA
+      OUT.END.DATE=OCONV(END.DATE,'D2/')
+      END.MONTH=FIELD(OUT.END.DATE,'/',1)
+      END.DAY=FIELD(OUT.END.DATE,'/',2)
+      END.YEAR=FIELD(OUT.END.DATE,'/',3)
+
+*
+*  Initialize general application variables
+*
+      DATE.STR=OCONV(DATE(),"D2/")
+      DUE.DATE.STR=OCONV(DATE()+7,"D2/")           ; * JMK02
+      TIME.STR=OCONV(TIME(),"MTHS")
+      END.DATE.STR=END.DATE'D2/'
+      INVOICE.NUM=CLIENT.ID:END.DATE.STR[7,2]:END.DATE.STR[1,2]:END.DATE.STR[4,2]
+      IF DIVISION.ID#'' THEN             ; * JMK04
+         PRE.EMAIL.FILENAME=CLIENT.ID'R%5':'_':DIVISION.ID:'-'
+      END ELSE
+         PRE.EMAIL.FILENAME=CLIENT.ID'R%5':'-'
+      END
+      PRE.EMAIL.FILENAME:=BEG.YEAR:BEG.MONTH:BEG.DAY:'-':END.YEAR:END.MONTH:END.DAY
+      PDF.ID=PRE.EMAIL.FILENAME:'-INV.PDF'
+      CKAUTH.MSG='When you send us a check as payment, you give a onetime authorization to clear your check electronically.'
+
+      WIDTH=80
+      CTR=INT(WIDTH/2)
+      X.POS.ARRAY=''                     ; * Not being used
+      BLOCK.TEXT=''                      ; * Not being used
+
+*
+*  Start printing
+*
+      IF PRT.FLG='F' THEN
+         HOLD.ID=PRE.EMAIL.FILENAME:'-INV.PCL'
+         EXECUTE 'SETPTR ,,,0,0,3,AT \\AFS\HP_PCL_5c,BRIEF,BANNER ':HOLD.ID
+      END
+      PRINTER ON
+
+*  Setup laser printer
+      GOSUB SETUP.LASER
+
+
+*  Print invoice form
+      GOSUB PRINT.FORM
+
+* Print Client Block of Information
+      GOSUB PRINT.CLIENT.BLOCK
+
+* Print Information Labels
+      GOSUB PRINT.INFO.LABEL
+
+* Print Information Text
+      GOSUB PRINT.INFO.TEXT
+
+* Print Body Information
+      BD.X.POS=0.625 ; BD.Y.POS = 4.35
+      BQ.X.POS=4.835 ; BQ.Y.POS = 4.35
+      BR.X.POS=5.835 ; BR.Y.POS = 4.35
+      BA.X.POS=7.450 ; BA.Y.POS = 4.35
+      BNVAL=DCOUNT(BODY.DESC<1>,@VM)
+      BODY.ROW=0
+      PAGE.CNT=1
+      FOR BVAL=1 TO BNVAL
+         BODY.ROW+=1
+*        IF BODY.ROW>11 THEN             ; * JMK02
+         IF BODY.ROW>BODY.MAX THEN       ; * JMK02
+            PRT.FONT='ARIAL'
+            PRT.PT='11'
+            PRT.WT='NORMAL'
+            GOSUB SET.TYPE
+
+            X.POS=6.5 ; Y.POS=6.665      ; * JMK12
+            STR.OUT='CONTINUED'          ; * JMK12
+            PRT.JUST='LEFT'
+            GOSUB PRINT.AT               ; * JMK12
+
+*   Print Client Number
+            GOSUB PRINT.CLIENT.ID
+
+* Print Invoice Number
+            GOSUB PRINT.INVOICE.NUM
+
+* Print Remittance Information
+            GOSUB PRINT.REMIT.INFO
+
+*  Print invoice form
+            PRINT ESC:'&l0H':
+            GOSUB PRINT.FORM             ; * JMKXXX
+
+* Print Client Block of Information
+            GOSUB PRINT.CLIENT.BLOCK
+
+* Print Information Labels
+            GOSUB PRINT.INFO.LABEL
+
+* Print Information Text
+            GOSUB PRINT.INFO.TEXT
+
+            PAGE.CNT+=1
+            BODY.ROW=1
+         END
+* Print Body Description
+         PRT.FONT='ARIAL'
+         PRT.PT='8'
+         PRT.WT='NORMAL'
+         GOSUB SET.TYPE
+
+*        X.POS=BD.X.POS ; Y.POS=BD.Y.POS+(BODY.ROW*.160)     ; * JMK02
+         X.POS=BD.X.POS ; Y.POS=BD.Y.POS+(BODY.ROW*.150)     ; * JMK02
+         STR.OUT=BODY.DESC<1,BVAL>'L#65'
+         PRT.JUST='LEFT'
+         GOSUB PRINT.AT
+
+* Print Body Quantity
+         PRT.FONT='ARIAL'
+         PRT.PT='8'
+         PRT.WT='NORMAL'
+         GOSUB SET.TYPE
+
+*        X.POS=BQ.X.POS ; Y.POS=BQ.Y.POS+(BODY.ROW*.160)     ; * JMK02
+         X.POS=BQ.X.POS ; Y.POS=BQ.Y.POS+(BODY.ROW*.150)     ; * JMK02
+         STR.OUT=BODY.QTY<1,BVAL>'R26,'
+*        STR.OUT=' '                     ; * JMK02 ; * JMK03
+         PRT.JUST='RIGHT'
+         GOSUB PRINT.AT
+
+
+* Print Body Rate
+*        X.POS=BR.X.POS ; Y.POS=BR.Y.POS+(BODY.ROW*.160)     ; * JMK02
+         X.POS=BR.X.POS ; Y.POS=BR.Y.POS+(BODY.ROW*.150)     ; * JMK02
+*        STR.OUT=BODY.RATE<1,BVAL>'R26,' ; * JMK01
+         STR.OUT=BODY.RATE<1,BVAL>'R37,'           ; * JMK01
+*        STR.OUT=' '                     ; * JMK02 ; * JMK03
+         PRT.JUST='RIGHT'
+         GOSUB PRINT.AT
+
+
+* Print Body Amount
+*        X.POS=BA.X.POS ; Y.POS=BA.Y.POS+(BODY.ROW*.160)     ; * JMK02
+         X.POS=BA.X.POS ; Y.POS=BA.Y.POS+(BODY.ROW*.150)     ; * JMK02
+         STR.OUT=BODY.AMT<1,BVAL>'R26,'
+         PRT.JUST='RIGHT'
+         GOSUB PRINT.AT
+
+      NEXT BVAL
+
+*** Print Body Total Information
+*   Print Total Due
+      PRT.FONT='ARIAL'
+      PRT.PT='11'
+      PRT.WT='BOLD'
+      GOSUB SET.TYPE
+
+      X.POS=7.450 ; Y.POS=6.665          ; * JMK12
+      STR.OUT=GRAND.TOTAL'R26$,#15'      ; * JMK12
+      PRT.JUST='RIGHT'
+      GOSUB PRINT.AT                     ; * JMK12
+
+      IF PCL.SAVINGS#'' THEN
+*   Print Savings Label
+
+         PRT.FONT='ARIAL'
+         PRT.PT='8'
+         PRT.WT='NORMAL'
+         GOSUB SET.TYPE
+
+         X.POS=0.50 ; Y.POS=7.30625      ; * JMK12
+         STR.OUT=TOT.SAV.LBL             ; * JMK12
+         IF PCL.SAVINGS=0 THEN
+            STR.OUT=''
+         END
+         PRT.JUST='LEFT'
+         GOSUB PRINT.AT                  ; * JMK12
+
+*   Print Savings Amount
+
+         PRT.FONT='ARIAL'
+         PRT.PT='10'
+         PRT.WT='NORMAL'
+         GOSUB SET.TYPE
+
+         X.POS=2.25 ; Y.POS=7.30625      ; * JMK12
+         STR.OUT=PCL.SAVINGS'R26$,'      ; * JMK12
+         IF PCL.SAVINGS=0 THEN
+            STR.OUT=''
+         END
+         PRT.JUST='LEFT'
+         GOSUB PRINT.AT                  ; * JMK12
+      END
+
+*   Print Client Number
+      GOSUB PRINT.CLIENT.ID
+
+* Print Invoice Number
+      GOSUB PRINT.INVOICE.NUM
+
+* Print Remittance Information
+      GOSUB PRINT.REMIT.INFO
+
+      IF CLIENT.ID='01148' THEN PRINT ESC:'E'
+      PRINTER OFF
+      PRINTER CLOSE
+      EXECUTE "SETPTR ,,,0,0,1,AT ":PRT.NAME:",BRIEF"
+
+      BEGIN CASE
+         CASE PRT.FLG='F'
+            HOLD.PATH='E:\Ardent\Accounts\AFS\&HOLD&\'
+       ****     HOLD.ID = '00135-241224-241226-SOC.HTM'
+            HOLD.FNAME=HOLD.PATH:HOLD.ID
+            PDF.PATH='E:\Ardent\public\EmailData\'
+            PDF.FNAME=PDF.PATH:PDF.ID
+           PDF.BATCH='e:\utilities\pcltopdf\pcltopdf -i "':HOLD.FNAME:'" -o "':PDF.FNAME:'" -x 600 -y 600 -s'
+         ****      PDF.BATCH='e:\utilities\htmltopdf\bin\wkhtmltopdf -i "':HOLD.FNAME:'" -o "':PDF.FNAME:'" -x 600 -y 600 -s'
+
+            WRITE PDF.BATCH ON F.PDF,'PDF.':INVOICE.NUM:'.BAT'
+            PDF.CMD='DOS /c "e:\ardent\public\pdf\PDF.':INVOICE.NUM:'.BAT"'
+            FOR XX=1 TO PAGE.CNT
+               DATA ''
+            NEXT XX
+            EXECUTE PDF.CMD CAPTURING PDF.RESULTS
+*           CALL ELINE('AT PDF RESULTS')
+            INPUTCLEAR
+            VOUT<1>=PDF.ID
+            DELETE F.PDF,'PDF.':INVOICE.NUM:'.BAT'
+*           EXECUTE "SLEEP 1"
+         CASE 1
+      END CASE
+
+      RETURN                             ; * Back to calling program, FB.3.1.NEW
+
+***********************************************************************
+PRINT.FORM:
+***********************************************************************
+      PRINT INVOICE.FORM:                ; * JMK06
+      RETURN
+
+***********************************************************************
+PRINT.LOGO:
+***********************************************************************
+      PRINT ESC:'*p140X':ESC:'*p50Y':AFS.LOGO:
+      RETURN
+
+***********************************************************************
+SETUP.LASER:
+***********************************************************************
+      PRINT ESC:"E":                     ; * JMK05 ; * JMKXXX
+      LASER.STR =ESC:"&l0O"              ; * Set orientation
+      LASER.STR:=ESC:"&l6D"              ; * Lines per inch
+      LASER.STR:=ESC:"&l66F"             ; * Page length
+      LASER.STR:=ESC:"(s12h"             ; * Char per inch (pitch)
+      LASER.STR:="0p"                    ; * Set spacing
+      LASER.STR:="0s"                    ; * Italics off
+      LASER.STR:="4b"                    ; * Stroke weight
+      LASER.STR:="9.50v"                 ; * Point Size
+      LASER.STR:="0T"                    ; * Font
+      LASER.STR:=ESC:"(8U"               ; * Select symbol set
+      PRINT LASER.STR:
+      RETURN
+
+***********************************************************************
+SET.TYPE:
+***********************************************************************
+      PRINT ESC:"&l":LPI:"D":            ; * Lines per inch
+      PRINT ESC:"(9U":                   ; * Symbol Set
+      PRINT ESC:"(s":                    ; *
+      BEGIN CASE
+         CASE PRT.FONT='ARIAL'
+            PRINT "16602t":
+         CASE PRT.FONT='HELVETICA'
+            PRINT "24580t":
+         CASE PRT.FONT='COURIER'
+            PRINT "4099t":
+      END CASE
+      BEGIN CASE
+         CASE PRT.WT='LIGHT'
+            PRINT "-3b":                 ; * Stroke Weight
+         CASE PRT.WT='NORMAL'
+            PRINT "0b":                  ; * Stroke Weight
+         CASE PRT.WT='BOLD'
+            PRINT "3b":                  ; * Stroke Weight
+      END CASE
+      PRINT "0s":                        ; * Italics off
+      BEGIN CASE
+         CASE PRT.PT='8'
+            PRINT "15.0h":               ; * Char Per Inch (pitch)
+         CASE PRT.PT='9'
+            PRINT "13.3h":               ; * Char Per Inch (pitch)
+         CASE PRT.PT='10'
+            PRINT "12.0h":               ; * Char Per Inch (pitch)
+         CASE PRT.PT='11'
+            PRINT "10.9h":               ; * Char Per Inch (pitch)
+         CASE 1
+            PRINT CPI:"h":               ; * Char Per Inch (pitch)
+      END CASE
+      PRINT PRT.PT:"v":                  ; * Point Size
+      PRINT "1p":                        ; * Spacing 0 = Fixed, 1 = Proportional
+*     PRINT ESC:")6J":                   ; *
+      RETURN
+
+***********************************************************************
+PRINT.AT:
+***********************************************************************
+      X.PIX=INT(X.POS*600)/2             ; * JMK12
+      Y.PIX=INT(Y.POS*600)/2             ; * JMK12
+      BEGIN CASE
+         CASE PRT.JUST='RIGHT'
+            PRINT ESC:'*p':X.PIX:'X':ESC:'*p':Y.PIX:'Y':     ; * POSITION THE CURSOR AT THE RIGHT SIDE OF THE COLUMN
+            PRINT ESC:'&a180P':ESC:'*v0O':ESC:'*v1T':STR.OUT:          ; * SET PRINT FROM RIGHT TO LEFT WITH TRANSPARENT PRINT ON
+            PRINT ESC:'&a0P':ESC:'*v1O':ESC:'*v0T':STR.OUT:  ; * SET PRINT FROM LEFT TO RIGHT WITH OPAQUE PRINT ON
+         CASE PRT.JUST='LEFT'
+            PRINT ESC:'*p':X.PIX:'X':ESC:'*p':Y.PIX:'Y':STR.OUT:
+         CASE 1
+            PRINT ESC:'*p':X.PIX:'X':ESC:'*p':Y.PIX:'Y':STR.OUT:
+      END CASE
+      RETURN
+***********************************************************************
+PRINT.CLIENT.BLOCK:* Print Client Block of Information
+***********************************************************************
+      PRT.FONT='ARIAL'
+      PRT.PT='9'
+      PRT.WT='NORMAL'
+      GOSUB SET.TYPE
+      CB.X.POS=0.75 ; CB.Y.POS = 1.7750
+      NVAL=DCOUNT(CLIENT.BLOCK<1>,@VM)
+      FOR VAL=1 TO NVAL
+         X.POS=CB.X.POS ; Y.POS=CB.Y.POS+(VAL*.15)
+         STR.OUT=CLIENT.BLOCK<1,VAL>
+         PRT.JUST='LEFT'
+         GOSUB PRINT.AT
+      NEXT VAL
+      RETURN
+***********************************************************************
+PRINT.INFO.LABEL:* Print Information Labels
+***********************************************************************
+      PRT.FONT='ARIAL'
+      PRT.PT='9'
+      PRT.WT='BOLD'
+      GOSUB SET.TYPE
+      IL.X.POS=6.175 ; IL.Y.POS = 1.625
+      NVAL=DCOUNT(INFO.LABEL<1>,@VM)
+      FOR VAL=1 TO NVAL
+         X.POS=IL.X.POS ; Y.POS=IL.Y.POS+(VAL*.15)
+         STR.OUT=INFO.LABEL<1,VAL>
+         PRT.JUST='RIGHT'
+         GOSUB PRINT.AT
+      NEXT VAL
+      RETURN
+***********************************************************************
+PRINT.INFO.TEXT:* Print Information Text
+***********************************************************************
+      PRT.FONT='ARIAL'
+      PRT.PT='9'
+      PRT.WT='NORMAL'
+      GOSUB SET.TYPE
+      IT.X.POS=6.2 ; IT.Y.POS = 1.625
+      NVAL=DCOUNT(INFO.TEXT<1>,@VM)
+      FOR VAL=1 TO NVAL
+         X.POS=IT.X.POS ; Y.POS=IT.Y.POS+(VAL*.15)
+         STR.OUT=INFO.TEXT<1,VAL>'L#18'
+         PRT.JUST='LEFT'
+         GOSUB PRINT.AT
+      NEXT VAL
+      RETURN
+***********************************************************************
+PRINT.CLIENT.ID:*   Print Client Number
+***********************************************************************
+      PRT.FONT='ARIAL'
+      PRT.PT='8'
+      PRT.WT='NORMAL'
+      GOSUB SET.TYPE
+
+      X.POS= 5.35 ; Y.POS= 8.2575        ; * JMK08 ; * JMK12
+      STR.OUT=CLIENT.ID
+      PRT.JUST='LEFT'
+      GOSUB PRINT.AT
+      RETURN
+***********************************************************************
+PRINT.INVOICE.NUM:* Print Invoice Number
+***********************************************************************
+      PRT.FONT='ARIAL'
+      PRT.PT='8'
+      PRT.WT='NORMAL'
+      GOSUB SET.TYPE
+
+      X.POS= 6.55 ; Y.POS= 8.2575        ; * JMK08 ; * JMK12
+      STR.OUT=INVOICE.NUM
+      PRT.JUST='LEFT'
+      GOSUB PRINT.AT
+      RETURN
+***********************************************************************
+PRINT.REMIT.INFO:* Print Remittance Information
+***********************************************************************
+      PRT.FONT='ARIAL'
+      PRT.PT='9'
+      PRT.WT='NORMAL'
+      GOSUB SET.TYPE
+
+      RL.X.POS=0.5 ; RL.Y.POS = 9.1375
+      NVAL=DCOUNT(REMIT.LEFT<1>,@VM)
+      FOR VAL=1 TO NVAL
+         X.POS=RL.X.POS ; Y.POS=RL.Y.POS+(VAL*.15)
+         STR.OUT=REMIT.LEFT<1,VAL>'L#35'
+         PRT.JUST='LEFT'
+         GOSUB PRINT.AT
+      NEXT VAL
+
+      RC.X.POS=3.0 ; RC.Y.POS = 9.1375
+      NVAL=DCOUNT(REMIT.CENTER<1>,@VM)
+      FOR VAL=1 TO NVAL
+         X.POS=RC.X.POS ; Y.POS=RC.Y.POS+(VAL*.15)
+         STR.OUT=REMIT.CENTER<1,VAL>'L#35'
+         PRT.JUST='LEFT'
+         GOSUB PRINT.AT
+      NEXT VAL
+
+      RR.X.POS=5.25 ; RR.Y.POS = 9.1375
+      NVAL=DCOUNT(REMIT.RIGHT<1>,@VM)
+      FOR VAL=1 TO NVAL
+         X.POS=RR.X.POS ; Y.POS=RR.Y.POS+(VAL*.15)
+         STR.OUT=REMIT.RIGHT<1,VAL>'L#35'
+         PRT.JUST='LEFT'
+         GOSUB PRINT.AT
+      NEXT VAL
+      RETURN
+
+   END

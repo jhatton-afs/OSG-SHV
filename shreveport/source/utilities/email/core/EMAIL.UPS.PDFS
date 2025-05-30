@@ -1,0 +1,269 @@
+**************************************************************************
+* 050208 - JMK01 - C081163 - Ebill automatic PDF files ; needs to happen at different point in process
+**************************************************************************
+      PROG.NAME='EMAIL.UPS.PDFS'
+      PROG.DESC='UPS EBILL CONVERSION'
+      PACK.NAME='FREIGHT BILLING'
+      EQU TB TO CHAR(9)
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'EMAIL.UPS.PDFS' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      TESTING=0
+      CALL GET.USER(USER)
+      IF TESTING THEN
+         IF USER#'MKERBOW' THEN
+            CALL ELINE('This processing is in testing mode.  See Mike to change.')
+         END
+      END
+      AFS.IS.ADDRESS = 'helpdesk@afs.net'          ; * JMK01
+      AFS.PARCEL.ADDRESS = 'parcel@afs.net'         ; * JMK01   ; * GRB01
+      CARRIER.ID='00041'                 ; * JMK01
+
+      OPEN '','BILLDATA.EBILL' TO F.EBILL ELSE
+         CALL OPEN.ABORT('BILLDATA.EBILL',PROG.NAME)
+      END
+      OPEN '','BILLDATA.EBILL.HIST' TO F.EBILL.HIST ELSE
+         CALL OPEN.ABORT('BILLDATA.EBILL.HIST',PROG.NAME)
+      END
+      OPEN '','BILLDATA.EBILL.DATA' TO F.EBILL.DATA ELSE
+         CALL OPEN.ABORT('BILLDATA.EBILL.DATA',PROG.NAME)
+      END
+      OPEN '','BILLDATA.EBILL.HOLD' TO F.EBILL.HOLD ELSE
+         CALL OPEN.ABORT('BILLDATA.EBILL.HOLD',PROG.NAME)
+      END
+      OPEN '','BILLDATA.':USER TO F.BILLDATA.USER ELSE       ; * JMK01
+         CALL OPEN.ABORT('BILLDATA.':USER,PROG.NAME)         ; * JMK01
+      END                                ; * JMK01
+      OPEN '','EBILL.CONVERT' TO F.EBILL.CONVERT ELSE
+         CALL OPEN.ABORT('EBILL.CONVERT',PROG.NAME)
+      END
+      OPEN '','EDI.CAR.ACNT.XREF' TO F.EDI.CAR.ACNT.XREF ELSE
+         CALL OPEN.ABORT('EDI.CAR.ACNT.XREF',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE          ; * JMK01
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)      ; * JMK01
+      END                                ; * JMK01
+      READ SHIPPER.LIST FROM F.BILLDATA.USER,'UPS.SHIPPER.LIST.TXT' ELSE
+         CALL ELINE('CANNOT READ UPS.SHIPPER.LIST FROM BILLDATA.')
+         STOP
+      END
+      SHIPPER.LIST=CHANGE(SHIPPER.LIST,CHAR(9),@VM)
+
+10:   CALL AFS.SCR.HEAD('','','',PROG.NAME,PROG.DESC,PACK.NAME,"AFS Logistics, LLC",TIME.DATE,1)
+50:   HELP='Enter N to stop. EX=Exit.'
+      CALL GEN.IN(0,22,'Do you want to continue? Y ','',ACK,0,2,'','',1,-2,22,0,QI,HELP,0,23)
+      ACK=OCONV(ACK,'MCU')
+      IF ACK='N' THEN STOP
+      IF ACK='EX' THEN STOP
+      IF ACK='' ! ACK='Y' ELSE GOTO 50
+      DEBUG
+
+EMAIL.PDFS: ; * JMK01
+********************************************
+*** Email UPS files to clients who need them
+********************************************
+***
+      NSHIPPERS=DCOUNT(SHIPPER.LIST,@AM)
+      FOR SHIPPER.ATT=1 TO NSHIPPERS
+         CLIENT.ID = SHIPPER.LIST<SHIPPER.ATT,1>
+         UPS.PLAN = SHIPPER.LIST<SHIPPER.ATT,2>
+         AFS.ID=UPS.PLAN'R%10':'_05_03_2008.XLS'
+         TEST.STR = 'PEB'
+*** Verify email data
+         READ CLIENT.REC FROM F.CLIENTS, CLIENT.ID ELSE
+*** Email self; client ID not found in CLIENTS file
+            PDFVIN = ''
+            PDFVIN<1> = AFS.PARCEL.ADDRESS
+            PDFVIN<2> = AFS.IS.ADDRESS
+            PDFVIN<3> = 'MKerbow@afs.net'
+            PDFVIN<4> = PROG.NAME:'@afs.net'
+            PDFVIN<5> = PROG.NAME:' Error'
+            PDFVIN<6> = 'Could not read record for client number ':CLIENT.ID
+            PDFVOUT=''
+            CALL SENDMAIL(PDFVIN,PDFVOUT)
+            GOTO NEXT.SHIPPER
+         END
+         FILE.FLAG = CLIENT.REC<251>
+         IF FILE.FLAG = '' THEN RETURN
+         IF INDEX(TEST.STR,FILE.FLAG,1) < 1 THEN
+***  Email self; client has invalid file flag value
+            PDFVIN = ''
+            PDFVIN<1> = AFS.PARCEL.ADDRESS
+            PDFVIN<2> = AFS.IS.ADDRESS
+            PDFVIN<3> = 'MKerbow@afs.net'
+            PDFVIN<4> = PROG.NAME:'@afs.net'
+            PDFVIN<5> = PROG.NAME:' Error'
+            PDFVIN<6> = 'Client record ':CLIENT.ID:' has an invalid file flag value of ':FILE.FLAG
+            PDFVOUT=''
+            CALL SENDMAIL(PDFVIN,PDFVOUT)
+            GOTO NEXT.SHIPPER
+         END
+         TO.ADDR = CLIENT.REC<252>
+         IF TO.ADDR = '' THEN
+*** Email self; no primary email address on record
+            PDFVIN = ''
+            PDFVIN<1> = AFS.PARCEL.ADDRESS
+            PDFVIN<2> = AFS.IS.ADDRESS
+            PDFVIN<3> = 'MKerbow@afs.net'
+            PDFVIN<4> = PROG.NAME:'@afs.net'
+            PDFVIN<5> = PROG.NAME:' Error'
+            STR = 'Client number ':CLIENT.ID:' has a file flag value of ':FILE.FLAG
+            STR := ', but no email addresses on record.'
+            PDFVIN<6> = STR
+            PDFVOUT=''
+            CALL SENDMAIL(PDFVIN,PDFVOUT)
+            GOTO NEXT.SHIPPER
+         END
+*** Set names and locations for files to be emailed
+         IF FILE.FLAG = 'P' OR FILE.FLAG = 'B' THEN
+*** Set PDF file name
+            ACCT = FIELD(AFS.ID,'_',1)[5,6]
+            DATE1 = FIELD(OCONV(AFS.ID,'G1_3'),'.',1)
+            MM = FIELD(DATE1,'_',1)
+            DD = FIELD(DATE1,'_',2)
+            YY = FIELD(DATE1,'_',3)
+            DATE2 = YY:MM:DD
+            TEMP.DATE = MM:'/':DD:'/':YY[3,2]
+            DI = ICONV(TEMP.DATE,'D')
+            XREF.ID = '00041*':ACCT
+            READV TEST FROM F.EDI.CAR.ACNT.XREF, XREF.ID, 1 THEN
+               JD = OCONV(DI,'DJ')
+               TEST.VAL = MOD(JD,7)
+               IF TEST.VAL = 0 THEN
+                  WEEK = JD / 7
+               END ELSE
+                  WEEK = INT(JD/7) + 1
+               END
+               PDF.FILENAME = 'A000000':ACCT:WEEK'R%2':YY[4,1]:'-':DATE2:'-1-pdf.zip'
+            END ELSE
+               PDF.FILENAME = 'P0000':ACCT:'-':DATE2:'-1-pdf.zip'
+            END
+*** Copy pdf file to user's billdata folder
+            STMT = 'DOS /c copy "e:\Ardent\public\billdata\E-BILL hist\pdf files\':PDF.FILENAME:'"'
+            STMT := ' e:\Ardent\public\billdata\':USER:'\':PDF.FILENAME
+            EXECUTE STMT CAPTURING MSG
+            MSTR = TRIM(MSG<1>)
+            MSTR = FIELD(MSTR,' ',3)
+            IF MSTR # 'copied.' THEN
+*** Email self; could not copy pdf file to user's billdata folder
+               PDFVIN = ''
+               PDFVIN<1> = AFS.PARCEL.ADDRESS
+               PDFVIN<2> = AFS.IS.ADDRESS
+               PDFVIN<3> = 'MKerbow@afs.net'
+               PDFVIN<4> = PROG.NAME:'@afs.net'
+               PDFVIN<5> = PROG.NAME:' Error'
+               STR = ''
+               STR = 'Client number ':CLIENT.ID
+               STR<1,-1> = 'Could not copy pdf file ':PDF.FILENAME:' to ':USER:"'s billdata folder."
+               PDFVIN<6> = STR
+               PDFVOUT=''
+               CALL SENDMAIL(PDFVIN,PDFVOUT)
+               GOTO NEXT.SHIPPER
+            END
+         END
+         IF FILE.FLAG = 'E' OR FILE.FLAG = 'B' THEN
+*** Move ebill file to user's billdata folder
+            READ REC FROM F.EBILL.HIST, AFS.ID ELSE
+*** Email self; could not read ebill record
+               PDFVIN = ''
+               PDFVIN<1> = AFS.PARCEL.ADDRESS
+               PDFVIN<2> = AFS.IS.ADDRESS
+               PDFVIN<3> = 'MKerbow@afs.net'
+               PDFVIN<4> = PROG.NAME:'@afs.net'
+               PDFVIN<5> = PROG.NAME:' Error'
+               STR = ''
+               STR = 'Client number ':CLIENT.ID
+               STR<1,-1> = 'Could not copy ebill file ':AFS.ID:' from the ebill-billdata-hist folder.'
+               PDFVIN<6> = STR
+               PDFVOUT=''
+               CALL SENDMAIL(PDFVIN,PDFVOUT)
+               GOTO NEXT.SHIPPER
+            END
+            WRITE REC TO F.BILLDATA.USER, AFS.ID ELSE
+*** Email self; could not write ebill record to user's billdata folder
+               PDFVIN = ''
+               PDFVIN<1> = AFS.PARCEL.ADDRESS
+               PDFVIN<2> = AFS.IS.ADDRESS
+               PDFVIN<3> = 'MKerbow@afs.net'
+               PDFVIN<4> = PROG.NAME:'@afs.net'
+               PDFVIN<5> = PROG.NAME:' Error'
+               STR = ''
+               STR = 'Client number ':CLIENT.ID
+               STR<1,-1> = 'Could not write ebill file ':AFS.ID:' to ':USER:"'s billdata folder."
+               PDFVIN<6> = STR
+               PDFVOUT=''
+               CALL SENDMAIL(PDFVIN,PDFVOUT)
+               GOTO NEXT.SHIPPER
+            END
+         END
+***
+*** Create body of email
+***
+         BODY = ''
+         BODY<1,-1> = ' '
+         BODY<1,-1> = 'Please let us know if you have any questions.'
+         BODY<1,-1> = ' '
+         BODY<1,-1> = 'Thanks,'
+         BODY<1,-1> = 'Nick'
+*** Finish it up!
+         PDFVIN = ''
+         PDFVIN<1> = TO.ADDR
+         PDFVIN<2> = CLIENT.REC<253>
+         PDFVIN<2,-1> = AFS.PARCEL.ADDRESS
+         PDFVIN<3,-1> = AFS.IS.ADDRESS
+         PDFVIN<3,-1> = 'MKerbow@afs.net'
+         PDFVIN<4> = AFS.PARCEL.ADDRESS
+         PDFVIN<5> = 'UPS E-bill data from AFS'
+         PDFVIN<6> = BODY
+         PDFVIN<11> = ''
+         IF FILE.FLAG = 'P' OR FILE.FLAG = 'B' THEN
+            PDFVIN<11,-1> = 'e:\Ardent\public\billdata\':USER:'\':PDF.FILENAME
+         END
+         IF FILE.FLAG = 'E' OR FILE.FLAG = 'B' THEN
+            PDFVIN<11,-1> = 'e:\Ardent\public\billdata\':USER:'\':AFS.ID
+         END
+         PDFVOUT=''
+         CALL SENDMAIL(PDFVIN,PDFVOUT)
+***
+*** Remove files from user's billdata location
+***
+         IF FILE.FLAG = 'P' OR FILE.FLAG = 'B' THEN
+            DELETE F.BILLDATA.USER, PDF.FILENAME ELSE
+***  Email self; temporary pdf file not deleted from user's billdata folder
+               PDFVIN = ''
+               PDFVIN<1> = AFS.PARCEL.ADDRESS
+               PDFVIN<2> = AFS.IS.ADDRESS
+               PDFVIN<3> = 'MKerbow@afs.net'
+               PDFVIN<4> = PROG.NAME:'@afs.net'
+               PDFVIN<5> = PROG.NAME:' Error'
+               MSG = 'The program ':PROG.NAME:' was not able to delete ':PDF.FILENAME
+               MSG := ' from BILLDATA.':USER:'.'
+               PDFVIN<6> = MSG
+               PDFVOUT=''
+               CALL SENDMAIL(PDFVIN,PDFVOUT)
+               GOTO NEXT.SHIPPER
+            END
+         END
+         IF FILE.FLAG = 'E' OR FILE.FLAG = 'B' THEN
+            DELETE F.BILLDATA.USER, AFS.ID ELSE
+***  Email self; temporary ebill file not deleted from user's billdata folder
+               PDFVIN = ''
+               PDFVIN<1> = AFS.PARCEL.ADDRESS
+               PDFVIN<2> = AFS.IS.ADDRESS
+               PDFVIN<3> = 'MKerbow@afs.net'
+               PDFVIN<4> = PROG.NAME:'@afs.net'
+               PDFVIN<5> = PROG.NAME:' Error'
+               MSG = 'The program ':PROG.NAME:' was not able to delete ':AFS.ID
+               MSG := ' from BILLDATA.':USER:'.'
+               PDFVIN<6> = MSG
+               PDFVOUT=''
+               CALL SENDMAIL(PDFVIN,PDFVOUT)
+               GOTO NEXT.SHIPPER
+            END
+         END
+NEXT.SHIPPER: *
+      NEXT SHIPPER.ATT
+      RETURN  ; * END JMK01
+

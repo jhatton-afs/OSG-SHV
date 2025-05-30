@@ -1,0 +1,2842 @@
+********************************************************************************
+* PROGRAM: FB.5.4.LASER
+* PROGRAM TO PRINT CHECKS
+*
+* FRIEGHT BILLING PACKAGE
+*
+* AUTHOR: BRIAN M. QUEEN
+* DATE: April 17, 1992
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE
+* EXPRESS WRITTEN CONSENT OF SAME.
+********************************************************************************
+* 083112 - RLM01 - SysAid#3073 - Replace former employees' email addresses with current employees' email addresses
+* 030912 - JMK18 - SysAid#2097 - Bills that have been paid short Email to Carriers
+* 081809 - NPR01 - T091057 - Replace Sandra Long with Stacy Rittenbach wherever the former occurs
+* 030507 - JMK17 - ADJUST LOGIC SELECTION LOOPS WHEN NO ACH TRANSACTIONS
+* 013107 - JTW01 - Add ACH Logic.
+* 110606 - DRF   - Replaced DGipson with RCason and added LVeasey every
+*                  where jjohnson was emailed.
+* 091506 - JCW03 - USE NEW FB.CHECKS FILES
+* 071006 - JCW02 - USE EDI.BILLS.HIST,CLIENT.ID
+* 070606 - JMK16 - ADD FB SELECTION DEFAULT DATES FOR DOSKOCIL (00932)
+* 062206 - JMK15 - ADJUST THE LOOK AHEAD FOR CHECK RUNS
+* 061906 - JMK14 - UPDATE COGNOS.CHECKS IN FB.TABLES WITH CLIENT AND DATE FOR UPDATING
+* 060606 - JMK13 - ADD SARAH LIMA TO REMITTANCE EMAILS
+* 060506 - JMK12 - ADD INVOICE NUMBER TO EREMITTANCE FILE IF OPTIONS ARE SET
+* 050806 - JCW01 - CHANGES TO '@SELECTED', 'CLEARSELECT', AND 'STMT<X>'
+* 030806 - JMK11 - ADD CLIENT# AND AMOUNT TO CHECK REC
+* 012306 - JMK10 - ADD RUBY TO REMITTANCE EMAILS
+* 011806 - JMK09 - ADD PAYOR(CLIENT) INFORMATION TO EMAIL REMITTANCE
+* 010406 - JMK08 - EXCLUDE PRINTING OF OVERFLOW STUB WHEN EREMIT IS SENT
+* 110905 - JMK07 - TRACK SENDING OF W9 AND MARK CHECKS FOR FUTURE INCLUSION
+* 110805 - JMK06 - MAKE SURE EDI IS TESTED CONSISTENTLY FOR EREMIT PROCESSING
+* 082605 - JMK05 - UPDATE FB.CHECK.DATE.XREF FILE
+* 081205 - JMK04 - REVAMP COGNOS UPDATE PROCESS
+* 122804 - DRF   - MODIFIED THE SELECTION FOR MANUAL CHECK TO SELECT
+*                  WITH 24 EQUAL THE BANK CODE
+* 102804 - JMK03 - MOVE PRINTING OF CHECKS UP TWO LINES
+* 101404 - JMK02 - UPDATE TO UTILIZE BANK CODE OF 'S' LIKE 'F'
+* 122002 - JMK01 - CREATE COGNOS.UPDATE RECORDS
+* Last updated by AFS.SOURCE (valerie) at 17:22:29 on 06/02/1994.
+*   MADE VOUCHERS BREAK ON ALL CLIENT BREAKS.
+* Last updated by AFS.SOURCE (valerie) at 14:29:52 on 04/29/1994.
+*   ADDED DEFAULT PRINTER STUFF
+*
+*  LASER NOTES:
+*     The following setting allow the program to choose which tray
+*     to print from on multiple tray printers - PROVIDED that tray
+*     linking is NOT TURNED ON!!!
+*
+*        CHAR(27):"&l1H"     - Selects TOP Bin (OR MAINFEED)
+*        CHAR(27):"&l4H"     - Selectes BOTTOM bin (or Secondary)
+********************************************************************************
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_FB.BILLS.HIST
+
+*
+* Initialize variables
+*
+      PROMPT''
+      CALL CHANNEL(CH.NUM)
+      CALL GET.USER(USER)
+      PROG.NAME='FB.5.4.LASER'
+      PACK.NAME='FREIGHT PAYMENT'
+
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.5.4.LASER.ACH' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      TESTING=0
+      IF TESTING THEN
+         EXECUTE 'BLOCK-TERM TEST MODE'
+         CRT @(0,23):'Press [Enter] to Continue...':
+         INPUT NUL:
+         PROG.DESC='CHECK PRINTING -- TEST MODE NO UPDATES!!! --':CHAR(7)
+      END ELSE
+         PROG.DESC='CHECK PRINTING'
+      END
+      COGNOS.REC=''                      ; * JMK01
+
+      ESC=CHAR(27)
+      DATE.PRINTED=DATE()                ; * Save current date in case of midnight runs
+      BILL.LIST=''                       ; * Used for Storing Bill ID's in Pre Processing
+      PREV.CARRIER=''
+      PREV.CLIENT=''
+      PREV.SEP.CHECK.FLG=''
+      ACH.FLAG=''                        ; * JTW01
+      PREV.EDI.SENDER.ID=''
+      PREV.EDI.ACCOUNT=''
+      CHECK.REC=''
+*     CLIENT.CHECK.REC='' ; * JCW03
+      CHECK.AMT=0
+      CLIENT.CHECK.AMT=0
+      CLIENT.EDI.AMT=0
+      ERRMSG=''
+      CUTBACK.HEAD='Client Name''L#31':'Auditor Name''L#26':'Pro Date ':'Pro Number''L#14':'Amt Billed''R#10':'Reduced''R#10':'Amt Paid''R#10':' Short Pay Reason'
+      CUTBACK.TEXT=''                    ; * Set it, Ready for carrier
+      FIRST.CHECK=0                      ; * Special Flag for Problem with Fujitsu
+      ADJ.CD='N'
+      CARRIER.NUM.CODE=''
+      ADJ.AMOUNT=''
+      CHECK.TYPE='B'
+      MAN.CHECK=0
+      NO.MAN.ITEMS=0
+      NO.FRT.ITEMS=0
+      BOTH.MAN.FRT=0
+      FRT.ONLY=0
+      MAN.ONLY=0
+      SENT.JIM.MAIL=0
+      NEXT.CHECK.ALREADY.ON.FILE=0
+      MASK.CHAR='-'
+      BANK.ID=''
+      BANK.DESC=''
+      SELECT.BY.CHECK.PRINT.DATE='Y'
+*DF      SINGLE.CARRIER=STR(MASK.CHAR,5)
+      SINGLE.CARRIER='ALL'
+      SINGLE.CLIENT=STR(MASK.CHAR,5)
+      SINGLE.DATE='ALL'
+      INC.INV=0                          ; * JMK12
+      COGNOS.BUFFER=5                    ; * JMK14
+
+
+*
+* Display heading information
+*
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+
+*
+* Open files
+*
+      OPEN '','EMAILDATA' TO F.EMAILDATA ELSE
+         CALL OPEN.ABORT("EMAILDATA",PROG.NAME)
+      END
+      OPEN '','EREMIT' TO F.EREMIT ELSE
+         CALL OPEN.ABORT("EREMIT",PROG.NAME)
+      END
+*     OPEN '','EDI.BILLS.HIST' TO F.EDI.BILLS.HIST ELSE ; * JCW02
+*        CALL OPEN.ABORT("EDI.BILLS.HIST",PROG.NAME)    ; * JCW02
+*      END                                              ; * JCW02
+      OPEN '','FB.BANKS' TO F.BANK ELSE
+         CALL OPEN.ABORT("FB.BANKS",PROG.NAME)
+      END
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         CALL OPEN.ABORT("FB.BILLS.CRX",PROG.NAME)
+      END
+*     OPEN '','FB.CHECKS' TO F.CHECKS ELSE          ; * JCW03
+*        CALL OPEN.ABORT("FB.CHECKS",PROG.NAME)     ; * JCW03
+*     END                                           ; * JCW03
+      OPEN '','FB.CHECKS.HDR' TO F.CHECKS ELSE     ; * JCW03
+         CALL OPEN.ABORT("FB.CHECKS.HDR",PROG.NAME)          ; * JCW03
+      END                                ; * JCW03
+      OPEN '','FB.CHECKS.DTL' TO F.CHECKS.D ELSE   ; * JCW03
+         CALL OPEN.ABORT("FB.CHECKS.DTL",PROG.NAME)          ; * JCW03
+      END                                ; * JCW03
+      OPEN '','EDI.REMITTANCE' TO F.REMIT ELSE
+         CALL OPEN.ABORT("EDI.REMITTANCE",PROG.NAME)
+      END
+      OPEN '','FB.PAY' TO F.PAY ELSE CALL OPEN.ABORT("FB.PAY",PROG.NAME)
+      OPEN '','FB.PAY.LAST' TO F.PAY.LAST ELSE CALL OPEN.ABORT("FB.PAY.LAST",PROG.NAME)
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            CALL OPEN.ABORT("FBWORK":CH.NUM,PROG.NAME)
+         END
+      END
+      CLEARFILE F.WORK
+      OPEN '','FB.STUB.LAST' TO F.STUB.LAST ELSE
+         CALL OPEN.ABORT("FB.STUB.LAST",PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIER ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT("FB.TABLES",PROG.NAME)
+      END
+      READ ADJ.CODE FROM F.TABLES,'CHECK.ADJUST' ELSE
+         CALL ELINE('Table CHECK.ADJUST is not setup')
+         STOP
+      END
+      OPEN '','FB.MAN.CHECKS' TO F.MAN.CHECKS ELSE
+         CALL OPEN.ABORT("FB.MAN.CHECKS",PROG.NAME)
+      END
+      OPEN '','FB.ACH.FILE' TO F.ACH.FILE ELSE     ; * JTW01
+         CALL OPEN.ABORT("FB.ACH.FILE",PROG.NAME)  ; * JTW01
+      END                                ; * JTW01
+*     OPEN '','COGNOS.FIELDUPDATE' TO F.COGNOS.FIELDUPDATE ELSE        ; * JMK01 ; * JMK04
+*        CALL OPEN.ABORT("COGNOS.FIELDUPDATE",PROG.NAME)     ; * JMK01 ; * JMK04
+*     END                                ; * JMK01 ; * JMK04
+      OPEN '','FB.CHECK.DATE.XREF' TO F.CHECK.DATE.XREF ELSE           ; * JMK05
+         CALL OPEN.ABORT("FB.CHECK.DATE.XREF",PROG.NAME)     ; * JMK05
+      END                                ; * JMK05
+      READ INVOICE.CARRIERS FROM F.TABLES,'INVOICE.CARRIERS' ELSE INVOICE.CARRIERS=''      ; * JMK12
+*
+* Select bank account
+*
+100:***
+      HELP='Enter bank account ID. [EX]it'
+      CALL GEN.IN(0,3,'Enter bank ID.................','',Q,0,2,'','',0,30,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' OR QI='EX' THEN STOP
+      READU BANK.REC FROM F.BANK,'BANK*':QI ELSE
+         RELEASE F.BANK,'BANK*':QI
+         CALL ELINE('Invalid bank ID ':QI)
+         GOTO 100
+      END
+      IF TESTING THEN RELEASE F.BANK,'BANK*':QI
+      BANK.ID=QI
+      BANK.DESC=BANK.REC<1>
+      CHECK.NUM=BANK.REC<2>
+105:  ID=CHECK.NUM'R%6':'*':BANK.ID
+      READ TEMP FROM F.CHECKS,ID THEN
+         CHECK.NUM=CHECK.NUM+1
+         GOTO 105
+      END
+      CRT @(30,3):BANK.ID:' ':BANK.DESC
+* At this point CHECK.NUM is the 1st blank/available check number
+
+*
+* Select records by check print date? (Y/N)
+*
+110:***
+      MASK=SELECT.BY.CHECK.PRINT.DATE:MASK.CHAR
+      HELP='[Y]es [N]o [X]=Back [EX]it'
+      CALL GEN.IN(0,5,'Select records by check print date?: ':MASK,'',Q,0,2,'','',2,-2,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=SELECT.BY.CHECK.PRINT.DATE
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GOTO 100
+         CASE QI='Y' OR QI='1'
+            QI='Y'
+         CASE QI='N' OR QI='0'
+            QI='N'
+         CASE 1
+            GOTO 110
+      END CASE
+      SELECT.BY.CHECK.PRINT.DATE=QI
+      CRT @(37,5):SELECT.BY.CHECK.PRINT.DATE:@(-4)
+
+      IF SELECT.BY.CHECK.PRINT.DATE='Y' THEN GOTO 150
+
+*
+* Get carrier number
+*
+115:***
+      MASK=SINGLE.CARRIER:@(-4)
+      HELP='Enter carrier number or letters for search. [ALL] [X]=Back [EX]it'
+      CALL GEN.IN(0,6,'Print check for this single carrier: ':MASK,'',Q,0,20,'','',2,37,6,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' AND SINGLE.CARRIER#STR(MASK.CHAR,5) THEN QI=SINGLE.CARRIER
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GOTO 110
+         CASE QI='ALL'
+            SINGLE.CARRIER=QI
+            SINGLE.CARRIER.NAME='All Carriers'
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'CARRIERS','SDX.CARRIER,NAME','1,3,4',ITEM.LIST)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+               CASE ITEM.LIST#''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+            END CASE
+            CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            CRT @(0,3):'Enter bank ID.................':BANK.ID:' ':BANK.DESC
+            CRT @(0,5):'Select records by check print date?: ':SELECT.BY.CHECK.PRINT.DATE
+            CRT @(0,6):'Print check for this single carrier: '
+            GOTO 115
+         CASE NUM(QI) AND QI#''
+            QI=QI'R%5'
+            READ CARRIER.REC FROM F.CARRIER,QI THEN
+               SINGLE.CARRIER=QI
+               SINGLE.CARRIER.NAME=CARRIER.REC<1>
+            END ELSE
+               CALL ELINE('ERROR - Carrier ':QI:' is not a valid carrier.')
+               GOTO 115
+            END
+         CASE 1
+            GOTO 115
+      END CASE
+      CRT @(37,6):SINGLE.CARRIER:' - ':SINGLE.CARRIER.NAME:@(-4)
+
+*
+* Get client
+*
+120:***
+      MASK=SINGLE.CLIENT:@(-4)
+      HELP='Enter client number or letters for search. [ALL] [X]=Back [EX]it'
+      CALL GEN.IN(0,7,'Limit Pros for this client only:     ':MASK,'',Q,0,20,'','',2,37,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' AND SINGLE.CLIENT#STR(MASK.CHAR,5) THEN QI=SINGLE.CLIENT
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GOTO 115
+         CASE QI='ALL'
+            SINGLE.CLIENT=QI
+            SINGLE.CLIENT.NAME='All Clients'
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'CLIENTS','SDX.CLIENTS,NAME','2,3,4',ITEM.LIST)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+               CASE ITEM.LIST#''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+            END CASE
+            CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            CRT @(0,3):'Enter bank ID.................':BANK.ID:' ':BANK.DESC
+            CRT @(0,5):'Select records by check print date?: ':SELECT.BY.CHECK.PRINT.DATE
+            CRT @(0,6):'Print check for this single carrier: ':SINGLE.CARRIER:' - ':SINGLE.CARRIER.NAME
+            CRT @(0,7):'Limit Pros for this client only:     '
+            GOTO 120
+         CASE NUM(QI) AND QI#''
+            QI=QI'R%5'
+            READ CLIENT.REC FROM F.CLIENTS,QI THEN
+               SINGLE.CLIENT=QI
+               SINGLE.CLIENT.NAME=CLIENT.REC<2>
+            END ELSE
+               CALL ELINE('ERROR - Client ':QI:' is not a valid client.')
+               GOTO 120
+            END
+         CASE 1
+            GOTO 120
+      END CASE
+      CRT @(37,7):SINGLE.CLIENT:' - ':SINGLE.CLIENT.NAME:@(-4)
+
+*
+* Get single process date or ALL dates
+*
+125:***
+      IF SINGLE.DATE='ALL' THEN
+         MASK=SINGLE.DATE:@(-4)
+      END ELSE
+         MASK=SINGLE.DATE'D4-'
+      END
+      HELP='Enter a single process date or ALL for all dates. [ALL] [X]=Back [EX]it'
+      CALL GEN.IN(0,8,'Limit Pros to a process date of:     ':MASK,'DATE',Q,0,10,'','',2,37,8,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' AND SINGLE.DATE#'ALL' THEN QI=SINGLE.DATE'D4'
+      IF QI='' AND SINGLE.DATE='ALL' THEN QI='ALL'
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GOTO 120
+         CASE QI='ALL'
+            SINGLE.DATE='ALL'
+         CASE NUM(Q) AND QI#''
+            IF SINGLE.CLIENT='00932' THEN          ; * JMK16
+               CMND='SSELECT FB.OPEN.DATE.XREF,00932 BY DATE SAMPLE 1'           ; * JMK16
+               EXECUTE CMND RTNLIST DATE.LIST CAPTURING RESULTS        ; * JMK16
+               IF @SELECTED > 0 THEN     ; * JMK16
+                  READNEXT OLDEST.DATE FROM DATE.LIST THEN   ; * JMK16
+                     IF Q NE OLDEST.DATE THEN      ; * JMK16
+                        CALL ELINE('Doskocil has FB from ':OLDEST.DATE'D2/':'.  Please re-enter.')   ; * JMK16
+                        GO 125           ; * JMK16
+                     END                 ; * JMK16
+                  END                    ; * JMK16
+               END                       ; * JMK16
+            END                          ; * JMK16
+            SINGLE.DATE=Q
+         CASE 1
+            GOTO 125
+      END CASE
+      IF SINGLE.DATE='ALL' THEN
+         CRT @(37,8):SINGLE.DATE:@(-4)
+      END ELSE
+         CRT @(37,8):SINGLE.DATE'D4-':@(-4)
+      END
+      IF SINGLE.CARRIER='ALL' AND SINGLE.CLIENT='ALL' AND SINGLE.DATE='ALL' THEN
+         MASK='No'
+         HELP='Enter [Yes] or [No]'
+         CALL GEN.IN(0,22,'WARNING You are about to clear the accrual file Is this Correct ':MASK,'',Q,0,3,'','',2,64,22,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         IF QI # 'YES' THEN
+            GOTO 125
+         END
+      END
+
+*
+* If Voucher Select Paper Type
+*
+150:***
+      IF BANK.ID#'V' THEN
+*        FORM='C'
+         FORM='L'                        ; * Laser Checks
+         PRT.NUM=1
+         GOTO 200
+      END
+      HELP='Enter type of form. [P]aper [X]=Back [EX]it'
+      CALL GEN.IN(0,9,'Enter form type...............':'','',Q,0,5,'','',0,30,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            IF SELECT.BY.CHECK.PRINT.DATE='Y' THEN GOTO 110 ELSE GOTO 125
+*DF        CASE QI='V'
+*DF          FORM='V'
+*DF          PRT.NUM=1
+         CASE QI='P'
+            FORM='P'
+            PRT.NUM=2
+*DF        CASE QI='N'
+*DF          FORM='N'
+*DF          PRT.NUM=0
+         CASE 1
+            GOTO 150
+      END CASE
+
+*
+* Get starting check number
+*
+200:***
+      HELP='Enter starting check number. [X]=Back to Bank ID [EX]it'
+      CALL GEN.IN(0,10,'Enter starting check number...':CHECK.NUM'R#6','',Q,0,6,'','',0,-6,10,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      QI=TRIM(QI)
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GOTO 100
+         CASE QI=''
+            Q=CHECK.NUM
+         CASE NUM(QI)
+            Q=QI
+         CASE 1
+            CALL ELINE('Invalid check number.')
+            GOTO 200
+      END CASE
+      TEMP.NUM=Q
+      IF TEMP.NUM-CHECK.NUM GT 1 THEN
+         CRT @(0,21):CHAR(7):"WARNING - missing checks ":CHECK.NUM:" thru ":Q-1
+         HELP='[Y]es [N]o [X]=Back [EX]it'
+210:     CALL GEN.IN(0,22,'Do you want to void missing checks? Y','',Q,1,1,'','',0,-1,22,1,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='EX'
+               STOP
+            CASE QI='X'
+               GOTO 200
+            CASE QI='N'
+               NULL
+            CASE QI='Y'
+               NULL
+            CASE 1
+               GOTO 210
+         END CASE
+      END
+      IF QI='Y' THEN
+         IF CHECK.NUM NE TEMP.NUM THEN
+            STOP.NUM=TEMP.NUM-1
+            FOR I=CHECK.NUM TO STOP.NUM
+               ID=I'R%6':'*':BANK.ID
+               READ CHECK.REC FROM F.CHECKS,ID ELSE
+                  CHECK.REC=''
+                  CHECK.REC<1>=I'R%6'
+                  CHECK.REC<2>=DATE()
+                  CHECK.REC<4>=0
+                  CHECK.REC<7>='Void'
+                  CHECK.REC<25>=0        ; * JCW03
+               END
+               IF NOT(TESTING) THEN WRITE CHECK.REC ON F.CHECKS,ID
+               IF NOT(TESTING) THEN      ; * JMK05
+                  READU XREF.REC FROM F.CHECK.DATE.XREF,DATE() ELSE XREF.REC=''  ; * JMK05
+                  LOCATE ID IN XREF.REC SETTING SSPOS ELSE   ; * JMK05
+                     XREF.REC<-1>=ID     ; * JMK05
+                     WRITE XREF.REC ON F.CHECK.DATE.XREF,DATE()        ; * JMK05
+                  END                    ; * JMK05
+               END                       ; * JMK05
+               CHECK.REC=''
+            NEXT I
+         END
+      END
+      CHECK.NUM=TEMP.NUM
+      START=CHECK.NUM
+      CRT @(30,10):CHECK.NUM'R%6'
+*
+* Check for check number already on file
+*
+      CHECK.ID=CHECK.NUM'R%6':'*':BANK.ID
+      READ TEMP FROM F.CHECKS,CHECK.ID THEN
+         CALL ELINE('Check number ':CHECK.NUM:' already on file.')
+         CRT @(0,3):@(-3)
+         GOTO 100
+      END
+
+*
+* Get check date
+*
+300:***
+      HELP='Enter check date. [X]=Back [EX]it'
+      CALL GEN.IN(0,11,'Enter check date..............':DATE()'D2/','DATE',Q,0,8,'','',0,-8,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GOTO 200
+      END CASE
+      CHECK.DATE=Q
+      CRT @(30,11):CHECK.DATE'D2/'
+      OCHECK.DATE=CHECK.DATE'D4-'
+      YYYYMMDD=OCHECK.DATE[7,4]:OCHECK.DATE[1,2]:OCHECK.DATE[4,2]
+
+*
+* Enter Frieght Only, Manual Only, Or Both
+*
+325:***
+      HELP='[F]reight Payments Only [M]anual Checks Only [B]oth [X]=Back [EX]it'
+      CALL GEN.IN(0,12,'Enter check type..............':CHECK.TYPE'L#2','',Q,0,2,'','',0,-2,12,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=CHECK.TYPE
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GOTO 300
+         CASE QI='B'
+            BOTH.MAN.FRT=1
+            FRT.ONLY=0
+            MAN.ONLY=0
+            CHECK.TYPE=QI
+         CASE QI='M'
+            BOTH.MAN.FRT=0
+            FRT.ONLY=0
+            MAN.ONLY=1
+            NO.FRT.ITEMS=1
+            CHECK.TYPE=QI
+         CASE QI='F'
+            BOTH.MAN.FRT=0
+            FRT.ONLY=1
+            MAN.ONLY=0
+            NO.MAN.ITEMS=1
+            CHECK.TYPE=QI
+         CASE 1
+            CALL ELINE('Invalid Entry')
+            GOTO 325
+      END CASE
+      CRT @(30,12):CHECK.TYPE'L#2'
+
+*
+* Adjust code
+*
+350:***
+      HELP='Enter the adjust code. [N]o adjust code [X]=Back [EX]it'
+      NUM.OF.ITEMS=DCOUNT(ADJ.CODE<1>,@VM)
+      CRT @(0,15):'Code   Description                Amount'
+      FOR X=1 TO NUM.OF.ITEMS
+         CRT @(0,15+X):SPACE(2):ADJ.CODE<1,X>'L#2':SPACE(2):ADJ.CODE<2,X>'L#21':SPACE(2):ADJ.CODE<3,X>'R26,#7'
+      NEXT X
+      CALL GEN.IN(0,13,'Enter adjust code.............':ADJ.CD'L#2','',Q,0,1,'','',0,-2,13,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=ADJ.CD
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GOTO 325
+         CASE QI='N'
+            CRT @(30,13):QI'L#2':@(-3)
+            ADJ.CD=QI
+            GOTO 400
+         CASE 1
+            LOCATE QI IN ADJ.CODE<1> SETTING POS ELSE
+               CALL ELINE('Invalid Entry.')
+               GOTO 350
+            END
+            CRT @(30,13):ADJ.CODE<1,POS>'L#2':SPACE(2):ADJ.CODE<2,POS>'L#21':SPACE(2):ADJ.CODE<3,POS>'R26#7':@(-3)
+            ADJ.CD=QI
+      END CASE
+
+*
+* Enter Adjustment Amount if "ASK" is in the amount
+*
+      IF ADJ.CODE<3,POS>='ASK' THEN
+360:     HELP='Enter the adjustment amount to apply. [X]=Back to Pay Code [EX]it'
+         CALL GEN.IN(57,13,ADJ.AMOUNT'R26#7','AMT2',Q,0,7,'','',2,-7,13,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         IF QI='' THEN QI=ADJ.AMOUNT ; Q=ADJ.AMOUNT
+         BEGIN CASE
+            CASE QI='EX'
+               STOP
+            CASE QI='X'
+               CRT @(57,13):ADJ.AMOUNT'R26#7'
+               GOTO 350
+            CASE NUM(QI)
+               QI=Q'R0'
+               CRT @(57,13):QI'R26#7'
+               IF QI>=0 THEN
+                  CALL ELINE('Error the adjustment amount - must be a negative number.')
+                  GOTO 360
+               END
+               ADJ.AMOUNT=QI
+            CASE 1
+               CALL ELINE('Invalid adjustment amount')
+               GOTO 360
+         END CASE
+         CRT @(57,13):ADJ.AMOUNT'R26#7'
+      END
+
+*
+* Enter Check Number To Apply Adjust Code To
+*
+375:***
+      IF CARRIER.NUM.CODE # '' THEN
+         MASK=CARRIER.NUM.CODE'R%5'
+      END ELSE
+         MASK='#####'
+      END
+      HELP='Enter the carrier # to apply the adjust code. [X]=Back [EX]it'
+      CALL GEN.IN(0,14,'Enter carrier number to apply code..':MASK,'',Q,0,14,'','',2,-5,15,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=CARRIER.NUM.CODE
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            IF ADJ.CODE<3,POS>='ASK' THEN
+               GOTO 360
+            END ELSE
+               GOTO 350
+            END
+         CASE NUM(QI) AND QI # ''
+            CARRIER.NUM.CODE=QI'R%5'
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'CARRIERS','SDX.CARRIER,NAME','1,3,4',ITEM.LIST)
+            CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            CRT @(0,3):'Enter bank ID.................':BANK.ID:' ':BANK.DESC
+            CRT @(0,5):'Select records by check print date?: ':SELECT.BY.CHECK.PRINT.DATE
+            CRT @(0,6):'Print check for this single carrier: ':SINGLE.CARRIER:' - ':SINGLE.CARRIER.NAME
+            CRT @(0,7):'Limit Pros for this client only:     ':SINGLE.CLIENT:' - ':SINGLE.CLIENT.NAME
+            CRT @(0,8):'Limit Pros to a process date of:     '
+            IF SINGLE.DATE='ALL' THEN
+               CRT @(37,8):SINGLE.DATE:@(-4)
+            END ELSE
+               CRT @(37,8):SINGLE.DATE'D4-':@(-4)
+            END
+            IF BANK.ID='V' THEN
+               CRT @(0,9):'Enter form type...............':FORM
+            END
+            CRT @(0,10):'Enter starting check number...':CHECK.NUM'R#6'
+            CRT @(0,11):'Enter check date..............':CHECK.DATE'D2/'
+            CRT @(0,12):'Enter check type..............':CHECK.TYPE'L#2'
+            CRT @(0,13):'Enter adjust code.............'
+            CRT @(30,13):ADJ.CODE<1,POS>'L#2':SPACE(2):ADJ.CODE<2,POS>'L#21':SPACE(2):ADJ.CODE<3,POS>'R26#7'
+            IF ADJ.CODE<3,POS>='ASK' THEN
+               CRT @(57,13):ADJ.AMOUNT'R26#7'
+            END
+            CRT @(0,14):'Enter carrier number to apply code..'
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 375               ; * ENTER CARRIER
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 375               ; * ENTER CARRIER
+               CASE ITEM.LIST # ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO 375               ; * ENTER CARRIER
+            END CASE
+         CASE 1
+            CALL ELINE('Invalid Carrier Number. Try Again.')
+            GOTO 375
+      END CASE
+      CARRIER.NUM.CODE=QI'R%5'
+
+      *
+      * Open Carrier Records
+      *
+      READ CARRIER.REC FROM F.CARRIER,CARRIER.NUM.CODE ELSE
+         CALL ELINE('"':CARRIER.NUM.CODE:'" is an invalid Carrier Number. Try Again.')
+         GOTO 375
+      END
+      CARRIER.NAME=CARRIER.REC<1>
+      CRT @(36,14):CARRIER.NUM.CODE:' ':CARRIER.NAME:@(-4)
+
+*
+* Verify entries
+*
+400:***
+      HELP='[Y]es [N]o [EX]it'
+      CALL GEN.IN(0,22,'Correct? N','',Q,0,1,'','',0,-1,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='N' OR QI=''
+            CRT @(0,3):@(-3)
+            GOTO 100
+         CASE QI='Y'
+            IF ADJ.CD#'N' THEN
+               IF ADJ.CODE<3,POS>='ASK' THEN
+                  ADJ.CODE<3,POS>=ADJ.AMOUNT
+               END
+            END
+         CASE 1
+            GOTO 400
+      END CASE
+      IF FORM='L' THEN
+         X.POS=1688
+*        Y.POS=2770  ; * JMK03
+         Y.POS=2710                      ; * JMK03
+         BARKER.SIG=''
+         CALL GET.BARKER.IMG(X.POS,Y.POS,BARKER.SIG)
+      END
+*DF      LOCK 2 ELSE
+      READ DUMMY FROM F.TABLES,'CHECK.LOCK' THEN
+*DF*        UNLOCK 2
+         CALL ELINE('Process is locked call programming.')
+         STOP
+      END
+*DF      IF NOT(TESTING) THEN
+*DF        IF FRT.ONLY OR BOTH.MAN.FRT THEN
+*DF          IF BANK.ID='F' THEN CLEARFILE F.PAY.LAST
+*DF        END
+*DF      END
+      IF MAN.ONLY OR BOTH.MAN.FRT THEN
+*DF         EXECUTE 'SSELECT FB.MAN.CHECKS BY 15 BY 16' CAPTURING OUTPUT
+         EXECUTE 'SSELECT FB.MAN.CHECKS WITH 24 = "':BANK.ID:'" BY 15 BY 16' CAPTURING OUTPUT
+         IF @SELECTED < 1 THEN           ; * JCW01
+            NO.MAN.ITEMS=1
+            IF MAN.ONLY THEN
+               CALL ELINE('No manual transactions in FB.MAN.CHECKS file.')
+*DF            UNLOCK 2
+               STOP
+            END
+         END
+      END
+
+*----------------------------------------------------------------------
+* Start processing checks
+*----------------------------------------------------------------------
+*
+* Sort and select pay records
+*
+      IF FRT.ONLY OR BOTH.MAN.FRT THEN
+         IF BANK.ID='V' THEN
+            EX.REC='SSELECT FB.PAY BY CLIENT# BY CARRIER BY CARRIER#'
+         END ELSE
+            EX.REC='SSELECT FB.PAY'
+            EX.REC:=' BY CARRIER BY CARRIER#'
+            EX.REC:=' BY AIRB.EDI.BILL BY EDI.SENDER.ID BY EDI.ACCOUNT'
+            EX.REC:=' BY CLIENT.SEP.FLAG BY CLIENT.NAME BY CLIENT#'
+            EX.REC:=' BY EDI.DATE'
+         END
+*        IF NOT(TESTING) THEN EX.REC :=' WITH 40 = "' : BANK.ID : '"' ; * JMK03
+         EX.REC :=' WITH 40 = "' : BANK.ID : '"'   ; * JMK03
+*        IF NOT(TESTING) THEN ; * JMK03
+         IF SELECT.BY.CHECK.PRINT.DATE#'Y' THEN
+            IF SINGLE.CARRIER # 'ALL' THEN
+               EX.REC :=' AND WITH CARRIER# = "':SINGLE.CARRIER:'" '
+            END
+            IF SINGLE.CLIENT # 'ALL' THEN
+               EX.REC :=' AND WITH CLIENT# = "':SINGLE.CLIENT:'" '
+            END
+            IF SINGLE.DATE # "ALL" THEN
+               EX.REC :=' AND WITH 37 = "':SINGLE.DATE'D2/':'" '
+            END
+         END ELSE
+            EX.REC :=' AND WITH 134 LE "':OCONV(CHECK.DATE,'D2/'):'" '
+         END
+*        END ; * JMK03
+         EXECUTE EX.REC CAPTURING OUTPUT
+         NUM.ITMS=@SELECTED
+         IF @SELECTED < 1 THEN           ; * JCW01
+            NO.FRT.ITEMS=1
+            IF FRT.ONLY THEN
+               CALL ELINE('No transactions in FB.PAY file.')
+*DF            UNLOCK 2
+               STOP
+            END
+            IF NO.MAN.ITEMS THEN
+               CALL ELINE('No transactions in FB.PAY or FB.MAN.CHECKS file.')
+*DF            UNLOCK 2
+               STOP
+            END
+         END
+      END
+      IF NOT(TESTING) THEN
+         IF FRT.ONLY OR BOTH.MAN.FRT THEN
+*           IF BANK.ID='F' THEN ; * JMK02
+            IF BANK.ID#'V' THEN          ; * JMK02
+               CLEARFILE F.PAY.LAST
+               CLEARFILE F.STUB.LAST
+            END
+         END
+      END
+      DTEMP=''
+      DTEMP=USER
+      DTEMP<2>=DATE()
+      DTEMP<3>=TIME()
+      DTEMP<4>=CH.NUM
+      IF NOT(TESTING) THEN
+         WRITE DTEMP ON F.TABLES,'CHECK.LOCK'
+      END
+*
+************************************************************
+*
+* Write Items to F.WORK att<1> = 1 if < 2500.00   = 0 if GE 2500.00
+*                       ATT<2> = 1 IF Separate Check Flag 0 if not
+*                       ATT<4> = 1 if Normal = 2 if ACH      (JTW01)
+*
+      FOUND.CARRIER=0
+      IF NOT(NO.FRT.ITEMS) THEN
+         IF FORM='C' OR FORM='L' THEN
+            COUNTER=0
+            LOOP
+               READNEXT PAY.ID ELSE PAY.ID=''
+               COUNTER=COUNTER+1
+            UNTIL PAY.ID='' DO
+               CALL PROG.BAR(18,COUNTER,NUM.ITMS,PER)
+               READ PAY.REC FROM F.PAY,PAY.ID ELSE PAY.REC=''
+               CARRIER=FIELD(PAY.ID,'*',2)
+               CLIENT=FIELD(PAY.ID,'*',1)
+*DF               IF CLIENT='00981' AND CARRIER='00004' THEN
+*DF                  GOTO SKIP.TO.NEXT.PRO
+*DF               END
+*DF               IF CLIENT='00354' AND CARRIER='00004' THEN
+*DF                  GOTO SKIP.TO.NEXT.PRO
+*DF               END
+               IF CARRIER.NUM.CODE#'' THEN
+                  IF CARRIER=CARRIER.NUM.CODE THEN FOUND.CARRIER=1
+               END
+               READ DREMIT FROM F.REMIT,PAY.ID ELSE DREMIT=''
+               EDI.SENDER.ID=DREMIT<3>
+               EDI.ACCOUNT=DREMIT<14>
+               ORIG.EDI.ID = PAY.REC<88>           ; * JCW02
+*              IF PAY.REC<88>#'' AND CARRIER='00143' THEN                           ; * JCW02
+               IF ORIG.EDI.ID # '' AND CARRIER='00143' THEN  ; * JCW02
+                  CALL PARSE.EDI.ID(ORIG.EDI.ID, CLIENT.ID, EDI.HIST.ID)         ; * JCW02
+                  OPEN 'EDI.BILLS.HIST,':CLIENT.ID TO F.EDI.BILLS.HIST THEN      ; * JCW02
+*                   READ EDI.REC FROM F.EDI.BILLS.HIST,PAY.REC<88> ELSE EDI.REC=''  ; * JCW02
+                     READ EDI.REC FROM F.EDI.BILLS.HIST, EDI.HIST.ID ELSE EDI.REC=''       ; * JCW02
+                  END ELSE               ; * JCW02
+                     EDI.REC = ''        ; * JCW02
+                  END                    ; * JCW02
+                  EDI.SENDER.ID='AIRB'
+                  EDI.ACCOUNT='EDI ':OCONV(EDI.REC<5>,'D2/')
+               END
+               IF ORIG.EDI.ID # '' AND CARRIER='00365' THEN  ; * JCW02
+                  CALL PARSE.EDI.ID(ORIG.EDI.ID, CLIENT.ID, EDI.HIST.ID)         ; * JCW02
+                  OPEN 'EDI.BILLS.HIST,':CLIENT.ID TO F.EDI.BILLS.HIST THEN      ; * JCW02
+*                   READ EDI.REC FROM F.EDI.BILLS.HIST,PAY.REC<88> ELSE EDI.REC=''  ; * JCW02
+                     READ EDI.REC FROM F.EDI.BILLS.HIST, EDI.HIST.ID ELSE EDI.REC=''       ; * JCW02
+                  END ELSE               ; * JCW02
+                     EDI.REC = ''        ; * JCW02
+                  END                    ; * JCW02
+                  EDI.SENDER.ID='DHLC'
+                  EDI.ACCOUNT='EDI ':OCONV(EDI.REC<5>,'D2/')
+               END
+               IF CARRIER#PREV.CARRIER THEN GOTO WRITE.BILLS
+               INC.INV=0                 ; * JMK12
+               LOCATE CARRIER IN INVOICE.CARRIERS<1> SETTING CPOS THEN           ; * JMK12
+                  IF INVOICE.CARRIERS<3,CPOS>='Y' THEN INC.INV=1       ; * JMK12
+               END                       ; * JMK12
+               IF CLIENT#PREV.CLIENT THEN
+                  READV SEP.CHECK.FLG FROM F.CLIENTS,CLIENT,96 ELSE
+                     SEP.CHECK.FLG=''
+                  END
+                  IF PREV.SEP.CHECK.FLG='Y' THEN GOTO WRITE.BILLS
+                  IF SEP.CHECK.FLG='Y' THEN GOTO WRITE.BILLS
+                  PREV.CLIENT=CLIENT
+               END
+               IF PREV.EDI.SENDER.ID # EDI.SENDER.ID THEN GOTO WRITE.BILLS
+               *OH       IF PREV.EDI.ACCOUNT # EDI.ACCOUNT THEN GOTO WRITE.BILLS
+               IF PREV.EDI.ACCOUNT='' AND EDI.ACCOUNT#'' THEN GOTO WRITE.BILLS
+               IF PREV.EDI.ACCOUNT#'' AND EDI.ACCOUNT='' THEN GOTO WRITE.BILLS
+               GOTO SKIP.WRITE
+WRITE.BILLS:***
+               IF CHECK.AMT < 250000 THEN DA=1 ELSE DA=0
+               IF PREV.SEP.CHECK.FLG='Y' THEN DA<2>=1 ELSE DA<2>=0
+               DA<3>=CHECK.AMT
+               IF ACH.FLAG='A' THEN DA<4>=2 ELSE DA<4>=1     ; * JTW01
+               TIMES=DCOUNT(BILL.LIST,@AM)
+               FOR X=1 TO TIMES
+                  BILL.ID=BILL.LIST<X>
+                  WRITE DA ON F.WORK,BILL.ID
+               NEXT X
+               BILL.LIST=''
+               CHECK.AMT=0
+               READV PREV.SEP.CHECK.FLG FROM F.CLIENTS,CLIENT,96 ELSE PREV.SEP.CHECK.FLG=''
+               PREV.EDI.SENDER.ID=EDI.SENDER.ID
+               PREV.EDI.ACCOUNT=EDI.ACCOUNT
+               PREV.CARRIER=CARRIER
+               PREV.CLIENT=CLIENT
+               READV ACH.FLAG FROM F.CARRIER,PREV.CARRIER,102 ELSE ACH.FLAG=''   ; * JTW01
+               IF ACH.FLAG='A' AND BANK.ID='F' THEN NULL ELSE ACH.FLAG=''        ; * JTW01
+SKIP.WRITE:***
+*DF               READV PRO.AMT FROM F.PAY,PAY.ID,8 ELSE PRO.AMT=0
+               PRO.AMT=PAY.REC<8>
+               BILL.LIST<-1>=PAY.ID
+               CHECK.AMT=CHECK.AMT+PRO.AMT
+SKIP.TO.NEXT.PRO:***
+            REPEAT
+            IF CHECK.AMT < 250000 THEN DA=1 ELSE DA=0
+            IF PREV.SEP.CHECK.FLG='Y' THEN DA<2>=1 ELSE DA<2>=0
+            DA<3>=CHECK.AMT
+            IF ACH.FLAG='A' THEN DA<4>=2 ELSE DA<4>=1        ; * JTW01
+            TIMES=DCOUNT(BILL.LIST,@AM)
+            FOR X=1 TO TIMES
+               BILL.ID=BILL.LIST<X>
+               WRITE DA ON F.WORK,BILL.ID
+            NEXT X
+            OPEN 'DICT','FB.PAY' TO D.F.PAY ELSE
+               CALL OPEN.ABORT("DICT FB.PAY",PROG.NAME)
+            END
+            DA=''
+            DA<1>='S'
+            DA<2>=0
+            DA<3>='25FLAG'
+            DA<8>='TFBWORK':CH.NUM:';X;;1'
+            DA<9>='R'
+            DA<10>='1'
+            WRITE DA ON D.F.PAY,'25FLAG.':CH.NUM
+            DA=''                        ; * JTW01
+            DA<1>='S'                    ; * JTW01
+            DA<2>=0                      ; * JTW01
+            DA<3>='ACH FLAG'             ; * JTW01
+            DA<8>='TFBWORK':CH.NUM:';X;;4'         ; * JTW01
+            DA<9>='R'                    ; * JTW01
+            DA<10>='1'                   ; * JTW01
+            WRITE DA ON D.F.PAY,'ACH.FLAG.':CH.NUM           ; * JTW01
+            DA=''
+            DA<1>='S'
+            DA<2>=0
+            DA<3>='SPECIAL'
+            DA<8>='TFBWORK':CH.NUM:';X;;2'
+            DA<9>='R'
+            DA<10>='1'
+            WRITE DA ON D.F.PAY,'SPECIAL.':CH.NUM
+            IF CARRIER.NUM.CODE#'' AND NOT(FOUND.CARRIER) THEN
+425:           HELP="Enter Y to continue or N to stop. "
+               CALL GEN.IN(0,22,'Adjustment Carrier was not found in these checks Continue? N','',Q,0,1,'','',0,-1,22,1,QI,HELP,0,23)
+               QI=OCONV(QI,'MCU')
+               BEGIN CASE
+                  CASE QI='N' ! QI=''
+                     STOP
+                  CASE QI='Y'
+                     NULL
+                  CASE 1
+                     CALL ELINE('Invalid Entry - Please Try Again')
+                     GOTO 425
+               END CASE
+            END
+*CALL ELINE('BETH CALL OWEN NOW! FBWORK':CH.NUM)
+            EX.REC='SSELECT FB.PAY'
+            EX.REC:=' BY SPECIAL.':CH.NUM
+            EX.REC:=' BY 25FLAG.':CH.NUM
+            EX.REC:=' BY CARRIER BY CARRIER#'
+            EX.REC:=' BY DHLC.EDI.BILL BY EDI.SENDER.ID BY EDI.ACCOUNT'
+            EX.REC:=' BY CLIENT.SEP.FLAG BY CLIENT.NAME BY CLIENT#'
+            EX.REC:=' BY EDI.DATE'
+            EX.REC:=' BY AIRB.ENTRY BY BILL.DATE BY PRO'
+            IF NOT(TESTING) THEN EX.REC :=' WITH 40 = "' : BANK.ID : '"'
+            IF NOT(TESTING) THEN
+               IF SELECT.BY.CHECK.PRINT.DATE#'Y' THEN
+                  IF SINGLE.CARRIER # 'ALL' THEN
+                     EX.REC :=' AND WITH CARRIER# = "':SINGLE.CARRIER:'" '
+                  END
+                  IF SINGLE.CLIENT # 'ALL' THEN
+                     EX.REC :=' AND WITH CLIENT# = "':SINGLE.CLIENT:'" '
+                  END
+                  IF SINGLE.DATE # "ALL" THEN
+                     EX.REC :=' AND WITH 37 = "':SINGLE.DATE'D2/':'" '
+                  END
+               END ELSE
+                  EX.REC :=' AND WITH 134 LE "':OCONV(CHECK.DATE,'D2/'):'" '
+               END
+            END
+!           EXECUTE EX.REC PASSLIST CAPTURING OUTPUT; * JTW01
+!           DELETE D.F.PAY,'25FLAG.':CH.NUM  ; * JTW01
+!           DELETE D.F.PAY,'SPECIAL.':CH.NUM ; * JTW01
+         END
+      END
+      PREV.CARRIER=''
+      PREV.CLIENT=''
+      PREV.SEP.CHECK.FLG=''
+      PREV.EDI.SENDER.ID=''
+      PREV.EDI.ACCOUNT=''
+      CHECK.AMT=0
+!     CLEARFILE F.WORK   ; * JTW01
+      IF BANK.ID='V' THEN
+         BEGIN CASE
+            CASE FORM='P' ; EXECUTE 'SP-ASSIGN F15'
+            CASE FORM='N' ; EXECUTE 'SP-ASSIGN S'
+            CASE 1 ; EXECUTE 'SP-ASSIGN F0'
+         END CASE
+      END ELSE
+         BEGIN CASE
+            CASE FORM='C'
+               EXECUTE 'SP-ASSIGN F5'    ; * Fujitsu
+            CASE FORM='L'
+               BEGIN CASE
+                  CASE USER='OWEN'
+*             EXECUTE 'SP-ASSIGN F15' ; * Freight Payment Laser
+*             EXECUTE 'SP-ASSIGN F20' ; * Account Laser
+                     EXECUTE 'SP-ASSIGN F40'       ; * Owen Laser
+*             CALL ELINE("Warning Checks are going to Freight Payment Printer")
+                  CASE USER='MKERBOW'
+                     EXECUTE 'SP-ASSIGN F45'
+                  CASE 1
+*             EXECUTE 'SP-ASSIGN F20' ; * Accounting Laser
+*             EXECUTE 'SP-ASSIGN F15' ; * Freight Payment Laser
+                     EXECUTE 'SP-ASSIGN F55'       ; * Missy's Laser
+*             EXECUTE 'SP-ASSIGN F5' ; * Debbie's Laser
+               END CASE
+         END CASE
+      END
+*
+*      CALL ELINE('LOAD CHECKS IN THE SECOND (BOTTOM) TRAY')
+      PRINTER ON
+      GOSUB SETUP.PTR
+      PRINT ESC:'&l4H':                  ; * BOTTOM Bin Selection
+      COUNTER=0
+*
+* Build stub array
+*
+      STUB=''
+      E.STUB='Tracking Number':@VM:'Amount Paid'
+*     EREMIT.STUB='Date':@VM:'Pro Number':@VM:'Amount Billed':@VM:'Amount Paid':@VM:'Cutback Reason' ; * JMK09
+      EREMIT.STUB='Payor':@VM:'Subtotal':@VM:'Date':@VM:'Pro Number':@VM:'Amount Billed':@VM:'Amount Paid':@VM:'Cutback Reason'    ; * JMK09
+      IF INC.INV THEN                    ; * JMK12
+         EREMIT.STUB='Payor':@VM:'Subtotal':@VM:'Date':@VM:'Pro Number':@VM:'Invoice Number':@VM:'Amount Billed':@VM:'Amount Paid':@VM:'Cutback Reason'          ; * JMK12
+      END                                ; * JMK12
+      UPS.STUB=''
+      AIRB.STUB=''
+      DHLC.STUB=''
+      ATTR=1
+      ACH.FLAG=''                        ; * JTW01
+      IF NOT(NO.FRT.ITEMS) THEN
+         FOR QQQ=1 TO 2                  ; * JTW01
+            ENG.STMT=EX.REC:' AND WITH ACH.FLAG.':CH.NUM:' = "':QQQ:'"'          ; * JTW01
+            EXECUTE ENG.STMT PASSLIST CAPTURING OUTPUT       ; * JTW01
+            IF @SELECTED < 1 THEN GO NEXT.QQQ      ; * JMK17
+            PFLAG=1                      ; * JTW01 - PRINT FLAG
+            ACH.FLAG=''                  ; * JTW01
+            IF QQQ=2 THEN                ; * JTW01
+               PFLAG=0                   ; * JTW01
+               ACH.FLAG=DATE():"*":TIME()          ; * JTW01
+               BANK.REC<2>=CHECK.NUM     ; * JTW01
+               CHECK.NUM=BANK.REC<5>     ; * JTW01
+               LOOP                      ; * JTW01
+                  ID=CHECK.NUM'R%6':'*':BANK.ID    ; * JTW01
+                  READ TEST FROM F.CHECKS,ID THEN  ; * JTW01
+                     CHECK.NUM=CHECK.NUM+1         ; * JTW01
+                  END ELSE               ; * JTW01
+                     TEST=''             ; * JTW01
+                  END                    ; * JTW01
+               UNTIL TEST='' DO REPEAT   ; * JTW01
+               CHECK.ID=ID               ; * JTW01
+            END                          ; * JTW01
+            PREV.CARRIER=''
+            PREV.CLIENT=''
+            PREV.SEP.CHECK.FLG=''
+            PREV.EDI.SENDER.ID=''
+            PREV.EDI.ACCOUNT=''
+            CHECK.AMT=0
+            LOOP
+               READNEXT PAY.ID ELSE PAY.ID=''
+               COUNTER=COUNTER+1
+            UNTIL PAY.ID='' DO
+               CALL PROG.BAR(20,COUNTER,NUM.ITMS,PER)
+               READ PAY.REC FROM F.PAY,PAY.ID ELSE PAY.REC=''
+               CLIENT=FIELD(PAY.ID,'*',1)
+               CARRIER=FIELD(PAY.ID,'*',2)
+*DF            IF CLIENT='00981' AND CARRIER='00004' THEN
+*DF               GOTO SKIP.NEXT.PRO
+*DF            END
+*DF            IF CLIENT='00354' AND CARRIER='00004' THEN
+*DF               GOTO SKIP.NEXT.PRO
+*DF            END
+               READ DREMIT FROM F.REMIT,PAY.ID ELSE DREMIT=''
+               EDI.SENDER.ID=DREMIT<3>
+               EDI.ACCOUNT=DREMIT<14>
+               ORIG.EDI.ID = PAY.REC<88>           ; * JCW02
+*           IF PAY.REC<88>#'' AND CARRIER='00143' THEN                           ; * JCW02
+               IF ORIG.EDI.ID # '' AND CARRIER='00143' THEN  ; * JCW02
+                  CALL PARSE.EDI.ID(ORIG.EDI.ID, CLIENT.ID, EDI.HIST.ID)         ; * JCW02
+                  OPEN 'EDI.BILLS.HIST,':CLIENT.ID TO F.EDI.BILLS.HIST THEN      ; * JCW02
+*                READ EDI.REC FROM F.EDI.BILLS.HIST,PAY.REC<88> ELSE EDI.REC=''  ; * JCW02
+                     READ EDI.REC FROM F.EDI.BILLS.HIST, EDI.HIST.ID ELSE EDI.REC=''       ; * JCW02
+                  END ELSE               ; * JCW02
+                     EDI.REC = ''        ; * JCW02
+                  END                    ; * JCW02
+               END
+               IF ORIG.EDI.ID # '' AND CARRIER='00365' THEN  ; * JCW02
+                  CALL PARSE.EDI.ID(ORIG.EDI.ID, CLIENT.ID, EDI.HIST.ID)         ; * JCW02
+                  OPEN 'EDI.BILLS.HIST,':CLIENT.ID TO F.EDI.BILLS.HIST THEN      ; * JCW02
+*                READ EDI.REC FROM F.EDI.BILLS.HIST,PAY.REC<88> ELSE EDI.REC=''  ; * JCW02
+                     READ EDI.REC FROM F.EDI.BILLS.HIST, EDI.HIST.ID ELSE EDI.REC=''       ; * JCW02
+                  END ELSE               ; * JCW02
+                     EDI.REC = ''        ; * JCW02
+                  END                    ; * JCW02
+               END
+               IF CARRIER='00143' AND PAY.REC<88>#'' THEN
+                  EDI.SENDER.ID='AIRB'
+*DF               READ EDI.REC FROM F.EDI.BILLS.HIST,PAY.REC<88> ELSE EDI.REC=''
+                  EDI.ACCOUNT='EDI ':OCONV(EDI.REC<5>,'D2/')
+               END
+               IF CARRIER='00365' AND PAY.REC<88>#'' THEN
+                  EDI.SENDER.ID='DHLC'
+*DF               READ EDI.REC FROM F.EDI.BILLS.HIST,PAY.REC<88> ELSE EDI.REC=''
+                  EDI.ACCOUNT='EDI ':OCONV(EDI.REC<5>,'D2/')
+               END
+               CLIENT.BREAK=0
+               IF CARRIER NE PREV.CARRIER THEN GOTO PRINT.CHECK
+               IF PREV.EDI.SENDER.ID NE EDI.SENDER.ID THEN GOTO PRINT.CHECK
+               *OH     IF PREV.EDI.ACCOUNT NE EDI.ACCOUNT THEN GOTO PRINT.CHECK
+               IF PREV.EDI.ACCOUNT='' AND EDI.ACCOUNT#'' THEN GOTO PRINT.CHECK
+               IF PREV.EDI.ACCOUNT#'' AND EDI.ACCOUNT='' THEN GOTO PRINT.CHECK
+               IF PREV.EDI.ACCOUNT NE EDI.ACCOUNT THEN
+                  CLIENT.BREAK.AMT=CLIENT.EDI.AMT
+                  GOSUB 8200             ; * Print client payment break line
+                  CLIENT.EDI.AMT=0
+                  PREV.EDI.ACCOUNT=EDI.ACCOUNT
+               END
+               IF CLIENT NE PREV.CLIENT THEN
+                  READ DCLIENTS FROM F.CLIENTS,CLIENT ELSE
+                     DCLIENTS=''
+                     DCLIENTS<2>=CLIENT:' Not On File!'
+                  END
+                  SEP.CHECK.FLG=DCLIENTS<96>
+                  IF PREV.SEP.CHECK.FLG='Y' THEN GOTO PRINT.CHECK
+                  IF SEP.CHECK.FLG='Y' THEN GOTO PRINT.CHECK
+                  CLIENT.BREAK.AMT=CLIENT.CHECK.AMT
+                  PREV.EDI.ACCOUNT=''
+                  GOSUB 8200             ; * Print client payment break line
+                  GOSUB 8100             ; * Update client checks
+                  CLIENT.NAME=DCLIENTS<2>
+                  AUDITOR.NAME=DCLIENTS<71>
+                  PREV.CLIENT=CLIENT
+                  PREV.EDI.ACCOUNT=EDI.ACCOUNT
+               END
+               GOTO SKIP.PRINT.CHECK
+PRINT.CHECK:***
+               IF PREV.CARRIER # '' THEN
+                  IF NEXT.CHECK.ALREADY.ON.FILE THEN         ; * JMK15
+                     GOSUB ERROR.NEXT.CHECK.IS.ON.FILE       ; * JMK15
+                     GO PREMATURE.EXIT   ; * JMK15
+                  END                    ; * JMK15
+                  IF PREV.EDI.ACCOUNT#'' THEN
+                     CLIENT.BREAK.AMT=CLIENT.EDI.AMT
+                     GOSUB 8200
+                  END
+                  TEMP.PREV.EDI.ACCOUNT=PREV.EDI.ACCOUNT
+                  PREV.EDI.ACCOUNT=''
+                  CLIENT.BREAK.AMT=CLIENT.CHECK.AMT
+                  GOSUB 8200             ; * Print client payment break line
+                  PREV.EDI.ACCOUNT=TEMP.PREV.EDI.ACCOUNT
+                  GOSUB 8100             ; * Update client checks
+                  IF ADJ.CD # 'N' THEN
+                     IF PREV.CARRIER=CARRIER.NUM.CODE THEN
+                        LOCATE ADJ.CD IN ADJ.CODE<1> SETTING POS THEN
+                           STUB<-1>=' Adjustments: ':ADJ.CODE<2,POS>'L#21':' ':ADJ.CODE<3,POS>'R26#7'
+                           CHECK.AMT=CHECK.AMT+ADJ.CODE<3,POS>
+                           ATTR=ATTR+1
+                        END
+                     END
+                  END
+                  STUB<-1>=' Total for check: ':CHECK.NUM:' = ':CHECK.AMT'R26,$#16'
+                  ATTR=ATTR+1
+                  GOSUB 8000             ; * Print Check
+*              IF NEXT.CHECK.ALREADY.ON.FILE THEN ; * JMK15
+*                 GOSUB ERROR.NEXT.CHECK.IS.ON.FILE ; * JMK15
+*                 GO PREMATURE.EXIT ; * JMK15
+*              END ; * JMK15
+               END
+               CUTBACK.TEXT=''           ; * Reset it, Ready for next carrier
+               PREV.CARRIER=CARRIER
+               PREV.CLIENT=CLIENT
+               READ DCLIENTS FROM F.CLIENTS,CLIENT ELSE
+                  DCLIENTS=''
+                  DCLIENTS<2>=CLIENT:' Not On File!'
+               END
+               CLIENT.NAME=DCLIENTS<2>
+               AUDITOR.NAME=DCLIENTS<71>
+               PREV.SEP.CHECK.FLG=DCLIENTS<96>
+               PREV.EDI.SENDER.ID=EDI.SENDER.ID
+               PREV.EDI.ACCOUNT=EDI.ACCOUNT
+*
+*START PROCESSING
+SKIP.PRINT.CHECK:***
+*DF            READ PAY.REC FROM F.PAY,PAY.ID THEN
+               IF PAY.REC#'' THEN
+*              IF (CARRIER="00015" OR CARRIER="01075") AND PAY.REC<88>#'' THEN ON.STUB=0 ELSE ON.STUB=1 ; * JMK06
+                  IF (CARRIER="00015" OR CARRIER="01075") AND PAY.REC<88>#'' AND DREMIT#'' THEN ON.STUB=0 ELSE ON.STUB=1           ; * JMK06
+*           Don't Include Pro Number on FedEx EDI Bills
+                  PRO.NUM=FIELD(PAY.ID,'*',3)
+                  VERSION=FIELD(PAY.ID,'*',4)
+                  PRO.DATE=PAY.REC<1>
+                  PRO.AMT=PAY.REC<8>
+                  DATE.SELECT=PAY.REC<133>
+                  PRINT.DATE=PAY.REC<134>
+                  DEPOSIT.DATE=PAY.REC<135>
+                  IF (CARRIER="00015" OR CARRIER="01075") AND ON.STUB THEN
+*             Only add Pro's that are NOT EDI and on the stub
+                     E.STUB.LINE=PRO.NUM:@VM:PRO.AMT'R26'
+                     E.STUB<-1>=E.STUB.LINE
+                  END
+                  IF CARRIER="00041" THEN
+                     UPS.ACCOUNT=PRO.NUM[1,3]:PRO.NUM[5,3]
+                     UPS.STUB.LINE=UPS.ACCOUNT'R%10':" ":PRO.NUM[8,6]:" ":PRO.AMT'R%9':" ":PRO.AMT'R%9'
+                     UPS.STUB<-1>=UPS.STUB.LINE
+                  END
+*DF            BILL.AMT=PAY.REC<7>
+                  BILL.AMT=PAY.REC<8>-PAY.REC<11>-PAY.REC<10>
+*              EREMIT.LINE=PRO.DATE'D2/':@VM:PRO.NUM:@VM:BILL.AMT'R26':@VM:PRO.AMT'R26':@VM:TRIM(PAY.REC<41,1>:' ':PAY.REC<41,2>) ; * JMK09
+                  EREMIT.LINE=CLIENT.NAME:@VM:'':@VM:PRO.DATE'D2/':@VM:PRO.NUM:@VM:BILL.AMT'R26':@VM:PRO.AMT'R26':@VM:TRIM(PAY.REC<41,1>:' ':PAY.REC<41,2>)      ; * JMK09
+                  IF INC.INV THEN        ; * JMK12
+                     EREMIT.LINE=CLIENT.NAME:@VM:'':@VM:PRO.DATE'D2/':@VM:PRO.NUM:@VM:PAY.REC<94>:@VM:BILL.AMT'R26':@VM:PRO.AMT'R26':@VM:TRIM(PAY.REC<41,1>:' ':PAY.REC<41,2>)       ; * JMK12
+                  END                    ; * JMK12
+                  EREMIT.STUB<-1>=EREMIT.LINE
+                  IF BILL.AMT=PRO.AMT THEN BILL.AMT=''       ; * Don't Show if Same
+                  CHECK.AMT=CHECK.AMT+PRO.AMT
+                  CLIENT.CHECK.AMT=CLIENT.CHECK.AMT+PRO.AMT
+                  CLIENT.EDI.AMT=CLIENT.EDI.AMT+PRO.AMT
+*              CHECK.REC<7,-1>=CARRIER:'*':PRO.NUM:'*':VERSION  ; * JCW03
+*              CHECK.REC<12,-1>=PRO.AMT  ; * Save Pro Amount    ; * JCW03
+                  IF CHECK.REC<25> = '' THEN CHECK.REC<25> = 0         ; * JCW03
+                  CHECK.REC<25> += 1     ; * JCW03
+                  DTL.REC = ''           ; * JCW03
+                  DTL.REC<1>=CARRIER:'*':PRO.NUM:'*':VERSION           ; * JCW03
+                  DTL.REC<2>=PRO.AMT     ; * Save Pro Amount       ; * JCW03
+                  DTL.REC<3>=CLIENT      ; * JCW03
+                  DTL.ID = CHECK.ID:'*':CHECK.REC<25>        ; * JCW03
+                  WRITE DTL.REC ON F.CHECKS.D, DTL.ID        ; * JCW03
+*DF            LOCATE PAY.REC<133> IN CHECK.REC<22> BY 'AR' SETTING REC.POS THEN
+                  LOCATE DATE.SELECT IN CHECK.REC<22> BY 'AR' SETTING REC.POS THEN
+                     CHECK.REC<23,REC.POS>=CHECK.REC<23,REC.POS>+PRO.AMT
+                  END ELSE
+*DF               INS PAY.REC<133> BEFORE CHECK.REC<22,REC.POS>
+                     INS DATE.SELECT BEFORE CHECK.REC<22,REC.POS>
+                     INS PRO.AMT BEFORE CHECK.REC<23,REC.POS>
+                  END
+*              CLIENT.CHECK.REC<7,-1>=CARRIER:'*':PRO.NUM:'*':VERSION   ; * JCW03
+*              CLIENT.CHECK.REC<8,-1>=PRO.AMT                           ; * JCW03
+*              CLIENT.CHECK.REC<12,-1>=PRO.AMT     ; * Save Pro Amount  ; * JCW03
+                  IF ON.STUB ELSE GOTO SKIP.STUB
+                  CUT.DESC=''
+                  CUT.COUNT=0
+*           FOR I=1 TO 3
+* Don't even look at the logisitcs description in 3... we dont need it!
+                  FOR I=1 TO 2
+                     IF TRIM(PAY.REC<41,I>) NE '' THEN
+                        IF CUT.DESC='' THEN
+                           CUT.DESC=' <--':TRIM(PAY.REC<41,I>)
+                        END ELSE
+                           CUT.DESC=CUT.DESC:',':TRIM(PAY.REC<41,I>)
+                        END
+                        IF PREV.CARRIER='00143' AND PREV.EDI.ACCOUNT#'' THEN
+                           AIRB.STUB<-1>=TRIM(PAY.REC<41,I>)
+                        END
+                        IF PREV.CARRIER='00365' AND PREV.EDI.ACCOUNT#'' THEN
+                           DHLC.STUB<-1>=TRIM(PAY.REC<41,I>)
+                        END
+                     END
+                  NEXT I
+*
+*           IF BILL.AMT # '' THEN
+                  IF BILL.AMT-PRO.AMT > 1 THEN
+* Limit autocutback emails to cutbacks over 1 cent - Owen 10-09-02
+                     CUTBACK.TEXT<1,-1>=CLIENT.NAME'L(#30 )':AUDITOR.NAME'L(#25 )':PRO.DATE'D2-':' ':PRO.NUM'L#14':BILL.AMT'R26,#10':(BILL.AMT-PRO.AMT)'R26,#10':PRO.AMT'R26,#10':CUT.DESC
+                  END
+* Build stub array
+*
+*OH         TEXT='  ':PRO.DATE'D2/':'  ':PRO.NUM'L#19':PRO.AMT'R26,#13'
+                  TEXT=SPACE(1):PRO.DATE'D2/'
+                  TEXT:=SPACE(2):PRO.NUM'L#14'
+*DF            IF CUT.DESC='' THEN BILL.AMT='' ; * Don't Print if Logistics
+                  TEXT:=BILL.AMT'R26Z,#9'
+                  TEXT:=PRO.AMT'R26,#9'
+                  TEXT:=SPACE(1)
+                  BASE.LEN=LEN(STUB<ATTR>)
+                  TEXT.LEN=LEN(TEXT)
+                  DESC.LEN=LEN(CUT.DESC)
+                  TOT.LEN=BASE.LEN+TEXT.LEN+DESC.LEN
+                  IF TOT.LEN GT 132 THEN
+                     IF BASE.LEN > 0 THEN ATTR=ATTR+1
+                     STUB<ATTR>=TEXT
+                     IF CUT.DESC NE '' THEN
+                        X=DCOUNT(CUT.DESC,',')
+                        FOR I=1 TO X
+                           C.TEXT=FIELD(CUT.DESC,',',I)
+                           IF I NE X THEN C.TEXT=C.TEXT:', '
+                           BASE.LEN=LEN(STUB<ATTR>)
+                           DESC.LEN=LEN(C.TEXT)
+                           TOT.LEN=BASE.LEN+DESC.LEN
+                           IF TOT.LEN GE 132 THEN ATTR=ATTR+1
+                           STUB<ATTR>=STUB<ATTR>:C.TEXT
+                        NEXT I
+                     END
+                  END ELSE
+                     STUB<ATTR>=STUB<ATTR>:TEXT:CUT.DESC
+                  END
+                  BEGIN CASE
+                     CASE LEN(STUB<ATTR>) LE 44
+                        STUB<ATTR>=STUB<ATTR>'L#44'
+                     CASE LEN(STUB<ATTR>) LE 88
+                        STUB<ATTR>=STUB<ATTR>'L#88'
+                     CASE 1
+                        STUB<ATTR>=STUB<ATTR>'L#132'
+                  END CASE
+SKIP.STUB:***
+                  IF NOT(TESTING) THEN
+*                 IF BANK.ID='F' THEN ; * JMK02
+                     IF BANK.ID#'V' THEN           ; * JMK02
+                        * Update Temporary File with Check # and Date printed
+                        * For recovery purposes only
+                        PAY.REC<14>=CHECK.NUM
+                        PAY.REC<15>=DATE.PRINTED
+                        WRITE PAY.REC ON F.PAY.LAST,PAY.ID
+                     END
+                  END
+                  IF NOT(TESTING) THEN DELETE F.PAY,PAY.ID
+               END
+SKIP.NEXT.PRO:***
+            REPEAT
+
+            IF NEXT.CHECK.ALREADY.ON.FILE THEN     ; * JMK15
+               GOSUB ERROR.NEXT.CHECK.IS.ON.FILE   ; * JMK15
+               GO PREMATURE.EXIT         ; * JMK15
+            END                          ; * JMK15
+            PREV.CARRIER=CARRIER
+            IF PREV.EDI.ACCOUNT#'' THEN
+               CLIENT.BREAK.AMT=CLIENT.EDI.AMT
+               GOSUB 8200
+            END
+            TEMP.PREV.EDI.ACCOUNT=PREV.EDI.ACCOUNT
+            PREV.EDI.ACCOUNT=''
+            CLIENT.BREAK.AMT=CLIENT.CHECK.AMT
+            GOSUB 8200                   ; * Print client payment break line
+            PREV.EDI.ACCOUNT=TEMP.PREV.EDI.ACCOUNT
+            GOSUB 8100                   ; * Update client checks
+            IF ADJ.CD # 'N' THEN
+               IF PREV.CARRIER=CARRIER.NUM.CODE THEN
+                  LOCATE ADJ.CD IN ADJ.CODE<1> SETTING POS THEN
+                     STUB<-1>=' Adjustments: ':ADJ.CODE<2,POS>'L#21':' ':ADJ.CODE<3,POS>'R26#7'
+                     IF PREV.CARRIER='00143' AND PREV.EDI.ACCOUNT#'' THEN
+                        AIRB.STUB<-1>=' Adjustments: ':ADJ.CODE<2,POS>'L#21':' ':ADJ.CODE<3,POS>'R26#7'
+                     END
+                     IF PREV.CARRIER='00365' AND PREV.EDI.ACCOUNT#'' THEN
+                        DHLC.STUB<-1>=' Adjustments: ':ADJ.CODE<2,POS>'L#21':' ':ADJ.CODE<3,POS>'R26#7'
+                     END
+                     CHECK.AMT=CHECK.AMT+ADJ.CODE<3,POS>
+                     ATTR=ATTR+1
+                     EREMIT.LINE=@VM:'Adjustments: 'ADJ.CODE<2,POS>:@VM:@VM:ADJ.CODE<3,POS>'R26'
+                     EREMIT.STUB<-1>=EREMIT.LINE
+                  END
+               END
+            END
+            STUB<-1>=' Total for check: ':CHECK.NUM:' = ':CHECK.AMT'R26,#16'
+            IF PREV.CARRIER='00143' AND PREV.EDI.ACCOUNT#'' THEN
+               AIRB.STUB<-1>=' Total for check: ':CHECK.NUM:' = ':CHECK.AMT'R26,#16'
+            END
+            IF PREV.CARRIER='00365' AND PREV.EDI.ACCOUNT#'' THEN
+               DHLC.STUB<-1>=' Total for check: ':CHECK.NUM:' = ':CHECK.AMT'R26,#16'
+            END
+            ATTR=ATTR+1
+            GOSUB 8000                   ; * Print check
+*        IF NEXT.CHECK.ALREADY.ON.FILE THEN ; * JMK15
+*           GOSUB ERROR.NEXT.CHECK.IS.ON.FILE ; * JMK15
+*           GO PREMATURE.EXIT ; * JMK15
+*        END ; * JMK15
+NEXT.QQQ:*                               ; * JMK17
+         NEXT QQQ                        ; * JTW01
+         BANK.REC<5>=CHECK.NUM           ; * JTW01
+         CHECK.NUM=BANK.REC<2>           ; * JTW01
+         CHECK.ID=CHECK.NUM'R%6':'*':BANK.ID       ; * JTW01
+         ACH.FLAG=''                     ; * JTW01
+      END
+      PFLAG=1                            ; * JTW01
+      CLEARFILE F.WORK
+      DELETE D.F.PAY,'25FLAG.':CH.NUM
+      DELETE D.F.PAY,'SPECIAL.':CH.NUM
+      DELETE D.F.PAY,'ACH.FLAG.':CH.NUM
+      IF NOT(NO.MAN.ITEMS) THEN
+*DF         EXECUTE 'SSELECT FB.MAN.CHECKS BY 15 BY 16' PASSLIST CAPTURING OUTPUT
+         EXECUTE 'SSELECT FB.MAN.CHECKS WITH 24 = "':BANK.ID:'" BY 15 BY 16' PASSLIST CAPTURING OUTPUT
+         MAN.CHECK=1
+         ATTR=1
+         LOOP
+            READNEXT MAN.ID ELSE MAN.ID=''
+         UNTIL MAN.ID='' DO
+            READ DMAN.CHECKS FROM F.MAN.CHECKS,MAN.ID ELSE DMAN.CHECKS=''
+            STUB<-1>=DMAN.CHECKS<16>
+            ATTR=ATTR+1
+            CHECK.AMT=DMAN.CHECKS<4>
+            GOSUB 8000                   ; * Print checks (manual checks)
+            IF NOT(TESTING) THEN DELETE F.MAN.CHECKS,MAN.ID
+
+*OH We don't really care if the next check is on file... This the last check that we need for this run
+*OH         IF NEXT.CHECK.ALREADY.ON.FILE THEN
+*OH           GOSUB ERROR.NEXT.CHECK.IS.ON.FILE
+*OH           GO PREMATURE.EXIT
+*OH         END
+         REPEAT
+      END
+
+** DAVID .... SHOULDN'T THE NEXT TWO LINES BE AT THE BOTTOM OF THE IF THEN BLOCK ABOVE..??
+** See me.... Owen.... In the Print Check routine 8000, there is an update to F.BANK
+** I can only assume that this update to F.BANK is for the manual check in the above IF THEN block
+
+      BANK.REC<2>=CHECK.NUM
+      IF NOT(TESTING) THEN WRITE BANK.REC ON F.BANK,'BANK*':BANK.ID
+      IF ADJ.CD # 'N' THEN
+         IF CARRIER.NUM.CODE # '' THEN
+            CALL ELINE('WARNING: An adjusting code was made for Carrier ':CARRIER.NUM.CODE:' but no check was issued')
+         END
+      END
+
+**Premature Exit point because next check number is on file
+
+PREMATURE.EXIT:***
+      IF NEXT.CHECK.ALREADY.ON.FILE THEN
+         CRT @(0,21):"This check run was incomplete due to a check number being on file."
+      END
+      HELP="Load ":(CHECK.NUM-1)-START+1:" Checks, ":START'R%6':" to ":(CHECK.NUM-1)'R%6':" into the printer"
+      CALL GEN.IN(0,22,'Press <Enter> to when ready to print:  ','',Q,0,1,'','',0,-1,22,1,QI,HELP,0,23)
+      CRT @(0,7):"Printing ":(CHECK.NUM-1)-START+1:" Checks, ":START'R%6':" to ":(CHECK.NUM-1)'R%6':"."
+      PRINTER CLOSE
+      IF FORM='N' THEN
+         EXECUTE 'SP-ASSIGN F0'
+*DF        UNLOCK 2
+         STOP
+      END
+*
+* Print overflow check stubs
+*
+      IF FRT.ONLY OR BOTH.MAN.FRT THEN
+         EXECUTE 'SSELECT FB.STUB.LAST' PASSLIST CAPTURING OUTPUT
+*
+* Get printer number
+*
+         IF @SELECTED > 0 THEN           ; * JCW01
+            CRT @(0,3):@(-3):
+            CRT @(0,7):"Printing ":(CHECK.NUM-1)-START+1:" Checks, ":START'R%6':" to ":(CHECK.NUM-1)'R%6':"."
+            TEXT='Printing overflow stubs.'
+            CALL CENTER(TEXT,80)
+            CRT @(0,10):TEXT
+            SELECT F.STUB.LAST TO SAVE.LIST
+
+500:
+*          PRT.NUM=5               ;* Admhp
+*          PRT.NUM=4               ;* OPTRAN
+            PRT.NUM=2                    ; * Missy's Printer
+            HELP="Enter the printer number on which to overflow stubs."
+            CALL GEN.IN(0,20,'Enter printer number ':PRT.NUM'L#3','',Q,0,3,'','',1,-3,20,0,QI,HELP,0,23)
+            QI=OCONV(QI,'MCU')
+            IF QI='' THEN Q=PRT.NUM
+            PRT.NUM=Q
+            CRT @(21,20):PRT.NUM'L#3'
+            HELP="Enter either Y or N."
+
+510:        CALL GEN.IN(0,22,'Is printer number correct? Y','',Q,0,1,'','',0,-1,22,1,QI,HELP,0,23)
+            QI=OCONV(QI,'MCU')
+            BEGIN CASE
+               CASE QI='Y' ! QI=''
+                  NULL
+               CASE QI='N'
+                  GOTO 500
+               CASE 1
+                  GOTO 510
+            END CASE
+
+            CALL PRINTER.NUM(PRT.NUM,QUEUE)
+            EXECUTE 'SP-ASSIGN F':QUEUE
+            PRINTER ON                   ; * JMK08
+            GOSUB 9000
+            PRINT ESC:'&l1H':            ; * TOP Bin Selection
+
+            STMT='SORT FB.STUB.LAST CARRIER# CARRIER.NAME CHECK# CHECK.DATE (I,P'
+            EXECUTE STMT
+            PRINTER CLOSE
+            LOOP
+               READNEXT ID FROM SAVE.LIST ELSE ID=''
+            UNTIL ID='' DO
+               READ STUB FROM F.STUB.LAST,ID THEN
+                  ATTR=0
+                  LN.COUNT=0
+                  CHECK=FIELD(ID,'*',1)
+                  CARRIER=FIELD(ID,'*',3)
+                  DATE=FIELD(ID,'*',4)
+                  PAGE=0
+                  READV NAME FROM F.CARRIER,CARRIER,1 ELSE
+                     NAME='~~~ Unknown ~~~'
+                  END
+450:              IF LN.COUNT=0 ! LN.COUNT=78 THEN
+                     LN.COUNT=0
+                     PAGE=PAGE+1
+*               PRINT ''
+                     PRINT CHAR(12):'Check Number ':CHECK:'  Check Date ':DATE'D2/':'  To: ':NAME'L#30':SPACE(47):'Page ':PAGE
+                     PRINT ''
+                     FOR I=1 TO 3
+*OH               PRINT '  Date   Pro Number                Amount':
+*DF                  PRINT ('  ':'Date''L#8':'  ':'Pro Number''L#24':'Amount')'L#44':
+                        PRINT 'DATE''R#7':'PRO NUMBER''R#14':'$ BILLED''R#13':
+                        PRINT '$ PAID''R#8':'  ':
+                     NEXT I
+                     PRINT ''
+                  END
+                  ATTR=ATTR+1
+                  LN.COUNT=LN.COUNT+1
+                  IF STUB<ATTR> NE '' THEN
+                     PRINT STUB<ATTR>
+                     GOTO 450
+                  END
+                  IF STUB<ATTR+1> NE '' THEN GOTO 450
+               END
+            REPEAT
+         END
+      END
+      PRINTER OFF
+      PRINTER CLOSE
+      RELEASE
+*     IF NOT(TESTING) AND COGNOS.REC#'' THEN       ; * JMK01 ; * JMK04
+*        SEQ=0                           ; * JMK01 ; * JMK04
+*        LOOP                            ; * JMK01 ; * JMK04
+*           SEQ=SEQ+1                    ; * JMK01 ; * JMK04
+*           COGNOS.ID=OCONV(DATE(),'D2/'):"*":SEQ  ; * JMK01 ; * JMK04
+*           READ TEST FROM F.COGNOS.FIELDUPDATE,COGNOS.ID ELSE TEST=''           ; * JMK01 ; * JMK04
+*        UNTIL TEST='' DO                ; * JMK01 ; * JMK04
+*        REPEAT                          ; * JMK01 ; * JMK04
+*        WRITE COGNOS.REC ON F.COGNOS.FIELDUPDATE,COGNOS.ID  ; * JMK01 ; * JMK04
+*     END                                ; * JMK01 ; * JMK04
+      CALL ELINE('')
+*DF      UNLOCK 2
+      DELETE F.TABLES,'CHECK.LOCK'
+
+      IF NOT(TESTING) THEN               ; * JMK14
+         CRT@(0,22):"Updating WEB Database with payment information...."         ; * JMK14
+9900:    * START OF PROCESS TO UPDATE COGNOS DATABASE
+         PARMS=''                        ; * JMK14
+         READU COGNOS.REC FROM F.TABLES,'COGNOS.UPDATE' THEN           ; * JMK14
+            PARMS=COGNOS.REC<1>          ; * JMK14
+            DEL COGNOS.REC<1>            ; * JMK14
+            WRITE COGNOS.REC ON F.TABLES,'COGNOS.UPDATE'     ; * JMK14
+         END                             ; * JMK14
+         RELEASE F.TABLES,'COGNOS.UPDATE'          ; * JMK14
+         IF PARMS#'' THEN                ; * JMK14
+9935:*
+            STMT='SELECT COGNOS.ADD'     ; * JMK14
+            EXECUTE STMT CAPTURING RESULTS         ; * JMK14
+            COG.CNT=@SELECTED            ; * JMK14
+            IF COG.CNT>COGNOS.BUFFER THEN          ; * JMK14
+               NAP 500                   ; * JMK14
+               GO 9935                   ; * JMK14
+            END                          ; * JMK14
+            CLIENT=FIELD(PARMS,'*',1)    ; * JMK14
+            PDATE=FIELD(PARMS,'*',2)     ; * JMK14
+            STMT='COGNOS OLEDBAFS ':CLIENT:' ':PDATE'D2/':' ':PDATE'D2/':' ALL'  ; * JMK14
+*           CRT STMT                     ; * JMK14
+            EXECUTE STMT CAPTURING RESULTS         ; * JMK14
+*           CRT                          ; * JMK14
+            GO 9900                      ; * JMK14
+         END                             ; * JMK14
+      END                                ; * JMK14
+      STOP
+
+
+*-----------------------------------------------------------------------
+*
+* INTERNAL SUBROUTINES
+*
+*-----------------------------------------------------------------------
+*
+*  Subroutine to Print check
+*
+8000: IF FORM='C' OR FORM='L' OR FORM='V' THEN
+*        PRINT '' ; * JMK03
+*        PRINT '' ; * JMK03
+         IF PFLAG THEN                   ; * JTW01
+            IF NOT(MAN.CHECK) THEN
+               FOR X=1 TO 3
+                  PRINT 'DATE''R#7':'PRO NUMBER''R#14':'$ BILLED''R#13':
+                  PRINT '$ PAID''R#8':'  ':
+               NEXT X
+            END
+            PRINT ''
+         END                             ; * JTW01
+*       PRINT ESC:0: ; * 8 LPI
+*       PRINT CHAR(15): ; * Condensed Print
+         MAX.STUB.LINES=54
+         HALF.STUB.LINES=INT(MAX.STUB.LINES/2)
+         IF FIRST.CHECK THEN MAX.STUB.LINES=MAX.STUB.LINES-1
+         BEGIN CASE
+            CASE PREV.CARRIER='00143' AND PREV.EDI.ACCOUNT#''
+               NUM.OF.STUB.ITEMS=DCOUNT(AIRB.STUB,@AM)
+               IF NUM.OF.STUB.ITEMS GT MAX.STUB.LINES-3 THEN
+                  IF PFLAG THEN          ; * JTW01
+                     FOR I =1 TO HALF.STUB.LINES
+                        PRINT
+                     NEXT I
+                     PRINT ESC:"(s":'10h':CHAR(13):          ; * 10 CPI
+                     PRINT SPACE(30):'SEE ATTACHED LISTING'
+                     FOR I=1 TO MAX.STUB.LINES-HALF.STUB.LINES-1
+                        PRINT ''
+                     NEXT I
+                  END                    ; * JTW01
+                  WRITE AIRB.STUB ON F.STUB.LAST,CHECK.ID:'*':PREV.CARRIER:'*'CHECK.DATE:'*A'
+                  WRITE STUB ON F.STUB.LAST,CHECK.ID:'*':PREV.CARRIER:'*':CHECK.DATE
+               END ELSE
+                  IF PFLAG THEN          ; * JTW01
+                     FOR I = 1 TO NUM.OF.STUB.ITEMS
+                        PRINT AIRB.STUB<I>
+                     NEXT I
+                     IF NUM.OF.STUB.ITEMS LT HALF.STUB.LINES-2 THEN
+                        FOR I = NUM.OF.STUB.ITEMS TO HALF.STUB.LINES-1
+                           PRINT ''
+                        NEXT I
+                        PRINT ESC:"(s":'10h':CHAR(13):       ; * 10 CPI
+                        PRINT SPACE(30):'SEE ATTACHED LISTING'
+                        FOR I=1 TO MAX.STUB.LINES-HALF.STUB.LINES-1
+                           PRINT ''
+                        NEXT I
+                     END ELSE
+                        PRINT ''
+                        PRINT ''
+                        PRINT ESC:"(s":'10h':CHAR(13):       ; * 10 CPI
+                        PRINT SPACE(30):'SEE ATTACHED LISTING'
+                        FOR I=1 TO MAX.STUB.LINES-NUM.OF.STUB.ITEMS-3
+                           PRINT ''
+                        NEXT I
+                     END
+                  END                    ; * JTW01
+                  WRITE STUB ON F.STUB.LAST,CHECK.ID:'*':PREV.CARRIER:'*':CHECK.DATE
+               END
+            CASE PREV.CARRIER='00365' AND PREV.EDI.ACCOUNT#''
+               NUM.OF.STUB.ITEMS=DCOUNT(DHLC.STUB,@AM)
+               IF NUM.OF.STUB.ITEMS GT MAX.STUB.LINES-3 THEN
+                  IF PFLAG THEN          ; * JTW01
+                     FOR I =1 TO HALF.STUB.LINES
+                        PRINT
+                     NEXT I
+                     PRINT ESC:"(s":'10h':CHAR(13):          ; * 10 CPI
+                     PRINT SPACE(30):'SEE ATTACHED LISTING'
+                     FOR I=1 TO MAX.STUB.LINES-HALF.STUB.LINES-1
+                        PRINT ''
+                     NEXT I
+                  END                    ; * JTW01
+                  WRITE DHLC.STUB ON F.STUB.LAST,CHECK.ID:'*':PREV.CARRIER:'*'CHECK.DATE:'*A'
+                  WRITE STUB ON F.STUB.LAST,CHECK.ID:'*':PREV.CARRIER:'*':CHECK.DATE
+               END ELSE
+                  IF PFLAG THEN          ; * JTW01
+                     FOR I = 1 TO NUM.OF.STUB.ITEMS
+                        PRINT DHLC.STUB<I>
+                     NEXT I
+                     IF NUM.OF.STUB.ITEMS LT HALF.STUB.LINES-2 THEN
+                        FOR I = NUM.OF.STUB.ITEMS TO HALF.STUB.LINES-1
+                           PRINT ''
+                        NEXT I
+                        PRINT ESC:"(s":'10h':CHAR(13):       ; * 10 CPI
+                        PRINT SPACE(30):'SEE ATTACHED LISTING'
+                        FOR I=1 TO MAX.STUB.LINES-HALF.STUB.LINES-1
+                           PRINT ''
+                        NEXT I
+                     END ELSE
+                        PRINT ''
+                        PRINT ''
+                        PRINT ESC:"(s":'10h':CHAR(13):       ; * 10 CPI
+                        PRINT SPACE(30):'SEE ATTACHED LISTING'
+                        FOR I=1 TO MAX.STUB.LINES-NUM.OF.STUB.ITEMS-3
+                           PRINT ''
+                        NEXT I
+                     END
+                  END                    ; * JTW01
+                  WRITE STUB ON F.STUB.LAST,CHECK.ID:'*':PREV.CARRIER:'*':CHECK.DATE
+               END
+            CASE ATTR LE MAX.STUB.LINES
+*DF           IF ATTR LE MAX.STUB.LINES THEN
+               FOR I=1 TO MAX.STUB.LINES
+                  IF I=5 AND FIRST.CHECK THEN PRINT ''
+*IF TESTING AND STUB<I>='' THEN STUB<I>=I'R%2':' Line of Stub'
+!                 PRINT STUB<I>  ; * JTW01
+                  IF PFLAG THEN PRINT STUB<I>      ; * JTW01
+               NEXT I
+*DF            END ELSE
+            CASE 1
+               IF PFLAG THEN             ; * JTW01
+                  FOR I=1 TO HALF.STUB.LINES
+                     PRINT ''
+                  NEXT I
+               END                       ; * JTW01
+*            PRINT CHAR(18):SPACE(30):'SEE ATTACHED LISTING'
+               EMAIL.REMIT=0             ; * JMK08
+               READ PREV.CARRIER.REC FROM F.CARRIER,PREV.CARRIER ELSE PREV.CARRIER.REC=''  ; * JMK08
+               IF PREV.CARRIER='00041' AND UPS.STUB<1>#"" THEN         ; * JMK08
+                  PREV.CARRIER.REC<91>='payups@ups.com'      ; * JMK08
+*df                  PREV.CARRIER.REC<93,1>='RGarza@afs.net'     ; * JMK10
+*NPR01                  PREV.CARRIER.REC<93,1>='SLong@afs.net'     ; * JMK10
+                  PREV.CARRIER.REC<93,1>='srittenbach@afs.net'     ; * NPR01
+                  PREV.CARRIER.REC<93,2>='dfriend@afs.net'   ; * JMK08
+                  PREV.CARRIER.REC<93,3>='RCason@afs.net'    ; * JMK13
+                  PREV.CARRIER.REC<93,4>='JDawson@afs.net'   ; *  Matt 1/10/07
+                  PREV.CARRIER.REC<93,5>='cbeasley@afs.net'
+                  EMAIL.REMIT=1          ; * JMK08
+               END                       ; * JMK08
+               IF (PREV.CARRIER="00015" OR PREV.CARRIER="01075") AND E.STUB<2>#'' THEN     ; * JMK08
+                  PREV.CARRIER.REC<91>='e-remit@fedex.com'   ; * JMK08
+*df                  PREV.CARRIER.REC<93>='RGarza@afs.net'       ; * JMK10
+
+*                  PREV.CARRIER.REC<93,2>='RCason@afs.net'    ; * JMK13
+*                  PREV.CARRIER.REC<93,3>='JDawson@afs.net'   ; * Matt 1/10/07
+                  EMAIL.REMIT=1          ; * JMK08
+               END                       ; * JMK08
+               IF (PREV.CARRIER='00015' OR PREV.CARRIER='01075') & PREV.EDI.ACCOUNT#'' THEN          ; * JMK08
+                  PREV.CARRIER.REC<91>='e-remit@fedex.com'   ; * JMK08
+*df                  PREV.CARRIER.REC<93>='RGarza@afs.net'       ; * JMK10
+*NPR01                  PREV.CARRIER.REC<93>='SLong@afs.net'     ; * JMK10
+                  PREV.CARRIER.REC<93>='srittenbach@afs.net'     ; * NPR01
+                  PREV.CARRIER.REC<93,2>='RCason@afs.net'    ; * JMK13
+                  PREV.CARRIER.REC<93,3>='JDawson@afs.net'   ; * Matt 1/10/07
+                  PREV.CARRIER.REC<93,4>='cbeasley@afs.net'
+                  EMAIL.REMIT=1          ; * JMK08
+               END                       ; * JMK08
+               IF PREV.CARRIER.REC<91>#"" AND EREMIT.STUB<2>#"" THEN EMAIL.REMIT=1         ; * JMK08
+               IF EMAIL.REMIT THEN       ; * JMK08
+                  TO.EMAIL.ADDR=PREV.CARRIER.REC<91>         ; * JMK08
+                  CC.EMAIL.ADDR=PREV.CARRIER.REC<93>         ; * JMK08
+                  EMAIL.ADDR=''          ; * JMK08
+                  EMAIL.ADDR<1,-1>=TO.EMAIL.ADDR   ; * JMK08
+                  EMAIL.ADDR<1,-1>=CC.EMAIL.ADDR   ; * JMK08
+                  NUM.ADDR=DCOUNT(EMAIL.ADDR<1>,@VM)         ; * JMK08
+                  IF PFLAG THEN          ; * JTW01
+                     PRINT ESC:"(s":'10h':CHAR(13):          ; * 10 CPI ; * JMK08
+                     FOR X=1 TO NUM.ADDR           ; * JMK08
+                        PRINT SPACE(10):'Remittance Email was sent to: ':EMAIL.ADDR<1,X>   ; * JMK08
+                     NEXT X              ; * JMK08
+                     PRINT ' '           ; * JMK08
+                     PRINT SPACE(10):"If you have any problems or questions please contact:"         ; * JMK08
+                     PRINT SPACE(10):"Accounts Payable Department"     ; * JMK08
+                     PRINT SPACE(10):"AFS Logistics, LLC"    ; * JMK08
+                     PRINT SPACE(10):"P.O. Box 18170"        ; * JMK08
+                     PRINT SPACE(10):"Shreveport, LA  71138"           ; * JMK08
+                     PRINT SPACE(10):"Phone: 318-798-2111 x1227"        ; * JMK08
+                     PRINT SPACE(10):'FAX: 318-797-3628'     ; * JMK08
+                     PRINT SPACE(10):'EMAIL: AccountsPayable@afs.net'  ; * JMK08
+                     FOR I=1 TO MAX.STUB.LINES-HALF.STUB.LINES-9-NUM.ADDR        ; * JMK08
+                        PRINT ''         ; * JMK08
+                     NEXT I              ; * JMK08
+                  END                    ; * JTW01
+               END ELSE                  ; * JMK08
+                  IF PFLAG THEN          ; * JTW01
+                     PRINT ESC:"(s":'10h':CHAR(13):          ; * 10 CPI
+                     PRINT SPACE(30):'SEE ATTACHED LISTING'
+                     FOR I=1 TO MAX.STUB.LINES-HALF.STUB.LINES-1
+                        PRINT ''
+                     NEXT I
+                  END                    ; * JTW01
+                  WRITE STUB ON F.STUB.LAST,CHECK.ID:'*':PREV.CARRIER:'*':CHECK.DATE
+               END                       ; * JMK08
+         END CASE
+         FIRST.CHECK=0
+      END ELSE
+         GOSUB 9100                      ; * Print Paper Vouchers
+      END
+*
+* Update last purchase date in carrier record
+*
+      IF NOT(MAN.CHECK) THEN
+         READU CARRIER.REC FROM F.CARRIER,PREV.CARRIER ELSE CARRIER.REC=''
+         IF TESTING THEN RELEASE F.CARRIER,PREV.CARRIER
+         CARRIER.REC<25>=CHECK.DATE
+         NEED.W9=0                       ; * JMK07
+         IF CARRIER.REC<100>='' THEN     ; * JMK07
+            NEED.W9=1                    ; * JMK07
+            CARRIER.REC<100>=DATE()      ; * JMK07
+         END                             ; * JMK07
+         IF NOT(TESTING) THEN WRITE CARRIER.REC ON F.CARRIER,PREV.CARRIER
+      END
+*
+* Print carrier name, address, city, state and zip
+*
+      CAR.DESC=''
+      IF NOT(MAN.CHECK) THEN
+         BEGIN CASE
+            CASE (PREV.CARRIER='00015' OR PREV.CARRIER='01075') & PREV.EDI.ACCOUNT#''
+               IF SENT.JIM.MAIL=0 THEN
+                  SUBJ='-s"EDI checks printed... Need to send Remittance"'
+                  TEXT=DATE()'D2/':' ':OCONV(TIME(),'MTHS')
+                  TEXT<-1>="EDI Check for FedEx were printed!"
+                  TEXT<-1>="Please transmit remittance"
+*DF               EXECUTE 'mail ':SUBJ:' owen',//IN. < TEXT
+                  SENT.JIM.MAIL=1
+               END
+*df               * Temporary to Correct FedEx EDI Remittance
+*df               CAR.DESC<1>='FedEx - EDI'
+*df               CAR.DESC<2>='Attn.: EDI Payment'
+*df               CAR.DESC<3>='2005 Corporate Plaza, 1st Floor'
+*df               CAR.DESC<4>='Memphis, TN  38132-1855'
+               * Address changed for EDI Remittance on 05/15/03 DRF
+               CAR.DESC<1>='FedEx ERS'
+               CAR.DESC<2>='PO Box 371741'
+               CAR.DESC<3>='Pittsburgh, PA  15250-7741'
+            CASE PREV.CARRIER='00143' & PREV.EDI.ACCOUNT#''
+               EMAIL.OUT=''
+               EMAIL.OUT<1>='dfriend@afs.net'
+*df               EMAIL.OUT<2>='RGarza@afs.net' ; * JMK10
+*NPR01               EMAIL.OUT<2>='SLong@afs.net'
+               EMAIL.OUT<2>='srittenbach@afs.net'  ;* NPR01
+*df               EMAIL.OUT<2,2>='agrubbs@afs.net'
+               EMAIL.OUT<2,2>='RCason@afs.net'     ; * JMK13
+               EMAIL.OUT<2,3>='JDawson@afs.net'    ; * Matt 1/10/07
+               EMAIL.OUT<2,4>='cbeasley@afs.net'
+*              EMAIL.OUT<3>='MKerbow@afs.net'       ; * JMK08
+               EMAIL.OUT<5>='Printed an EDI Airborne check'
+               EMAIL.OUT<6,2>='Check # ':CHECK.NUM'R%6':' was printed'
+               VIN=EMAIL.OUT
+               CALL SENDMAIL(VIN,VOUT)
+               CAR.DESC<1>='Airborne Express'
+               CAR.DESC<2>='Attn: Check Research/RDI Dept.'
+               CAR.DESC<3>='PO Box 662'
+               CAR.DESC<4>='Seattle, WA 98111'
+            CASE PREV.CARRIER='00365' & PREV.EDI.ACCOUNT#''
+               EMAIL.OUT=''
+               EMAIL.OUT<1>='dfriend@afs.net'
+*df               EMAIL.OUT<2>='RGarza@afs.net' ; * JMK10
+*NPR01               EMAIL.OUT<2>='SLong@afs.net'
+               EMAIL.OUT<2>='srittenbach@afs.net'  ;* NPR01
+*df               EMAIL.OUT<2,2>='agrubbs@afs.net'
+               EMAIL.OUT<2,2>='RCason@afs.net'     ; * JMK13
+               EMAIL.OUT<2,3>='JDawson@afs.net'    ; * Matt 1/10/07
+*df               EMAIL.OUT<2,3>='RCason@afs.net'       ; * JMK13
+               EMAIL.OUT<2,4>='cbeasley@afs.net'
+*              EMAIL.OUT<3>='MKerbow@afs.net'       ; * JMK08
+               EMAIL.OUT<5>='Printed an EDI DHL check'
+               EMAIL.OUT<6,2>='Check # ':CHECK.NUM'R%6':' was printed'
+               VIN=EMAIL.OUT
+               CALL SENDMAIL(VIN,VOUT)
+               CAR.DESC<1>='DHL Express'
+               CAR.DESC<2>='Attn: Check Research/RDI Dept.'
+               CAR.DESC<3>='PO Box 4723'
+               CAR.DESC<4>='Houston, TX 77210-4723'
+*           CASE OCONV(CARRIER.REC<3>,'MCU')='NULL' OR CARRIER.REC<3>='' ; * International
+*               CAR.DESC<-1>=CARRIER.REC<1>
+*              IF CARRIER.REC<2,1> NE '' THEN CAR.DESC<-1>=CARRIER.REC<2,1> ; * Added 05-04-04 OH
+*              IF CARRIER.REC<2,2> NE '' THEN CAR.DESC<-1>=CARRIER.REC<2,2> ; * Added 05-04-04 OH
+*              IF CARRIER.REC<2,3> NE '' THEN CAR.DESC<-1>=CARRIER.REC<2,3> ; * Added 05-04-04 OH
+*              IF CARRIER.REC<2,4> NE '' THEN CAR.DESC<-1>=CARRIER.REC<2,4> ; * Added 05-04-04 OH
+*              IF CARRIER.REC<2,5> NE '' THEN CAR.DESC<-1>=CARRIER.REC<2,5> ; * Added 05-04-04 OH
+            CASE 1
+               CAR.DESC<-1>=CARRIER.REC<1>
+               IF CARRIER.REC<2,1> NE '' THEN CAR.DESC<-1>=CARRIER.REC<2,1>
+               IF CARRIER.REC<2,2> NE '' THEN CAR.DESC<-1>=CARRIER.REC<2,2>
+               IF CARRIER.REC<2,3> NE '' THEN CAR.DESC<-1>=CARRIER.REC<2,3>      ; * Added 05-04-04 OH
+               IF CARRIER.REC<2,4> NE '' THEN CAR.DESC<-1>=CARRIER.REC<2,4>      ; * Added 05-04-04 OH
+               IF CARRIER.REC<3> NE '' THEN
+                  CAR.DESC<-1>=CARRIER.REC<3>:', ':CARRIER.REC<4>:'  ':CARRIER.REC<5>
+               END
+               CAR.DESC<-1>=CARRIER.REC<7>
+               IF PREV.CARRIER='14610' THEN
+                  EMAIL.OUT=''
+*df                  EMAIL.OUT<1>='RGarza@afs.net' ; * JMK10
+*NPR01               EMAIL.OUT<1>='SLong@afs.net'
+                  EMAIL.OUT<1>='srittenbach@afs.net'  ;* NPR01
+                  EMAIL.OUT<1,2>='mmckay@afs.net'
+                  EMAIL.OUT<1,3>='mbutts@afs.net'
+*                 EMAIL.OUT<1,4>='kgilbert@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,4>='brose@afs.net'  ; * RLM01
+*                 EMAIL.OUT<1,4>='kgilbert@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,4>='brose@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,5>='jjohnson@afs.net'
+*df                  EMAIL.OUT<1,6>='slong@afs.net'
+*df                  EMAIL.OUT<1,8>='agrubbs@afs.net'
+                  EMAIL.OUT<1,6>='RCason@afs.net'  ; * JMK13
+                  EMAIL.OUT<1,7>='LVeasey@afs.net'           ; * JMK13
+                  EMAIL.OUT<1,8>='JDawson@afs.net'           ; * Matt 1/10/07
+                  EMAIL.OUT<1,9>='cbeasley@afs.net'
+                  EMAIL.OUT<2>='dfriend@afs.net'
+*                 EMAIL.OUT<3>='MKerbow@afs.net'    ; * JMK08
+                  EMAIL.OUT<5>='JED Service check'
+                  EMAIL.OUT<6,2>='Check # ':CHECK.NUM'R%6':' was printed'
+                  EMAIL.OUT<6,3>='If client is Calgon Carbon use UPS # 69972E Next Day Air Collect Attn: Tom Henderson'
+                  VIN=EMAIL.OUT
+                  CALL SENDMAIL(VIN,VOUT)
+               END
+               IF PREV.CARRIER='14613' THEN
+                  EMAIL.OUT=''
+*df                  EMAIL.OUT<1>='RGarza@afs.net' ; * JMK10
+*NPR01               EMAIL.OUT<1>='SLong@afs.net'
+                  EMAIL.OUT<1>='srittenbach@afs.net'  ;* NPR01
+                  EMAIL.OUT<1,2>='mmckay@afs.net'
+                  EMAIL.OUT<1,3>='mbutts@afs.net'
+*                 EMAIL.OUT<1,4>='kgilbert@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,4>='brose@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,5>='jjohnson@afs.net'
+*df                  EMAIL.OUT<1,6>='slong@afs.net'
+*df                  EMAIL.OUT<1,8>='agrubbs@afs.net'
+                  EMAIL.OUT<1,6>='RCason@afs.net'  ; * JMK13
+                  EMAIL.OUT<1,7>='LVeasey@afs.net'           ; * JMK13
+                  EMAIL.OUT<1,8>='JDawson@afs.net'           ; * Matt 1/10/07
+                  EMAIL.OUT<1,9>='cbeasley@afs.net'
+                  EMAIL.OUT<2>='dfriend@afs.net'
+*                 EMAIL.OUT<3>='MKerbow@afs.net'    ; * JMK08
+                  EMAIL.OUT<5>='Jerry Trucking check'
+                  EMAIL.OUT<6,2>='Check # ':CHECK.NUM'R%6':' was printed'
+                  EMAIL.OUT<6,3>='If client is Calgon Carbon then it needs to be sent with JED Servuce check'
+                  VIN=EMAIL.OUT
+                  CALL SENDMAIL(VIN,VOUT)
+               END
+               IF PREV.CARRIER='14644' THEN
+                  EMAIL.OUT=''
+*df                  EMAIL.OUT<1>='RGarza@afs.net' ; * JMK10
+*NPR01               EMAIL.OUT<1>='SLong@afs.net'
+                  EMAIL.OUT<1>='srittenbach@afs.net'  ;* NPR01
+                  EMAIL.OUT<1,2>='mmckay@afs.net'
+                  EMAIL.OUT<1,3>='mbutts@afs.net'
+*                 EMAIL.OUT<1,4>='kgilbert@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,4>='brose@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,5>='jjohnson@afs.net'
+*df                  EMAIL.OUT<1,6>='slong@afs.net'
+*df                  EMAIL.OUT<1,8>='agrubbs@afs.net'
+                  EMAIL.OUT<1,6>='RCason@afs.net'  ; * JMK13
+                  EMAIL.OUT<1,7>='LVeasey@afs.net'           ; * JMK13
+                  EMAIL.OUT<1,8>='JDawson@afs.net'           ; * Matt 1/10/07
+                  EMAIL.OUT<1,9>='cbeasley@afs.net'
+                  EMAIL.OUT<2>='dfriend@afs.net'
+*                 EMAIL.OUT<3>='MKerbow@afs.net'    ; * JMK08
+                  EMAIL.OUT<5>='Perfetti Trucking check'
+                  EMAIL.OUT<6,2>='Check # ':CHECK.NUM'R%6':' was printed'
+                  EMAIL.OUT<6,3>='If client is Union Electric use Fed Ex 1865-3317-8 we have preprinted airbills'
+                  VIN=EMAIL.OUT
+                  CALL SENDMAIL(VIN,VOUT)
+               END
+               IF PREV.CARRIER='14682' THEN
+                  EMAIL.OUT=''
+*df                  EMAIL.OUT<1>='RGarza@afs.net' ; * JMK10
+*NPR01               EMAIL.OUT<1>='SLong@afs.net'
+                  EMAIL.OUT<1>='srittenbach@afs.net'  ;* NPR01
+                  EMAIL.OUT<1,2>='mmckay@afs.net'
+                  EMAIL.OUT<1,3>='mbutts@afs.net'
+*                 EMAIL.OUT<1,4>='kgilbert@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,4>='brose@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,5>='jjohnson@afs.net'
+*df                  EMAIL.OUT<1,6>='slong@afs.net'
+*df                  EMAIL.OUT<1,8>='agrubbs@afs.net'
+                  EMAIL.OUT<1,6>='RCason@afs.net'  ; * JMK13
+                  EMAIL.OUT<1,7>='LVeasey@afs.net'           ; * JMK13
+                  EMAIL.OUT<1,8>='JDawson@afs.net'           ; * Matt 1/10/07
+                  EMAIL.OUT<1,9>='cbeasley@afs.net'
+                  EMAIL.OUT<2>='dfriend@afs.net'
+*                 EMAIL.OUT<3>='MKerbow@afs.net'    ; * JMK08
+                  EMAIL.OUT<5>='Stivason & Sons Trucking check'
+                  EMAIL.OUT<6,2>='Check # ':CHECK.NUM'R%6':' was printed'
+                  EMAIL.OUT<6,3>='Use Fed Ex 2029-9605-1 we have preprinted airbills'
+                  VIN=EMAIL.OUT
+                  CALL SENDMAIL(VIN,VOUT)
+               END
+               IF PREV.CARRIER='14488' THEN
+                  EMAIL.OUT=''
+*df                  EMAIL.OUT<1>='RGarza@afs.net' ; * JMK10
+*NPR01               EMAIL.OUT<1>='SLong@afs.net'
+                  EMAIL.OUT<1>='srittenbach@afs.net'  ;* NPR01
+*df                  EMAIL.OUT<1,2>='agrubbs@afs.net'
+                  EMAIL.OUT<1,2>='RCason@afs.net'  ; * JMK13
+                  EMAIL.OUT<1,3>='LVeasey@afs.net'           ; * JMK13
+                  EMAIL.OUT<1,4>='JDawson@afs.net'           ; * Matt 1/10/07
+                  EMAIL.OUT<1,5>='cbeasley@afs.net'
+                  EMAIL.OUT<2>='dfriend@afs.net'
+*                 EMAIL.OUT<3>='MKerbow@afs.net'    ; * JMK08
+                  EMAIL.OUT<5>='D F Enterprises check'
+                  EMAIL.OUT<6,2>='Check # ':CHECK.NUM'R%6':' was printed'
+                  EMAIL.OUT<6,3>='If client is Darling Stores send check to Darling Stores instead of D F Enterprises'
+                  VIN=EMAIL.OUT
+                  CALL SENDMAIL(VIN,VOUT)
+               END
+               IF PREV.CARRIER='12840' THEN
+                  EMAIL.OUT=''
+*df                  EMAIL.OUT<1>='RGarza@afs.net' ; * JMK10
+*NPR01               EMAIL.OUT<1>='SLong@afs.net'
+                  EMAIL.OUT<1>='srittenbach@afs.net'  ;* NPR01
+                  EMAIL.OUT<1,2>='mmckay@afs.net'
+                  EMAIL.OUT<1,3>='mbutts@afs.net'
+*                 EMAIL.OUT<1,4>='kgilbert@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,4>='brose@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,5>='jjohnson@afs.net'
+*df                  EMAIL.OUT<1,6>='slong@afs.net'
+*df                  EMAIL.OUT<1,8>='agrubbs@afs.net'
+                  EMAIL.OUT<1,6>='RCason@afs.net'  ; * JMK13
+                  EMAIL.OUT<1,7>='LVeasey@afs.net'           ; * JMK13
+                  EMAIL.OUT<1,8>='JDawson@afs.net'           ; * Matt 1/10/07
+                  EMAIL.OUT<1,9>='cbeasley@afs.net'
+                  EMAIL.OUT<2>='dfriend@afs.net'
+*                 EMAIL.OUT<3>='MKerbow@afs.net'    ; * JMK08
+                  EMAIL.OUT<5>='Motor Ways Inc check'
+                  EMAIL.OUT<6,2>='Check # ':CHECK.NUM'R%6':' was printed'
+                  EMAIL.OUT<6,3>='Use Fed Ex 1288-4949-1 '
+                  VIN=EMAIL.OUT
+                  CALL SENDMAIL(VIN,VOUT)
+               END
+               IF PREV.CARRIER='09530' THEN
+                  EMAIL.OUT=''
+*df                  EMAIL.OUT<1>='RGarza@afs.net' ; * JMK10
+*NPR01               EMAIL.OUT<1>='SLong@afs.net'
+                  EMAIL.OUT<1>='srittenbach@afs.net'  ;* NPR01
+*df                  EMAIL.OUT<1,2>='agrubbs@afs.net'
+                  EMAIL.OUT<1,2>='RCason@afs.net'  ; * JMK13
+                  EMAIL.OUT<1,3>='LVeasey@afs.net'           ; * JMK13
+                  EMAIL.OUT<1,4>='JDawson@afs.net'           ; * Matt 1/10/07
+                  EMAIL.OUT<1,5>='cbeasley@afs.net'
+                  EMAIL.OUT<2>='dfriend@afs.net'
+*                 EMAIL.OUT<3>='MKerbow@afs.net'    ; * JMK08
+                  EMAIL.OUT<5>='B&D Transport check'
+                  EMAIL.OUT<6,2>='Check # ':CHECK.NUM'R%6':' was printed'
+                  EMAIL.OUT<6,3>='If client is Rittal send check FedEx using account number 2144-4800-9'
+                  EMAIL.OUT<6,4>='This can be removed from the check print as this is a one time occurance'
+                  VIN=EMAIL.OUT
+*DF                  CALL SENDMAIL(VIN,VOUT)
+               END
+               IF PREV.CARRIER='15051' THEN
+                  EMAIL.OUT=''
+*df                  EMAIL.OUT<1>='RGarza@afs.net' ; * JMK10
+*NPR01               EMAIL.OUT<1>='SLong@afs.net'
+                  EMAIL.OUT<1>='srittenbach@afs.net'  ;* NPR01
+*df                  EMAIL.OUT<1,2>='slong@afs.net'
+                  EMAIL.OUT<1,2>='RCason@afs.net'  ; * JMK13
+                  EMAIL.OUT<1,3>='LVeasey@afs.net'           ; * JMK13
+                  EMAIL.OUT<1,4>='JDawson@afs.net'           ; * Matt 1/10/07
+                  EMAIL.OUT<1,5>='cbeasley@afs.net'
+                  EMAIL.OUT<2>='dfriend@afs.net'
+*                 EMAIL.OUT<3>='MKerbow@afs.net'    ; * JMK08
+                  EMAIL.OUT<5>='Botica Transport check'
+                  EMAIL.OUT<6,2>='Check # ':CHECK.NUM'R%6':' was printed'
+                  VIN=EMAIL.OUT
+                  CALL SENDMAIL(VIN,VOUT)
+               END
+*
+* Added the below line for 12331 M A Chrisman on 07/27/06. DRF
+*
+               IF PREV.CARRIER='12331' THEN
+                  EMAIL.OUT=''
+*NPR01               EMAIL.OUT<1>='SLong@afs.net'
+                  EMAIL.OUT<1>='srittenbach@afs.net'  ;* NPR01
+                  EMAIL.OUT<1,2>='mmckay@afs.net'
+                  EMAIL.OUT<1,3>='mbutts@afs.net'
+*                 EMAIL.OUT<1,4>='kgilbert@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,4>='brose@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,5>='jjohnson@afs.net'
+                  EMAIL.OUT<1,6>='RCason@afs.net'  ; * JMK13
+                  EMAIL.OUT<1,7>='LVeasey@afs.net'           ; * JMK13
+                  EMAIL.OUT<1,8>='JDawson@afs.net'           ; * Matt 1/10/07
+                  EMAIL.OUT<1,9>='cbeasley@afs.net'
+                  EMAIL.OUT<2>='dfriend@afs.net'
+*                 EMAIL.OUT<3>='MKerbow@afs.net'    ; * JMK08
+                  EMAIL.OUT<5>='M A Chrisman Trucking check'
+                  EMAIL.OUT<6,2>='Check # ':CHECK.NUM'R%6':' was printed'
+                  EMAIL.OUT<6,3>='If client is National Seating use DHL 850703939 Next Day DHL'
+                  VIN=EMAIL.OUT
+                  CALL SENDMAIL(VIN,VOUT)
+               END
+*
+* Added the below line for 14633 Smith Truck Serivce on 09/12/06. DRF
+*
+               IF PREV.CARRIER='14633' THEN
+                  EMAIL.OUT=''
+*df                  EMAIL.OUT<1>='RGarza@afs.net' ; * JMK10
+*NPR01               EMAIL.OUT<1>='SLong@afs.net'
+                  EMAIL.OUT<1>='srittenbach@afs.net'  ;* NPR01
+                  EMAIL.OUT<1,2>='mmckay@afs.net'
+                  EMAIL.OUT<1,3>='mbutts@afs.net'
+*                 EMAIL.OUT<1,4>='brose@afs.net'  ; * RLM01
+*                 EMAIL.OUT<1,4>='kgilbert@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,4>='brose@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,5>='jjohnson@afs.net'
+*df                  EMAIL.OUT<1,6>='slong@afs.net'
+*df                  EMAIL.OUT<1,8>='agrubbs@afs.net'
+                  EMAIL.OUT<1,6>='RCason@afs.net'  ; * JMK13
+                  EMAIL.OUT<1,7>='LVeasey@afs.net'           ; * JMK13
+                  EMAIL.OUT<1,8>='JDawson@afs.net'           ; * Matt 1/10/07
+                  EMAIL.OUT<1,9>='cbeasley@afs.net'
+                  EMAIL.OUT<2>='dfriend@afs.net'
+*                 EMAIL.OUT<3>='MKerbow@afs.net'    ; * JMK08
+                  EMAIL.OUT<5>='Smith Truck Service check'
+                  EMAIL.OUT<6,2>='Check # ':CHECK.NUM'R%6':' was printed'
+                  EMAIL.OUT<6,3>='Use Next Day Air UPS. Shipper number is in our UPS database'
+                  VIN=EMAIL.OUT
+                  CALL SENDMAIL(VIN,VOUT)
+               END
+*
+* Added the below line for 15954 Star Fire Transportation on 10/11/06. DRF
+*
+               IF PREV.CARRIER='15954' THEN
+                  EMAIL.OUT=''
+*NPR01               EMAIL.OUT<1>='SLong@afs.net'
+                  EMAIL.OUT<1>='srittenbach@afs.net'  ;* NPR01
+                  EMAIL.OUT<1,2>='mmckay@afs.net'
+                  EMAIL.OUT<1,3>='mbutts@afs.net'
+*                 EMAIL.OUT<1,4>='kgilbert@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,4>='brose@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,5>='jjohnson@afs.net'
+                  EMAIL.OUT<1,6>='RCason@afs.net'  ; * JMK13
+                  EMAIL.OUT<1,7>='LVeasey@afs.net'           ; * JMK13
+                  EMAIL.OUT<1,8>='JDawson@afs.net'           ; * Matt 1/10/07
+                  EMAIL.OUT<1,9>='cbeasley@afs.net'
+                  EMAIL.OUT<2>='dfriend@afs.net'
+*                 EMAIL.OUT<3>='MKerbow@afs.net'    ; * JMK08
+                  EMAIL.OUT<5>='Star Fire Transportation check'
+                  EMAIL.OUT<6,2>='Check # ':CHECK.NUM'R%6':' was printed'
+                  EMAIL.OUT<6,3>='Use FedEx accont number 277374382'
+                  VIN=EMAIL.OUT
+                  CALL SENDMAIL(VIN,VOUT)
+               END
+*
+* Added the below line for 16580 Racing Cargo on 11/06/06. DRF
+*
+               IF PREV.CARRIER='16580' THEN
+                  EMAIL.OUT=''
+*NPR01               EMAIL.OUT<1>='SLong@afs.net'
+                  EMAIL.OUT<1>='srittenbach@afs.net'  ;* NPR01
+                  EMAIL.OUT<1,2>='mmckay@afs.net'
+                  EMAIL.OUT<1,3>='mbutts@afs.net'
+*                 EMAIL.OUT<1,4>='kgilbert@afs.net'
+                  EMAIL.OUT<1,4>='brose@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,5>='jjohnson@afs.net'
+                  EMAIL.OUT<1,6>='RCason@afs.net'  ; * JMK13
+                  EMAIL.OUT<1,7>='LVeasey@afs.net'           ; * JMK13
+                  EMAIL.OUT<1,8>='JDawson@afs.net'           ; * Matt 1/10/07
+                  EMAIL.OUT<1,9>='cbeasley@afs.net'
+                  EMAIL.OUT<2>='dfriend@afs.net'
+*                 EMAIL.OUT<3>='MKerbow@afs.net'    ; * JMK08
+                  EMAIL.OUT<5>='Racing Cargo check'
+                  EMAIL.OUT<6,2>='Check # ':CHECK.NUM'R%6':' was printed'
+                  EMAIL.OUT<6,3>='Use Preprinted FedEx Internation Airbills'
+                  VIN=EMAIL.OUT
+                  CALL SENDMAIL(VIN,VOUT)
+               END
+*
+* Added the below line for 17362 Kamino Internation Transport on 11/13/06. DRF
+*
+               IF PREV.CARRIER='17362' THEN
+                  EMAIL.OUT=''
+*NPR01               EMAIL.OUT<1>='SLong@afs.net'
+                  EMAIL.OUT<1>='srittenbach@afs.net'  ;* NPR01
+                  EMAIL.OUT<1,2>='mmckay@afs.net'
+                  EMAIL.OUT<1,3>='mbutts@afs.net'
+*                 EMAIL.OUT<1,4>='kgilbert@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,4>='brose@afs.net'  ; * RLM01
+                  EMAIL.OUT<1,5>='jjohnson@afs.net'
+                  EMAIL.OUT<1,6>='RCason@afs.net'  ; * JMK13
+                  EMAIL.OUT<1,7>='LVeasey@afs.net'           ; * JMK13
+                  EMAIL.OUT<1,8>='JDawson@afs.net'           ; * Matt 1/10/07
+                  EMAIL.OUT<1,9>='cbeasley@afs.net'
+                  EMAIL.OUT<2>='dfriend@afs.net'
+*                 EMAIL.OUT<3>='MKerbow@afs.net'    ; * JMK08
+                  EMAIL.OUT<5>='Kamino International check'
+                  EMAIL.OUT<6,2>='Check # ':CHECK.NUM'R%6':' was printed'
+                  EMAIL.OUT<6,3>='Use UPS Next Day Air on shipper number 320684 (Kamino shipper number)'
+                  VIN=EMAIL.OUT
+                  CALL SENDMAIL(VIN,VOUT)
+               END
+*
+* Removed the lines below as the email was for a one time process. DRF
+* 11/18/04
+*
+*DF               IF PREV.CARRIER='05899' AND BANK.ID#'F' AND BANK.ID#'V' THEN
+*DF                  EMAIL.OUT=''
+*DF                  EMAIL.OUT<1>='agrubbs@afs.net'
+*DF                  EMAIL.OUT<1,2>='mmckay@afs.net'
+*DF                  EMAIL.OUT<1,3>='mbutts@afs.net'
+*DF                  EMAIL.OUT<1,4>='kgilbert@afs.net'
+*DF                  EMAIL.OUT<1,5>='jjohnson@afs.net'
+*DF                  EMAIL.OUT<2>='dfriend@afs.net'
+*DF                  EMAIL.OUT<5>='Printed Expeditors Intl/Los Angel check'
+*DF                  EMAIL.OUT<6,2>='Check # ':CHECK.NUM'R%6':' was printed'
+*DF                  EMAIL.OUT<6,3>='If client is Calgon Carbon then it needs to be sent via DHL overnight. Account number 88760796.'
+*DF                  VIN=EMAIL.OUT
+*DF                  CALL SENDMAIL(VIN,VOUT)
+*DF               END
+         END CASE
+      END ELSE
+         CAR.DESC<1>=DMAN.CHECKS<15>
+         IF DMAN.CHECKS<17,1> NE '' THEN CAR.DESC<-1>=DMAN.CHECKS<17,1>
+         IF DMAN.CHECKS<17,2> NE '' THEN CAR.DESC<-1>=DMAN.CHECKS<17,2>
+         IF DMAN.CHECKS<18> NE '' THEN
+            CAR.DESC<-1>=DMAN.CHECKS<18>:', ':DMAN.CHECKS<19>:' ':DMAN.CHECKS<20>
+         END ELSE
+            IF DMAN.CHECKS<19> NE '' THEN
+               CAR.DESC<-1>=DMAN.CHECKS<19>:' ':DMAN.CHECKS<20>
+            END ELSE
+               CAR.DESC<-1>=DMAN.CHECKS<20>
+            END
+         END
+      END
+      IF NEED.W9 THEN CAR.DESC<1>='*':CAR.DESC<1>  ; * JMK07
+      IF FORM='P' THEN
+         ALPHA.AMT=108
+      END ELSE
+         ALPHA.AMT=55                    ; * Set Length of Return
+      END
+      IF CHECK.AMT <= "0" THEN           ; * JMK03
+         ALPHA.AMT='*** VOID *** VOID *** VOID *** VOID *** VOID *** VOID *** VOID *** VOID *** VOID ***'      ; * JMK03
+      END ELSE                           ; * JMK03
+         CALL ALPHA.AMOUNT(CHECK.AMT,ALPHA.AMT)
+      END                                ; * JMK03
+      IF FORM='P' THEN
+         IF PFLAG THEN                   ; * JTW01
+            PRINT 'Pay:''L#10':ALPHA.AMT<1>:STR('.',10):CHECK.AMT'R26,$'
+            PRINT ''
+            PRINT ''
+            PRINT ''
+            PRINT 'To:''L#10':CAR.DESC<1>
+            FOR X=2 TO 4
+               PRINT SPACE(10):CAR.DESC<X>
+            NEXT X
+         END                             ; * JTW01
+      END ELSE
+         IF PFLAG THEN                   ; * JTW01
+            PRINT ''
+            PRINT ''
+            IF FORM='C' OR FORM='L' OR FORM='V' THEN
+*         PRINT ESC:2: ; * 6 LPI
+*         PRINT CHAR(18): ; * Condensed Print off
+               PRINT ESC:"(s":'10h':     ; * 10 CPI
+               PRINT ESC:'&l6D':         ; * 6 LPI
+            END
+            *
+            * Print "Check" part of Check
+            *
+            PRINT SPACE(64):CHECK.NUM'R%6'
+            PRINT ''
+            PRINT ''
+            PRINT ''
+            PRINT SPACE(59):'Void after 60 days'
+            PRINT ''
+            PRINT ''
+            PRINT ''
+*        PRINT ALPHA.AMT<1>'L#55':SPACE(2):CHECK.DATE'D2-''L#8': ; * JMK03
+*        PRINT SPACE(2):CHECK.AMT'R26,$*13'                      ; * JMK03
+            PRINT ALPHA.AMT<1>'L#55':SPACE(1):CHECK.DATE'D2-''L#8':    ; * JMK03
+            IF CHECK.AMT < "0" THEN      ; * JMK03
+               PRINT SPACE(3):'*** VOID ***'       ; * JMK03
+            END ELSE                     ; * JMK03
+               PRINT SPACE(3):CHECK.AMT'R26,$*13'  ; * JMK03
+            END                          ; * JMK03
+            PRINT ALPHA.AMT<2>
+            *
+            * Update last purchase date in carrier record
+            *
+
+            IF CAR.DESC<6>='' THEN CAR.DESC=@AM:CAR.DESC
+* If the actual text is 5 or less make the 1st line blank
+
+            FOR I=1 TO 6
+               PRINT SPACE(7):CAR.DESC<I>'L#60'
+            NEXT I
+
+            IF FORM='L' AND BANK.ID#'H' AND BANK.ID#'D' THEN PRINT BARKER.SIG:
+
+            IF FORM='C' OR FORM='L' OR FORM='V' THEN
+*          PRINT CHAR(15): ; * Condensed Print (Return to "Small" Print)
+*          PRINT ESC:"(s":'19h': ; * 19 CPI
+*          PRINT "3b"; * ?????
+*          PRINT "4099T": ; * Courier Bold FONT
+               PRINT ESC:'(s0p16.67h8.50v0s0b0t'
+               PRINT ESC:'&l8D':         ; * 8 LPI
+            END
+            IF FORM='L' THEN PRINT CHAR(12):
+         END                             ; * JTW01
+      END
+*
+* Update check file
+*
+      CHECK.REC<1>=CHECK.NUM
+      CHECK.REC<2>=CHECK.DATE
+      IF MAN.CHECK THEN
+         CHECK.REC<3>='00000'
+         CHECK.REC<15>=DMAN.CHECKS<15>
+         CHECK.REC<16>=DMAN.CHECKS<16>
+         CHECK.REC<17>=DMAN.CHECKS<17>
+         CHECK.REC<18>=DMAN.CHECKS<18>
+         CHECK.REC<19>=DMAN.CHECKS<19>
+         CHECK.REC<20>=DMAN.CHECKS<20>
+      END ELSE
+         CHECK.REC<3>=PREV.CARRIER
+      END
+      CHECK.REC<4>=CHECK.AMT
+      IF ADJ.CD # 'N' THEN
+         IF PREV.CARRIER=CARRIER.NUM.CODE THEN
+            LOCATE ADJ.CD IN ADJ.CODE<1> SETTING POS THEN
+               CHECK.REC<14>=ADJ.CODE<3,POS>
+            END
+            CHECK.REC<13>=ADJ.CD
+            CARRIER.NUM.CODE=''
+         END
+      END
+      CHECK.REC<26>=ACH.FLAG             ; * JTW01
+      IF NOT(TESTING) THEN WRITE CHECK.REC ON F.CHECKS,CHECK.ID
+      IF NOT(TESTING) THEN               ; * JMK05
+         IF ACH.FLAG='' THEN NULL ELSE   ; * JTW01
+            READ CREC FROM F.CARRIER,CHECK.REC<3> ELSE CREC=''         ; * JTW01
+            NAME=CREC<1>                 ; * JTW01
+            CONVERT ',' TO '' IN NAME    ; * JTW01
+            ACH.REC=''                   ; * JTW01
+            ACH.REC<1>=NAME              ; * JTW01
+            ACH.REC<2>=CREC<103,1>       ; * JTW01
+            ACH.REC<3>=CREC<104,1>       ; * JTW01
+            ACH.REC<4>=CHECK.NUM         ; * JTW01
+            ACH.REC<5>=CHECK.AMT         ; * JTW01
+            ACH.REC<6>=CREC<105,1>       ; * JTW01
+            ACH.REC<7>=CHECK.DATE        ; * JTW01
+            ACH.REC<8>=''                ; * JTW01
+            ACH.REC<9>=''                ; * JTW01
+            ACH.REC<10>='No'             ; * JTW01
+            ACH.REC<11>=ACH.FLAG         ; * JTW01
+            WRITE ACH.REC ON F.ACH.FILE,CHECK.ID   ; * JTW01
+         END                             ; * JTW01
+         READU XREF.REC FROM F.CHECK.DATE.XREF,CHECK.DATE ELSE XREF.REC=''       ; * JMK05
+         LOCATE CHECK.ID IN XREF.REC SETTING SSPOS ELSE      ; * JMK05
+            XREF.REC<-1>=CHECK.ID        ; * JMK05
+            WRITE XREF.REC ON F.CHECK.DATE.XREF,CHECK.DATE   ; * JMK05
+         END                             ; * JMK05
+      END                                ; * JMK05
+*     IF NOT(TESTING) THEN               ; * JMK01 ; * JMK04
+*        COGNOS.LINE=''                  ; * JMK01 ; * JMK04
+*        COG.CHECK.NO=CHECK.REC<1>       ; * JMK01 ; * JMK04
+*        COG.CHECK.DT=OCONV(CHECK.REC<2>,'D2/')    ; * JMK01 ; * JMK04
+*        COG.CHECK.AMT=OCONV(CHECK.REC<4>,'MR2,')  ; * JMK01 ; * JMK04
+*        NVAL=DCOUNT(CHECK.REC<7>,@VM)   ; * JMK01 ; * JMK04
+*        FOR VAL=1 TO NVAL               ; * JMK01 ; * JMK04
+*           COG.PRO.ID=CHECK.REC<7,VAL>  ; * JMK01 ; * JMK04
+*           COG.CARRIER=FIELD(COG.PRO.ID,'*',1)    ; * JMK01 ; * JMK04
+*           COG.PRO=FIELD(COG.PRO.ID,'*',2)        ; * JMK01 ; * JMK04
+*           COGNOS.LINE<1,1>=COG.CARRIER           ; * JMK01 ; * JMK04
+*           COGNOS.LINE<1,2>=COG.PRO     ; * JMK01 ; * JMK04
+*           COGNOS.LINE<1,3>="Check_Number~":COG.CHECK.NO    ; * JMK01 ; * JMK04
+*           COGNOS.LINE<1,4>="Check_Amount~":COG.CHECK.AMT   ; * JMK01 ; * JMK04
+*           COGNOS.LINE<1,5>="Check_Date~":COG.CHECK.DT      ; * JMK01 ; * JMK04
+*           CONVERT @VM TO "|" IN COGNOS.LINE      ; * JMK01 ; * JMK04
+*           COGNOS.REC<-1>=COGNOS.LINE   ; * JMK01 ; * JMK04
+*        NEXT VAL                        ; * JMK01 ; * JMK04
+*     END                                ; * JMK01 ; * JMK04
+************************************************************************
+* Do all "Email" type stuff Here
+************************************************************************
+      IF CUTBACK.TEXT#'' THEN
+         GOSUB EMAIL.CUTBACKS            ; * Email Cut Backs and Reasons
+      END
+      IF (PREV.CARRIER="00015" OR PREV.CARRIER="01075") AND E.STUB<2>#'' THEN
+* Email Stub to FedEx
+         E.STUB=CHANGE(E.STUB,@VM,CHAR(9))         ; *Swap Values to Tabs
+         E.STUB.ID=PREV.CARRIER:'-EREMIT-':YYYYMMDD:"-":CHECK.NUM'R%6':'.xls'
+         CHECK.INFO="Check # ":CHECK.NUM'R%6':" dated ":CHECK.DATE'D4-':" in the amount of ":CHECK.AMT'R26,$'
+         WRITE E.STUB ON F.EMAILDATA,E.STUB.ID
+         EMAIL.OUT=''
+         IF TESTING THEN
+*           EMAIL.OUT<1>='oweninfo@afs.net'  ; * RLM01
+*           EMAIL.OUT<1>='bfranklin@afs.net'  ; * RLM01
+         END ELSE
+            EMAIL.OUT<1>='e-remit@fedex.com'
+*df            EMAIL.OUT<2>='RGarza@afs.net' ; * JMK10
+*NPR01               EMAIL.OUT<2>='SLong@afs.net'
+            EMAIL.OUT<2>='srittenbach@afs.net'  ;* NPR01
+            EMAIL.OUT<2,2>='RCason@afs.net'        ; * JMK13
+            EMAIL.OUT<2,3>='JDawson@afs.net'       ; * Matt 1/10/07
+*df         EMAIL.OUT<2,2>='AGrubbs@afs.net'
+*DF         EMAIL.OUT<2,2>='mryates@fedex.com'
+         EMAIL.OUT<2,4>='cbeasley@afs.net'
+*DF*        Melody's Phone Number 901-360-7346
+*
+* We received an email from Melody that she is not longer in the
+* remittance department of FedEx and was removed from the email
+* on 02/02/04 - DRF
+         END
+*        EMAIL.OUT<3>='MKerbow@afs.net'   ; * JMK08
+         EMAIL.OUT<4>='AccountsPayable@afs.net'
+         EMAIL.OUT<5>="E-Remittance for Check# ":CHECK.NUM'R%6':" dated ":CHECK.DATE'D2-'
+         EMAIL.OUT<6,2>="The attached TAB delimited file contains remittance information"
+         EMAIL.OUT<6,3>="for Check # ":CHECK.NUM'R%6':" dated ":CHECK.DATE'D4-':" in the amount of ":CHECK.AMT'R26,$'
+         EMAIL.OUT<6,4>="If you have any questions concerning this email"
+         EMAIL.OUT<6,-1>="Please contact: Accounts Payable Department"
+         EMAIL.OUT<6,-1>="AFS Logistics, LLC"
+         EMAIL.OUT<6,-1>="P.O. Box 18170"
+         EMAIL.OUT<6,-1>="Shreveport, LA  71138"
+         EMAIL.OUT<6,-1>="Phone: 318-798-2111 x1227"
+         EMAIL.OUT<6,-1>='FAX: 318-797-3628'
+         EMAIL.OUT<6,-1>='EMAIL: AccountsPayable@afs.net'
+         EMAIL.OUT<6,-1>="This is an automated message, do NOT reply"
+         EMAIL.OUT<6,-1>="If you need to check the payment status of any"
+         EMAIL.OUT<6,-1>="other invoices please visit our web site at:"
+         EMAIL.OUT<6,-1>="http:\\www.AFSLogistics.com"
+         EMAIL.OUT<11>='E:\ARDENT\PUBLIC\EMAILDATA\'
+         EMAIL.OUT<11>:=E.STUB.ID
+         VIN=EMAIL.OUT
+         CALL SENDMAIL(VIN,VOUT)
+      END
+      IF PREV.CARRIER="00041" AND UPS.STUB<1>#'' THEN
+* Email Stub to UPS
+         UPS.STUB.ID=PREV.CARRIER:'-REPS-':YYYYMMDD:"-":CHECK.NUM'R%6':'.txt'
+         CHECK.INFO="Check # ":CHECK.NUM'R%6':" dated ":CHECK.DATE'D4-':" in the amount of ":CHECK.AMT'R26,$'
+         WRITE UPS.STUB ON F.EMAILDATA,UPS.STUB.ID
+         EMAIL.OUT=''
+         IF TESTING THEN
+*           EMAIL.OUT<1>='oweninfo@afs.net'  ; * RLM01
+*           EMAIL.OUT<1>='bfranklin@afs.net'  ; * RLM01
+         END ELSE
+            EMAIL.OUT<1>='payups@ups.com'
+*df            EMAIL.OUT<2>='RGarza@afs.net' ; * JMK10
+*NPR01               EMAIL.OUT<2>='SLong@afs.net'
+            EMAIL.OUT<2>='srittenbach@afs.net'  ;* NPR01
+            EMAIL.OUT<2,2>='dfriend@afs.net'
+            EMAIL.OUT<2,3>='RCason@afs.net'        ; * JMK13
+            EMAIL.OUT<2,4>='JDawson@afs.net'       ; * Matt 1/10/07
+*df            EMAIL.OUT<2,3>='AGrubbs@afs.net'
+            EMAIL.OUT<2,4>='cbeasley@afs.net'
+         END
+*        EMAIL.OUT<3>='MKerbow@afs.net'   ; * JMK08
+         EMAIL.OUT<4>='AccountsPayable@afs.net'
+         EMAIL.OUT<5>="REPS for Check# ":CHECK.NUM'R%6':" dated ":CHECK.DATE'D2-'
+         EMAIL.OUT<6,2>="The attached text file contains remittance information"
+         EMAIL.OUT<6,3>="for Check # ":CHECK.NUM'R%6':" dated ":CHECK.DATE'D4-':" in the amount of ":CHECK.AMT'R26,$'
+         EMAIL.OUT<6,4>="If you have any questions please contact:"
+         EMAIL.OUT<6,-1>="Accounts Payable Department"
+         EMAIL.OUT<6,-1>="AFS Logistics, LLC"
+         EMAIL.OUT<6,-1>="P.O. Box 18170"
+         EMAIL.OUT<6,-1>="Shreveport, LA  71138"
+         EMAIL.OUT<6,-1>="Phone: 318-798-2111 x1227"
+         EMAIL.OUT<6,-1>='FAX: 318-797-3628'
+         EMAIL.OUT<6,-1>='EMAIL: AccountsPayable@afs.net'
+         EMAIL.OUT<11>='E:\ARDENT\PUBLIC\EMAILDATA\'
+         EMAIL.OUT<11>:=UPS.STUB.ID
+         VIN=EMAIL.OUT
+         CALL SENDMAIL(VIN,VOUT)
+      END
+      IF NOT(MAN.CHECK) THEN
+         EREMIT.STUB=CHANGE(EREMIT.STUB,@VM,CHAR(9))         ; *Swap Values to Tabs
+         WRITE EREMIT.STUB ON F.EREMIT,CHECK.NUM'R%6':'-':BANK.ID:'.XLS'
+         IF CARRIER.REC<91>#'' AND EREMIT.STUB<2>#'' THEN
+            EMAIL.OUT=''
+            EMAIL.OUT<1>=CARRIER.REC<91>
+            IF TESTING THEN
+*              EMAIL.OUT<1>='oweninfo@afs.net'  ; * RLM01
+*              EMAIL.OUT<1>='bfranklin@afs.net'  ; * RLM01
+            END
+            EMAIL.OUT<2>=CARRIER.REC<93>
+*           EMAIL.OUT<3>='MKerbow@afs.net'          ; * JMK08
+*df            EMAIL.OUT<3,-1>='RGarza@afs.net'        ; * JMK10
+*NPR01               EMAIL.OUT<3,-1>='SLong@afs.net'
+            EMAIL.OUT<3,-1>='srittenbach@afs.net'  ;* NPR01
+            EMAIL.OUT<3,-1>='RCason@afs.net'       ; * JMK13
+            EMAIL.OUT<3,-1>='JDawson@afs.net'      ; * Matt 1/10/07
+            EMAIL.OUT<3,-1>='cbeasley@afs.net'
+            IF DATE()<=13903 THEN        ; * JMK09
+               EMAIL.OUT<3,-1>='OHolman@afs.net'   ; * JMK09
+            END                          ; * JMK09
+            EMAIL.OUT<4>='AccountsPayable@afs.net'
+            EMAIL.OUT<5>="E-Remittance for Check# ":CHECK.NUM'R%6':" dated ":CHECK.DATE'D2-'
+            EMAIL.OUT<6,2>="The attached TAB delimited file contains remittance information"
+            EMAIL.OUT<6,3>="for Check # ":CHECK.NUM'R%6':" dated ":CHECK.DATE'D4-':" in the amount of ":CHECK.AMT'R26,$'
+            EMAIL.OUT<6,4>="If you have any questions please contact:"
+            EMAIL.OUT<6,-1>="Accounts Payable Department"
+            EMAIL.OUT<6,-1>="AFS Logistics, LLC"
+            EMAIL.OUT<6,-1>="P.O. Box 18170"
+            EMAIL.OUT<6,-1>="Shreveport, LA  71138"
+            EMAIL.OUT<6,-1>="Phone: 318-798-2111 x1227"
+            EMAIL.OUT<6,-1>='FAX: 318-797-3628'
+            EMAIL.OUT<6,-1>='EMAIL: AccountsPayable@afs.net'
+            EMAIL.OUT<11>='E:\ARDENT\PUBLIC\EREMIT\'
+            EMAIL.OUT<11>:=CHECK.NUM'R%6':'-':BANK.ID:'.XLS'
+            VIN=EMAIL.OUT
+            CALL SENDMAIL(VIN,VOUT)
+         END
+      END
+************************************************************************
+*
+* Check for duplicate check and append version character (A THRU ~)
+*
+      APPEND=64
+      CHECK.NUM=CHECK.NUM+1
+      CHECK.ID=CHECK.NUM'R%6':'*':BANK.ID
+      READ TEMP FROM F.CHECKS,CHECK.ID THEN
+         NEXT.CHECK.ALREADY.ON.FILE=1
+      END ELSE
+         TEMP=''
+      END
+*OH   LOOP
+*OH      READ TEMP FROM F.CHECKS,CHECK.ID ELSE TEMP=''
+*OH   UNTIL TEMP='' DO
+*OH      APPEND=APPEND+1
+*OH      TEMP2=CHECK.NUM:CHAR(APPEND)
+*OH      CHECK.ID=TEMP2'R%7':'*':BANK.ID
+*OH   REPEAT
+      CHECK.REC=''
+      CHECK.AMT=0
+      STUB=''
+      E.STUB='Tracking Number':@VM:'Amount Paid'
+*     EREMIT.STUB='Date':@VM:'Pro Number':@VM:'Amount Billed':@VM:'Amount Paid':@VM:'Cutback Reason' ; * JMK09
+      EREMIT.STUB='Payor':@VM:'':@VM:'Date':@VM:'Pro Number':@VM:'Amount Billed':@VM:'Amount Paid':@VM:'Cutback Reason'  ; * JMK09
+      UPS.STUB=''
+      AIRB.STUB=''
+      DHLC.STUB=''
+      ATTR=1
+      RETURN
+
+*
+* Subroutine to update client checks file
+*
+8100:
+*     OPEN '','FB.CHECKS,':PREV.CLIENT TO F.CLIENT.CHECKS ELSE                                ; * JCW03
+*        EXECUTE 'CREATE-FILE DATA FB.CHECKS,':PREV.CLIENT:' 3' PASSLIST CAPTURING OUTPUT     ; * JCW03
+*        OPEN '','FB.CHECKS,':PREV.CLIENT TO F.CLIENT.CHECKS ELSE                             ; * JCW03
+*           CALL OPEN.ABORT("FB.CHECKS,":PREV.CLIENT,PROG.NAME)                               ; * JCW03
+*        END                                                                                  ; * JCW03
+*     END                                                                                     ; * JCW03
+
+8105:***
+*     LOCATE PREV.CLIENT IN CHECK.REC<41> SETTING PCLPOS THEN ; * JMK11           ; * JCW03
+*        READ PREV.CLIENT.CHECK.REC FROM F.CLIENT.CHECKS,CHECK.ID ELSE  ; * JMK11 ; * JCW03
+*           PREV.CLIENT.CHECK.REC=''     ; * JMK11  ; * JCW03
+*        END                             ; * JMK11  ; * JCW03
+*     END ELSE                           ; * JMK11  ; * JCW03
+*        PREV.CLIENT.CHECK.REC=''        ; * JMK11  ; * JCW03
+*        CHECK.REC<41,-1>=PREV.CLIENT    ; * JMK11  ; * JCW03
+*        CHECK.REC<42,-1>=0              ; * JMK11  ; * JCW03
+*        GO 8105                         ; * JMK11 - SET CLPOS VARIABLE ; * JCW03
+*     END                                ; * JMK11  ; * JCW03
+      LOCATE PREV.CLIENT IN CHECK.REC<41> SETTING PCLPOS ELSE          ; * JCW03
+         CHECK.REC<41,-1>=PREV.CLIENT    ; * JMK11
+         CHECK.REC<42,-1>=0              ; * JMK11
+         GO 8105                         ; * JMK11 - SET CLPOS VARIABLE
+      END                                ; * JMK11
+
+      CHECK.REC<42,PCLPOS>+=CLIENT.CHECK.AMT       ; * JMK11
+*     CLIENT.CHECK.REC<1>=CHECK.NUM                 ; * JCW03
+*     CLIENT.CHECK.REC<2>=CHECK.DATE                ; * JCW03
+*     CLIENT.CHECK.REC<3>=PREV.CARRIER              ; * JCW03
+*     CLIENT.CHECK.REC<4>=CLIENT.CHECK.AMT          ; * JCW03
+*     IF PREV.CLIENT.CHECK.REC#'' THEN   ; * JMK11  ; * JCW03
+*        HOLD.CLIENT.CHECK.REC=CLIENT.CHECK.REC    ; * JMK11  ; * JCW03
+*        PREV.CLIENT.CHECK.AMT=PREV.CLIENT.CHECK.REC<4>      ; * JMK11  ; * JCW03
+*        PREV.CLIENT.PRO.LIST=PREV.CLIENT.CHECK.REC<7>       ; * JMK11  ; * JCW03
+*        PREV.CLIENT.PRO.AMT1=PREV.CLIENT.CHECK.REC<8>       ; * JMK11  ; * JCW03
+*        PREV.CLIENT.PRO.AMT2=PREV.CLIENT.CHECK.REC<12>      ; * JMK11  ; * JCW03
+*        CLIENT.CHECK.REC<4>=PREV.CLIENT.CHECK.AMT+CLIENT.CHECK.AMT    ; * JMK11  ; * JCW03
+*        CLIENT.CHECK.REC<7>=PREV.CLIENT.PRO.LIST:@VM:CLIENT.CHECK.REC<7>        ; * JMK11  ; * JCW03
+*        CLIENT.CHECK.REC<8>=PREV.CLIENT.PRO.AMT1:@VM:CLIENT.CHECK.REC<8>        ; * JMK11  ; * JCW03
+*        CLIENT.CHECK.REC<12>=PREV.CLIENT.PRO.AMT2:@VM:CLIENT.CHECK.REC<12>      ; * JMK11  ; * JCW03
+*     END                                ; * JMK11  ; * JCW03
+*     IF NOT(TESTING) THEN WRITE CLIENT.CHECK.REC ON F.CLIENT.CHECKS,CHECK.ID ; * JCW03
+*     IF PREV.CLIENT.CHECK.REC#'' THEN   ; * JMK11            ; * JCW03
+*        CLIENT.CHECK.REC=HOLD.CLIENT.CHECK.REC    ; * JMK11  ; * JCW03
+*     END                                ; * JMK11            ; * JCW03
+*
+* Update client history file
+*
+      OPEN '','FB.BILLS.HIST,':PREV.CLIENT TO F.HIST ELSE
+         CALL OPEN.ABORT("FB.BILLS.HIST,":PREV.CLIENT,PROG.NAME)
+      END
+*     X=DCOUNT(CLIENT.CHECK.REC<7>,CHAR(253))
+      DTL.CNT = CHECK.REC<25>
+      X = 0
+*     FOR I=1 TO X                                  ; * JCW03
+      FOR I = 1 TO DTL.CNT               ; * JCW03
+         DTL.ID = CHECK.ID:'*':I         ; * JCW03
+         READ DTL.REC FROM F.CHECKS.D,DTL.ID ELSE  ; * JCW03
+            MSG = 'Could not read ':DTL.ID:' from FB.CHECKS.DTL; program will stop.'       ; * JCW03
+            MSG := CHAR(10):CHAR(13)     ; * JCW03
+            MSG := 'Contact Jay Webert in Information Systems.'        ; * JCW03
+            MSG := CHAR(10):CHAR(13)     ; * JCW03
+            CALL ELINE(MSG)              ; * JCW03
+            STOP                         ; * JCW03
+         END                             ; * JCW03
+         DTL.CLIENT = DTL.REC<3>         ; * JCW03
+         IF DTL.CLIENT # PREV.CLIENT THEN CONTINUE           ; * JCW03
+*        HIST.ID=CLIENT.CHECK.REC<7,I>              ; * JCW03
+         HIST.ID = DTL.REC<1>            ; * JCW03
+         MATREADU HIST.REC FROM F.HIST, HIST.ID THEN
+            IF TESTING THEN RELEASE F.HIST, HIST.ID
+            FBH.CK.AMT=CLIENT.CHECK.AMT
+            FBH.CK.NO=CHECK.ID
+            FBH.CK.DATE=CHECK.DATE
+*DF            HIST.REC(133)=PAY.REC<133>
+*DF            HIST.REC(134)=PAY.REC<134>
+*DF            HIST.REC(135)=PAY.REC<135>
+            HIST.REC(133)=DATE.SELECT
+            HIST.REC(134)=PRINT.DATE
+            HIST.REC(135)=DEPOSIT.DATE
+            IF NOT(TESTING) THEN MATWRITE HIST.REC ON F.HIST, HIST.ID
+            IF NOT(TESTING) THEN         ; * JMK04
+               READU COGNOS.REC FROM F.TABLES,'COGNOS.UPDATE' ELSE COGNOS.REC=''           ; * JMK14
+               COGNOS.ORG=COGNOS.REC     ; * JMK14
+               TEST=PREV.CLIENT:'*':HIST.REC(37)   ; * JMK14
+               LOCATE TEST IN COGNOS.REC SETTING TPOS ELSE   ; * JMK14
+                  COGNOS.REC<-1>=TEST    ; * JMK14
+               END                       ; * JMK14
+               IF COGNOS.REC#COGNOS.ORG THEN       ; * JMK14
+                  WRITE COGNOS.REC ON F.TABLES,'COGNOS.UPDATE'         ; * JMK14
+               END                       ; * JMK14
+               RELEASE F.TABLES,'COGNOS.UPDATE'    ; * JMK14
+*              STMT='COGNOS OLEDBAFS ':PREV.CLIENT:' ':HIST.REC(37)'D2/':' ':HIST.REC(37)'D2/':' ':HIST.ID ; * JMK04
+*              EXECUTE STMT CAPTURING RESULTS ; * JMK04
+            END                          ; * JMK04
+*
+* Update pro cross reference file
+*
+            READU CRX.REC FROM F.CRX,HIST.ID ELSE CRX.REC=''
+            IF TESTING THEN RELEASE F.CRX,HIST.ID
+            CRX.REC<7>=FBH.CAR.CHG
+            CRX.REC<8>=FBH.ACT.CHG
+            CRX.REC<13>=FBH.CK.AMT
+            CRX.REC<14>=FBH.CK.NO
+            CRX.REC<15>=FBH.CK.DATE
+            CRX.REC<30>=FBH.ENT.DATE
+            CRX.REC<37>=FBH.PRO.DATE
+            CRX.REC<43>=FBH.OR.FLAG
+            IF NOT(TESTING) THEN WRITE CRX.REC ON F.CRX,HIST.ID
+*DF            IF PAY.REC<88>#'' THEN       ; * EDI Bill
+            REMIT.ID=PREV.CLIENT:'*':HIST.ID
+            READU DREMIT FROM F.REMIT,REMIT.ID THEN
+               IF TESTING THEN RELEASE F.REMIT,REMIT.ID
+*              DREMIT<7>=CLIENT.CHECK.REC<8,I>  ; * JCW03
+               DREMIT<7>=DTL.REC<2>      ; * JCW03
+               DREMIT<16>=CHECK.DATE
+               DREMIT<17>=CHECK.ID
+               DREMIT<18>=CLIENT.CHECK.AMT
+               IF NOT(TESTING) THEN WRITE DREMIT ON F.REMIT,REMIT.ID
+            END ELSE RELEASE F.REMIT,REMIT.ID
+*DF            END
+         END ELSE RELEASE F.HIST, HIST.ID
+      NEXT I
+*     CLIENT.CHECK.REC='' ; * JCW03
+      CLIENT.CHECK.AMT=0
+      CLIENT.EDI.AMT=0
+      RETURN
+
+*
+* Put client break line on check stub
+*
+8200: IF STUB<ATTR> NE '' THEN ATTR=ATTR+1
+*OH   TEXT=' ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ For '
+*OH   TEXT :=PREV.CLIENT.NAME'L#25':' ':CLIENT.CHECK.AMT'R26,#10'
+*OH   TEXT :=' ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^'
+      TEXT=STR('-',130)
+      TEXT1=CLIENT.BREAK.AMT'R26,':' For ':CLIENT.NAME
+      TEXT2=TRIM(PREV.EDI.SENDER.ID:' ':PREV.EDI.ACCOUNT)
+      IF PREV.CARRIER='00143' THEN
+         TEXT2=TRIM(PREV.EDI.ACCOUNT)
+      END
+      IF PREV.CARRIER='00365' THEN
+         TEXT2=TRIM(PREV.EDI.ACCOUNT)
+      END
+      IF TEXT2#'' THEN TEXT1:=' (':TEXT2:')'
+      LTEXT1=LEN(TEXT1)
+      LSTART=INT((130-LTEXT1)/2)
+      TEXT[LSTART,LTEXT1]=TEXT1
+*OH   CALL CENTER(TEXT,145)
+      STUB<ATTR>=' ':TEXT
+      IF PREV.CARRIER='00143' AND PREV.EDI.ACCOUNT#'' THEN
+         AIRB.STUB<-1>=TEXT
+      END
+      IF PREV.CARRIER='00365' AND PREV.EDI.ACCOUNT#'' THEN
+         DHLC.STUB<-1>=TEXT
+      END
+      EREMIT.LINE=CLIENT.NAME:@VM:CLIENT.BREAK.AMT'R26'      ; * JMK09
+      EREMIT.STUB<-1>=EREMIT.LINE        ; * JMK09
+      RETURN
+
+*
+* Configure the printer to Small (Condensed) Print
+*
+9000:*----
+      BEGIN CASE
+         CASE PRT.NUM=1 OR PRT.NUM=2
+*         PRINT CHAR(15):
+         CASE PRT.NUM=4 OR PRT.NUM=5 OR PRT.NUM=6 OR PRT.NUM=7
+            GOSUB SETUP.PTR
+      END CASE
+      RETURN
+
+ERROR.NEXT.CHECK.IS.ON.FILE:*** Routine to warn you if the next check is on file
+      PRINTER OFF
+      SUBJECT='Freight Payment Check Run Error'
+      TEXT='On ':DATE()'D4-':' at ':OCONV(TIME(),'MTHS'):' The Freight payment check run stopped prematurely'
+      TEXT<1,-1>='due to check number ':CHECK.NUM:' previously existing in the Computer system'
+      TEXT<1,-1>='The check process must be restarted to complete the check run for the day.'
+      TEXT<1,-1>='Once restarted the program will resume printing at the point where it stopped.'
+      TEXT<1,-1>='There is no action required other than re running the check print program'
+      TEXT<1,-1>='and supplying the program with a check number that is not in the system.'
+      TEXT<1,-1>='FB.5.4.LASER (Lines 1671-1690)'
+      MVIN=''
+*df      MVIN<1>='RGarza@afs.net' ; * JMK10
+*NPR01      MVIN<1>='SLong@afs.net'
+      MVIN<1>='srittenbach@afs.net'      ; * NPR01
+      MVIN<1,2>='RCason@afs.net'         ; * JMK13
+      MVIN<1,3>='JDawson@afs.net'        ; * Matt 1/10/07
+*df      MVIN<1,2>='AGrubbs@afs.net'
+      MVIN<1,4>='cbeasley@afs.net'
+      MVIN<2,1>='OHolman@afs.net'
+      MVIN<2,-1>='DFriend@afs.net'
+*     MVIN<2,-1>='KGilbert@afs.net'  ; * RLM01
+      MVIN<2,-1>='brose@afs.net'  ; * RLM01
+*df      MVIN<2,-1>='SLong@afs.net'
+      MVIN<2,-1>='DCurtis@afs.net'
+      MVIN<2,-1>='RLowe@afs.net'
+*     MVIN<3>='MKerbow@afs.net'           ; * JMK08
+      MVIN<4>='FPCheckWriter@afs.net'
+      MVIN<5>=SUBJECT
+      MVIN<6>=TEXT
+      CALL SENDMAIL(MVIN,MVOUT)
+
+      CALL ELINE("Error! Check # ":CHECK.NUM:" is in the system.  All checks were NOT printed!")
+      CALL ELINE("Run this program again, Checks will resume at proper point")
+
+      RETURN
+
+SETUP.PTR:****
+      LASER.STR=''
+*      LASER.STR:=ESC:'E' ; * Printer Reset
+*      LASER.STR:=ESC:'&l0O' ; * Portrait
+*      LASER.STR:=ESC:'&l8D' ; * 8 LPI
+*      LASER.STR:=ESC:'&l82F' ; * 82 Lines on Logical Page Length
+*      * 82nd line is on the new page
+*      LASER.STR:=ESC:'(8U' ; * 8U - Roman-8 Font
+*      LASER.STR:=ESC:'(s0p' ; * Fixed Pitch
+*      LASER.STR:='19h' ; * 19 CPI
+*      LASER.STR:='0s' ; * Upright Style
+*      LASER.STR:='0b' ; * Medium Stroke Weight
+*      LASER.STR:='3T' ; * Typeface
+
+      LASER.STR:=ESC:'E'                 ; * Printer Reset
+      LASER.STR:=ESC:'&l0O'              ; * 0 = Portrait 1=Landscape
+      LASER.STR:=ESC:'&l8D'              ; * 8 LPI
+      LASER.STR:=ESC:'&l82F'             ; * 82 Lines on Logical Page Length
+      LASER.STR:=ESC:'(s0p'              ; * 0=Fixed Pitch 1=Proportional
+      LASER.STR:='16.67h'                ; * 16.67 CPI
+      LASER.STR:='8.50v'                 ; * 8.50 Point Size
+      LASER.STR:='0s'                    ; * Upright Style
+      LASER.STR:='0b'                    ; * Medium Stroke Weight (1=SemiBold,2=DemiBold,3,4...)
+      LASER.STR:='0T'                    ; * Typeface
+
+      PRINT LASER.STR:
+      RETURN
+
+9100:*---- Print Stub on Paper
+      ATTR=0
+      LN.COUNT=0
+      PAGE=0
+9150: IF LN.COUNT=0 ! LN.COUNT=55 THEN
+         LN.COUNT=0
+         PAGE=PAGE+1
+*OH       PRINT @(-1):'Check Number ':CHECK.NUM:'  Check Date ':CHECK.DATE'D2/':'  To: ':NAME'L#30':SPACE(47):'Page ':PAGE
+*OH       PRINT @(-1):SPACE(58):'Remittance Advice':SPACE(50):'Page ':PAGE
+         PRINT @(-1):'Control #: ':CHECK.NUM'L#8':
+         PRINT SPACE(3):'Reference Date: ':CHECK.DATE'D2/':
+         PRINT SPACE(12):'Remittance Advice':
+         PRINT SPACE(50):'Page ':PAGE
+         PRINT ''
+         IF MAN.CHECK THEN
+            PRINT ''
+         END ELSE
+            FOR X=1 TO 3
+               PRINT 'DATE''R#7':'PRO NUMBER''R#14':'$ BILLED''R#13':
+               PRINT '$ PAID''R#8':'  ':
+            NEXT X
+         END
+         PRINT                           ; * Drop down
+         FOR X=1 TO 3
+            PRINT SPACE(1):STR('-',08):  ; * Date
+            PRINT SPACE(2):STR('-',14):  ; * Pro
+            PRINT SPACE(1):STR('-',08):  ; * $ Billed
+            PRINT SPACE(1):STR('-',08):  ; * $ Paid
+            PRINT SPACE(1):
+         NEXT X
+         PRINT                           ; * Drop Down
+      END
+      ATTR=ATTR+1
+      LN.COUNT=LN.COUNT+1
+      IF STUB<ATTR> NE '' THEN
+         PRINT STUB<ATTR>
+         GOTO 9150
+      END
+      IF LN.COUNT> 46 THEN
+         PAGE=PAGE+1
+         PRINT @(-1):'Control #: ':CHECK.NUM'L#8':
+         PRINT SPACE(3):'Reference Date: ':CHECK.DATE'D2/':
+         PRINT SPACE(12):'Remittance Advice':
+         PRINT SPACE(50):'Page ':PAGE
+         FOR X=1 TO 3
+            PRINT ''
+         NEXT X
+         LN.COUNT=0
+      END
+      FOR X=LN.COUNT TO 46
+         PRINT ''
+      NEXT X
+      * Now positioned for abbrievated Information
+      RETURN
+
+EMAIL.CUTBACKS:***
+*IF USER='OWEN' THEN CALL ELINE('OVERCHARGE EMAIL ROUTINE')
+      TO.EMAIL=CARRIER.REC<81>
+*     IF TESTING THEN TO.EMAIL<1,-1>='oweninfo@afs.net'  ; * RLM01
+*     IF TESTING THEN TO.EMAIL<1,-1>='bfranklin@afs.net'  ; * RLM01
+      CC.EMAIL=CARRIER.REC<83>
+      IF TO.EMAIL='' THEN RETURN         ; * No Name to "Send" to
+      MVIN=''
+      SUBJ=PREV.CARRIER:' Bills that have been paid short'
+      TEXT='This message is best viewed with a fixed pitch font like courier.'
+      TEXT<1,-1>=' '
+      TEXT<1,-1>=' '
+      CAR.INFO=CHANGE(CAR.DESC,@VM,' ')
+      FOR X=1 TO 5
+         IF CAR.INFO<X>#'' THEN TEXT<1,-1>=CAR.INFO<X>
+      NEXT X
+      ATTN=CARRIER.REC<80>
+      CC=CARRIER.REC<82>
+      FOR X=1 TO 5
+         IF X=1 THEN FILLER='Attn  ' ELSE FILLER='      '
+         IF ATTN<1,X> # '' THEN TEXT<1,-1>=FILLER:ATTN<1,X>
+      NEXT X
+      FOR X=1 TO 5
+         IF X=1 THEN FILLER='cc    ' ELSE FILLER='      '
+         IF CC<1,X> # '' THEN TEXT<1,-1>=FILLER:CC<1,X>
+      NEXT X
+      TEXT<1,-1>=' '
+      TEXT<1,-1>='Check Number: ':CHECK.NUM'R%6':' printed on ':CHECK.DATE'D2-':' contains payment for the following bills that were paid short'
+      TEXT<1,-1>=' '
+      TEXT<1,-1>='Note: this information along with payment status is available on our web site at: www.afslogistics.com '
+      TEXT<1,-1>=' '
+      TEXT<1,-1>=CUTBACK.HEAD
+      TEXT<1,-1>=CUTBACK.TEXT
+      MVIN=''
+      MVIN<1>=TO.EMAIL
+      MVIN<2>=CC.EMAIL
+      IF DATE() LE 12702 THEN
+         MVIN<2,-1>='OHolman@afs.net'
+      END
+*     MVIN<4>='FreightPayment@afs.net'   ; * JMK18
+      MVIN<4>='FBresolution@afs.net'     ; * JMK18
+      MVIN<5>=SUBJ
+      MVIN<6>=TEXT
+      CALL SENDMAIL(MVIN,MVOUT)
+      RETURN

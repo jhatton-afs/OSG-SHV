@@ -1,0 +1,545 @@
+*************************************************************************
+* Program : FB.IMPORT.FTP.01636
+*           Import Bill of Lading Code data from Dover Chemical
+* Author  :
+* Date    : June 2006
+*
+* Copyright (c) 2006 by AFS Logistics, LLC. - All Rights Reserved
+*************************************************************************
+* 080706 - JMK01 - ADD LOGIC FOR VARIOUS FILENAMES
+* 122607 - JMK02 - T071329 - Item distribution of Freight Bills
+
+      $INCLUDE PROG.ADMIN INC_OPTIONS
+
+* Initialize general variables
+      PROMPT''
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='FB.IMPORT.FTP.01636'
+      PROG.DESC='Import Dover Chemical PO/BOL Data'
+      PACK.NAME='Freight Payment'
+      MASK.CHAR='-'
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+      EMAIL.SENT=0
+      TODAY=DATE()
+      OTODAY=OCONV(TODAY,'D4/')
+
+* Restrict program usage
+      VALID.USER=1
+      BEGIN CASE
+         CASE USER.NAME='OLEDBAFS'
+         CASE USER.NAME='OWEN'
+         CASE USER.NAME='DAVID'
+         CASE USER.NAME='MKERBOW'
+         CASE 1
+            VALID.USER=0
+      END CASE
+
+      IF NOT(VALID.USER) THEN
+         IF CMD THEN
+            ERROR.ARRAY<-1>='**  This is a restricted access application  **'
+         END ELSE
+            TEMP='**  This is a restricted access application  **'
+            CALL CENTER(TEMP,80)
+            CRT @(0,12):TEMP
+         END
+         GOTO THE.END
+      END
+
+      IF USER.NAME='OLEDBAFS' THEN
+         CMD=1
+      END ELSE
+         CMD=0
+      END
+
+
+* Write screen header
+      IF CMD ELSE
+         CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+         CRT @(0,2):STR('=',79)
+      END
+
+* Open client file and read record for client
+      CLIENT.ID='01636'
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot Open CLIENTS File!'
+            GOTO THE.END
+         END ELSE
+            CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+         END
+      END
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Could not read client information.'
+            GOTO THE.END
+         END ELSE
+            CALL ELINE('Could not read client file.')
+         END
+         GOTO THE.END
+      END
+
+100: ***
+      IF CMD THEN
+         QI='Y'
+      END ELSE
+         LN='Are you ready to import PO Bill of Lading codes from ':CLIENT.ID:' ':CLIENT.REC<2>:'? '
+         MASK='N-'
+         HELP='[Y]=Yes [N]=No [EX]=Exit'
+         CALL GEN.IN(0,5,LN:MASK,'',Q,0,2,'','',2,-2,5,1,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+      END
+      BEGIN CASE
+         CASE QI='EX' OR QI='N' OR QI=''
+            GOTO THE.END
+         CASE QI='Y'
+            NULL
+         CASE 1
+            GOTO 100
+      END CASE
+
+* Open other files
+      OPEN '','FTP.01636.HISTORY' TO F.FTP.HIST ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot Open FTP.01636.HISTORY File!'
+            GOTO THE.END
+         END ELSE
+            CALL OPEN.ABORT('FTP.01636.HISTORY',PROG.NAME)
+         END
+      END
+      OPEN '','FB.BOL.CRX,':CLIENT.ID TO F.BOL ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot Open FB.BOL.CRX,':CLIENT.ID:' File!'
+            GOTO THE.END
+         END ELSE
+            CALL OPEN.ABORT('FB.BOL.CRX,':CLIENT.ID,PROG.NAME)
+         END
+      END
+      OPEN '','FTP.01636' TO F.FTP ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot Open FTP.01636 File!'
+            GOTO THE.END
+         END ELSE
+            CALL OPEN.ABORT('FTP.01636',PROG.NAME)
+         END
+      END
+
+* Set update date
+      UPDATE.DATE=CLIENT.REC<82>+1       ; * Last processed + 1 day
+      IF UPDATE.DATE<DATE() THEN
+         UPDATE.DATE=DATE()
+      END
+
+* Start processing any files
+      STMT='SSELECT FTP.':CLIENT.ID:' WITH IDU = "':CLIENT.ID:'_]" BY FTP.DATE'
+      EXECUTE STMT RTNLIST CAPTURING RESULTS
+      NITMS=@SELECTED
+      IF NITMS=0 THEN
+         IF CMD THEN
+            ERROR.ARRAY<-1>='No file to process for Dover Chemical.'
+         END ELSE
+            CALL ELINE('No file to process for Dover Chemical.')
+         END
+         GOTO THE.END
+      END
+      EOF=0
+      LOOP
+         READNEXT FTP.ID ELSE EOF=1
+      UNTIL EOF DO
+
+* Make sure that we have read the file completely and it is not
+* still transferring via FTP.
+
+         PRV.FTP.IMPORT=""
+FTP.READ.AGAIN: *
+         READ FTP.IMPORT FROM F.FTP,FTP.ID ELSE
+            IF CMD THEN
+               ERROR.ARRAY<-1>='Cannot read ':FTP.ID:'. Aborting process.'
+            END ELSE
+               CALL ELINE('Cannot read ':FTP.ID:'. Aborting process.')
+            END
+            GOTO THE.END
+         END
+         IF FTP.IMPORT#PRV.FTP.IMPORT THEN
+            SLEEP 60
+            PRV.FTP.IMPORT=FTP.IMPORT
+            GO FTP.READ.AGAIN
+         END
+
+* Read in the existing Dover Chemical text file
+         FTP.IMPORT=CHANGE(FTP.IMPORT,CHAR(12),'')
+         FTP.IMPORT=CHANGE(FTP.IMPORT,'"','')
+         FTP.IMPORT=CHANGE(FTP.IMPORT,CHAR(9),@VM)
+         FTP.LAST.IMPORT=FTP.IMPORT      ; * Save file for writing as "last"
+         FTP.ID=OCONV(FTP.ID,'MCU')
+         BEGIN CASE
+            CASE FTP.ID[1,6]='AFSPO_' ; FILE.TYPE='INBOUND'
+            CASE FTP.ID[1,7]='AFSBOL_' ; FILE.TYPE='OUTBOUND'
+            CASE FTP.ID[1,6]='AFSBO_' ; FILE.TYPE='OUTBOUND'
+            CASE 1 ; GOTO SKIP.FILE
+         END CASE
+
+* Status lines
+         NATT=DCOUNT(FTP.IMPORT,@AM)
+         IF CMD ELSE
+            CRT @(0,5):'Total items in import file = ':NATT:@(-4)
+            CRT @(0,7):'Total Items processed'
+            CRT @(0,8):'---------------------'
+         END
+
+* Check for an anticipated complete file transfer
+* by testing the last line in the transfer for all
+* anticipated fields
+
+         FIRST.LINE=FTP.IMPORT<1>
+         LAST.LINE=FTP.IMPORT<NATT>
+         FIRST.FIELDS=DCOUNT(FIRST.LINE,@VM)
+         LAST.FIELDS=DCOUNT(LAST.LINE,@VM)
+         EST.COMPLETE=1
+         IF FIRST.FIELDS#LAST.FIELDS THEN
+            EST.COMPLETE=0
+         END
+         IF EST.COMPLETE=0 THEN
+            IF CMD THEN
+               ERROR.ARRAY<-1>=FTP.ID:' may have been received incomplete. Please re-send.  Aborting process.'
+            END ELSE
+               CALL ELINE(FTP.ID:' may have been received incomplete. Please re-send.  Aborting process.')
+            END
+            GOTO THE.END
+         END
+* Set counters for processing
+         NOT.THERE=0
+         ALREADY.THERE=0
+         ALREADY.THERE.CHANGED=0
+         ALREADY.THERE.UNCHANGED=0
+         ALREADY.THERE.BOTH.MATCH=0
+         ALREADY.THERE.AMOUNTS.MATCH=0
+         ALREADY.THERE.DATES.MATCH=0
+         ALREADY.THERE.NEITHER.MATCH=0
+         ALREADY.THERE.NULL=0
+
+         RESULTS.ARRAY=''
+         ERROR.ARRAY=''
+         PERC=0
+
+         ORIG.NAME=""
+         ORIG.ADD1=""
+         ORIG.ADD2=""
+         ORIG.CITY=""
+         ORIG.STATE=""
+         ORIG.COUNTRY=""
+         ORIG.ZIP=""
+         DEST.NAME=""
+         DEST.ADD1=""
+         DEST.ADD2=""
+         DEST.CITY=""
+         DEST.STATE=""
+         DEST.COUNTRY=""
+         DEST.ZIP=""
+         SHIP.DATE=""
+         SHIP.WT=""
+         SHIP.DIR=""
+         SHIP.NO=""
+         CONS.ACNT.NO=""
+         REF.NO=""
+         PRO.NO=""
+         LOC.CODE=""
+         PPD.COLL=""
+         EXP.CODE=""
+         EXP.RATIO=""
+         ACTION=""
+         FB.CLASSES=""
+         FB.CLASS.CODES=""
+         FB.WEIGHTS=""
+         CONTRACT.PRICE=""
+         ACCESS.CODES=""
+         ACCESS.CHRGS=""
+         PO.NO=""
+         BOL.NO=""
+         DIV.NO=""
+         SCAC.CODE=""
+         TRACK.NO=""
+         PREV.CLIENT.NO=""
+         UPD.LIST=''
+
+* Prepare the file for processing
+         FOR ATT=1 TO NATT
+            IF CMD ELSE
+               CRT @(0,9):ATT'R#21'
+               CALL PROG.BAR(11,ATT,NATT,PERC)
+            END
+            FTP.LINE=FTP.IMPORT<ATT>
+*           IF TESTING THEN DEBUG ; * JMK01
+            ORIG.NAME=TRIM(FTP.LINE<1,1>)
+            ORIG.ADD1=TRIM(FTP.LINE<1,2>)
+            ORIG.ADD2=TRIM(FTP.LINE<1,3>)
+            ORIG.CITY=TRIM(FTP.LINE<1,4>)
+            ORIG.STATE=TRIM(FTP.LINE<1,5>)
+            ORIG.COUNTRY=TRIM(FTP.LINE<1,6>)
+            ORIG.ZIP=TRIM(FTP.LINE<1,7>)
+            DEST.NAME=TRIM(FTP.LINE<1,8>)
+            DEST.ADD1=TRIM(FTP.LINE<1,9>)
+            DEST.ADD2=TRIM(FTP.LINE<1,10>)
+            DEST.CITY=TRIM(FTP.LINE<1,11>)
+            DEST.STATE=TRIM(FTP.LINE<1,12>)
+            DEST.COUNTRY=TRIM(FTP.LINE<1,13>)
+            DEST.ZIP=TRIM(FTP.LINE<1,14>)
+            SHIP.DATE=ICONV(TRIM(FTP.LINE<1,15>),'D')
+            SHIP.WT=TRIM(FTP.LINE<1,16>) ; * bypass negative weights, they are credit memos
+            SHIP.DIR=TRIM(FTP.LINE<1,17>)
+            SHIP.NO=TRIM(FTP.LINE<1,18>)
+            CONS.ACNT.NO=TRIM(FTP.LINE<1,19>)
+            REF.NO=TRIM(FTP.LINE<1,20>)
+            PRO.NO=TRIM(FTP.LINE<1,21>)
+            LOC.CODE=TRIM(FTP.LINE<1,22>); * 11-Dover Sale & Dover Ship
+                                         ; * 12-Hammond Sale & Hammond Ship
+                                         ; * 13-Hammond Sale & Dover Ship
+                                         ; * 14-Dover Sale & Hammond Ship
+            PPD.COLL=TRIM(FTP.LINE<1,23>)
+            EXP.CODE=TRIM(FTP.LINE<1,24>)
+            EXP.RATIO=TRIM(FTP.LINE<1,25>)
+            ACTION=TRIM(FTP.LINE<1,26>)
+            FB.CLASSES=TRIM(FTP.LINE<1,27>)
+            FB.WEIGHTS=TRIM(FTP.LINE<1,28>)
+            CONTRACT.PRICE=TRIM(FTP.LINE<1,29>)
+            ACCESS.CODES=TRIM(FTP.LINE<1,30>)
+            ACCESS.CHRGS=TRIM(FTP.LINE<1,31>)
+            PO.NO=""
+            BOL.NO=""
+            DIV.NO=""
+            SCAC.CODE=""
+            TRACK.NO=""
+
+            IF SHIP.NO#'' THEN
+               READ BOL.ITEM FROM F.BOL,SHIP.NO THEN
+                  ALREADY.THERE+=1
+                  BEGIN CASE
+                     CASE SHIP.NO=BOL.ITEM<8> AND SHIP.DATE=BOL.ITEM<2>
+* Numbers match, and invoice dates match
+                        ALREADY.THERE.BOTH.MATCH+=1
+
+                     CASE SHIP.NO=BOL.ITEM<8> AND SHIP.DATE#BOL.ITEM<2>
+* Numbers match, but invoice dates do not match
+                        ALREADY.THERE.AMOUNTS.MATCH+=1
+                        LINE=''
+                        LINE<1,1>='BOL ITEM.ID ':SHIP.NO
+                        LINE<1,2>='Order numbers match, but Order Dates do not match. File not changed.'
+                        LINE<1,3>='Sales Order Number    = ':SHIP.NO
+                        LINE<1,4>='Existing Order Date   = ':BOL.ITEM<2>'D4-'
+                        LINE<1,5>='New Order Date        = ':SHIP.DATE'D4-'
+                        ERROR.ARRAY<-1>=LINE
+                        ERROR.ARRAY<-1>=' '
+                        ERROR.ARRAY<-1>=' '
+
+                     CASE SHIP.NO#BOL.ITEM<8> AND SHIP.DATE=BOL.ITEM<2>
+* Numbers do not match, but invoice dates match
+                        ALREADY.THERE.DATES.MATCH+=1
+                        LINE=''
+                        LINE<1,1>='BOL ITEM.ID ':SHIP.NO
+                        LINE<1,2>='Numbers do not match, but Order Dates match. File not changed.'
+                        LINE<1,3>='Existing Order Number = ':BOL.ITEM<8>
+                        LINE<1,4>='New Order Number      = ':SHIP.NO
+                        LINE<1,5>='Order Date            = ':BOL.ITEM<2>'D4-'
+                        ERROR.ARRAY<-1>=LINE
+                        ERROR.ARRAY<-1>=' '
+                        ERROR.ARRAY<-1>=' '
+
+                     CASE SHIP.NO#BOL.ITEM<8> AND SHIP.DATE#BOL.ITEM<2>
+* Numbers do not match, and invoice dates do not match
+                        ALREADY.THERE.NEITHER.MATCH+=1
+                        LINE=''
+                        LINE<1,1>='BOL ITEM.ID ':SHIP.NO
+                        LINE<1,2>='Numbers do not match, and Order Dates do not match. File not changed.'
+                        LINE<1,3>='Existing Order Number = ':BOL.ITEM<8>
+                        LINE<1,4>='New Order Number      = ':SHIP.NO
+                        LINE<1,5>='Existing Order Date   = ':BOL.ITEM<2>'D4-'
+                        LINE<1,6>='New Order Date        = ':SHIP.DATE'D4-'
+                        ERROR.ARRAY<-1>=LINE
+                        ERROR.ARRAY<-1>=' '
+                        ERROR.ARRAY<-1>=' '
+                  END CASE
+
+                  IF (BOL.ITEM<8>)="" THEN         ; * Existing number is null
+                     ALREADY.THERE.NULL+=1
+                     LINE=''
+                     LINE<1,1>='BOL ITEM.ID ':SHIP.NO
+                     LINE<1,2>='Existing Number was null. Updated to New Number.'
+                     LINE<1,3>='Existing Order Number = ':BOL.ITEM<8>
+                     LINE<1,4>='New Order Number      = ':SHIP.NO
+                     ERROR.ARRAY<-1>=LINE
+                     ERROR.ARRAY<-1>=' '
+                     ERROR.ARRAY<-1>=' '
+                     BOL.ITEM<2>=SHIP.DATE
+                     BOL.ITEM<4>=UPDATE.DATE
+                     BOL.ITEM<8>=SHIP.NO
+                  END
+                  LOCATE(FTP.ITEM,BOL.ITEM,10;BPOS) ELSE
+                     NVAL=DCOUNT(BOL.ITEM<10>,@VM)+1         ; * JMK03
+                     BOL.ITEM<10,NVAL>=FTP.ITEM
+                     BOL.ITEM<11,NVAL>=FTP.QTY
+                     BOL.ITEM<12,NVAL>=FTP.WT
+                     BOL.ITEM<13,NVAL>=FTP.GL
+                  END
+               END ELSE
+                  NOT.THERE+=1
+                  BOL.ITEM=''
+                  BOL.ITEM<2>=SHIP.DATE
+                  BOL.ITEM<4>=UPDATE.DATE
+                  BOL.ITEM<8>=SHIP.NO
+                  BOL.ITEM<10>=FTP.ITEM
+                  BOL.ITEM<11>=FTP.QTY
+                  BOL.ITEM<12>=FTP.WT
+                  BOL.ITEM<13>=FTP.GL
+               END
+               WRITE BOL.ITEM ON F.BOL,SHIP.NO
+            END
+         NEXT ATT
+
+* Update files
+         WRITE FTP.LAST.IMPORT ON F.FTP.HIST,FTP.ID THEN
+            DELETE F.FTP,FTP.ID          ; * Delete the original text file
+         END ELSE
+            IF CMD THEN
+               ERROR.ARRAY<-1>='Could not write 01636_RAW_LAST.TXT. Not deleting ':FTP.ID:'.'
+            END ELSE
+               CALL ELINE('Could not write history record. Not deleting FTP record. Call Help Desk.')
+            END
+         END
+
+SKIP.FILE: ***
+
+      REPEAT
+
+* Screen output of results
+      IF CMD THEN
+      END ELSE
+         CRT @(0,12):'Items already existing in the BOL cross reference file:'
+         CRT @(0,13):'   1 Same Order Numbers, Same Order Dates             (not changed) = ':ALREADY.THERE.BOTH.MATCH'R#8'
+         CRT @(0,14):'   2 Same Order Numbers, Different Order Dates        (not changed) = ':ALREADY.THERE.AMOUNTS.MATCH'R#8'
+         CRT @(0,15):'   3 Different Order Numbers, Same Order Dates        (not changed) = ':ALREADY.THERE.DATES.MATCH'R#8'
+         CRT @(0,16):'   4 Different Order Numbers, Different Order Dates   (not changed) = ':ALREADY.THERE.NEITHER.MATCH'R#8'
+         CRT @(0,17):'---- Total items already in the file                                = ':ALREADY.THERE'R#8'
+
+         CRT @(0,19):'   5 Zero or Null Order Number (occurs as 1-4 above)      (changed) = ':ALREADY.THERE.NULL'R#8'
+         CRT @(0,20):'---- Total items not in the file                          (written) = ':NOT.THERE'R#8'
+      END
+
+* Email output of results
+      RESULTS.ARRAY<-1>='Items already existing in the BOL cross reference file:'
+      RESULTS.ARRAY<-1>='   1 Same Order Numbers, Same Order Dates             (not changed) = ':ALREADY.THERE.BOTH.MATCH'R#8'
+      RESULTS.ARRAY<-1>='   2 Same Order Numbers, Different Order Dates        (not changed) = ':ALREADY.THERE.AMOUNTS.MATCH'R#8'
+      RESULTS.ARRAY<-1>='   3 Different Order Numbers, Same Order Dates        (not changed) = ':ALREADY.THERE.DATES.MATCH'R#8'
+      RESULTS.ARRAY<-1>='   4 Different Order Numbers, Different Order Dates   (not changed) = ':ALREADY.THERE.NEITHER.MATCH'R#8'
+      RESULTS.ARRAY<-1>='---- Total items already in the file                                = ':ALREADY.THERE'R#8'
+      RESULTS.ARRAY<-1>=' '
+      RESULTS.ARRAY<-1>='   5 Zero or Null Order Number (occurs as 1-4 above)      (changed) = ':ALREADY.THERE.NULL'R#8'
+      RESULTS.ARRAY<-1>='---- Total items not in the file                          (written) = ':NOT.THERE'R#8'
+
+      EMAIL.OUT=''
+      EMAIL.OUT<1,1>='LKenline@doverchem.com'      ; * To: Email addresses
+*     EMAIL.OUT<1,1>='MKerbow@afs.net'   ; * Troubleshooting
+      EMAIL.OUT<2>=''                    ; * CC: Email addresses
+      EMAIL.OUT<3,1>='MKerbow@afs.net'   ; * BCC: Email addresses
+      EMAIL.OUT<3,2>='OHolman@afs.net'   ; * BCC: Email addresses
+      EMAIL.OUT<4>='Imports@afs.net'     ; * From Email address
+      EMAIL.OUT<5>='Results From Running ':PROG.NAME:' - Import Of New PO/BOL Bill of Lading Code Data For ':CLIENT.ID:' ':CLIENT.REC<2>     ; * Subject of Email
+
+* Email body
+      EMAIL.OUT<6,-1>=USER.NAME:' ran ':PROG.NAME:' (':PROG.DESC:') on ':DATE()'D2/':' at ':OCONV(TIME(),'MTHS'):' with the following results:'
+      EMAIL.OUT<6,-1>=' '
+      NUM=DCOUNT(RESULTS.ARRAY,@AM)
+      FOR X=1 TO NUM
+         EMAIL.OUT<6,-1>='   ':RESULTS.ARRAY<X>
+      NEXT X
+
+      IF ERROR.ARRAY#'' THEN
+         EMAIL.OUT<6,-1>=' '
+         EMAIL.OUT<6,-1>=' '
+         EMAIL.OUT<6,-1>=' '
+         EMAIL.OUT<6,-1>='The following conflicts occurred between existing data and new data:'
+         EMAIL.OUT<6,-1>=' '
+         NUM=DCOUNT(ERROR.ARRAY,@AM)
+         FOR X=1 TO NUM
+            EMAIL.OUT<6,-1>='   ':ERROR.ARRAY<X>
+         NEXT X
+      END
+
+      EMAIL.OUT<7>=1                     ; * Auto format (add carriage returns to end of text)
+
+      VIN=EMAIL.OUT
+      VOUT=''
+      CALL SENDMAIL(VIN,VOUT)
+      EMAIL.SENT=1
+
+      IF CMD ELSE
+         CALL ELINE('')
+      END
+
+*************************************************************************
+
+THE.END: ***
+* End of program
+      IF CMD THEN
+         IF EMAIL.SENT=0 AND ERROR.ARRAY#'' THEN
+            EMAIL.OUT=''
+            EMAIL.OUT<1,1>='LKenline@doverchem.com'          ; * To: Email addresses
+*           EMAIL.OUT<1,1>='MKerbow@afs.net'       ; * Troubleshooting
+            EMAIL.OUT<2>=''              ; * CC: Email addresses
+            EMAIL.OUT<3,1>='MKerbow@afs.net'       ; * BCC: Email addresses
+            EMAIL.OUT<3,2>='OHolman@afs.net'       ; * BCC: Email addresses
+            EMAIL.OUT<4>='Imports@afs.net'         ; * From Email address
+            EMAIL.OUT<5>='Warnings/Errors From Running ':PROG.NAME:' - Import Of New EDP Bill of Lading Code Data For ':CLIENT.ID:' ':CLIENT.REC<2>    ; * Subject of Email
+
+* Email body
+            EMAIL.OUT<6,-1>=USER.NAME:' ran ':PROG.NAME:' (':PROG.DESC:') on ':DATE()'D2/':' at ':OCONV(TIME(),'MTHS'):' with the following results:'
+            EMAIL.OUT<6,-1>=' '
+
+            EMAIL.OUT<6,-1>='The following conflicts occurred between existing data and new data:'
+            EMAIL.OUT<6,-1>=' '
+            NUM=DCOUNT(ERROR.ARRAY,@AM)
+            FOR X=1 TO NUM
+               EMAIL.OUT<6,-1>='   ':ERROR.ARRAY<X>
+            NEXT X
+
+            EMAIL.OUT<7>=1               ; * Auto format (add carriage returns to end of text)
+
+            VIN=EMAIL.OUT
+            VOUT=''
+            CALL SENDMAIL(VIN,VOUT)
+            EMAIL.SENT=1
+         END
+      END ELSE
+         CRT @(0,23):
+      END
+      STOP
+
+UPDATE.BOL.REC: ***
+      BOL.REC<2>=SHIP.DATE
+      BOL.REC<8>=SHIP.NO
+      BOL.REC<10>=ORIG.NAME
+      BOL.REC<11,1>=ORIG.ADD1
+      BOL.REC<11,2>=ORIG.ADD2
+      BOL.REC<12>=ORIG.CITY
+      BOL.REC<13>=ORIG.STATE
+      BOL.REC<14>=ORIG.COUNTRY
+      BOL.REC<15>=ORIG.ZIP
+      BOL.REC<16>=DEST.NAME
+      BOL.REC<17,1>=DEST.ADD1
+      BOL.REC<17,2>=DEST.ADD2
+      BOL.REC<18>=DEST.CITY
+      BOL.REC<19>=DEST.STATE
+      BOL.REC<20>=DEST.COUNTRY
+      BOL.REC<21>=DEST.ZIP
+      BOL.REC<22>=SHIP.WT
+      BOL.REC<23>=SHIP.DIR
+      BOL.REC<24>=CONS.ACNT.NO
+      BOL.REC<25>=REF.NO
+      BOL.REC<26>=PRO.NO
+      BOL.REC<27>=LOC.CODE
+      BOL.REC<28>=PPD.COLL
+      BOL.REC<29>=EXP.CODE
+      BOL.REC<30>=EXP.RATIO
+      BOL.REC<31>=ACTION
+      RETURN
+      END

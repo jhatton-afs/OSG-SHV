@@ -1,0 +1,350 @@
+************************************************************************
+* Program name : FB.IMPORT.FTP.01308
+* Author       : UNKNOWN
+* Date written : June 2006
+* Library      : FBBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* Import Expense Code data from Malco Products
+* Last updated by afs (AFSLOGISTICS\gbino) at 07:08:01 on 02/25/2019.
+*
+* Start modification history
+* 032409 - JMK01 - Automate the Ebill Import Process
+* 022519 - GRB01 - Add new folders
+* End modification history
+**********************************************************************
+* Format of 01308 Text file                  Format of FB.BOL.CRX,01308
+* Tab delimiter with three fields            ITEM ID = EDP Number
+*
+* (1) EDP Number                             H< 1> Expense Code
+* (2) Expense Code Description               H< 2> Expense Code Description
+* (3) Expense Code
+*************************************************************************
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+* Initialize general variables
+      PROMPT''
+      CALL GET.USER.NEW(USER.NAME,CH.NUM)
+
+      CMD.LINE=@SENTENCE
+      NWORDS=DCOUNT(CMD.LINE,' ')
+      IF NWORDS>1 THEN
+         CLIENT.ID=FIELD(CMD.LINE,' ',2)
+         AUTO=1
+      END ELSE
+         CLIENT.ID=''
+         AUTO=0
+      END
+
+      PROG.NAME='FB.IMPORT.FTP.01308'
+      PROG.DESC='Malco Products Shipping Data'
+      PACK.NAME='Freight Payment'
+      MASK.CHAR='-'
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+      EMAIL.SENT=0
+      TODAY=DATE()
+      OTODAY=OCONV(TODAY,'D4/')
+
+* Restrict program usage
+      VALID.USER=1
+      CMD=0
+      BEGIN CASE
+         CASE AUTO=1 ; CMD=1
+         CASE USER.NAME='OLEDBAFS' ; CMD=1
+         CASE USER.NAME='NMEDDAUGH'
+         CASE USER.NAME='DAVID'
+         CASE USER.NAME='GBINO'
+         CASE 1
+            VALID.USER=0
+      END CASE
+
+      IF NOT(VALID.USER) THEN
+         IF CMD THEN
+            ERROR.ARRAY<-1>='**  This is a restricted access application  **'
+         END ELSE
+            TEMP='**  This is a restricted access application  **'
+            CALL CENTER(TEMP,80)
+            CRT @(0,12):TEMP
+         END
+         GOTO THE.END
+      END
+      CLIENT.NUMBER='01308'
+
+      GOSUB OPEN.FILES
+
+* Write screen header
+      IF CMD ELSE
+         CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+         CRT @(0,2):STR('=',79)
+      END
+
+* Open client file and read record for client
+
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.NUMBER ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Could not read client information.'
+            GOTO THE.END
+         END ELSE
+            CALL ELINE('Could not read client file.')
+         END
+         GOTO THE.END
+      END
+
+100:***
+      IF CMD THEN
+         QI='Y'
+      END ELSE
+         LN='Are you ready to import shipping data from ':CLIENT.NUMBER:' ':CLIENT.REC<2>:'? '
+         MASK='N-'
+         HELP='[Y]=Yes [N]=No [EX]=Exit'
+         CALL GEN.IN(0,5,LN:MASK,'',Q,0,2,'','',2,-2,5,1,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+      END
+      BEGIN CASE
+         CASE QI='EX' OR QI='N' OR QI=''
+            GOTO THE.END
+         CASE QI='Y'
+            NULL
+         CASE 1
+            GOTO 100
+      END CASE
+
+* Start processing any files
+****      CMND='SSELECT FTP.01308.EXP = "01308_Expense.txt"'     ; *GRB01
+      CMND='SSELECT FTP.01308.EXP = "01308_EXPENSE.TXT"'     ; *GRB01
+      EXECUTE CMND RTNLIST CAPTURING RESULTS
+      NITMS=@SELECTED
+      IF NITMS=0 THEN
+         IF CMD THEN
+            ERROR.ARRAY<-1>='No file to process for Malco Products.'
+         END ELSE
+            CALL ELINE('No file to process for Malco Products.')
+         END
+         GOTO THE.END
+      END
+      EOF=0
+      LOOP
+         READNEXT FTPID ELSE EOF=1
+      UNTIL EOF DO
+         READ MALCO.IMPORT FROM F.FTP,FTPID ELSE
+            IF CMD THEN
+
+            END ELSE
+               CALL ELINE('Cannot read ':FTPID:'. Aborting process.')
+            END
+            GOTO THE.END
+         END
+
+* Read in the existing Malco Products text file
+         MALCO.LAST.IMPORT=MALCO.IMPORT  ; * Save file for writing as "last"
+         MALCO.IMPORT=CHANGE(MALCO.IMPORT,CHAR(9),@VM)
+
+* Status lines
+         NATT=DCOUNT(MALCO.IMPORT,@AM)
+         IF CMD ELSE
+            CRT @(0,5):'Total items in import file = ':NATT:@(-4)
+            CRT @(0,7):'Total Items processed'
+            CRT @(0,8):'---------------------'
+         END
+
+* Set counters for processing
+         NOT.THERE=0
+         ALREADY.THERE=0
+         ALREADY.THERE.CHANGED=0
+         ALREADY.THERE.UNCHANGED=0
+
+         RESULTS.ARRAY=''
+         ERROR.ARRAY=''
+         PERC=0
+
+         ST.DATE = DATE()                ; * NPR99
+         ST.TIME = TIME()                ; * NPR99
+
+* Prepare the file for processing
+         FOR ATT=1 TO NATT
+            IF CMD ELSE
+               CRT @(0,9):ATT'R#21'
+               CALL PROG.BAR(11,ATT,NATT,PERC)
+            END
+            MALCO.LINE=MALCO.IMPORT<ATT>
+            MALCO.EDPID=MALCO.LINE<1,1>
+            MALCO.EXPDESC=MALCO.LINE<1,2>
+            MALCO.EXPCD=MALCO.LINE<1,3>
+
+            IF MALCO.EDPID#'' THEN
+               READ EXP.ITEM FROM F.EXP,MALCO.EDPID THEN
+                  ALREADY.THERE+=1
+                  BEGIN CASE
+                     CASE MALCO.EXPCD=EXP.ITEM<1>
+                        * Numbers match, and Expense codes match
+                        ALREADY.THERE.UNCHANGED+=1
+                     CASE 1
+                        * Numbers match, and Expense codes do not match
+                        ALREADY.THERE.CHANGED+=1
+                        EXP.ITEM<1>=MALCO.EXPCD
+                        EXP.ITEM<2,-1>=MALCO.EXPCD
+                        EXP.ITEM<3,-1>=DATE()
+                        EXP.ITEM<4,-1>=FTPID
+                  END CASE
+               END ELSE
+                  NOT.THERE+=1
+                  EXP.ITEM=''
+                  EXP.ITEM<1>=MALCO.EXPCD
+                  EXP.ITEM<2,-1>=MALCO.EXPCD
+                  EXP.ITEM<3,-1>=DATE()
+                  EXP.ITEM<4,-1>=FTPID
+               END
+               WRITE EXP.ITEM ON F.EXP,MALCO.EDPID
+            END
+         NEXT ATT
+
+* Update files
+         FTP.YR=OTODAY[7,4]
+         FTP.MO=OTODAY[1,2]
+         FTP.DA=OTODAY[4,2]
+         WRITE MALCO.LAST.IMPORT ON F.FTP.HIST,'01308_EXP_LAST.TXT' THEN
+            WRITE MALCO.LAST.IMPORT ON F.FTP.HIST,'01308_EXP_':FTP.MO:FTP.DA:FTP.YR:'.TXT'
+            DELETE F.FTP,FTPID
+         END ELSE
+            IF CMD THEN
+               ERROR.ARRAY<-1>='Could not write 01308_EXP_LAST.TXT. Not deleting ':FTPID:'.'
+            END ELSE
+               CALL ELINE('Could not write 01308_EXP_LAST.TXT. Not deleting ':FTPID:'. Call Owen or Mike.')
+            END
+         END
+
+         LVIN = ST.DATE                  ; * Date started
+         LVIN<2> = ST.TIME               ; * Time started
+         LVIN<3> = PROG.NAME
+         LVIN<4> = FTPID                 ; * Raw data file worked with
+         LVOUT = ""
+         CALL UPDATE.BOL.FTP.LOG(LVIN,LVOUT,CLIENT.ID)
+
+* Screen output of results
+         IF CMD THEN
+         END ELSE
+            CRT @(0,12):'Items already existing in the shipping data cross reference file:'
+            CRT @(0,13):'   1 Same EDP Numbers, Same Expense Codes        (not changed) = ':ALREADY.THERE.UNCHANGED'R#8'
+            CRT @(0,14):'   2 Same EDP Numbers, Different Expense Codes       (changed) = ':ALREADY.THERE.CHANGED'R#8'
+            CRT @(0,15):'---- Total items already in the file                           = ':ALREADY.THERE'R#8'
+            CRT @(0,16):'---- Total items not in the file                     (written) = ':NOT.THERE'R#8'
+         END
+
+* Email output of results
+         RESULTS.ARRAY<-1>='Items already existing in the shipping data cross reference file:'
+         RESULTS.ARRAY<-1>='   1 Same EDP Numbers, Same Expense Codes        (not changed) = ':ALREADY.THERE.UNCHANGED'R#8'
+         RESULTS.ARRAY<-1>='   2 Same EDP Numbers, Different Expense Codes       (changed) = ':ALREADY.THERE.CHANGED'R#8'
+         RESULTS.ARRAY<-1>='---- Total items already in the file                           = ':ALREADY.THERE'R#8'
+         RESULTS.ARRAY<-1>='---- Total items not in the file                     (written) = ':NOT.THERE'R#8'
+
+         EMAIL.OUT=''
+         EMAIL.OUT<1,1>='pattiw@malcopro.com'      ; * To: Email addresses
+         EMAIL.OUT<1,2>='charlie@malcopro.com'     ; * To: Email addresses
+         EMAIL.OUT<2>=''                 ; * CC: Email addresses
+         EMAIL.OUT<3,1>='DAVID@afs.net'  ; * BCC: Email addresses  ;*GRB01
+         EMAIL.OUT<3,2>='GBINO@afs.net'  ; * BCC: Email addresses;*GRB01
+         EMAIL.OUT<4>='Imports@afs.net'  ; * From Email address
+         EMAIL.OUT<5>='Results From Running ':PROG.NAME:' - Import Of New Shipping Data For ':CLIENT.NUMBER:' ':CLIENT.REC<2>      ; * Subject of Email
+
+         * Email body
+         EMAIL.OUT<6,-1>=USER.NAME:' ran ':PROG.NAME:' (':PROG.DESC:') on ':DATE()'D2/':' at ':OCONV(TIME(),'MTHS'):' with the following results:'
+         EMAIL.OUT<6,-1>=' '
+         NUM=DCOUNT(RESULTS.ARRAY,@AM)
+         FOR X=1 TO NUM
+            EMAIL.OUT<6,-1>='   ':RESULTS.ARRAY<X>
+         NEXT X
+
+         IF ERROR.ARRAY#'' THEN
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>='The following conflicts occurred between existing data and new data:'
+            EMAIL.OUT<6,-1>=' '
+            NUM=DCOUNT(ERROR.ARRAY,@AM)
+            FOR X=1 TO NUM
+               EMAIL.OUT<6,-1>='   ':ERROR.ARRAY<X>
+            NEXT X
+         END
+
+         EMAIL.OUT<7>=1                  ; * Auto format (add carriage returns to end of text)
+         VIN=EMAIL.OUT
+         VOUT=''
+         CALL SENDMAIL(VIN,VOUT)
+         EMAIL.SENT=1
+      REPEAT
+      CALL ELINE('')
+
+*****************************************************
+THE.END:***
+*****************************************************
+* End of program
+      IF CMD THEN
+         IF EMAIL.SENT=0 AND ERROR.ARRAY#'' THEN
+            EMAIL.OUT=''
+            EMAIL.OUT<1,1>='pattiw@malcopro.com'   ; * To: Email addresses
+            EMAIL.OUT<1,2>='charlie@malcopro.com'  ; * To: Email addresses
+            EMAIL.OUT<2>=''              ; * CC: Email addresses
+            EMAIL.OUT<3,2>='GBINO@afs.net'         ; * BCC: Email addresses;*GRB01
+            EMAIL.OUT<4>='Imports@afs.net'         ; * From Email address;*GRB01
+            EMAIL.OUT<5>='Warnings/Errors From Running ':PROG.NAME:' - Import Of New Shipping Data Data For ':CLIENT.NUMBER:' ':CLIENT.REC<2>          ; * Subject of Email
+
+* Email body
+            EMAIL.OUT<6,-1>=USER.NAME:' ran ':PROG.NAME:' (':PROG.DESC:') on ':DATE()'D2/':' at ':OCONV(TIME(),'MTHS'):' with the following results:'
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>='The following conflicts occurred between existing data and new data:'
+            EMAIL.OUT<6,-1>=' '
+            NUM=DCOUNT(ERROR.ARRAY,@AM)
+            FOR X=1 TO NUM
+               EMAIL.OUT<6,-1>='   ':ERROR.ARRAY<X>
+            NEXT X
+
+            EMAIL.OUT<7>=1               ; * Auto format (add carriage returns to end of text)
+            VIN=EMAIL.OUT
+            VOUT=''
+            CALL SENDMAIL(VIN,VOUT)
+            EMAIL.SENT=1
+         END
+      END ELSE
+         CRT @(0,23):
+      END
+***************************************************************
+OPEN.FILES:
+***************************************************************
+* Open files
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot Open CLIENTS File!'
+            GOTO THE.END
+         END ELSE
+            CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+         END
+      END
+      OPEN '','FTP.01308.EXP.HISTORY' TO F.FTP.HIST ELSE     ; *GRB01
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot Open FTP.01308.HISTORY File!'
+            GOTO THE.END
+         END ELSE
+            CALL OPEN.ABORT('FTP.01308.HISTORY',PROG.NAME)
+         END
+      END
+      OPEN '','EXPENSE.CODE.XREF,':CLIENT.NUMBER TO F.EXP ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot Open EXPENSE.CODE.XREF,':CLIENT.NUMBER:' File!'
+            GOTO THE.END
+         END ELSE
+            CALL OPEN.ABORT('EXPENSE.CODE.XREF,':CLIENT.NUMBER,PROG.NAME)
+         END
+      END
+      OPEN '','FTP.01308.EXP' TO F.FTP ELSE        ; *GRB01
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot Open FTP.01308 File!'
+            GOTO THE.END
+         END ELSE
+            CALL OPEN.ABORT('FTP.01308',PROG.NAME)
+         END
+      END
+      RETURN
+
+   END

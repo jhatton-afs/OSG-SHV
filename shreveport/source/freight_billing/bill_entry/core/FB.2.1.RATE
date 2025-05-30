@@ -1,0 +1,156 @@
+      SUBROUTINE FB.2.1.RATE(CLIENT.ID,CARRIER.ID,CLASS,MILES,WGHT,CHARGES,MARGIN)
+****************************************
+* Program name : FB.2.1.RATE
+* Author       : Brian M. Queen
+* Date written : August 5, 1993
+* Library      : FBBP
+* COPYRIGHT (c) : AFS, LLC 2016, All Rights Reserved.
+*
+*
+* * PROGRAM TO CALCULATE FREIGHT CHARGES
+* Last updated by afs (gbino) at 08:48:26 on 01/24/2018.
+*
+* Start modification history
+* Mod nn  mm/dd/yy, init, req #, description
+* End modification history
+*
+*******************************************
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+$OPTIONS HEADER.EJECT
+      ERRMSG=''
+
+* Initialize variables
+*
+      PROMPT''
+      PROG.NAME='FB.2.1.RATE'
+      PROG.DESC='FREIGHT BILL ENTRY'
+      PACK.NAME='FREIGHT BILLING'
+      CHARGES=0
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.2.1.RATE' ; UPL.VOUT = ''    ; * NPR_UPL 04/23/2010
+      CALL GET.USER.NEW(USER,CH.NUM)
+      UPL.VIN<3> = USER
+      UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      MARGIN=0
+      TOT.CHARGES=0
+*
+* Open files
+*
+      OPEN '','FB.RATES' TO F.RATES ELSE CALL OPEN.ABORT("FB.RATES",PROG.NAME)
+      OPEN '','FB.RATES,TYPES' TO F.TYPES ELSE CALL OPEN.ABORT("FB.RATES,TYPES",PROG.NAME)
+*
+* Set up calculation array
+*
+      IF CLASS<2> EQ '' THEN
+         VAR=''
+         VAR<1>=CLASS
+         VAR<2>=WGHT
+      END ELSE
+         VAR=CLASS
+      END
+*
+* Get rating data from type item
+*
+      X=DCOUNT(VAR<1>,CHAR(253))
+      IF X=0 THEN X=1
+      FOR I=1 TO X
+         WGHT=VAR<2,I>
+         RATE.ID=CLIENT.ID:'*':CARRIER.ID:'*':VAR<1,I>
+         READ TYPE.REC FROM F.TYPES,RATE.ID THEN
+            RATE.LINK=TYPE.REC<1>
+            CALC.TYPE=TYPE.REC<2>
+            MARGIN=TYPE.REC<3>
+            IF RATE.LINK='' ELSE RATE.ID=RATE.LINK:'*':CARRIER.ID:'*':VAR<1,I>
+            READ RATE.REC FROM F.RATES,RATE.ID THEN
+*
+* Calculate rate
+*
+               BEGIN CASE
+                  CASE CALC.TYPE='Reg'
+                     ROW=1
+                     DONE=0
+                     LOOP
+                     UNTIL DONE DO
+                        ROW=ROW+1
+                        TEST.MILES=RATE.REC<ROW,1>
+                        IF TEST.MILES > MILES THEN DONE=1
+                        IF TEST.MILES = '' THEN DONE=1
+                     REPEAT
+*
+                     COL=2               ; * Start Looking in 3 (2 is Min charge)
+                     DONE=0
+                     LOOP
+                     UNTIL DONE DO
+                        COL=COL+1
+                        TEST.WEIGHT=RATE.REC<1,COL>
+                        IF TEST.WEIGHT > WGHT THEN DONE=1
+                        IF TEST.WEIGHT = '' THEN DONE=1
+                     REPEAT
+*** Once the the Weight and Miles are exceeded Back the up one
+                     IF COL=3 ELSE COL-=1
+                     IF ROW<2 OR COL<3 THEN
+                        CALL ELINE("Program/Setup Error Row=":ROW:" Column=":COL:"  Cant calculate!")
+                        TOT.CHARGES=0
+                        GO 9999
+                     END
+                     RATE=RATE.REC<ROW,COL>
+                     CHARGES=(RATE*WGHT)/100
+                     CHARGES=CHARGES'R0'
+                     MIN.CHARGE=RATE.REC<ROW,2>
+                     IF CHARGES<MIN.CHARGE THEN CHARGES=MIN.CHARGE
+**** Test next Level for As Weight (Cheaper fee) ****
+                     TEST.RATE=RATE.REC<ROW,COL+1>
+                     TEST.WEIGHT=RATE.REC<1,COL+1>
+                     IF TEST.RATE+0>0 & TEST.WEIGHT+0>0 THEN
+                        TEST.CHARGE=TEST.RATE*TEST.WEIGHT/100
+                        TEST.CHARGE=TEST.CHARGE'R0'
+                        IF TEST.CHARGE < CHARGES THEN
+                           CHARGES=TEST.CHARGE
+                        END
+                     END
+                     IF CHARGES<MIN.CHARGE THEN CHARGES=MIN.CHARGE
+*
+* Calculate flat rate based on miles
+*
+                  CASE CALC.TYPE='Flat' & RATE.REC<1,1>='MILES'
+                     ROW=1
+                     DONE=0
+                     LOOP
+                     UNTIL DONE DO
+                        ROW=ROW+1
+                        IF RATE.REC<ROW,1> GE MILES THEN
+                           CHARGES=RATE.REC<ROW,2>
+                           DONE=1
+                        END
+                        IF RATE.REC<ROW,1> = '' THEN
+                           CHARGES=0
+                           DONE=1
+                        END
+                     REPEAT
+*
+* Calculate flat rate based on weights
+*
+                  CASE CALC.TYPE='Flat' & RATE.REC<1,1>='WEIGHT'
+                     ROW=1
+                     DONE=0
+                     LOOP
+                     UNTIL DONE DO
+                        ROW=ROW+1
+                        IF RATE.REC<ROW,1> GE WGHT THEN
+                           CHARGES=RATE.REC<ROW,2>
+                           DONE=1
+                        END
+                        IF RATE.REC<ROW,1> = '' THEN
+                           CHARGES=0
+                           DONE=1
+                        END
+                     REPEAT
+               END CASE
+               TOT.CHARGES=TOT.CHARGES + CHARGES
+            END
+         END
+      NEXT I
+      CHARGES=TOT.CHARGES
+9999:***
+      RETURN

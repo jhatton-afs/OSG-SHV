@@ -1,0 +1,580 @@
+      SUBROUTINE NUMK.4010.997(VIN,VOUT,DA,F.EDI.BILLS,F.CAR.XREF,F.CAR.ACNT.XREF,F.CARRIER,F.CLIENT,F.WORK,F.FACK)
+****************************************************
+* Program name : NUMK.4010.997
+* Author       : Greg Bino
+* Date written : 04-27-2017
+* Library      : EDIBP
+* COPYRIGHT (c) : AFS, LLC 2016, All Rights Reserved.
+* for DAYLIGHT TRANSPORTATION INC
+*
+* Last updated by AFS (nmeddaugh) at 07:57:18 on 07/19/2022.
+*
+* Start modification history
+* 04/03/17 : GRB01 : SysAid 31787 - New program
+* 03/15/19 : NKH01 : ACCU-316 Modified CREATE-FILE file sizes3
+* 11/20/19 : NKH02 : ACCU-639 Modified email recipients
+* 07/19/22 : NKH03 : ACCU-1823 Added code for AER 89994 - Commented out - No test file received
+
+* End modification history
+*
+*******************************************************
+      PREV.CLIENT.ID = '***'             ; * JCW01
+      INV.NUM = ''                       ; * JCW01
+      PROG.NAME='NUMK.4010.997'
+      TODAY=DATE()
+      LINE.NO=VIN<1>                     ; * Array Line Counter
+      EDI.RECORD.NAME=VIN<2>
+      WRITE.DATA=VIN<3>
+      TOT.BILL.COUNT=VIN<4>              ; * Total Bills Received and Processed
+      TOT.BILL.AMT=VIN<5>                ; * Total Amount of Bills (Actual Charge)
+      TEST.OR.PROD=''
+      FILE.NUMB=''
+      LINE=DA<1>
+      SEG.ARR=CHANGE(LINE,"*",@AM)
+      SEG.ID=SEG.ARR<1>
+      DEL SEG.ARR<1>                     ; * Realign the other elements
+      BEGIN CASE
+         CASE SEG.ID='ISA'
+            LAST.SEG.ID='IEA'
+         CASE SEG.ID='BG'
+            LAST.SEG.ID='EG'
+         CASE SEG.ID='GS'
+            LAST.SEG.ID='GE'
+         CASE 1
+            CALL ELINE('Error Expecting ISA or BG at Line ':LINE.NO+1)
+            GO ABORT.PROGRAM
+      END CASE
+      * Only Process one Group and then return to main program
+
+      * Initalize Variables
+      SEG.CNTR=0
+      GS.BEGIN=0
+      ST.BEGIN=0
+      ST.CNTR=0
+      SAVE.DA=''
+      N.ARRAY=''                         ; * Array where N1 ... Records are stored
+      L.ARRAY=''                         ; * Array where L ... Records are stored
+      FACK.REC=''                        ; * Record for Func. Ack (997)
+
+      OPEN '','CONTROL' TO CONTROL ELSE         ; * NKH02 
+         CALL OPEN.ABORT('CONTROL','PROG.NAME') ; * NKH02
+      END                                       ; * NKH02
+      READV EMAIL.RECIP FROM CONTROL, '4010', 1 ELSE EMAIL.RECIP = ''   ; * NKH02
+
+      LOOP
+         LINE=DA<1>
+         SAVE.DA<-1>=LINE                ; * Save it
+         IF TRIM(LINE)='' AND DA<2>#'' THEN
+            * Skip over Blank Lines if next one is not blank
+            DEL DA<1>
+            LINE.NO+=1
+            LINE=DA<1>
+            SAVE.DA<-1>=LINE             ; * Save it even if it is blank
+         END
+      UNTIL LINE='' DO
+         SEG.ARR=CHANGE(LINE,"*",@AM)
+         SEG.ID=SEG.ARR<1>
+         DEL SEG.ARR<1>                  ; * Realign the other elements
+         DEL DA<1>                       ; * After you determine that it is YOURS
+         LINE.NO+=1
+         SEG.CNTR+=1
+         GOSUB PROCESS.SEGMENT
+      REPEAT
+
+      GO END.PROGRAM
+
+*******************************************************
+PROCESS.SEGMENT:
+*******************************************************
+      BEGIN CASE
+         CASE SEG.ID='ISA'
+            TEST.OR.PROD=SEG.ARR<15>
+            FILE.NUMB=SEG.ARR<13>
+         CASE SEG.ID='BG'
+            NULL
+         CASE SEG.ID = 'GE'
+            IF GS.BEGIN#1 THEN
+               CALL ELINE('Line ':LINE.NO:' Reached GE without an active GS')
+               GO ABORT.PROGRAM
+            END
+            IF ST.CNTR#SEG.ARR<1>+0 THEN
+               CALL ELINE('Line ':LINE.NO:' GE reports ':SEG.ARR<1>:' STs ':ST.CNTR:' were counted')
+               GO ABORT.PROGRAM
+            END
+            IF SEG.ID=LAST.SEG.ID THEN RETURN TO END.PROGRAM
+         CASE SEG.ID=LAST.SEG.ID         ; ** Done with this routine
+            RETURN TO END.PROGRAM
+
+         CASE SEG.ID = 'ISA'
+            CALL ELINE('Line ':LINE.NO:' ISA Segment found in NUMK ... Shouldnt be there.. What do i do?')
+            GO ABORT.PROGRAM
+
+         CASE SEG.ID = 'GS'
+            IF GS.BEGIN=1 THEN
+               CALL ELINE('Line ':LINE.NO:' Already in the middle of a GS Segment cannot start another')
+               GO ABORT.PROGRAM
+            END
+            IF SEG.ARR<8>#'004010' THEN
+               CALL ELINE('Line ':LINE.NO:' This program only supports 4010 not ':SEG.ARR<8>)
+               GO ABORT.PROGRAM
+            END
+            SCAC=SEG.ARR<2>
+            IF SCAC#'NUMK' THEN
+               CALL ELINE('Line ':LINE.NO:' This program only supports NUMK not ':SCAC)
+               GO ABORT.PROGRAM
+            END
+            READV CARRIER.ID FROM F.CAR.XREF,SCAC,1 ELSE
+               CALL ELINE('LINE ':LINE.NO:' Unable to read ':SCAC:' from EDI.CAR.XREF')
+               GO ABORT.PROGRAM
+            END
+            GS.BATCH.TOTAL=0
+            CLIENT.ID=FIELD(SEG.ARR<3>,'-',2)
+            * Begin NKH03
+*            AER.PARENT = 0
+*            READV PARENT.ID FROM F.CLIENT, CLIENT.ID, 147 THEN
+*               IF PARENT.ID = "89994" THEN AER.PARENT = 1
+*            END    
+*            AER.CLIENT.ID = CLIENT.ID                                                            
+            * End NKH03            
+* OPEN CLIENT FILE HERE
+            GS.BEGIN=1
+            GS.TIME=ICONV(SEG.ARR<5>[1,2]:":":SEG.ARR<5>[3,2],'MT')
+            IN.DATA=SEG.ARR<4> ; GOSUB CONVERT.DATE
+            GS.DATE=OUT.DATA
+
+            * Create Functional Acknowledgement
+            FACK.REC=SCAC
+            FACK.REC<2>=SEG.ARR<1>
+            FACK.REC<10>=SEG.ARR<3>
+            FACK.REC<3>=SEG.ARR<6>
+            FACK.REC<4>=''
+            FACK.REC<5>='A'
+            FACK.REC<6>=GS.TIME
+            FACK.REC<7>=GS.DATE
+            FACK.REC<11>=SEG.ARR<8>
+
+         CASE SEG.ID = 'B3'
+            PRO=SEG.ARR<2>"R%9"
+
+            MOP=SEG.ARR<4>               ; * B3-4 Method of Payment
+            SHIP.IDENT.NUM=SEG.ARR<3>    ; * Bill of Lading Number for Out Bound
+
+            IN.DATA=SEG.ARR<6> ; GOSUB CONVERT.DATE
+            SHIP.DATE=OUT.DATA
+            SCAC.CODE=SEG.ARR<11>
+
+         CASE SEG.ID = 'G62'
+            IF SEG.ARR<1>='86' OR SEG.ARR<1>='11' THEN
+               IN.DATA=SEG.ARR<2> ; GOSUB CONVERT.DATE
+               SHIP.DATE=OUT.DATA
+            END
+         CASE SEG.ID = 'ST'
+
+            IF ST.BEGIN#0 THEN
+               CALL ELINE('Line ':LINE.NO:' ST Reached and ST.BEGIN was not 0')
+               GO ABORT.PROGRAM
+            END
+            IF GS.BEGIN#1 THEN
+               CALL ELINE('Line ':LINE.NO:' ST Reached without an active GS')
+               GO ABORT.PROGRAM
+            END
+            ST.BEGIN=1
+            ST.LINE.NO=LINE.NO
+            SEG.CNTR=1                   ; * Start of a new Bill
+            ST.CNTR+=1                   ; * Count of ST segments
+            TXN.SET.IDENT=SEG.ARR<1>     ; * ST-1
+            BEGIN CASE
+               CASE TXN.SET.IDENT='210'
+                  SEG.CONTROL=SEG.ARR<2>
+                  GOSUB INITIALIZE.BILL
+               CASE TXN.SET.IDENT='980'
+
+                  GOSUB GET.LINE
+                  IF SEG.ID#'BT1' THEN
+                     CALL ELINE('Line ':LINE.NO:' ST*980 found but BT1 did not follow!')
+                     GOTO ABORT.PROGRAM
+                  END
+                  BT1.TOTAL=SEG.ARR<5>   ; * BT1-5  Batch Total
+                  IN.DATA=BT1.TOTAL ; GOSUB CONVERT.MONEY
+                  BT1.TOTAL=OUT.DATA
+                  IF GS.BATCH.TOTAL#BT1.TOTAL THEN
+                     CALL ELINE('Line ':LINE.NO:' BT1 record reports ':BT1.TOTAL'R26,':' GS Batch Total reports ':GS.BATCH.TOTAL'R26,')
+                     GO ABORT.PROGRAM
+                  END
+
+                  FACK.REC<4>=''
+                  FACK.ID=CLIENT.ID:"*":CARRIER.ID:"*980*0"
+                  IF WRITE.DATA THEN
+                     WRITE FACK.REC ON F.FACK,FACK.ID
+                  END ELSE
+                     WRITE FACK.REC ON F.FACK,FACK.ID
+                  END
+
+                  * Note Subtract 1 from ST.CNTR BT1 subtotal does not include the
+                  *  ST segment for the BT1 which has already been counted
+                  IF ST.CNTR-1#SEG.ARR<2> THEN     ; * BT1-2 Bill Count
+                     CALL ELINE('Line ':LINE.NO:' ST.CNTR reports ':ST.CNTR-1:' Bills and BT1-5 reports ':SEG.ARR<2>)
+                     GO ABORT.PROGRAM
+                  END
+                  SKIP.TO='SE' ; GOSUB SKIP.TO
+                  DEL DA<1>              ; * Don't Need SE for ST*980
+                  LINE.NO+=1
+                  ST.BEGIN=0
+               CASE 1
+                  CALL ELINE('Line ':LINE.NO:' Programmed for Version 210 ':TXN.SET.IDENT:' detected!')
+                  GO ABORT.PROGRAM
+            END CASE
+         CASE SEG.ID='N9'
+            IF SEG.ARR<1>='SI' THEN
+               SHIPPER.IDENTIFY=SEG.ARR<2>
+            END ELSE
+               IF SEG.ARR<1>='PO' THEN PO.NUMBER=SEG.ARR<2>
+            END
+         CASE SEG.ID='SE'
+            IF ST.BEGIN#1 THEN
+               CALL ELINE('Line ':LINE.NO:' SE Reached without an active ST')
+               GO ABORT.PROGRAM
+            END
+            ST.BEGIN=0
+            IF SEG.CNTR#SEG.ARR<1> THEN
+               CALL ELINE('Line ':LINE.NO:' Segment Counter in SE does not compute')
+               GO ABORT.PROGRAM
+            END
+            IF SEG.CONTROL#SEG.ARR<2> THEN
+               CALL ELINE('Line ':LINE.NO:' SE Control Number Does not Match ST Control Number')
+               GO ABORT.PROGRAM
+            END
+            GOSUB BUILD.EDI.BILL
+            SAVE.DA=''                   ; ** Reset Save Array  Everything looks OK
+
+         CASE SEG.ID='N1'
+            LOOP.ID=SEG.ARR<1>
+            IF LOOP.ID='PF' THEN LOOP.ID='BT'      ; * American
+            LOCATE LOOP.ID IN N.ARRAY<1> SETTING N.POS ELSE
+               N.ARRAY<1,-1>=LOOP.ID
+            END
+            N.ARRAY<2,N.POS>=SEG.ARR<2>  ; * Name
+            * Begin NKH03
+*            IF LOOP.ID = 'BT' THEN
+*               IF AER.CLIENT.ID = '89994' THEN    
+*                  CLIENT.ID = FIELD(SEG.ARR<4>,'-',2,1) 
+*                  READ TEST.INFO FROM F.CLIENT,CLIENT.ID ELSE  
+*                     CLIENT.ID=''     
+*                  END     
+*                  IF CLIENT.ID = '' THEN CLIENT.ID = '89994'
+*               END
+*            END                                     
+            * End NKH03            
+         CASE SEG.ID='LX'
+            L.POS=SEG.ARR<1>
+         CASE SEG.ID='L5'
+            L.ARRAY<1,SEG.ARR<1>>=SEG.ARR<2>       ; * Line Desc
+            IF LEN(SEG.ARR<3>) = 10 THEN SEG.ARR<3>=SEG.ARR<3>[3,99]
+            L.ARRAY<11,SEG.ARR<1>>=SEG.ARR<3>      ; * NMFC
+         CASE SEG.ID='L0'
+            IF SEG.ARR<1>#1 THEN
+               IF L.ARRAY<1,SEG.ARR<1>-1>[1,3]='LBS' ELSE
+                  L.ARRAY<2,SEG.ARR<1>>=SEG.ARR<4>           ; * Weight
+                  L.ARRAY<3,SEG.ARR<1>>=SEG.ARR<8>           ; * Pieces
+               END
+            END ELSE
+               L.ARRAY<2,SEG.ARR<1>>=SEG.ARR<4>    ; * Weight
+               L.ARRAY<3,SEG.ARR<1>>=SEG.ARR<8>    ; * Pieces
+            END
+         CASE SEG.ID='L1'
+            IF L.ARRAY<1,SEG.ARR<1>>='' THEN L.ARRAY<1,SEG.ARR<1>>=''
+            CWT=SEG.ARR<2>               ; * L1-2   C.W.T
+            IN.DATA=CWT ; GOSUB CONVERT.RATE
+            CWT=OUT.DATA
+            L.ARRAY<4,SEG.ARR<1>>=CWT
+            L.ARRAY<5,SEG.ARR<1>>=SEG.ARR<3>       ; * Charge Qualifier
+            L.ARRAY<6,SEG.ARR<1>>=SEG.ARR<4>       ; * Charge
+            CHARGE.CODE=TRIM(SEG.ARR<8>)
+            IF CHARGE.CODE='ENS' THEN CHARGE.CODE='FSC'
+            IF CHARGE.CODE='FUE' THEN CHARGE.CODE='FSC'
+            IF CHARGE.CODE='405' THEN CHARGE.CODE='FSC'
+            IF CHARGE.CODE='WTV' THEN CHARGE.CODE='WI'
+            IF CHARGE.CODE='IDL' THEN CHARGE.CODE='ID'
+            IF CHARGE.CODE='NFY' THEN CHARGE.CODE='NOA'
+            IF CHARGE.CODE='LFT' THEN CHARGE.CODE='L25'
+            IF CHARGE.CODE='420' THEN CHARGE.CODE='HAZ'
+            IF CHARGE.CODE='680' THEN CHARGE.CODE='GUAR'
+            IF CHARGE.CODE='OVR' THEN CHARGE.CODE='XLTH'     ; * DRF01
+            IF TRIM(L.ARRAY<1,SEG.ARR<1>>)[1,21]='CALIFORNIA COMPLIANCE' THEN    ; * GRB01
+               CHARGE.CODE='CACS'        ; * GRB01
+            END                          ; * GRB01
+            
+            L.ARRAY<7,SEG.ARR<1>>=CHARGE.CODE      ; * Code FUE DSC
+         CASE SEG.ID='L7'
+            TARIFF.NAME=TRIM(SEG.ARR<2>)           ; * Tariff Name
+            IF TARIFF.NAME='ZAR' THEN TARIFF.NAME='CZAR'
+            L.ARRAY<8,SEG.ARR<1>>=TARIFF.NAME
+            TARIFF.REF=TRIM(SEG.ARR<3>)  ; * Tariff Reference
+            L.ARRAY<9,SEG.ARR<1>>=TARIFF.REF
+            CLASS=TRIM(SEG.ARR<7>)+0
+
+            IF CLASS=92.5 THEN CLASS=92
+            IF CLASS=77.5 THEN CLASS=77
+
+            L.ARRAY<10,L.POS>=CLASS
+         CASE SEG.ID='L3'
+            BILL.WEIGHT=TRIM(SEG.ARR<1>)           ; * L3-1 Bill Weight
+            BILL.WEIGHT.QUAL=TRIM(SEG.ARR<2>)      ; * L3-2 Weight Qualifier
+            BILL.AMOUNT=TRIM(SEG.ARR<5>)           ; * L3-5 Bill Amount
+            GS.BATCH.TOTAL+=BILL.AMOUNT
+            BILL.PIECES=TRIM(SEG.ARR<11>)          ; * L3-11 Bill Pieces
+         CASE SEG.ID='N2'
+            N.ARRAY<3,N.POS>=SEG.ARR<1>  ; * Additional Name
+         CASE SEG.ID='N3'
+
+            N.ARRAY<4,N.POS>=TRIM(SEG.ARR<1>)
+            IF N.ARRAY<4,N.POS>='' THEN
+               N.ARRAY<4,N.POS>=TRIM(SEG.ARR<2>)
+            END ELSE
+               N.ARRAY<5,N.POS>=TRIM(SEG.ARR<2>)
+            END
+         CASE SEG.ID='N4'
+            N.ARRAY<6,N.POS>=SEG.ARR<1>  ; * City
+            N.ARRAY<7,N.POS>=SEG.ARR<2>  ; * State
+            N.ARRAY<8,N.POS>=SEG.ARR<3>  ; * Zip
+            N.ARRAY<9,N.POS>=SEG.ARR<4>  ; * Country Code
+         CASE SEG.ID='K1'
+            COMMENTS<1,-1>=SEG.ARR<1>:SEG.ARR<2>
+      END CASE
+      RETURN
+      
+*******************************************************
+CONVERT.DATE:
+*******************************************************
+      OUT.DATA=ICONV(IN.DATA[5,2]:'/':IN.DATA[7,2]:'/':IN.DATA[1,4],'D')
+      RETURN
+      
+*******************************************************
+CONVERT.MONEY:
+*******************************************************
+      OUT.DATA=ICONV(IN.DATA,'MR2')
+      RETURN
+      
+*******************************************************
+CONVERT.RATE:
+*******************************************************
+      OUT.DATA=ICONV(IN.DATA,'MR3')
+      RETURN
+      
+*******************************************************
+INITIALIZE.BILL: * reset all variables that may be lingering from previous bill
+*******************************************************
+      SHIP.DATE=''
+      N.ARRAY=''
+      L.ARRAY=''
+      PO.NUMBER=''
+      SHIPPER.IDENTIFY=''
+      SHIP.IDENT.NUM=''
+      COMMENTS=''
+      RETURN
+      
+*******************************************************
+BUILD.EDI.BILL: * Build & Write EDI Bill
+*******************************************************
+      * Get Version Number
+      IF PREV.CLIENT.ID # CLIENT.ID THEN           ; * JCW01
+         PREV.CLIENT.ID = CLIENT.ID      ; * JCW01
+         OPEN 'EDI.BILLS.HIST,':CLIENT.ID TO F.EDI.BILLS.HIST ELSE     ; * JCW01
+            GOSUB SEND.MAIL              ; * JCW01
+            STMT = 'CREATE-FILE DATA EDI.BILLS.HIST,':CLIENT.ID:' 1009,2'       ; * JCW01    NKH01
+            EXECUTE STMT CAPTURING MSG   ; * JCW01
+            OPEN 'EDI.BILLS.HIST,':CLIENT.ID TO F.EDI.BILLS.HIST ELSE  ; * JCW01
+               CALL OPEN.ABORT('EDI.BILLS.HIST,':CLIENT.ID, PROG.NAME)           ; * JCW01
+            END                          ; * JCW01
+         END                             ; * JCW01
+      END                                ; * JCW01
+      FOUND=1
+      VERSION=-1
+      LOOP UNTIL FOUND=0 DO
+         VERSION+=1
+         EDI.ID=CLIENT.ID:"*":CARRIER.ID:"*":PRO:"*":VERSION
+         EDI.HIST.ID = CARRIER.ID:"*":PRO:"*":VERSION        ; * JCW01
+
+         READV NUL FROM F.EDI.BILLS.HIST, EDI.HIST.ID, 1 ELSE FOUND=0  ; * JCW01
+         IF NOT(WRITE.DATA) THEN FOUND=0
+      REPEAT
+      DBILL=''
+
+      DBILL<5>=GS.DATE
+      DBILL<6>=GS.TIME
+      DBILL<3>=SCAC.CODE
+      DBILL<7>=EDI.RECORD.NAME:"*":ST.LINE.NO:"-":LINE.NO
+      IF MOP='CC' THEN
+         DBILL<9>=PO.NUMBER
+      END
+      IF MOP='PP' THEN
+         DBILL<9>=SHIP.IDENT.NUM
+      END
+      LOCATE 'BT' IN N.ARRAY<1> SETTING POS THEN
+         DBILL<10>=N.ARRAY<2,POS>        ; * Bill to Name 1
+         DBILL<11>=N.ARRAY<3,POS>        ; * Bill to Name 2
+         DBILL<12>=N.ARRAY<4,POS>        ; * Bill to Addr 1
+         DBILL<13>=N.ARRAY<5,POS>        ; * Bill to Addr 2
+         DBILL<14>=N.ARRAY<6,POS>        ; * Bill to City
+         DBILL<15>=N.ARRAY<7,POS>        ; * Bill to State
+         DBILL<16>=N.ARRAY<8,POS>        ; * Bill to Zip
+         DBILL<17>=N.ARRAY<9,POS>        ; * Bill to Country Code
+      END
+      LOCATE 'SH' IN N.ARRAY<1> SETTING POS THEN
+         DBILL<19>=N.ARRAY<2,POS>        ; * Shipper Name 1
+         DBILL<20>=N.ARRAY<3,POS>        ; * Shipper Name 2
+         DBILL<21>=N.ARRAY<4,POS>        ; * Shipper Addr 1
+         DBILL<22>=N.ARRAY<5,POS>        ; * Shipper Addr 2
+         DBILL<23>=N.ARRAY<6,POS>        ; * Shipper City
+         DBILL<24>=N.ARRAY<7,POS>        ; * Shipper State
+         DBILL<25>=N.ARRAY<8,POS>        ; * Shipper Zip
+         DBILL<26>=N.ARRAY<9,POS>        ; * Shipper Country Code
+      END
+      LOCATE 'SF' IN N.ARRAY<1> SETTING POS THEN
+         DBILL<19>=N.ARRAY<2,POS>        ; * Shipper Name 1
+         DBILL<20>=N.ARRAY<3,POS>        ; * Shipper Name 2
+         DBILL<21>=N.ARRAY<4,POS>        ; * Shipper Addr 1
+         DBILL<22>=N.ARRAY<5,POS>        ; * Shipper Addr 2
+         DBILL<23>=N.ARRAY<6,POS>        ; * Shipper City
+         DBILL<24>=N.ARRAY<7,POS>        ; * Shipper State
+         DBILL<25>=N.ARRAY<8,POS>        ; * Shipper Zip
+         DBILL<26>=N.ARRAY<9,POS>        ; * Shipper Country Code
+      END
+      LOCATE 'CN' IN N.ARRAY<1> SETTING POS THEN
+         DBILL<28>=N.ARRAY<2,POS>        ; * Consignee Name 1
+         DBILL<29>=N.ARRAY<3,POS>        ; * Consignee Name 2
+         DBILL<30>=N.ARRAY<4,POS>        ; * Consignee Addr 1
+         DBILL<31>=N.ARRAY<5,POS>        ; * Consignee Addr 2
+         DBILL<32>=N.ARRAY<6,POS>        ; * Consignee City
+         DBILL<33>=N.ARRAY<7,POS>        ; * Consignee State
+         DBILL<34>=N.ARRAY<8,POS>        ; * Consignee Zip
+         DBILL<35>=N.ARRAY<9,POS>        ; * Consignee Country Code
+      END
+      DBILL<58>=BILL.WEIGHT
+      DBILL<59>=BILL.WEIGHT.QUAL
+      DBILL<61>=BILL.PIECES
+      DBILL<67>=BILL.AMOUNT
+      DBILL<72>=MOP
+      DBILL<77>=SHIP.DATE
+      DBILL<114>=COMMENTS
+      IF SHIPPER.IDENTIFY#'' THEN
+         DBILL<115>=SHIPPER.IDENTIFY
+      END
+      L.TIMES=DCOUNT(L.ARRAY,@AM)
+      FOR L.CNT = 1 TO L.TIMES
+         DBILL<100+L.CNT>=L.ARRAY<L.CNT>
+      NEXT L.CNT
+      TOT.BILL.COUNT+=1
+      TOT.BILL.AMT+=BILL.AMOUNT
+
+      DBILL<130>=TODAY
+      DBILL<146>=TEST.OR.PROD
+      DBILL<147>=FILE.NUMB
+      * Begin NKH03
+*      BEGIN CASE
+*         CASE AER.CLIENT.ID = '89994' 
+*            FACK.ID = AER.CLIENT.ID:'*':CARRIER.ID:'*':PRO:'*':VERSION         
+*         CASE 1
+            FACK.ID = CLIENT.ID:'*':CARRIER.ID:'*':PRO:'*':VERSION
+*      END CASE
+      * End NKH03      
+      FACK.REC<4>=EDI.ID
+      IF WRITE.DATA THEN
+         IF VERSION=0 THEN WRITE DBILL ON F.EDI.BILLS,EDI.ID
+         WRITE DBILL ON F.EDI.BILLS.HIST, EDI.HIST.ID        ; * JCW01
+         WRITE FACK.REC ON F.FACK,FACK.ID                    ; * NKH03
+      END ELSE
+         WRITE DBILL ON F.WORK,EDI.ID
+         WRITE FACK.REC ON F.FACK,FACK.ID                    ; * NKH03
+      END
+
+      RETURN
+      
+*******************************************************
+GET.LINE:
+*******************************************************
+      LINE=DA<1>
+      IF TRIM(LINE)='' AND DA<2>#'' THEN
+         * Skip over Blank Lines
+         DEL DA<1>
+         LINE.NO+=1
+         LINE=DA<1>
+      END
+      LINE=CHANGE(LINE,CHAR(13),'')      ; * Remove CR's
+      DEL DA<1>
+      LINE.NO+=1
+      SEG.ID=FIELD(LINE,"*",1)
+      STAR.POS=INDEX(LINE,"*",1)
+      SEG.ARR=LINE[STAR.POS+1,9999]
+      SEG.ARR=CHANGE(SEG.ARR,"*",@AM)
+      RETURN
+      
+*******************************************************
+SKIP.TO: * Subroutine to Skip to Next Specified Segment
+*******************************************************
+      LOOP
+         LINE=DA<1>
+      UNTIL LINE='' OR LINE[1,LEN(SKIP.TO)]=SKIP.TO DO
+         DEL DA<1>
+         LINE.NO+=1
+      REPEAT
+      RETURN
+
+*******************************************************
+SEND.MAIL: * SEND EMAIL REGARDING NEW EDI CLIENT                           
+*******************************************************
+      EMAIL.OUT=''                       ; * JCW01
+      READV CLIENT.NAME FROM F.CLIENT, CLIENT.ID, 2 ELSE     ; * JCW01
+         CLIENT.NAME = 'Name Not Found'  ; * JCW01
+      END                                ; * JCW01
+      READV CARRIER.NAME FROM F.CARRIER, CARRIER.ID, 1 ELSE  ; * JCW01
+         CARRIER.NAME = 'Name Not Found'           ; * JCW01
+      END                                ; * JCW01
+      EMAIL.OUT<1>=EMAIL.RECIP           ; * NKH02
+      EMAIL.OUT<2>=''                    ; * NKH02
+      EMAIL.OUT<3>=''                    ; * JCW01
+      EMAIL.OUT<4>='DataProc@AFSLogistics.Com'     ; * JCW01
+      EMAIL.OUT<5>='New EDI Client Encountered'    ; * JCW01
+      EMAIL.OUT<6,-1>='An EDI record has been processed that contains a client ID that has not been properly setup for EDI.'       ; * JCW01
+      EMAIL.OUT<6,-1>='Specifically, this program had to create a subfile for the client under EDI.BILLS.HIST.'          ; * JCW01
+      EMAIL.OUT<6,-1>=''                 ; * JCW01
+      EMAIL.OUT<6,-1>='Program Name: ':PROG.NAME   ; * JCW01
+      EMAIL.OUT<6,-1>='Client Number: ':CLIENT.ID:'-':CLIENT.NAME      ; * JCW01
+      EMAIL.OUT<6,-1>='Carrier Number: ':CARRIER.ID:'-':CARRIER.NAME   ; * JCW01
+      IF PROG.NAME[1,3] = 'UPS' THEN     ; * JCW01
+         EMAIL.OUT<6,-1>='Invoice Number: ':INV.NUM          ; * JCW01
+      END ELSE                           ; * JCW01
+         EMAIL.OUT<6,-1>='Pro Number: ':PRO        ; * JCW01
+      END                                ; * JCW01
+      VIN=EMAIL.OUT                      ; * JCW01
+      VOUT=''                            ; * JCW01
+      CALL SENDMAIL(VIN,VOUT)            ; * JCW01
+      RETURN                             ; * JCW01
+
+*******************************************************
+ABORT.PROGRAM:
+*******************************************************
+      OPEN 'TEMP' TO F.TEMP ELSE ABORT
+      WRITE SAVE.DA ON F.TEMP,'SAVE.DA'
+      CRT @(0,23):'SAVE.DA written on file TEMP.....!  [Enter] to Continue: ':
+      INPUT NUL
+      CRT 'Current Segment ':SEG.ID:' ':SEG.ARR
+      FOR X = 1 TO 15
+         PRINT X'R(%3 )':DA<X>[1,75]
+      NEXT X
+      CRT
+      CRT "Press Break to Check Any Variables: ":
+      INPUT NUL
+      NULL
+      NULL
+      NULL
+      ABORT
+      
+*******************************************************
+END.PROGRAM:
+*******************************************************
+      VOUT=LINE.NO
+      VOUT<4>=TOT.BILL.COUNT
+      VOUT<5>=TOT.BILL.AMT
+      RETURN
+   END

@@ -1,0 +1,221 @@
+$OPTIONS HEADER.EJECT
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+ERRMSG=''
+* PROGRAM UPD.EXCHANGE.RATES
+*
+* Routine to monitor Daily Currency rates to ensure that they have been entered
+*
+* FREIGHT BILLING PACKAGE
+*
+* May 2009  BY N PRATT
+*
+* 081809 - NPR00 - T091057 - Replace Sandra Long with Stacy Rittenbach wherever the former occurs
+* 100314 - DRF01 - SysAid 11706 - Added KShelton to the emails
+*
+* Initialize variables
+*
+5
+*
+      PROMPT''
+      PROG.NAME='MONITOR.EXCHANGE.RATES'
+      PROG.DESC = "Enter Exchange rates"
+      PACK.NAME='FREIGHT BILLING'
+*
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'MONITOR.EXCHANGE.RATES' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      CALL AFS.SCR.HEAD(CO.ID,"",'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+
+HLINE = "Currency"
+HLINE<1,2> = "Country Name"
+HLINE<1,3> = "Eff. Date"
+HLINE<1,4> = "Rate 1"
+HLINE<1,5> = "Rate 2"
+HLINE<1,6> = "Entered By 1st"
+HLINE<1,7> = "1st Entered on"
+HLINE<1,8> = "1st Entered at"
+HLINE<1,9> = "Entered By 2nd"
+HLINE<1,10> = "2nd Entered on"
+HLINE<1,11> = "2nd Entered at"
+
+XLS.REC = HLINE
+
+      CALL GET.USER(USER)
+      BEGIN CASE
+        *
+        * Authorized users
+        *
+        CASE USER = 'DAVID'
+        CASE USER = 'OWEN'
+        CASE USER = 'NPRATT'
+        CASE USER = 'BRIAN'
+        CASE USER = 'MKERBOW'
+        CASE USER = 'KAREN'
+*NPR01        CASE USER = 'SANDRA'
+        CASE USER = 'SRITTENBACH'
+        CASE USER = 'CBEASLEY'
+        CASE USER = 'DEBBIE'
+        *
+        * Restrict everyone else
+        *
+        CASE 1
+          SUBJ="Unauthorized Program Access by ":USER
+          TEXT=''
+          TEXT<1,-1>=USER:' ':DATE()'D2/':' ':OCONV(TIME(),'MTHS'):' ':PROG.NAME
+          TEXT<1,-1>='User ':USER:' tried to access ':PROG.DESC
+          TEXT<1,-1>="(This user's name was not included in the program to allow access)"
+          MVIN=''
+*          MVIN<1>='Owen@afs.net':@VM:'SMatthews@afs.net'
+******          MVIN<1> = "npratt@afs.net"
+          MVIN<2>=''
+          MVIN<4>='AFS'
+          MVIN<5>=SUBJ
+          MVIN<6>=TEXT
+*zz          CALL SENDMAIL(MVIN,MVOUT)
+
+          CALL FB.PRINT.CENT(1,80,12,'Restricted Access Application...')
+          CALL FB.PRINT.CENT(1,80,14,'Access Denied! Contact the IS Help Desk for Access')
+          CALL ELINE('')
+          STOP
+      END CASE
+
+*
+* Open files
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      OPEN '','FB.TABLES' TO F.TABLES ELSE CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      OPEN '','FB.CURRENCY.RATES' TO  F.CURRENCY.RATES ELSE CALL OPEN.ABORT('FB.CURRENCY.RATES',PROG.NAME)
+      OPEN '','FB.COUNTRIES' TO F.COUNTRIES ELSE CALL OPEN.ABORT('FB.CURRENCY.RATES',PROG.NAME)
+      OPEN '',"BILLDATA.":USER TO F.BILLDATA ELSE CALL OPEN.ABORT("BILLDATA.":USER,PROG.NAME)
+      OPEN '',"EMAILDATA" TO F.EMAILDATA ELSE CALL OPEN.ABORT("EMAILDATA",PROG.NAME)
+
+EOF = "N"
+TODAY   = DATE()
+TO.DATE = TODAY
+FROM.DT = TO.DATE - 7
+DATE.ARRAY = ''
+DAY.STR = "MTWTFSS"
+
+ID.EXCHR = ''
+
+ID.TAB = "CURRENCY.CODES"
+READ CCODES.REC FROM F.TABLES, ID.TAB ELSE CCODES.REC = ""          ;* Particular currencies of interest to AFS as at 07/31/09
+
+FOR DTX = FROM.DT TO TO.DATE
+   W.DATEX = DTX
+   DAY.POS = OCONV(W.DATEX,"DW")
+   DOW = DAY.STR[DAY.POS,1]
+*   CRT OCONV(W.DATEX,"D2/") :' ' :DAY.POS:"  DAY ":DAY.STR[DAY.POS,1]
+   IF DOW NE "S" THEN
+      DATE.ARRAY<-1> = W.DATEX
+   END
+NEXT DTX
+*
+N.DAYS = DCOUNT(DATE.ARRAY,@AM)
+FOR ID = 1 TO N.DAYS
+   W.DATE = DATE.ARRAY<ID>
+   N.RATES = DCOUNT(CCODES.REC<1>,@VM)
+   FOR IR = 1 TO N.RATES
+      CURR.CD = CCODES.REC<1,IR>
+      ID.EXCHR = CURR.CD:"*":W.DATE
+      GOSUB PROC.RATES
+   NEXT IR
+NEXT ID
+*
+DATE.STR = OCONV(FROM.DT,"D2/"):"_TO_":OCONV(TO.DATE,"D2/")
+CONVERT "/" TO "" IN DATE.STR
+ID.XLS = "EXCHANGE_RATES_":DATE.STR:".XLS"
+
+CONVERT @VM TO CHAR(9) IN XLS.REC
+
+WRITE XLS.REC ON F.BILLDATA, ID.XLS
+
+WRITE XLS.REC ON F.EMAILDATA, ID.XLS
+
+GOSUB BUILD.ERR.MSG
+
+CALL ELINE("File ":ID.XLS:" Written to your U: drive")
+*
+STOP
+
+PROC.RATES :
+
+READ EXCHR.REC FROM F.CURRENCY.RATES, ID.EXCHR ELSE
+   EXCHR.REC = ""   
+END
+
+RATE1       = EXCHR.REC<1>
+RATE2       = EXCHR.REC<2>
+ENTERED.BY1 = EXCHR.REC<3>
+ENTERED.ON1 = EXCHR.REC<4>
+ENTERED.AT1 = EXCHR.REC<5>
+ENTERED.BY2 = EXCHR.REC<6>
+ENTERED.ON2 = EXCHR.REC<7>
+ENTERED.AT2 = EXCHR.REC<8>
+
+IF RATE1 NE "" THEN RATE1 = OCONV(RATE1,"MR4")
+IF RATE2 NE "" THEN RATE2 = OCONV(RATE2,"MR4")
+
+CURRENCY = FIELD(ID.EXCHR,"*",1)
+EFF.DATE = FIELD(ID.EXCHR,"*",2)
+
+COUNTRY.NAME = ""
+LOCATE CURRENCY IN CCODES.REC<1> SETTING CPOS THEN
+   COUNTRY.NAME = CCODES.REC<3,CPOS>
+END
+
+DLINE = CURRENCY
+DLINE<1,2> = OCONV(COUNTRY.NAME,"MCT")
+DLINE<1,3> = OCONV(EFF.DATE,"D2/")
+DLINE<1,4> = RATE1
+DLINE<1,5> = RATE2
+DLINE<1,6> = ENTERED.BY1
+DLINE<1,7> = OCONV(ENTERED.ON1,"D2/")
+DLINE<1,8> = OCONV(ENTERED.AT1,"MTS")
+DLINE<1,9> = ENTERED.BY2
+DLINE<1,10> = OCONV(ENTERED.ON2,"D2/")
+DLINE<1,11> = OCONV(ENTERED.AT2,"MTS")
+
+XLS.REC<-1> = DLINE
+*
+RETURN
+
+BUILD.ERR.MSG :
+
+EMAIL.OUT = ''
+VOUT      = ''
+
+******EMAIL.OUT<1>='npratt@afs.net'
+
+*ZZ EMAIL.OUT<2>='karen@afs.net'
+*ZZ EMAIL.OUT<2,2>='slong@afs.net'
+EMAIL.OUT<2>='srittenbach@afs.net'
+EMAIL.OUT<2,2>='DGarrett@afs.net'
+EMAIL.OUT<2,3>='cbeasley@afs.net'
+EMAIL.OUT<2,4>='KShelton@afs.net'     ; * DRF01
+
+*         EMAIL.OUT<3>='MKerbow@afs.net'
+
+EMAIL.OUT<4>='AccountsReceivable@afs.net'
+EMAIL.OUT<5>=\Exchange Rate log for the period \:OCONV(FROM.DT,"D2/"):\ to \:OCONV(TO.DATE,"D2/")
+EMAIL.OUT<6>="  "
+EMAIL.OUT<6,2>="The attached TAB delimited file contains exchange rates entered and checked for the period : "
+EMAIL.OUT<6,3>=" "
+EMAIL.OUT<6,4>= OCONV(FROM.DT,"D2/"):\ to \:OCONV(TO.DATE,"D2/")
+EMAIL.OUT<6,5>=" "
+EMAIL.OUT<6,6>="Please be sure to check that all rates have been entered and checked : "
+EMAIL.OUT<6,-1>=" "
+EMAIL.OUT<6,-1>=" "
+EMAIL.OUT<6,-1>=SPACE(40):" Created via the MONITOR.EXCHANGE.RATES program in FBBP"
+
+
+EMAIL.OUT<11>='E:\ARDENT\PUBLIC\EMAILDATA\'
+EMAIL.OUT<11>:=ID.XLS
+VIN=EMAIL.OUT
+CALL SENDMAIL(VIN,VOUT)
+
+*
+*
+RETURN
+
+

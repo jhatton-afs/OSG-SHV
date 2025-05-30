@@ -1,0 +1,403 @@
+***********************************************************************
+* Program name :  AUDIT.AGING.RPT
+* Author       :  Nicole Hennick
+* Date written :  01/06/2021
+* Library      :  FBBP
+$* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* OCR Audit Aging Report
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 09:23:01 on 07/21/2022
+*
+* Start modification history
+* 01/06/21 : NKH00 : ACCU-1077 New program
+* 02/15/21 : NKH01 : ACCU-1133 Added server checking for dev
+* 10/20/21 : NKH02 : ACCU-1440 Changed selection
+* 05/12/22 : NKH03 : ACCU-1723 Added Keyed Date and SCAC
+* 06/28/22 : NKH04 : ACCU-1803 Added day of process
+* 07/21/22 : NKH05 : ACCU-1838 Removed bills with status of needs review
+* 01/11/23 : NKH06 : ACCU-2000 Added automated process
+* End modification history
+***********************************************************************
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE UNIVERSE.INCLUDE UDO.H
+
+      * Initialize variables      
+      PROMPT''
+      CALL GET.USER.NEW(USER.NAME,CH.NUM)
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'OLD.IMAGE.RPT' ; UPL.VOUT = ''
+      UPL.VIN<3> = USER.NAME
+      UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+      STATUS = 0
+      CALL GET.SERVER.INFO(SVR.VIN,SVR.VOUT)       ; * NKH01
+      SERVER.NAME=SVR.VOUT<1>                      ; * NKH01   
+      USER.SV=0                                ; * NKH06
+      IF USER.NAME[1,3]='SV.' THEN USER.SV=1   ; * NKH06         
+
+      RESP.CNT=1
+      RESP = ''
+      VOUT=''
+      TIME.LINE=''
+      ST.TIME = TIME()
+      TIME.LINE<1,1,1>=TIME()            ; * start time
+      PROMPT ''
+      TIMEOUT = 30000
+      PROG.NAME='AUDIT.AGING.RPT'
+      PROG.DESC = 'OCR AUDIT AGING REPORT'
+      PACK.NAME = 'OCR'
+      CRT@(-1)
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      HELP = "Enter the Due Date. [T]=Today [X]=Back to Pro Date [EX]=Exit"
+      MASK = 'MM/DD/YY'
+      REQ=1
+      DELIM = CHAR(9)
+      TEMP.REC = ''
+      IMAGE.DT = ''
+      CARRIERNAME = ''
+      SCAc = ''      ; * NKH04
+      
+      * Capture Input Data
+      EOJD=0
+      LOOP
+      UNTIL EOJD DO     
+         IF NOT(USER.SV) THEN                                                 ; * NKH06      
+*IF USER.NAME # 'NMEDDAUGH' THEN
+            CRT @(10,10):"Enter Cutoff Date (MM/DD/YY) or (E)nd  ": 
+            CALL GEN.IN(10,27,MASK,'DATE',Q,REQ,8,'','',2,50,10,0,QI,HELP,0,23)     
+            IF Q[1,1]="E" THEN
+               EOJD = 1
+               STOP
+            END
+            CUTOFF.DT = Q
+            CRT @(50,10):OCONV(CUTOFF.DT,"D2/")
+            CRT @(5,20):"Is this date correct ? (Y/N) ": ; INPUT RESP
+            IF RESP = "Y" THEN
+               EOJD = 1
+            END
+         END ELSE                                  ; * NKH06
+            CUTOFF.DT =  OCONV(DATE(),'D2/')       ; * NKH06
+         END                                       ; * NKH06            
+      REPEAT
+      
+      * Open Files
+      OPEN 'VOC' TO VOC ELSE 
+         CALL ELINE('UNABLE TO OPEN VOC')
+         RETURN
+      END            
+      OPEN 'CONTROL' TO FILE.CNTL ELSE
+         CALL ELINE('UNABLE TO OPEN CONTROL FILE')
+         RETURN
+      END
+      OPEN 'CLIENTS' TO F.CLIENTS ELSE
+         CALL ELINE('UNABLE TO OPEN CLIENTS FILE')
+         RETURN
+      END    
+      OPEN 'CARRIERS' TO F.CARRIERS ELSE
+         CALL ELINE('UNABLE TO OPEN CARRIERS FILE')
+         RETURN
+      END            
+      OPEN 'AGING.TEMP' TO TEMP.FILE ELSE
+         CALL ELINE('UNABLE TO OPEN AGING.TEMP FILE')
+         RETURN
+      END 
+      HUSH ON
+      EXECUTE 'CLEAR-FILE AGING.TEMP'                 
+      HUSH OFF
+      OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+         CALL OPEN.ABORT('BILLDATA.':USER.NAME,PROG.NAME)
+      END
+*      OPEN '','AUDIT.AGING.DLY' TO DOS.FILE.OUT ELSE                    ; * NKH06
+*         CALL ELINE('Unable to open the ':DOS.FILE.OUT:' out file')     ; * NKH06
+*      END                                                               ; * NKH06      
+      IF USER.SV THEN                                                   ; * NKH06
+*IF USER.NAME = 'NMEDDAUGH' THEN 
+         TDATE = OCONV(DATE(),'D2-')                                    ; * NKH06
+         FILE.ID = "AUDIT.AGING-":TDATE:".XLS"                          ; * NKH06
+         OPENSEQ 'AUDIT.AGING.DLY', FILE.ID TO OUTSEQ.FILE ELSE           ; * NKH06
+            CREATE OUTSEQ.FILE ELSE                                     ; * NKH06
+            END                                                         ; * NKH06
+         END                                                            ; * NKH06
+      END ELSE                                                          ; * NKH06
+         FILE.ID = "AUDIT.AGING.XLS"      
+         OPENSEQ 'BILLDATA.':USER.NAME, FILE.ID TO OUTSEQ.FILE ELSE
+            CREATE OUTSEQ.FILE ELSE
+            END
+         END
+      END                                                               ; * NKH06
+      WEOFSEQ OUTSEQ.FILE
+      
+      * Get parameters
+      GOSUB BUILD.HEADER
+
+      READ XMLPARAMS FROM FILE.CNTL,"AUDIT.AGING.RPT" THEN
+         URL = XMLPARAMS<1>
+         SERVER = XMLPARAMS<2>
+         SOAPACTION = XMLPARAMS<3>
+         LOGGING = XMLPARAMS<4>          ; * Y/N
+         LOGFILE = XMLPARAMS<5>
+         EMAIL.RECIP = XMLPARAMS<6>
+         TEST.FLG = XMLPARAMS<7>
+      END ELSE
+         LOGFILE="AUDIT.AGING.LOG"
+         LOGGING = "N"
+         EMAIL.RECIP = 'nhennick@afs.net'
+         TEST.FLG = @FALSE
+      END
+
+      IF LOGGING = "Y" OR LOGGING = 1 THEN
+         LOGGING = @TRUE
+      END ELSE
+         LOGGING = @FALSE
+      END
+      IF LOGGING THEN
+         STAT = PROTOCOLLOGGING(LOGFILE, "ON", 10)
+      END
+
+      * Setup Email
+      EMAIL.OUT=''
+      EMAIL.OUT<1,-1>='HelpDesk@afs.net'
+      EMAIL.OUT<2,-1>= EMAIL.RECIP
+      EMAIL.OUT<4>='FBBP_AUDIT.AGING.RPT@afs.net'
+      EMAIL.OUT<5>='Error while trying to access OCR IMAGE Web-Service .'
+
+      * Main Loop
+      FILENAME = 'FB.BILLS'
+      READ VOC.REC FROM VOC, FILENAME ELSE NULL
+      CLIENT.COUNT = DCOUNT(VOC.REC<7>,@VM)
+      FOR X = 1 TO CLIENT.COUNT
+         ID = FILENAME:",":VOC.REC<7,X>
+         AUDITOR = '' ; STATUS = ''
+         READ CLIENTS.REC FROM F.CLIENTS, VOC.REC<7,X> THEN
+            AUDITOR = CLIENTS.REC<71>
+            STATUS = CLIENTS.REC<30>
+            * Begin NKH04
+            DAY.OF.PROC = CLIENTS.REC<151>   
+            BEGIN CASE
+               CASE DAY.OF.PROC = 0
+                  DAY = 'Sun'
+               CASE DAY.OF.PROC = 1
+                  DAY = 'Mon'
+               CASE DAY.OF.PROC = 2               
+                  DAY = 'Tues'
+               CASE DAY.OF.PROC = 3               
+                  DAY = 'Wed'
+               CASE DAY.OF.PROC = 4               
+                  DAY = 'Thurs'
+               CASE DAY.OF.PROC = 5
+                  DAY = 'Fri'
+               CASE DAY.OF.PROC = 6
+                  DAY = 'Sat'                    
+            END CASE
+            * End NKH04
+         END
+         IF STATUS = 'A' THEN
+            OPEN ID TO FILENAME.FILE THEN
+               HUSH ON
+*               CMD = 'SELECT ':FILENAME:',':VOC.REC<7,X>:' WITH 39 = "2" "3" "4"'
+*               CMD = 'SELECT ':FILENAME:',':VOC.REC<7,X>:' WITH (39 = "2" "3" "4") OR WITH AD > "0" OR WITH BD > "0"'  ; * NKH02   
+*               CMD = 'SELECT ':FILENAME:',':VOC.REC<7,X>:' WITH (39 = "2" "3" "4") OR ((BD > "0") AND (39 = "2" "3" "4")) OR ((AD > "0") AND (39 = "2" "3" "4"))' ; * NKH02
+               CMD = 'SELECT ':FILENAME:',':VOC.REC<7,X>:' WITH (39 = "2" "3" "4") OR ((BD > "0") AND (66 = "A")) OR ((AD > "0") AND (66 = "A"))' ; * NKH02
+               EXECUTE CMD
+               HUSH OFF
+               NUM.BILLS = @SELECTED
+               IF NUM.BILLS > 0 THEN
+                  CLIENT.ID = VOC.REC<7,X>            
+                  CRT @(10,13):"NOW PROCESSING CLIENT ":CLIENT.ID
+                  OPEN 'FB.BILLS.HIST,':CLIENT.ID TO F.HIST ELSE           ; * NKH03
+                     CALL OPEN.ABORT('FB.BILLS.HIST,':CLIENT.ID,PROG.NAME) ; * NKH03
+                  END                                                      ; * NKH03
+                  EOF = 0
+                  LOOP
+                     READNEXT REC.ID ELSE EOF = 1
+                  UNTIL EOF
+                     READ FILENAME.REC FROM FILENAME.FILE, REC.ID THEN
+                        IMAGE.NO = FILENAME.REC<280>                  
+                        REJECT.CODE = FILENAME.REC<59>
+                        IF IMAGE.NO > "" AND REJECT.CODE # "AU257" AND REJECT.CODE # "AU341" THEN    
+                           CARRIER = FIELD(REC.ID,'*',1,1)
+                           PRONUM = FIELD(REC.ID,'*',2,1)  
+                           IF SERVER.NAME = 'AFS' THEN   ; * NKH01                                         
+                              URL = 'http://imagingws.afs.net/images/list?clientFolder=':CLIENT.ID:'&imageKey=':IMAGE.NO
+                           END ELSE                      ; * NKH01
+                              URL = 'http://imagingws.qa.afs.net/images/list?clientFolder=':CLIENT.ID:'&imageKey=':IMAGE.NO   ; * NKH01
+                           END                           ; * NKH01                           
+                           GOSUB SEND.REST.REQUEST  
+                           IF RESTDATA # "[]" THEN   
+                              GOSUB PARSE.RESULTS  
+                              IF IMAGE.DT LE CUTOFF.DT THEN                           
+                                 GOSUB BUILD.DETAIL
+                              END
+                           END ELSE
+                              IMAGE.DT = ''
+                              READV CARRIERNAME FROM F.CARRIERS, CARRIER, 1 ELSE CARRIERNAME = ''
+                              GOSUB BUILD.DETAIL
+                           END                        
+                        END                               
+                     END
+                  REPEAT
+               END
+            END
+            IF NUM.BILLS > 0 THEN
+               GOSUB WRITE.FILE
+            END
+         END
+      NEXT X    
+      TIME.LINE<1,1,1>=TIME()            ; * finish time      
+      
+      GOTO 9999
+
+***********************************************************************
+SEND.REST.REQUEST:
+***********************************************************************
+      METHOD="GET"
+      STAT = SETHTTPDEFAULT("VERSION", "1.1")
+      STAT = CREATEREQUEST(URL, METHOD, RESTGET)
+      STAT = SETREQUESTHEADER(RESTGET, "Content-Type", "application/json;charset=utf-8")
+      STAT = SUBMITREQUEST(RESTGET, 30000, "", HEADER, RESTDATA, HTTPSTATUS)
+
+      RETURN
+
+************************************************************************
+PARSE.RESULTS:
+************************************************************************
+      UDOHANDLE = ""
+      RESP = ''
+      STATUS =UDORead(RESTDATA, UDOFORMAT_JSON, UDOHANDLE )
+      ST = UDOArrayGetSize(UDOHANDLE, ITEM_SIZE) ; IF ST NE UDO_SUCCESS THEN
+         ITEM_SIZE = 0
+      END
+      FOR I = 1 TO ITEM_SIZE
+         ST = UDOArrayGetItem(UDOHANDLE, I, result_udo, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         ST = UDOGetProperty(result_udo, "imageKey", IMAGE.NO, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN IMAGE.NO = ""
+         ST = UDOGetProperty(result_udo, "imagePath", IMAGE.PATH, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN IMAGE.PATH = ""
+         ST = UDOGetProperty(result_udo, "carrierName",CARRIERNAME, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN CARRIERNAME = ""
+         ST = UDOGetProperty(result_udo, "scanDate",IMAGE.DT, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN IMAGE.DT = ""  
+         ST = UDOGetProperty(result_udo, "scac", SCAC, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER        ; * NKH03
+         IF UDOTYPE = UDO_NULL THEN SCAC = ""                                                                        ; * NKH03  
+         ST = UDOGetProperty(result_udo,"needsReview", NEEDSREVIEW, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER    ; * NKH05
+         IF UDOTYPE = UDO_NULL THEN NEEDSREVIEW = "0"                                                                         ; * NKH05
+         IF UDOTYPE = UDO_FALSE THEN NEEDSREVIEW = "0"                                                                        ; * NKH05
+         IF UDOTYPE = UDO_TRUE THEN NEEDSREVIEW = "1"                                                                         ; * NKH05
+         IF IMAGE.DT = '' THEN
+            FILE.NAME = FIELD(IMAGE.PATH,'\',9)
+            FILE.NAME = FIELD(FILE.NAME,"_",1)
+            FILE.LEN = LEN(FILE.NAME)
+            BEGIN CASE
+               CASE FILE.LEN = 14 
+                  IMAGE.DT = FILE.NAME[7,8]
+               CASE FILE.LEN = 15
+                  IMAGE.DT = FILE.NAME[8,8]
+               CASE 1
+                  IMAGE.DT = ''
+            END CASE
+            IF IMAGE.DT > '' THEN IMAGE.DT = ICONV(IMAGE.DT,"D")            
+         END ELSE                  
+            YY=IMAGE.DT[3,2]
+            MM=IMAGE.DT[6,2]
+            DD=IMAGE.DT[9,2]
+            IMG.DT = MM:'\':DD:'\':YY
+            IMAGE.DT = ICONV(IMG.DT,"D")                
+         END
+      NEXT I
+
+      RETURN
+      
+******************************************************
+BUILD.HEADER:
+******************************************************
+      HDR =''
+      HDR = 'OCR Audit Aging Report, Stack 2,3,4.  Cutoff date used ':OCONV(CUTOFF.DT,"D2/")
+      WRITESEQ HDR TO OUTSEQ.FILE ELSE NULL
+      HDR = 'CLIENT':DELIM:'IMAGE DATE':DELIM:'CARRIER':DELIM:'PRO NUMBER':DELIM:'IMAGE NUMBER':DELIM:'DAYS OLD':DELIM:'AUDITOR':DELIM:'KEY DATE':DELIM:'SCAC':DELIM:'PROC DAY'  ; * NKH03  NKH04
+      WRITESEQ HDR TO OUTSEQ.FILE ELSE NULL
+
+      RETURN
+      
+*********************************************************************
+BUILD.DETAIL:
+*********************************************************************
+      DAYS.OLD = ''
+*      IF IMAGE.DT > "" AND IMAGE.DT # 'NF' THEN   ; * NKH03
+*         DAYS.OLD = DATE() - IMAGE.DT             ; * NKH03
+*      END                                         ; * NKH03
+      HIST.ID = CARRIER:"*":PRONUM:"*0"            ; * NKH03
+      READV KEY.DATE FROM F.HIST, HIST.ID, 30 THEN ; * NKH03
+         DAYS.OLD = DATE() - KEY.DATE              ; * NKH03
+      END ELSE                                     ; * NKH03
+         KEY.DATE = ''                             ; * NKH03
+      END                                          ; * NKH03      
+      IF NOT(NEEDSREVIEW) THEN                     ; * NKH05
+         TEMP.REC<1> = CLIENT.ID
+         TEMP.REC<2> = IMAGE.DT
+         TEMP.REC<3> = CARRIERNAME
+         TEMP.REC<4> = PRONUM
+         TEMP.REC<5> = IMAGE.NO
+         TEMP.REC<6> = DAYS.OLD
+         TEMP.REC<7> = AUDITOR
+         TEMP.REC<8> = KEY.DATE     ; * NKH03
+         TEMP.REC<9> = SCAC         ; * NKH03
+         TEMP.REC<10>= DAY          ; * NKH04
+
+         TEMP.ID = CLIENT.ID:'*':CARRIER:'*':PRONUM
+         WRITE TEMP.REC ON TEMP.FILE, TEMP.ID      
+      END                                          ; * NKH05
+      
+      RETURN      
+      
+*********************************************************************
+WRITE.FILE:
+*********************************************************************
+      HUSH ON
+      CMD = 'SELECT AGING.TEMP BY 2'
+      EXECUTE CMD
+      EOAF = 0
+      LOOP
+         READNEXT AGING.ID ELSE EOAF = 1
+      UNTIL EOAF
+         READ TEMP.REC FROM TEMP.FILE, AGING.ID THEN
+            DTL = ''                     
+            CLIENT.ID = TEMP.REC<1>
+            IMAGE.DT = TEMP.REC<2>
+            CARRIERNAME = TEMP.REC<3>
+            PRONUM = TEMP.REC<4>
+            IMAGE.NO = TEMP.REC<5>
+            DAYS.OLD = TEMP.REC<6>
+            AUDITOR = TEMP.REC<7>
+            KEY.DATE = OCONV(TEMP.REC<8>,'D2/')     ; * NKH03
+            SCAC = TEMP.REC<9>                      ; * NKH03
+            DTL = CLIENT.ID:DELIM:OCONV(IMAGE.DT,"D2/"):DELIM:CARRIERNAME:DELIM:PRONUM:DELIM:IMAGE.NO:DELIM:DAYS.OLD:DELIM:AUDITOR:DELIM:KEY.DATE:DELIM:SCAC:DELIM:DAY  ; * NKH03  NKH04            
+            WRITESEQ DTL TO OUTSEQ.FILE ELSE NULL      
+         END
+      REPEAT
+      EXECUTE 'CLEAR-FILE AGING.TEMP'
+      HUSH OFF
+      
+      RETURN
+
+****************************************************
+ERR.HANDLER:
+*****************************************************
+      ERRCODE = "" ; ERRMSG = ""
+      S = UDOGetLastError(ERRCODE, ERRMSG)
+      ERROR = "UDO ERROR: (":ERRCODE:") ":ERRMSG
+      VOUT<1> =ERROR
+
+      RETURN
+
+*************************************************
+9999:* Program End
+*************************************************
+      CLOSESEQ OUTSEQ.FILE
+      CALL ELINE("File ":FILE.ID:" may be found in your own U: drive directory")
+      IF LOGGING THEN
+         LOG.RET = PROTOCOLLOGGING(LOGFILE,"OFF",10)
+      END
+
+      STOP
+        
+

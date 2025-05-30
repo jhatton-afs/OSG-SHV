@@ -1,0 +1,809 @@
+*********************************************************************
+* Program name : FB.3.20.10
+* Author       : James Barberousse
+* Date written : December 2001
+* Library      : FBBP
+* COPYRIGHT (c) : AFS, LLC 2016, All Rights Reserved.
+*
+* Analyze bills acted upon by auditors
+*
+* Last updated by afs (nmeddaugh) at 14:36:11 on 03/22/2019.
+
+* Start modification history
+* 042006 - JCW01 - ADD FB.PROC.DATE.XREF FOR PERFORMANCE
+* 031208 - JMK01 - T080799 - Remove duplicates in FB History Reporting
+* 012109 - JMK02 - Add Shreveport/Pittsburgh flag to report
+* 081809 - NPR01 - T091057 - Replace Sandra Long with Stacy Rittenbach wherever the former occurs
+* 010412 - pkb01 - sysaid #1209 - Per Brian Jeppson, grant Jennifer Peters access to run this program.
+* 040212 - PKB02 - SysAid #2322 -Per Myra, grant Wayne Pardue access to run this program.
+* 070115 - DRF01 - SysAid 18393 - Gave Robbie Jester access
+* 032219 - NKH01 - ACCU-316 Modified CREATE-FILE file sizes
+* End modification history
+*********************************************************************** 
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+
+      CALL GET.USER.NEW(USER.NAME,CH.NUM)
+***      CALL CHANNEL(CH.NUM)
+      PROG.NAME='FB.3.20.10'
+      PROG.DESC='Auditor Stack Analysis'
+      PACK.NAME='Time Accounting'
+      PROMPT''
+      MASK.CHAR='-'
+      TAB=CHAR(9)
+      DIM BILL.REC(200)
+      MAT BILL.REC = ''
+      ESC=CHAR(27)
+      OPEN '','OPERATOR' TO F.OP ELSE CALL OPEN.ABORT("OPERATOR",PROG.NAME)      ; * GRB01
+
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+      * Begin GRB01
+      READV OP.FLG FROM F.OP,USER.NAME,39 ELSE
+         OP.FLG = "N"
+      END
+      IF OP.FLG = "Y" THEN
+*
+***   Restrict program usage
+*
+         VALID.USER=1
+         ****    BEGIN CASE
+         ***** CASE USER.NAME='BJEPPSON'
+         ***** CASE USER.NAME='DEBBIE'
+         ***** CASE USER.NAME='BROSE'
+         **** CASE USER.NAME='BRIANP'
+         ***** CASE USER.NAME='SRITTENBACH'     ;* NPR01
+         ***** CASE USER.NAME='CBEASLEY'
+         ***** CASE USER.NAME='CGOSS'
+
+         ***** CASE USER.NAME='JAMES'
+         ***** CASE USER.NAME='DAVID'
+         ***** CASE USER.NAME='SMATTHEWS'
+         ***** CASE USER.NAME='RHOLLIFIELD'
+         ***** CASE USER.NAME='JPETERS'         ;* PKB01
+         ***** CASE USER.NAME='WPARDUE'         ;* PKB02
+         ***** CASE USER.NAME='RCAMPER'
+         ***** CASE USER.NAME='RJESTER'        ; * DRF01
+         ***** CASE 1
+         ****     VALID.USER=0
+         ****  END CASE
+      END ELSE
+         ***  IF NOT(VALID.USER) THEN
+         CALL ELINE('This is a restricted access application.')
+         GOTO THE.END
+         ***   END
+      END
+
+***   Initialize input variables with their defaults
+      CLIENT.ID='ALL'
+      TRANSPORT.MODE='ALL'
+      BEG.DATE=DATE()
+      END.DATE=DATE()
+DIM CLIENT.REC(300)
+MAT CLIENT.REC = ''
+DIM WORK.REC(11)
+MAT WORK.REC = 0
+************************************************************************
+* Work File consists of items with the following detail
+* Attribute Description
+* ---------------------------------------------------------------------
+*     1     Number of Bills
+*     2     Actual Amount Paid
+*     3     Overcharges
+*     4     Logistics Charges
+*     5     Discounts
+*     6     Number of Bills for Overcharge Commission
+*     7     Overcharge Commission
+*     8     Number of Bills for Logistics Commission
+*     9     Logistics Commission
+*    10     Number of Bills for Discount Commission
+*    11     Discount Commission
+***********************************************************************
+     
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+         CALL OPEN.ABORT('FB.TRANSPORT',PROG.NAME)
+      END
+      OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+         CALL OPEN.ABORT('BILLDATA.':USER.NAME,PROG.NAME)
+      END
+       OPENSEQ 'BILLDATA.':USER.NAME,'AUDITOR.XLS' TO OUTSEQ.FILE ELSE
+                     CREATE OUTSEQ.FILE ELSE
+                     END
+                  END
+WEOFSEQ OUTSEQ.FILE
+*
+***   Read in transportation modes
+*
+      TRANSPORT.MODE.LIST=''
+      EXECUTE "SSELECT FB.TRANSPORT" PASSLIST CAPTURING OUTPUT
+      LOOP
+         READNEXT TRANSPORT.ID ELSE TRANSPORT.ID='DATA.ENTRY.IS.FINISHED'
+      UNTIL TRANSPORT.ID='DATA.ENTRY.IS.FINISHED'
+         READ TRANSPORT.REC FROM F.TRANSPORT,TRANSPORT.ID THEN
+            TRANSPORT.MODE.LIST<1,-1>=TRANSPORT.ID
+            TRANSPORT.MODE.LIST<2,-1>=TRANSPORT.REC<1>
+         END
+      REPEAT
+      MODE.COUNT=DCOUNT(TRANSPORT.MODE.LIST<1>,@VM)
+
+*
+***************************************************************
+100:***   Get Client ID
+***************************************************************
+  LN='Client ID Number    : '
+      MASK=CLIENT.ID:STR(MASK.CHAR,20-LEN(CLIENT.ID))
+      HELP='Enter Client ID or letters for search. [ENTER]=Accept [ALL]=All [EX]=Exit'
+      CALL GEN.IN(0,3,LN:MASK:@(-4),'',Q,0,20,'','',2,-22,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='ALL'
+            NULL
+         CASE QI=''
+            QI=CLIENT.ID
+         CASE NOT(QI MATCHES '0N')
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 100
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 100
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO 100
+            END CASE
+         CASE NUM(QI)
+            QI=QI'R%5'
+         CASE 1
+            GOTO 100
+      END CASE
+      CLIENT.ID=QI
+      FP.CO='SHV'                        ; * JMK02
+      IF CLIENT.ID='ALL' THEN
+         CLIENT.NAME='CLIENTS'
+         SAVE.SCREEN.LINE.CLIENT=LN:CLIENT.ID:' ':CLIENT.NAME
+      END ELSE
+         IF CLIENT.ID[1,2]='99' THEN
+            CALL ELINE('Traffic Survey accounts are not allowed.')
+            CLIENT.ID='ALL'
+            GOTO 100
+         END
+         IF CLIENT.ID='00000' THEN
+            CALL ELINE('This is not a valid account.')
+            CLIENT.ID='ALL'
+            GOTO 100
+         END
+         MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT.ID THEN
+            CLIENT.NAME=CLIENT.REC(2)
+            BEGIN CASE
+               CASE CLIENT.REC(30)='A'
+                  CLIENT.STATUS='Active'
+               CASE CLIENT.REC(30)='I'
+                  CLIENT.STATUS='Inactive'
+               CASE CLIENT.REC(30)='O'
+                  CLIENT.STATUS='Out of Business'
+               CASE CLIENT.REC(30)=''
+                  CLIENT.STATUS='null'
+               CASE 1
+                  CLIENT.STATUS=CLIENT.REC(30)
+            END CASE
+            SAVE.SCREEN.LINE.CLIENT=LN:CLIENT.ID:' ':CLIENT.NAME:' (':CLIENT.STATUS:')'
+            FP.CO='SHV'                  ; * JMK02
+            IF CLIENT.REC(92)+0=2 THEN FP.CO='PIT'           ; * JMK02
+         END ELSE
+            CALL ELINE('Client ':CLIENT.ID:' not on file.')
+            GOTO 100
+         END
+      END
+      CRT @(0,3):SAVE.SCREEN.LINE.CLIENT:@(-4)
+
+***************************************************************
+200:***   Get transportation mode
+***************************************************************
+  LN='Transportation Mode : '
+      MASK=TRANSPORT.MODE:STR(MASK.CHAR,4-LEN(TRANSPORT.MODE))
+      HELP='Enter Transportation Mode. [L]=List Modes [ENTER]=Accept [X]=Back [EX]=Exit'
+      CALL GEN.IN(0,5,LN:MASK:@(-4),'',Q,0,4,'','',2,-6,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            CRT @(0,5):@(-4)
+            GOTO 100
+         CASE QI=''
+            QI=TRANSPORT.MODE
+         CASE QI='L'
+            HED=CO.NAME:' Transportation Modes':"'L'"
+            HED:=STR(MASK.CHAR,40)
+            EXECUTE 'SORT FB.TRANSPORT 1 2 HEADING "':HED:'" (H'
+            CALL ELINE('')
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            CRT @(0,3):SAVE.SCREEN.LINE.CLIENT:@(-4)
+            GOTO 200
+         CASE QI=''
+            QI='ALL'
+      END CASE
+      TRANSPORT.MODE=QI
+      IF TRANSPORT.MODE='ALL' THEN
+         TRANSPORT.DESCRIP='MODES'
+         SAVE.SCREEN.LINE.TRANSPORT=LN:TRANSPORT.MODE:' ':TRANSPORT.DESCRIP
+      END ELSE
+         READ TRANSPORT.REC FROM F.TRANSPORT,TRANSPORT.MODE THEN
+            TRANSPORT.DESCRIP=TRANSPORT.REC<1>
+            SAVE.SCREEN.LINE.TRANSPORT=LN:TRANSPORT.MODE:' ':TRANSPORT.DESCRIP
+         END ELSE
+            CALL ELINE('Transportation Mode ':TRANSPORT.MODE:' not on file.')
+            GOTO 200
+         END
+      END
+      CRT @(0,5):SAVE.SCREEN.LINE.TRANSPORT:@(-4)
+
+***************************************************************
+300:***   Get beginning date
+***************************************************************
+  LN='Beginning Date      : '
+      MASK=BEG.DATE'D4/'
+      HELP='Enter freight bill beginning date. [ENTER]=Accept [T]=Today [X]=Back [EX]=Exit'
+      CALL GEN.IN(0,7,LN:MASK:@(-4),'',Q,0,10,'','',2,-12,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            CRT @(0,7):@(-4)
+            GOTO 200
+         CASE QI='T'
+            QI=DATE()'D4/'
+         CASE QI=''
+            QI=BEG.DATE'D4/'
+         CASE QI MATCHES '0N'
+            BEGIN CASE
+               CASE LEN(QI)=4
+                  QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,4]
+               CASE LEN(QI)=6
+                  IF QI[5,2]<50 THEN
+                     QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,2]:QI[5,2]
+                  END ELSE
+                     QI=QI[1,2]:'.':QI[3,2]:'.':'19':QI[5,2]           ; * ((DATE()-365)'D4/')[7,2]:QI[5,2]
+                  END
+               CASE LEN(QI)=8
+                  QI=QI[1,2]:'.':QI[3,2]:'.':QI[5,4]
+               CASE 1
+                  CALL ELINE('Use one of the following formats: MMDD or MMDDYY or MMDDYYYY.')
+                  GOTO 300
+            END CASE
+      END CASE
+      BEG.DATE=ICONV(QI,'D')
+      IF BEG.DATE='' THEN
+         CALL ELINE('Invalid date.')
+         GOTO 300
+      END
+      CRT @(0,7):LN:BEG.DATE'D4/':@(-4)
+
+***************************************************************
+400:***   Get ending date
+***************************************************************
+  LN='Ending Date         : '
+      MASK=END.DATE'D4/'
+      HELP='Enter freight bill ending date. [ENTER]=Accept [T]=Today [X]=Back [EX]=Exit'
+      CALL GEN.IN(0,9,LN:MASK:@(-4),'',Q,0,10,'','',2,-12,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            CRT @(0,9):@(-4)
+            GOTO 300
+         CASE QI='T'
+            QI=DATE()'D4/'
+         CASE QI=''
+            QI=END.DATE'D4/'
+         CASE QI MATCHES '0N'
+            BEGIN CASE
+               CASE LEN(QI)=4
+                  QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,4]
+               CASE LEN(QI)=6
+                  IF QI[5,2]<50 THEN
+                     QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,2]:QI[5,2]
+                  END ELSE
+                     QI=QI[1,2]:'.':QI[3,2]:'.':'19':QI[5,2]           ; * ((DATE()-365)'D4/')[7,2]:QI[5,2]
+                  END
+               CASE LEN(QI)=8
+                  QI=QI[1,2]:'.':QI[3,2]:'.':QI[5,4]
+               CASE 1
+                  CALL ELINE('Use one of the following formats: MMDD or MMDDYY or MMDDYYYY.')
+                  GOTO 400
+            END CASE
+      END CASE
+      END.DATE=ICONV(QI,'D')
+      IF END.DATE='' THEN
+         CALL ELINE('Invalid date.')
+         GOTO 400
+      END
+      IF END.DATE LT BEG.DATE THEN
+         CALL ELINE('Ending date must occur later than beginning date.')
+         GOTO 400
+      END
+      CRT @(0,9):LN:END.DATE'D4/':@(-4)
+
+***************************************************************
+500:***   Verify data
+***************************************************************
+  LN='Verify the entered data. Select : '
+      MASK=STR(MASK.CHAR,2)
+      HELP='[ENTER]=Continue [X]=Change [EX]=Exit'
+      CALL GEN.IN(0,22,LN:MASK,'',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            GOTO 400
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO 500
+      END CASE
+
+***   Select data and start processing
+      IF CLIENT.ID#'ALL' THEN
+         NUM.CLIENTS=1
+         COUNTER.1=0 ; PER.1=0
+         CLIENT=CLIENT.ID
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT    ; * NKH01
+            OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+              CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+            END
+         END
+         CLEARFILE F.WORK
+         GOTO SELECT.BILLS
+      END ELSE
+         STMT = 'DELETE-FILE FBWORK':CH.NUM
+        EXECUTE STMT CAPTURING STUFF RETURNING JUNK
+        OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT    ; * NKH01
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+         END
+        END
+          CLEARFILE F.WORK
+                  
+      TEXT='Selecting Clients...'
+      CRT @(0,12):TEXT
+
+      EXECUTE "SELECT VOC 'FB.BILLS.HIST' *A7" RTNLIST CLIENT.LIST CAPTURING OUTPUT
+      NUM.CLIENTS=@SELECTED
+      TEXT:=NUM.CLIENTS:' Selected'
+      CRT @(0,12):TEXT
+      IF NUM.CLIENTS=0 THEN
+         CALL ELINE('No clients on file with these criteria.')
+         GOTO THE.END
+      END
+      COUNTER.1=0 ; PER.1=0
+      LOOP
+         READNEXT CLIENT FROM CLIENT.LIST ELSE CLIENT='DATA.ENTRY.IS.FINISHED'
+      UNTIL CLIENT='DATA.ENTRY.IS.FINISHED' DO
+          IF CLIENT.ID='ALL' THEN
+            IF CLIENT='FB.BILLS.HIST' OR CLIENT[1,2]='99' OR CLIENT='00000' THEN
+               CONTINUE
+            END
+         END
+         
+        
+SELECT.BILLS:
+         COUNTER.1=COUNTER.1+1
+
+         MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT ELSE CLIENT.REC(2)='*** Not On File ***'    ; * JMK02
+         CLIENT.NAME=CLIENT.REC(2)       ; * JMK02
+         FP.CO='SHV'                     ; * JMK02
+         IF CLIENT.REC(92)+0=2 THEN FP.CO='PIT'    ; * JMK02
+
+IF @TTY # 'phantom' THEN    ;* GRB06
+         CRT @(0,15):CLIENT:' ':CLIENT.NAME:' #':COUNTER.1:' - Selecting Freight Bills':@(-4):
+END
+**         CALL PROG.BAR(17,COUNTER.1,NUM.CLIENTS,PER.1)
+ *****        IF CLIENT.ID='ALL' THEN
+ *****            IF CLIENT='FB.BILLS.HIST' OR CLIENT[1,2]='99' OR CLIENT='00000' THEN
+  *****              GOTO SKIP.CLIENT
+  *****           END
+   ***      END
+         OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS THEN
+
+            STMT='SSELECT FB.PROC.DATE.XREF,':CLIENT:' WITH DATE >= "':BEG.DATE'D2/':'" AND WITH DATE <= "':END.DATE'D2/':'"'      ; * JCW 01
+            EXECUTE STMT RTNLIST FPX.LIST CAPTURING FPX.LIST.RESULTS   ; * JCW 01
+            IF @SELECTED > 0 THEN        ; * JCW01
+               STMT = 'QSELECT FB.PROC.DATE.XREF,':CLIENT    ; * JCW01
+               EXECUTE STMT PASSLIST FPX.LIST RTNLIST FPX.BILLS CAPTURING FPX.BILLS.RESULTS          ; * JCW01
+            END ELSE                     ; * JCW01
+               GOTO SKIP.CLIENT          ; * JCW01
+            END                          ; * JCW01
+
+            STMT='SELECT FB.BILLS.HIST,':CLIENT
+            STMT:=' WITH VERSION = "0"'  ; * Exclude duplicates
+            STMT:=' AND WITH 37 GE "':BEG.DATE'D2/':'" AND LE "':END.DATE'D2/':'"'
+            STMT:=' AND WITH 39 # "R"'   ; * Exclude rejects
+            IF TRANSPORT.MODE#'ALL' THEN
+               STMT:=' AND WITH 21 = "':TRANSPORT.MODE:'"'   ; * Use Transportation mode
+            END
+
+            EXECUTE STMT PASSLIST FPX.BILLS RTNLIST BILLS.LIST CAPTURING OUTPUT
+            NUM.BILLS=@SELECTED
+            IF NUM.BILLS=0 THEN
+               IF CLIENT.ID='ALL' THEN
+                  GOTO SKIP.CLIENT
+               END ELSE
+                  CALL ELINE('No bills on file with these criteria.')
+                  GOTO THE.END
+               END
+            END
+   ****         CRT @(0,18):CLIENT:' ':CLIENT.NAME:' - Processing ':NUM.BILLS:' Freight Bills':@(-4):
+            COUNTER.2=0 ; PER.2=0
+            LOOP
+               READNEXT PRO.ID FROM BILLS.LIST ELSE PRO.ID='DATA.ENTRY.IS.FINISHED'
+            UNTIL PRO.ID='DATA.ENTRY.IS.FINISHED' DO
+               COUNTER.2=COUNTER.2+1
+****               CALL PROG.BAR(20,COUNTER.2,NUM.BILLS,PER.2)
+               MATREAD BILL.REC FROM F.BILLS,PRO.ID THEN
+* Determine stack, substack, mode, and auditor of the bill
+* These 4 fields along with 'ALL' comprise the item ID of the work file
+                  BILL.STACK=BILL.REC(68)          ; * Update code
+                  IF NOT(BILL.STACK='1' OR BILL.STACK='2' OR BILL.STACK='3' OR BILL.STACK='4') THEN
+                     GOTO SKIP.BILL
+                  END
+                  BEGIN CASE
+                     CASE BILL.STACK=1
+                        BILL.SUBSTACK=1
+                     CASE BILL.STACK=2
+                        IF BILL.REC(8)#BILL.REC(99) THEN
+                           BILL.SUBSTACK=2
+                        END ELSE
+                           BILL.SUBSTACK=1
+                        END
+                     CASE BILL.STACK=3
+                        IF BILL.REC(8)#BILL.REC(99) THEN
+                           BILL.SUBSTACK=2
+                        END ELSE
+                           BILL.SUBSTACK=1
+                        END
+                     CASE BILL.STACK=4
+                        BILL.SUBSTACK=2
+                     CASE 1              ; * This should never happen
+                        BILL.SUBSTACK=1
+                  END CASE
+                  BILL.MODE=BILL.REC(21)
+                  LOCATE BILL.MODE IN TRANSPORT.MODE.LIST<1> SETTING POS ELSE
+                     BILL.MODE='XXX'
+                  END
+                  BILL.AUDITOR=OCONV(FIELD(BILL.REC(89),' ',1),'MCU')
+                  IF BILL.AUDITOR='' THEN BILL.AUDITOR='NONE'
+
+* There are 2^4 = 16 possibilities for ALL in the four fields
+* 1 of 16
+                  FIELD1=BILL.STACK
+                  FIELD2=BILL.SUBSTACK
+                  FIELD3=BILL.MODE
+                  FIELD4=BILL.AUDITOR
+                  GOSUB BUILD.WORK.ID
+                  MATREAD WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+                  GOSUB UPDATE.WORK.REC
+                  MATWRITE WORK.REC ON F.WORK,WORK.ID
+* 2 of 16
+                  FIELD1=BILL.STACK
+                  FIELD2=BILL.SUBSTACK
+                  FIELD3=BILL.MODE
+                  FIELD4='ALL'
+                  GOSUB BUILD.WORK.ID
+                  MATREAD WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+                  GOSUB UPDATE.WORK.REC
+                  MATWRITE WORK.REC ON F.WORK,WORK.ID
+* 3 of 16
+                  FIELD1=BILL.STACK
+                  FIELD2=BILL.SUBSTACK
+                  FIELD3='ALL'
+                  FIELD4=BILL.AUDITOR
+                  GOSUB BUILD.WORK.ID
+                  MATREAD WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+                  GOSUB UPDATE.WORK.REC
+                  MATWRITE WORK.REC ON F.WORK,WORK.ID
+* 4 of 16
+                  FIELD1=BILL.STACK
+                  FIELD2=BILL.SUBSTACK
+                  FIELD3='ALL'
+                  FIELD4='ALL'
+                  GOSUB BUILD.WORK.ID
+                  MATREAD WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+                  GOSUB UPDATE.WORK.REC
+                  MATWRITE WORK.REC ON F.WORK,WORK.ID
+* 5 of 16
+                  FIELD1=BILL.STACK
+                  FIELD2='ALL'
+                  FIELD3=BILL.MODE
+                  FIELD4=BILL.AUDITOR
+                  GOSUB BUILD.WORK.ID
+                  MATREAD WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+                  GOSUB UPDATE.WORK.REC
+                  MATWRITE WORK.REC ON F.WORK,WORK.ID
+* 6 of 16
+                  FIELD1=BILL.STACK
+                  FIELD2='ALL'
+                  FIELD3=BILL.MODE
+                  FIELD4='ALL'
+                  GOSUB BUILD.WORK.ID
+                  MATREAD WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+                  GOSUB UPDATE.WORK.REC
+                  MATWRITE WORK.REC ON F.WORK,WORK.ID
+* 7 of 16
+                  FIELD1=BILL.STACK
+                  FIELD2='ALL'
+                  FIELD3='ALL'
+                  FIELD4=BILL.AUDITOR
+                  GOSUB BUILD.WORK.ID
+                  MATREAD WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+                  GOSUB UPDATE.WORK.REC
+                  MATWRITE WORK.REC ON F.WORK,WORK.ID
+* 8 of 16
+                  FIELD1=BILL.STACK
+                  FIELD2='ALL'
+                  FIELD3='ALL'
+                  FIELD4='ALL'
+                  GOSUB BUILD.WORK.ID
+                  MATREAD WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+                  GOSUB UPDATE.WORK.REC
+                  MATWRITE WORK.REC ON F.WORK,WORK.ID
+* 9 of 16
+                  FIELD1='ALL'
+                  FIELD2=BILL.SUBSTACK
+                  FIELD3=BILL.MODE
+                  FIELD4=BILL.AUDITOR
+                  GOSUB BUILD.WORK.ID
+                  MATREAD WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+                  GOSUB UPDATE.WORK.REC
+                  MATWRITE WORK.REC ON F.WORK,WORK.ID
+* 10 of 16
+                  FIELD1='ALL'
+                  FIELD2=BILL.SUBSTACK
+                  FIELD3=BILL.MODE
+                  FIELD4='ALL'
+                  GOSUB BUILD.WORK.ID
+                  MATREAD WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+                  GOSUB UPDATE.WORK.REC
+                  MATWRITE WORK.REC ON F.WORK,WORK.ID
+* 11 of 16
+                  FIELD1='ALL'
+                  FIELD2=BILL.SUBSTACK
+                  FIELD3='ALL'
+                  FIELD4=BILL.AUDITOR
+                  GOSUB BUILD.WORK.ID
+                  MATREAD WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+                  GOSUB UPDATE.WORK.REC
+                  MATWRITE WORK.REC ON F.WORK,WORK.ID
+* 12 of 16
+                  FIELD1='ALL'
+                  FIELD2=BILL.SUBSTACK
+                  FIELD3='ALL'
+                  FIELD4='ALL'
+                  GOSUB BUILD.WORK.ID
+                  MATREAD WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+                  GOSUB UPDATE.WORK.REC
+                  MATWRITE WORK.REC ON F.WORK,WORK.ID
+* 13 of 16
+                  FIELD1='ALL'
+                  FIELD2='ALL'
+                  FIELD3=BILL.MODE
+                  FIELD4=BILL.AUDITOR
+                  GOSUB BUILD.WORK.ID
+                  MATREAD WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+                  GOSUB UPDATE.WORK.REC
+                  MATWRITE WORK.REC ON F.WORK,WORK.ID
+* 14 of 16
+                  FIELD1='ALL'
+                  FIELD2='ALL'
+                  FIELD3=BILL.MODE
+                  FIELD4='ALL'
+                  GOSUB BUILD.WORK.ID
+                  MATREAD WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+                  GOSUB UPDATE.WORK.REC
+                  MATWRITE WORK.REC ON F.WORK,WORK.ID
+* 15 of 16
+                  FIELD1='ALL'
+                  FIELD2='ALL'
+                  FIELD3='ALL'
+                  FIELD4=BILL.AUDITOR
+                  GOSUB BUILD.WORK.ID
+                  MATREAD WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+                  GOSUB UPDATE.WORK.REC
+                  MATWRITE WORK.REC ON F.WORK,WORK.ID
+* 16 of 16
+                  FIELD1='ALL'
+                  FIELD2='ALL'
+                  FIELD3='ALL'
+                  FIELD4='ALL'
+                  GOSUB BUILD.WORK.ID
+                  MATREAD WORK.REC FROM F.WORK,WORK.ID ELSE GOSUB INIT.WORK.REC
+                  GOSUB UPDATE.WORK.REC
+                  MATWRITE WORK.REC ON F.WORK,WORK.ID
+               END                       ; * READ BILL.REC FROM F.BILLS,PRO.ID
+SKIP.BILL:     ***
+            REPEAT
+         END ELSE
+            CRT @(0,23):'Could not open FB.BILLS.HIST,':CLIENT:'. Skipping this file.':
+         END                             ; * OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS
+         IF CLIENT.ID#'ALL' THEN GOTO READ.WORK.FILE
+SKIP.CLIENT:***
+      REPEAT
+
+***************************************************************
+READ.WORK.FILE:
+***************************************************************
+      AUDIT.REPORT=''
+      AUDIT.REPORT<1, 1>='Auditor Analysis for Client: ':CLIENT.ID:' with Transportation Mode: ':TRANSPORT.MODE:' from ':BEG.DATE'D4/':' to ':END.DATE'D4/'
+       AUDIT.REPORT=CHANGE(AUDIT.REPORT,@VM,TAB) 
+      WRITESEQ AUDIT.REPORT ON OUTSEQ.FILE ELSE NULL   
+         
+      AUDIT.REPORT<1, 1>=' '
+      WRITESEQ AUDIT.REPORT ON OUTSEQ.FILE ELSE NULL   
+      AUDIT.REPORT<1, 1>='Stack'
+      AUDIT.REPORT<1, 2>='Substack'
+      AUDIT.REPORT<1, 3>='Mode'
+      AUDIT.REPORT<1, 4>='Auditor'
+      AUDIT.REPORT<1, 5>='# Bills'
+      AUDIT.REPORT<1, 6>='Paid'
+      AUDIT.REPORT<1, 7>='Ovrchrg'
+      AUDIT.REPORT<1, 8>='Logis'
+      AUDIT.REPORT<1, 9>='Disc'
+      AUDIT.REPORT<1,10>='# Ovrchrg Comm'
+      AUDIT.REPORT<1,11>='Ovrchrg Comm'
+      AUDIT.REPORT<1,12>='# Logis Comm'
+      AUDIT.REPORT<1,13>='Logis Comm'
+      AUDIT.REPORT<1,14>='# Disc Comm'
+      AUDIT.REPORT<1,15>='Disc Comm'
+      AUDIT.REPORT<1,16>='Location'      ; * JMK02
+        AUDIT.REPORT=CHANGE(AUDIT.REPORT,@VM,TAB) 
+ WRITESEQ AUDIT.REPORT ON OUTSEQ.FILE ELSE NULL   
+      NUM.BILLS=0
+      STMT='SSELECT FBWORK':CH.NUM
+      EXECUTE STMT PASSLIST CAPTURING OUTPUT
+      LOOP
+         READNEXT WORK.ID ELSE WORK.ID='DATA.ENTRY.IS.FINISHED'
+      UNTIL WORK.ID='DATA.ENTRY.IS.FINISHED' DO
+         MATREAD WORK.REC FROM F.WORK,WORK.ID THEN
+            STACK= TRIM(FIELD(WORK.ID,'*',1),'0','L')
+            SUBSTACK=TRIM(FIELD(WORK.ID,'*',2),'0','L')
+            MODE= TRIM(FIELD(WORK.ID,'*',3),'0','L')
+            AUDITOR= TRIM(FIELD(WORK.ID,'*',4))
+            LOC= TRIM(FIELD(WORK.ID,'*',5))        ; * JMK02
+            IF STACK#'ALL' AND SUBSTACK#'ALL' AND MODE#'ALL' AND AUDITOR#'ALL' THEN
+               LOCATE MODE IN TRANSPORT.MODE.LIST<1> SETTING POS THEN
+                  MODE=TRANSPORT.MODE.LIST<2,POS>
+               END ELSE
+                  MODE='UNKNOWN'
+               END
+               NUM.BILLS+=1
+          **     ATT.NUM=NUM.BILLS+3
+               ATT.NUM=NUM.BILLS =3
+               ATT.NUM = 1
+               AUDIT.REPORT<ATT.NUM, 1>=STACK
+               AUDIT.REPORT<ATT.NUM, 2>=SUBSTACK
+               AUDIT.REPORT<ATT.NUM, 3>=MODE
+               AUDIT.REPORT<ATT.NUM, 4>=AUDITOR
+               AUDIT.REPORT<ATT.NUM, 5>=WORK.REC(1)
+               AUDIT.REPORT<ATT.NUM, 6>=WORK.REC(2)'R26'
+               AUDIT.REPORT<ATT.NUM, 7>=WORK.REC(3)'R26'
+               AUDIT.REPORT<ATT.NUM, 8>=WORK.REC(4)'R26'
+               AUDIT.REPORT<ATT.NUM, 9>=WORK.REC(5)'R26'
+               AUDIT.REPORT<ATT.NUM,10>=WORK.REC(6)
+               AUDIT.REPORT<ATT.NUM,11>=WORK.REC(7)'R26'
+               AUDIT.REPORT<ATT.NUM,12>=WORK.REC(8)
+               AUDIT.REPORT<ATT.NUM,13>=WORK.REC(9)'R26'
+               AUDIT.REPORT<ATT.NUM,14>=WORK.REC(10)
+               AUDIT.REPORT<ATT.NUM,15>=WORK.REC(11)'R26'
+               AUDIT.REPORT<ATT.NUM,16>=LOC        ; * JMK02
+               AUDIT.REPORT=CHANGE(AUDIT.REPORT,@VM,TAB) 
+            WRITESEQ AUDIT.REPORT ON OUTSEQ.FILE ELSE NULL   
+               
+            END                          ; * IF STACK#'ALL' AND SUBSTACK#'ALL' AND MODE#'ALL' AND AUDITOR#'ALL'
+         END                             ; * READ WORK.REC FROM F.WORK,WORK.ID
+      REPEAT
+     ***   IF AUDIT.REPORT#'' THEN
+      ***     AUDIT.REPORT=CHANGE(AUDIT.REPORT,@VM,TAB)
+         
+      ***   WRITE AUDIT.REPORT ON F.BILLDATA,'AUDITOR.XLS' THEN
+      CLOSESEQ OUTSEQ.FILE
+            CRT @(0,21):'AUDITOR.XLS written to BILLDATA/':USER.NAME:' folder.'
+            CALL ELINE('To see a description of the fields in the report, press [ENTER].')
+****            GOSUB LEGEND
+       ***    END ELSE
+         ***     CRT @(0,21):'AUDITOR.XLS could not be written.'
+        ***   END
+     ***   END ELSE
+       ***    CRT @(0,21):'No data generated. AUDITOR.XLS could not be written.'
+    ***    END
+      GOTO THE.END                       ; * End of program
+
+***************************************************************
+LEGEND:***
+***************************************************************
+*     Put legend on the screen
+      LEGEND.TITLE='Legend of Data Columns in AUDITOR.XLS Report'
+      CALL CENTER(LEGEND.TITLE,79)
+      CRT @(-1)
+      CRT @(0, 0):LEGEND.TITLE
+      CRT @(0, 1):STR('-',79)
+      CRT @(0, 2):"Stack          - category of the bill"
+      CRT @(0, 3):"  1 : Carrier's bill matched OLA, but the class cannot be lowered"
+      CRT @(0, 4):"  2 : Carrier's bill matched OLA, and the class can be lowered"
+      CRT @(0, 5):"  3 : Bill amount is greater than OLA"
+      CRT @(0, 6):"  4 : Bill did not go through OLA"
+      CRT @(0, 7):"Substack       - auditor involvement in processing the bill"
+      CRT @(0, 8):"  1 : Auditor did not look at/work on the bill to process it"
+      CRT @(0, 9):"  2 : Auditor did look at/work on the bill to process it"
+      CRT @(0,10):"Mode           - transportation mode"
+      CRT @(0,11):"Auditor        - name of auditor"
+      CRT @(0,12):"# Bills        - number of bills counted"
+      CRT @(0,13):"Paid           - actual charge"
+      CRT @(0,14):"Ovrchrg        - overcharge variance"
+      CRT @(0,15):"Logis          - logistics (consulting) variance"
+      CRT @(0,16):"Disc           - discount variance"
+      CRT @(0,17):"# Ovrchrg Comm - number of bills with overcharge commission"
+      CRT @(0,18):"Ovrchrg Comm   - overcharge commission"
+      CRT @(0,19):"# Logis Comm   - number of bills with logistics (consulting) commission"
+      CRT @(0,20):"Logis Comm     - logistics commission"
+      CRT @(0,21):"# Disc Comm    - number of bills with discount commission"
+      CRT @(0,22):"Disc Comm      - discount commission"
+      CALL ELINE('')
+      RETURN
+***************************************************************
+BUILD.WORK.ID:***
+***************************************************************
+      WORK.ID=FIELD1'R%3':'*':FIELD2'R%3':'*':FIELD3'R%3':'*':FIELD4:'*':FP.CO   ; *JMK02
+      
+      RETURN
+***************************************************************
+INIT.WORK.REC:***
+***************************************************************
+*     Zero out all values of WORK.REC
+  *****    WORK.REC=''
+  *****    FOR X=1 TO 11
+  *****       WORK.REC<X>=0
+  *****    NEXT X
+      MAT WORK.REC = 0
+      RETURN
+***************************************************************
+UPDATE.WORK.REC:***
+***************************************************************
+*     Update work record arrays
+      WORK.REC(1)+=1
+      WORK.REC(2)+=BILL.REC(8)
+      WORK.REC(3)-=BILL.REC(11)
+      WORK.REC(4)-=BILL.REC(12)
+      WORK.REC(5)-=BILL.REC(10)
+      IF BILL.REC(43)#0 THEN
+         WORK.REC(6)+=1
+      END
+      WORK.REC(7)+=BILL.REC(43)
+      IF BILL.REC(44)#0 THEN
+         WORK.REC(8)+=1
+      END
+      WORK.REC(9)+=BILL.REC(44)
+      IF BILL.REC(42)#0 THEN
+         WORK.REC(10)+=1
+      END
+      WORK.REC(11)+=BILL.REC(42)
+      RETURN
+***************************************************************
+THE.END:***
+***************************************************************
+*     End of program
+      CRT @(0,23):
+   END

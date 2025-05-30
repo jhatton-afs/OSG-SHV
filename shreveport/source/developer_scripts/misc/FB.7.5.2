@@ -1,0 +1,1110 @@
+* PROGRAM FB.TL.BID.ANALYSIS
+* Program to print Truckload Bid Traffic Analysis
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: Tami Seago
+* DATE: April 24, 2000
+*
+***********************************************************************
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$OPTIONS HEADER.EJECT
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+
+*
+* Initialize variables
+*
+     TAB=CHAR(9)
+     PROMPT''
+     CALL CHANNEL(CH.NUM)
+     STATUS=''
+     PROG.DESC='Truckload Traffic Bid Analysis'
+     PROG.NAME='FB.7.5.2'
+     PACK.NAME='Freight Billing'
+     ROUTE.ZIP = ''
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.7.5.2' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+     ESC=CHAR(27)
+     SELECTED.IOT=''
+     X.BACK = 0
+     DIVISION = ''
+     EQUIP.TYPE = ''
+     CLIENT = ''
+     CALL GET.USER(USER)
+           
+*
+* Open files
+*
+     OPEN '','CLIENTS' TO F.CLIENT ELSE
+       CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+     END
+     OPEN '','FB.TABLES' TO F.TABLES ELSE
+        CALL OPEN.ABORT("FB.TABLES",PROG.NAME)
+     END
+     OPEN '','CARRIERS' TO F.CARRIER ELSE
+       CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+     END
+     OPEN '','FB.CONTROL' TO F.CONTROL ELSE
+       CALL OPEN.ABORT('FB.CONTROL',PROG.NAME)
+     END
+     READ AVAL.EQUIP.TYPES FROM F.TABLES,"TL.EQUIPMENT.TYPES" ELSE
+       AVAL.EQUIP.TYPES = ''
+     END
+     NUM.AVAL.TYPES = DCOUNT(AVAL.EQUIP.TYPES<1>,@VM)            
+     TYPE.HELP = ''
+     FOR X = 1 TO NUM.AVAL.TYPES
+     IF X # 1 THEN TYPE.HELP := ' '
+       TYPE.HELP := X:'-':AVAL.EQUIP.TYPES<2,X>
+     NEXT X  
+     OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+       EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+       OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+       END
+     END
+     OPEN 'DICT','FBWORK':CH.NUM TO F.DICT.WORK ELSE
+       CALL OPEN.ABORT('DICT FBWORK':CH.NUM,PROG.NAME)
+     END
+     OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+       CALL OPEN.ABORT('ZIPS',PROG.NAME)
+     END
+     READ STATE.LIST FROM F.TABLES,"TL.BID.STATES" ELSE
+       STATE.LIST = ''
+     END
+
+     OPEN '','VOC' TO F.VOC ELSE
+       CALL ELINE('UNABLE TO OPEN VOC FILE')
+       STOP
+     END
+     READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE
+       CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')
+       STOP
+     END
+     BILLDATA.REC<2>:='\':USER
+     WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER ELSE     
+       CALL ELINE("YOUR USER NAME '":USER:"' IS NOT IN THE BILLDATA FOLDER - PLEASE SEE OWEN/DAVID")
+       STOP
+     END
+     OPEN '','BILLDATA.':USER TO BILLDATA ELSE
+       CALL ELINE('UNABLE TO OPEN "BILLDATA.":USER')
+       STOP
+     END
+
+*
+* Create work file dictionary items
+*
+     TEMP=''
+     TEMP<1>='A'
+     TEMP<2>='1'
+     TEMP<9>='R'
+     TEMP<10>='8'
+     WRITE TEMP ON F.DICT.WORK,'RATE'
+     TEMP=''
+     TEMP<1>='A'
+     TEMP<2>='1'
+     TEMP<9>='R'
+     TEMP<10>='8'
+     WRITE TEMP ON F.DICT.WORK,'RANK.TOTAL'
+     TEMP=''
+     TEMP<1>='A'
+     TEMP<2>='1'
+     TEMP<9>='R'
+     TEMP<10>='8'
+     WRITE TEMP ON F.DICT.WORK,'MIN'
+     TEMP=''
+     TEMP<1>='A'
+     TEMP<2>='4'
+     TEMP<9>='R'    
+     TEMP<10>='8'
+     WRITE TEMP ON F.DICT.WORK,'RANK'
+     TEMP<1>='S'
+     TEMP<2>=0
+     TEMP<8>='G0*1'
+     TEMP<9>='L'
+     TEMP<10>=2
+     WRITE TEMP ON F.DICT.WORK,'CARRIER'
+     TEMP<1>='S'
+     TEMP<2>=0
+     TEMP<8>='G1*1'
+     TEMP<9>='L'
+     TEMP<10>=2
+     WRITE TEMP ON F.DICT.WORK,'STATE'
+     TEMP<1>='S'
+     TEMP<2>=0
+     TEMP<8>='G2*1'
+     TEMP<9>='L'
+     TEMP<10>=1
+     WRITE TEMP ON F.DICT.WORK,'IOT'
+*
+*  WORK FILE CONSISTS OF ITEMS WITH THE FOLLOWING DETAIL
+*  Variable Attribute Description.....................................
+*      ID    Carrier*State*IOT
+*      1     State Per Mile Rate/Min on Total Records
+*      2     Carriers Ranking
+
+*
+* Display screen heading
+*    
+    CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+
+***********************************************************************
+* Get client number to process
+*
+50   HELP.PROMPT="Enter the client number you want to process. S=Search. ''=Exit."
+     CRT @(0,3):@(-3)
+     CALL GEN.IN(0,3,'Enter Client Number : #####','',Q,0,20,'','',1,-5,3,0,QI,HELP.PROMPT,0,23)
+     QI=OCONV(QI,'MCU')
+     BEGIN CASE
+       CASE QI='' ! QI='EX' ! QI='X'
+         GO 9999
+       CASE ALPHA(QI)
+         CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+         CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+         IF ITEM.LIST='' ! DCOUNT(ITEM.LIST<1>,@VM) > 1 THEN GOTO 50
+         IF NOT(NUM(ITEM.LIST<1,1>)) THEN GOTO 50
+         Q=ITEM.LIST<1,1>'R%5'
+         CRT @(0,3):'Enter Client Number :'
+     END CASE
+     CLIENT.ID=Q'R%5'
+     IF CLIENT.ID[1,2]#99 THEN
+       CALL ELINE('Invalid entry. Client Number must begin with 99.')
+       GOTO 50
+     END
+     READ CLIENT.REC FROM F.CLIENT,CLIENT.ID ELSE
+       CALL ELINE('ERROR - Client ':CLIENT.ID:' not on file.')
+       GOTO 50
+     END 
+     CLIENT.NAME=CLIENT.REC<2>
+     CRT @(22,3):CLIENT.ID:" - ":CLIENT.NAME:
+     DIVISIONS = CLIENT.REC<12>
+     IF DIVISIONS = 'Y' THEN
+       OPEN '','DIVISION.CODES,':CLIENT.ID TO F.DIVISION ELSE
+         CALL OPEN.ABORT("DIVISION.CODES,":CLIENT.ID,PROG.NAME)
+       END                 
+     END
+	  
+     TABLE.ID = "TL.BID.STATES*":CLIENT.ID
+     READ STATE.LIST FROM F.TABLES,TABLE.ID ELSE NULL
+***********************************************************************
+* Get divisional information
+*
+GET.DIVISION:***
+100    IF DIVISIONS # 'Y' AND X.BACK # 1 THEN
+       CALL ELINE('DIVISIONS NOT SET UP, USING MAIN LOCATION')
+       DIVISION = ''
+       ROUTE.ZIP = CLIENT.REC<6>
+       ROUTE.CITY = CLIENT.REC<4>
+       ROUTE.STATE = CLIENT.REC<5> 
+       CRT @(0,5):'Enter Division      :'
+       CRT @(22,5):'Main Location - ':ROUTE.ZIP'R%5':' ':ROUTE.CITY:', ':ROUTE.STATE:
+       GO 125
+     END ELSE
+       IF DIVISIONS # 'Y' AND X.BACK = 1 THEN 
+         X.BACK = 0
+         GO 50
+       END ELSE
+         X.BACK = 0
+       END 
+     END
+
+     HELP="Enter division code. ''=Exit. 'X'=Exit. 'L'=List all divisions."
+     IF DIVISION#'' THEN MASK='Enter Division       : ':DIVISION'R%5' ELSE MASK='Enter Division      : #####'	
+     CALL GEN.IN(0,5,MASK,'',Q,0,5,'','',2,-5,5,0,QI,HELP,0,23)
+     IF QI = '' THEN QI = 'ALL'
+     QI=OCONV(QI,'MCU')
+     BEGIN CASE
+       CASE QI='X' OR QI = '' OR QI='EX'
+         GO 50
+       CASE QI='L'
+         EXECUTE 'SORT DIVISION.CODES,':CLIENT.ID:' CITY.STATE HEADING "List of all division codes for ':CLIENT.ID:' - ':CLIENT.NAME:"'CL'":'"'
+         CALL ELINE('Press <ENTER> to continue.')
+         CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+         CRT @(0,3):'Enter Client Number:'
+         CRT @(22,3):CLIENT.ID:" - ":CLIENT.NAME:
+         GO GET.DIVISION
+	 CASE QI = 'ALL'
+        CALL ELINE('Program does not function properly for ALL divisions')
+        GO 100
+         DIVISION = 'ALL'
+         CRT @(22,5):'ALL DIVISIONS'
+	 CASE LEN(QI) <= 5
+         DIVISION = Q'R%5'
+         READ DIV.REC FROM F.DIVISION, DIVISION ELSE 
+	     CALL ELINE('Invalid entry, please try again.')
+	     GO 100
+         END
+         ROUTE.ZIP = DIV.REC<1>
+         READ ZIP.REC FROM F.ZIPS,ROUTE.ZIP ELSE
+           CALL ELINE("Cannot find client ":ROUTE.ZIP:" in the ZIP CODE file")
+           ROUTE.ZIP=''
+           GOTO 100
+         END
+         ROUTE.CITY = ZIP.REC<1>
+         ROUTE.STATE = ZIP.REC<2>
+         CRT @(22,5):DIVISION'R%5':' - ': ROUTE.ZIP'R%5':' ':ROUTE.CITY:', ':ROUTE.STATE'L#25'
+      CASE 1
+         CALL ELINE('Invalid entry.')
+     END CASE
+
+***********************************************************************
+* Get equipment type
+*
+GET.EQUIP:***
+
+125   HELP='Select equipment type.  [L]ist [X]=Back [EX]=Exit'
+      CRT @(0,22):TYPE.HELP
+      IF EQUIP.TYPE#'' THEN MASK='Enter Equipment Type: ':EQUIP.TYPE ELSE MASK='Enter Equipment Type: #'
+      CALL GEN.IN(0,7,MASK,'',Q,0,1,'','',0,-1,7,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+        BEGIN CASE
+          CASE QI='X'
+            X.BACK=1
+		IF EQUIP.TYPE#'' THEN CRT @(28,7):EQUIP.TYPE'R%1' ELSE CRT @(28,7):'#':
+            GOTO 100
+          CASE QI='EX'
+            GOSUB 9999
+          CASE QI='' & EQUIP.TYPE = ''
+            CALL ELINE('You must select equipment type.')
+            GOTO 125
+          CASE QI='L'
+           CALL LIST.EQUIP.TYPES(AVAL.EQUIP.TYPES,EQUIP.RETURNED)
+	      EQUIP.TYPE=EQUIP.RETURNED<1>
+	      EQUIP.DESC = EQUIP.RETURNED<2>            
+            CRT @(22,3):CLIENT.ID:" - ":CLIENT.NAME:
+            IF DIVISION#'' THEN 
+              CRT @(28,5):DIVISION'R%5':' - ': ROUTE.ZIP'R%5':' ':ROUTE.CITY:', ':ROUTE.STATE:
+            END ELSE
+              CRT @(28,5):'Main Location - ':ROUTE.ZIP'R%5':' ':ROUTE.CITY:', ':ROUTE.STATE:
+            END
+          CASE QI='' & EQUIP.TYPE#''
+            QI=EQUIP.TYPE
+          CASE NUM(QI) AND QI LE NUM.AVAL.TYPES AND QI GT 0
+	      EQUIP.TYPE = AVAL.EQUIP.TYPES<1,QI>     
+ 		EQUIP.DESC = AVAL.EQUIP.TYPES<2,QI> 
+          CASE 1
+	      GO 125
+        END CASE
+      CRT @(0,7):'Enter Equipment Type: ':EQUIP.TYPE'L#4':' ':EQUIP.DESC'L#15'
+      IF X.BACK THEN GOTO 100
+      CHG.E.CODE = 'TL':EQUIP.TYPE[1,1]
+
+
+***********************************************************************
+* Process Inbound Info
+*
+175:
+     HELP="Options: Y-Yes, N-No, X-Back, EX-EXIT"
+     CALL GEN.IN(0,9,'Do you wish to print the Inbound? Y','',Q,0,3,'','',0,-1,9,0,QI,HELP,0,23)
+     QI=OCONV(QI,'MCU') ; IF QI='' THEN QI='Y'
+     BEGIN CASE
+       CASE QI='Y'
+         SELECTED.IOT<1,1> = 'I'
+       CASE QI='N'
+         SELECTED.IOT<1,1> = ''
+       CASE QI='EX'
+         STOP
+       CASE QI='X'
+         X.BACK = 1
+         CRT @(0,9):@(-3):
+         GO 125
+       CASE 1
+         CALL ELINE("Must be 'X', 'EX', 'Y', or 'N'")
+         GO 175
+     END CASE
+     CRT @(34,9):QI'L#3'
+
+***********************************************************************
+* Process Outbound Info
+*
+176:
+      HELP="Options: Y-Yes, N-No, X-Back, EX-EXIT"
+      CALL GEN.IN(0,11,'Do you wish to print the Outbound? Y','',Q,0,2,'','',0,-1,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU') ; IF QI='' THEN QI='Y'
+      BEGIN CASE
+        CASE QI='Y'
+          SELECTED.IOT<1,2> = 'O'
+        CASE QI='N'
+          SELECTED.IOT<1,2> = ''
+        CASE QI='EX'
+          STOP
+        CASE QI='X'
+          CRT @(0,11):@(-3):
+          GO 175
+        CASE 1
+          CALL ELINE("Must be 'X', 'EX', 'Y', or 'N'")
+          GO 176
+      END CASE
+      CRT @(35,11):QI'L#3'
+
+***********************************************************************
+* Process Third Party Info
+*
+177:
+      HELP="Options: Y-Yes, N-No, X-Back, EX-EXIT"
+      CALL GEN.IN(0,13,'Do you wish to print the Third Party? Y','',Q,0,2,'','',0,-1,13,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU') ; IF QI='' THEN QI='Y'
+      BEGIN CASE
+        CASE QI='Y'
+          SELECTED.IOT<1,3> = 'T'
+        CASE QI='N'
+          SELECTED.IOT<1,3> = ' '
+        CASE QI='EX'
+          STOP
+        CASE QI='X'
+          CRT @(0,13):@(-3):
+          GO 176
+        CASE 1
+          CALL ELINE("Must be 'X', 'EX', 'Y', or 'N'")
+          GO 177
+      END CASE
+      CRT @(38,13):QI'L#3'
+
+***********************************************************************
+* Update and Process Info
+*
+325:  HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+        BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            GO 177
+         CASE QI='EX'
+            GO 9999
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO 325
+      END CASE
+***********************************************************************
+* Start processing
+*
+400:  TEXT="Selecting TL Bid Info to Process - Please Wait."
+      CALL CENTER(TEXT,80)
+      CRT @(0,13):@(-3):TEXT
+      CRT @(0,2):@(-3)
+
+
+***********************************************************************
+* Build divisional array
+*
+     DIV.ARR=''
+     DONE = 0
+	IF DIVISION = 'ALL' THEN
+       SELECT F.DIVISION
+       LOOP
+         READNEXT DIV.ID ELSE DONE = 1
+       UNTIL DONE = 1 DO
+         LOCATE DIV.ID IN DIV.ARR BY 'AR' SETTING POS ELSE
+           INS DIV.ID BEFORE DIV.ARR<POS>
+         END
+       REPEAT
+	END ELSE
+	  DIV.ARR = DIVISION
+	END
+***********************************************************************
+* Select data for current client
+*
+     OPEN '','FB.TL.BIDS,':CLIENT.ID TO F.TL.BIDS ELSE
+       CALL OPEN.ABORT("FB.TL.BIDS,":CLIENT.ID,PROG.NAME)
+     END          
+
+	MAX.DIVS = DCOUNT(DIV.ARR<1>,@VM)
+
+        DIV.SEL=1 
+
+***********************************************************************
+* Marker for return to process route zips
+*
+NEXT.ROUTE.ZIP:
+
+***********************************************************************
+* Clear work file
+*
+      CLEARFILE F.WORK         
+
+***********************************************************************
+* Select Traffic Survey Info and collect Benchmark Info 
+*
+     STATE.REC = ''
+     DONE = 0     
+     OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS.HIST ELSE
+       CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,PROG.NAME)
+     END
+     STMT = 'SSELECT FB.BILLS.HIST,':CLIENT.ID
+*     STMT := ' WITH DIV = ':DIV.ARR<1,DIV.SEL>
+     IF DIVISION#'' THEN STMT := ' WITH DIV = ':DIVISION
+IF USER='OWEN' THEN
+CRT @(0,20):STMT:
+*CRT @(0,21):"GET-LIST OWEN....":
+*STMT='GET-LIST OWEN'
+END
+     EXECUTE STMT PASSLIST CAPTURING OUTPUT
+
+     IF SYSTEM(11) ELSE
+*OH    GO SKIP.DIVISION
+       GO GET.BID
+     END
+     LOOP
+       READNEXT PRO.ID ELSE DONE = 1
+     UNTIL DONE = 1 DO
+       READ PRO.REC FROM F.BILLS.HIST,PRO.ID ELSE GO SKIP.PRO
+	  IOT = PRO.REC<2>
+IF USER='OWEN' THEN
+  IF PRO.ID='11585*11915*0' OR PRO.ID='11585*12574*0' THEN
+    CALL ELINE('PRESS BREAK')
+  END
+END
+          GOSUB GET.OFFSET
+	  BEGIN CASE
+	    CASE IOT = 'I'
+	      TS.STATE = PRO.REC<25>
+	    CASE IOT = 'O'
+	      TS.STATE = PRO.REC<26>
+	    CASE 1
+	      TS.STATE = PRO.REC<25>
+	  END CASE
+          CHARGES = PRO.REC<77>
+          CODES = PRO.REC<70>
+	  MILES = PRO.REC<19>
+       LOCATE CHG.E.CODE IN CODES<1> SETTING POS2 ELSE GO SKIP.PRO
+          ACHARGE = CHARGES<1,POS2>'R26#8'
+          IF MILES GT 0 THEN
+          LOCATE TS.STATE IN STATE.LIST<1> BY 'AR' SETTING POS THEN              
+              STATE.LIST<OFFSET,POS> +=1
+              STATE.LIST<OFFSET+1,POS> = STATE.LIST<OFFSET+1,POS> + ACHARGE
+              STATE.LIST<OFFSET+2,POS> = STATE.LIST<OFFSET+2,POS> + MILES
+              IF STATE.LIST<OFFSET+1,POS> # 0 AND STATE.LIST<OFFSET+1,POS> # '' THEN
+                NEW.BENCHMARK = STATE.LIST<OFFSET+1,POS>/STATE.LIST<OFFSET+2,POS>
+                STATE.LIST<OFFSET+3,POS> = NEW.BENCHMARK'MR2'
+              END
+	    END ELSE          
+              STATE.LIST=INSERT(STATE.LIST,OFFSET,POS,0,1)
+              STATE.LIST=INSERT(STATE.LIST,OFFSET+1,POS,0,ACHARGE)
+              STATE.LIST=INSERT(STATE.LIST,OFFSET+2,POS,0,MILES)
+              IF STATE.LIST<OFFSET+1,POS> # 0 AND STATE.LIST<OFFSET+1,POS> # '' THEN
+                NEW.BENCHMARK = STATE.LIST<OFFSET+1,POS>/STATE.LIST<OFFSET+2,POS>
+                STATE.LIST=INSERT(STATE.LIST,OFFSET+3,POS,0,NEW.BENCHMARK'MR2')
+              END
+	    END
+	  END ELSE
+	    CALL ELINE('Pro # ':PRO.ID:' has 0 miles not included in per mile benchmark')
+	  END	   
+SKIP.PRO:
+     REPEAT
+
+GET.BID:***
+     IF USER='OWEN' THEN
+       CRT "Select Bids and build work file: ":
+       INPUT NUL:
+     END
+***********************************************************************
+* Select Bids and build work file based on Carrier, State, Part and IOT
+*
+       STMT = 'SSELECT FB.TL.BIDS,':CLIENT.ID
+       STMT := ' WITH EQUIP = "':EQUIP.TYPE:'"'
+       IF DIVISIONS = 'Y' THEN STMT := ' AND WITH DIV = ':DIV.ARR<1,DIV.SEL>
+IF USER='OWEN' THEN CRT STMT
+       EXECUTE STMT PASSLIST CAPTURING OUTPUT
+       IF SYSTEM(11) ELSE
+         IF DIV.SEL < MAX.DIVS THEN DIV.SEL+=1 ; GO NEXT.ROUTE.ZIP
+         GO 9999
+       END
+       NUM.BIDS = @SELECTED
+       IF NUM.BIDS = 0 THEN
+         CALL ELINE('0 ITEMS SELECTED')
+         GO SKIP.BID.IOT
+       END
+       COUNTER=0
+       DONE = 0
+       LOOP
+         READNEXT TL.BID.ID ELSE DONE = 1
+       UNTIL DONE = 1 DO
+         COUNTER=COUNTER+1
+         CALL PROG.BAR(21,COUNTER,NUM.BIDS,PER)    
+         READ RATE.REC FROM F.TL.BIDS,TL.BID.ID ELSE GO SKIP.BID
+         CARRIER=FIELD(TL.BID.ID,'*',1)
+         EQUIP.TYPE=FIELD(TL.BID.ID,'*',2)
+         DIVISION=FIELD(TL.BID.ID,'*',3)
+         NUM.STATES = DCOUNT(STATE.LIST,@VM)
+         FOR STATE.NUM = 1 TO NUM.STATES
+           STATE = STATE.LIST<1,STATE.NUM>
+           FOR IOT.TYPE = 1 TO 3
+             IOT = SELECTED.IOT<1,IOT.TYPE>             
+             IF IOT = '' THEN GO SKIP.BID.IOT
+             GOSUB GET.OFFSET
+             RANK.REC = ''
+             IF RATE.REC<OFFSET,STATE.NUM> # '' THEN
+               RANK.REC<1> = RATE.REC<OFFSET,STATE.NUM>
+               RANK.ID = CARRIER:'*':STATE:'*':IOT
+               WRITE RANK.REC ON F.WORK,RANK.ID
+             END
+             IF RATE.REC<OFFSET+1,STATE.NUM> # '' THEN
+              RATE.RANK = ''
+              FOR PART.STATE = 1 TO 4              
+                IF RATE.REC<OFFSET+1,STATE.NUM,PART.STATE> # '' THEN     
+                  BEGIN CASE
+                    CASE PART.STATE = 1
+                     PART='N'
+                    CASE PART.STATE = 2
+                     PART='S'
+                    CASE PART.STATE = 3
+                     PART='E'
+                    CASE PART.STATE = 4
+                     PART='W'
+                  END CASE
+                  RANK.REC<2,PART.STATE> = RATE.REC<OFFSET+1,STATE.NUM,PART.STATE>
+                  RANK.ID = CARRIER:'*':STATE:'*':IOT
+                  WRITE RANK.REC ON F.WORK,RANK.ID
+                  STATE.LIST<2,STATE.NUM,PART.STATE> = PART
+               END
+             NEXT PART.STATE
+           END
+SKIP.BID.IOT:
+         NEXT IOT.TYPE
+       NEXT STATE.NUM
+SKIP.BID:
+     REPEAT
+
+     IF USER='OWEN' THEN
+       CRT; CRT "Select and explode the states by N,S,E, & W"
+       INPUT NUL:
+     END
+***********************************************************************
+* Select and explode the states by N,S,E, & W
+*
+     IF SELECTED.IOT<1,1> = 'I' THEN
+       I.STATE.LIST = STATE.LIST<1>
+       I.STATE.LIST<2> = STATE.LIST<5>
+       I.STATE.LIST<3> = STATE.LIST<6>
+       I.STATE.LIST<4> = STATE.LIST<7>
+       I.STATE.LIST<5> = STATE.LIST<8>
+     END ELSE 
+	 I.STATE.LIST = ''
+     END
+
+     IF SELECTED.IOT<1,2> = 'O' THEN
+       O.STATE.LIST = STATE.LIST<1>
+       O.STATE.LIST<2> = STATE.LIST<10>
+       O.STATE.LIST<3> = STATE.LIST<11>
+       O.STATE.LIST<4> = STATE.LIST<12>
+       O.STATE.LIST<5> = STATE.LIST<13>
+     END ELSE 
+	 O.STATE.LIST = ''
+     END
+
+     IF SELECTED.IOT<1,3> = 'T' THEN
+       T.STATE.LIST = STATE.LIST<1>
+       T.STATE.LIST<2> = STATE.LIST<15>
+       T.STATE.LIST<3> = STATE.LIST<16>
+       T.STATE.LIST<4> = STATE.LIST<17>
+       T.STATE.LIST<5> = STATE.LIST<18>
+     END ELSE 
+	 T.STATE.LIST = ''
+     END
+
+     FOR STATE.NUM = 1 TO NUM.STATES
+       FOR IOT.TYPE = 1 TO 3         
+         IOT = SELECTED.IOT<1,IOT.TYPE>
+         IF IOT = '' THEN GO SKIP.EXPLODE.IOT
+         GOSUB GET.OFFSET         
+         STATE = STATE.LIST<1,STATE.NUM>
+         IF STATE.LIST<2,STATE.NUM> = '' THEN GO SKIP.STATE.1
+         STMT = 'SELECT FBWORK':CH.NUM 
+         STMT := ' WITH IOT = "':IOT:'"'
+         STMT := ' AND WITH STATE = "':STATE:'"'
+         EXECUTE STMT PASSLIST CAPTURING OUTPUT
+         NUM.CARRIERS = @SELECTED
+         IF NUM.CARRIERS GT 0 ELSE
+           GO SKIP.STATE.1
+         END
+         LOOP
+           DONE = 0
+           READNEXT WORK.ID ELSE DONE = 1
+         UNTIL DONE = 1 DO          
+           CARRIER=FIELD(WORK.ID,'*',1)
+           READ WORK.REC FROM F.WORK,WORK.ID ELSE GO SKIP.WORK.REC
+           STATE = STATE
+           FOR PART.STATE = 1 TO 4
+              IF STATE.LIST<2,STATE.NUM,PART.STATE> = '' THEN                
+                IF PART.STATE = 4 THEN
+                  DELETE F.WORK,WORK.ID
+                END
+                GO SKIP.PART.STATE              
+              END
+              BENCH.NUM = STATE.LIST<OFFSET,STATE.NUM>
+              BENCH.CHG = STATE.LIST<OFFSET+1,STATE.NUM>
+              BENCH.MILES = STATE.LIST<OFFSET+2,STATE.NUM>
+              BENCHMARK = STATE.LIST<OFFSET+3,STATE.NUM>
+              BEGIN CASE
+                CASE PART.STATE = 1
+                  PART='N'
+                CASE PART.STATE = 2
+                  PART='S'
+                CASE PART.STATE = 3
+                  PART='E'
+                CASE PART.STATE = 4
+                  PART='W'
+              END CASE
+              IF WORK.REC<2,PART.STATE> # '' THEN     
+                EXP.WORK.REC = WORK.REC<2,PART.STATE>
+              END ELSE
+                EXP.WORK.REC = WORK.REC<1>
+              END
+              STATE.ID = STATE:'-':PART
+              BEGIN CASE
+                CASE IOT = 'I'
+                  TEMP.STATE.LIST = I.STATE.LIST
+                  GOSUB INSERT.STATE
+                  I.STATE.LIST = TEMP.STATE.LIST
+                CASE IOT = "O"
+                  TEMP.STATE.LIST = O.STATE.LIST
+                  GOSUB INSERT.STATE
+                  O.STATE.LIST = TEMP.STATE.LIST
+                CASE 1
+                  TEMP.STATE.LIST = T.STATE.LIST
+                  GOSUB INSERT.STATE
+                  T.STATE.LIST = TEMP.STATE.LIST
+              END CASE                   
+              EXP.WORK.ID = CARRIER:'*':STATE.ID:'*':IOT
+              WRITE EXP.WORK.REC ON F.WORK,EXP.WORK.ID
+              IF PART.STATE = 4 THEN
+                DELETE F.WORK,WORK.ID            
+              END         
+SKIP.PART.STATE:
+           NEXT PART.STATE
+SKIP.WORK.REC:
+         REPEAT
+SKIP.EXPLODE.IOT:
+       NEXT IOT.TYPE                                         
+SKIP.STATE.1:
+     NEXT STATE.NUM
+
+
+     IF USER='OWEN' THEN
+       CRT "Select and Rank Carrier info: ":
+       INPUT NUL:
+     END
+***********************************************************************
+* Select and rank carrier info
+*
+     FOR IOT.TYPE = 1 TO 3
+       IOT = SELECTED.IOT<1,IOT.TYPE>
+       IF IOT = '' THEN GO SKIP.RANK.IOT
+       BEGIN CASE
+         CASE IOT = 'I'
+           TEMP.STATE.LIST = I.STATE.LIST
+           GOSUB RANK.BIDS
+           I.STATE.LIST = TEMP.STATE.LIST
+         CASE IOT = "O"
+           TEMP.STATE.LIST = O.STATE.LIST
+           GOSUB RANK.BIDS
+           O.STATE.LIST = TEMP.STATE.LIST
+         CASE 1
+           TEMP.STATE.LIST = T.STATE.LIST
+           GOSUB RANK.BIDS
+           T.STATE.LIST = TEMP.STATE.LIST
+       END CASE
+
+SKIP.RANK.IOT: 
+   NEXT IOT.TYPE
+                             
+     IF USER='OWEN' THEN
+       CRT; CRT "Select Traffic Survey Info and collect Benchmark Info"
+       INPUT NUL:
+     END
+***********************************************************************
+* Select Traffic Survey Info and collect Benchmark Info 
+*
+         CARRIER.ARRAY = ''
+         STMT = 'SELECT FBWORK':CH.NUM
+         STMT := ' BY-DSND RANK.TOTAL WITH STATE = "TOTAL" '         
+         EXECUTE STMT PASSLIST CAPTURING OUTPUT
+         NUM.CARRIERS = @SELECTED
+         IF NUM.CARRIERS GT 0 ELSE
+           CALL ELINE('NO DATA, PLEASE TRY AGAIN')
+           STOP
+         END
+         CARRIER.NUM = 0
+
+         LOOP
+           DONE = 0
+           READNEXT TOTAL.ID ELSE DONE = 1
+         UNTIL DONE = 1 DO
+           CARRIER=FIELD(TOTAL.ID,'*',1)
+           READ TOTAL.REC FROM F.WORK,TOTAL.ID ELSE TOTAL.REC = ''
+           TOTAL.RANK = TOTAL.REC<1>
+           I.RANK = TOTAL.REC<2>
+           O.RANK = TOTAL.REC<3>
+           T.RANK = TOTAL.REC<4>
+           CARRIER.NUM = CARRIER.NUM + 1
+           CARRIER.ARRAY<1,CARRIER.NUM> = CARRIER
+           READV CARRIER.NAME FROM F.CARRIER,CARRIER,1 ELSE CARRIER.NAME = 'UNKNOWN'
+           CARRIER.ARRAY<2,CARRIER.NUM> = CARRIER.NAME
+           CARRIER.ARRAY<3,CARRIER.NUM> = TOTAL.RANK
+           CARRIER.ARRAY<4,CARRIER.NUM> = I.RANK
+           CARRIER.ARRAY<5,CARRIER.NUM> = O.RANK
+           CARRIER.ARRAY<6,CARRIER.NUM> = T.RANK
+         REPEAT
+         FOR CARRIER.NUM = 1 TO NUM.CARRIERS
+           CARRIER =CARRIER.ARRAY<1,CARRIER.NUM>
+           FOR IOT.TYPE = 1 TO 3
+             IOT = SELECTED.IOT<1,IOT.TYPE>
+             IF IOT = '' THEN GO SKIP.RANK.IOT.2		 
+             BEGIN CASE
+               CASE IOT = 'I'
+                 TEMP.STATE.LIST = I.STATE.LIST
+                 GOSUB ANALYZE.BIDS
+                 I.STATE.LIST = TEMP.STATE.LIST
+               CASE IOT = "O"
+                 TEMP.STATE.LIST = O.STATE.LIST
+                 GOSUB ANALYZE.BIDS
+                 O.STATE.LIST = TEMP.STATE.LIST
+               CASE 1
+                 TEMP.STATE.LIST = T.STATE.LIST
+                 GOSUB ANALYZE.BIDS
+                 T.STATE.LIST = TEMP.STATE.LIST
+            END CASE
+SKIP.RANK.IOT.2: 
+        NEXT IOT.TYPE
+      NEXT CARRIER.NUM     
+     TEMP.STATE.LIST = CHANGE(STATE.LIST,@VM,TAB)
+     WRITE TEMP.STATE.LIST ON BILLDATA,'STATE.LIST.XLS'
+     IF I.STATE.LIST # '' THEN 
+       TEMP.STATE.LIST = I.STATE.LIST       
+       GOSUB TRANSPOSE.INFO       
+       TEMP.STATE.LIST = CHANGE(TEMP.STATE.LIST,@VM,TAB)
+	 LIST.ID = CLIENT.ID:'-IB-'
+	 IF DIVISIONS = 'Y' THEN LIST.ID := DIV.ARR<1,DIV.SEL>
+	 LIST.ID := EQUIP.TYPE:'.XLS'
+       WRITE TEMP.STATE.LIST ON BILLDATA,LIST.ID
+    END  
+     IF O.STATE.LIST # '' THEN 
+       TEMP.STATE.LIST = O.STATE.LIST       
+       GOSUB TRANSPOSE.INFO       
+       TEMP.STATE.LIST = CHANGE(TEMP.STATE.LIST,@VM,TAB)
+	 LIST.ID = CLIENT.ID:'-OB-'
+	 IF DIVISIONS = 'Y' THEN LIST.ID := DIV.ARR<1,DIV.SEL>
+	 LIST.ID := EQUIP.TYPE:'.XLS'
+       WRITE TEMP.STATE.LIST ON BILLDATA,LIST.ID
+     END
+     IF T.STATE.LIST # '' THEN 
+       TEMP.STATE.LIST = T.STATE.LIST       
+       GOSUB TRANSPOSE.INFO       
+       TEMP.STATE.LIST = CHANGE(TEMP.STATE.LIST,@VM,TAB)
+	 LIST.ID = CLIENT.ID:'-TP-'
+	 IF DIVISIONS = 'Y' THEN LIST.ID := DIV.ARR<1,DIV.SEL>
+	 LIST.ID := EQUIP.TYPE:'.XLS'
+       WRITE TEMP.STATE.LIST ON BILLDATA,LIST.ID
+     END
+     GOSUB PRINT.REPORT
+
+SKIP.DIVISION:
+     IF DIV.SEL < MAX.DIVS THEN DIV.SEL+=1 ; GO NEXT.ROUTE.ZIP
+
+GO 9999
+
+
+***********************************************************************
+* Get IOT offset
+*
+
+GET.OFFSET:
+     BEGIN CASE      
+       CASE IOT = 'I'
+         OFFSET = 5
+       CASE IOT = 'O'
+         OFFSET = 10
+       CASE 1
+         OFFSET = 15
+     END CASE
+RETURN
+
+***********************************************************************
+* Insert state in state list
+*
+INSERT.STATE:
+     LOCATE STATE IN TEMP.STATE.LIST<1> BY 'AR' SETTING POS THEN
+       TEMP.STATE.LIST  = DELETE(TEMP.STATE.LIST,1,POS)
+       TEMP.STATE.LIST  = DELETE(TEMP.STATE.LIST,2,POS)
+       TEMP.STATE.LIST  = DELETE(TEMP.STATE.LIST,3,POS)
+       TEMP.STATE.LIST  = DELETE(TEMP.STATE.LIST,4,POS)
+       TEMP.STATE.LIST  = DELETE(TEMP.STATE.LIST,5,POS)
+     END
+     LOCATE STATE.ID IN TEMP.STATE.LIST<1> BY 'AR' SETTING POS ELSE
+       TEMP.STATE.LIST=INSERT(TEMP.STATE.LIST,1,POS,0,STATE.ID)
+       TEMP.STATE.LIST=INSERT(TEMP.STATE.LIST,2,POS,0,BENCH.NUM)
+       TEMP.STATE.LIST=INSERT(TEMP.STATE.LIST,3,POS,0,BENCH.CHG)
+       TEMP.STATE.LIST=INSERT(TEMP.STATE.LIST,4,POS,0,BENCH.MILES)
+       TEMP.STATE.LIST=INSERT(TEMP.STATE.LIST,5,POS,0,BENCHMARK)
+     END
+RETURN
+
+***********************************************************************
+* Rank bids information
+*
+RANK.BIDS:
+    NUM.STATES = DCOUNT(TEMP.STATE.LIST<1>,@VM)
+    FOR STATE.POS = 1 TO NUM.STATES         
+         IF TEMP.STATE.LIST<2,STATE.POS> = '' THEN GO SKIP.STATE
+         TS.STATE = TEMP.STATE.LIST<1,STATE.POS>
+         STMT = 'SELECT FBWORK':CH.NUM 
+         STMT := ' BY STATE BY RATE '
+         STMT := ' WITH IOT = "':IOT:'"'
+         STMT := ' AND WITH STATE = "':TS.STATE:'"'
+         EXECUTE STMT PASSLIST CAPTURING OUTPUT
+         NUM.CARRIERS = @SELECTED
+         IF NUM.CARRIERS GT 0 ELSE
+           GO SKIP.STATE
+         END
+         OLD.RATE = 0
+         RANK = NUM.CARRIERS         
+         LOOP
+           DONE = 0
+           READNEXT WORK.ID ELSE DONE = 1
+         UNTIL DONE = 1 DO
+           CARRIER=FIELD(WORK.ID,'*',1)          
+           READ RANK.REC FROM F.WORK,WORK.ID THEN 
+             NEW.RATE = RANK.REC<1>
+             IF NEW.RATE # OLD.RATE THEN                         
+               RANK.REC<4> = RANK
+               OLD.RATE = NEW.RATE
+               RANK = RANK - 1                 
+             END ELSE
+               RANK.REC<4> = RANK
+             END           
+             WRITE RANK.REC ON F.WORK,WORK.ID
+           END
+           TOTAL.ID = CARRIER:'*TOTAL'
+           READ TOTAL.REC FROM F.WORK,TOTAL.ID ELSE TOTAL.REC = ''
+           TOTAL.REC<1> = TOTAL.REC<1> + RANK.REC<4>
+           BEGIN CASE
+ 		 CASE IOT = 'I'
+		   TOTAL.REC<2> = TOTAL.REC<2> + RANK.REC<4>
+ 		 CASE IOT = 'O'
+		   TOTAL.REC<3> = TOTAL.REC<3> + RANK.REC<4>
+ 		 CASE 1
+		   TOTAL.REC<4> = TOTAL.REC<4> + RANK.REC<4>
+	     END CASE
+           WRITE TOTAL.REC ON F.WORK,TOTAL.ID
+         REPEAT
+SKIP.STATE:
+     NEXT STATE.POS
+RETURN
+
+***********************************************************************
+* Analyze ranked bid info
+*
+ANALYZE.BIDS:
+       STMT = 'SELECT FBWORK':CH.NUM 
+       STMT := ' WITH CARRIER = "':CARRIER:'"'
+       STMT := ' AND WITH IOT = "':IOT:'"'
+       EXECUTE STMT PASSLIST CAPTURING OUTPUT
+       NUM.ITEMS = @SELECTED
+       IF NUM.ITEMS = 0 THEN RETURN
+       ROW = 6 + CARRIER.NUM
+       NUM.STATES = DCOUNT(TEMP.STATE.LIST<1>,@VM)
+
+         LOOP
+           DONE = 0
+           READNEXT WORK.ID ELSE DONE = 1
+         UNTIL DONE = 1 DO
+           STATE = FIELD(WORK.ID,'*',2)          
+           LOCATE STATE IN TEMP.STATE.LIST<1> SETTING POS THEN
+             READ RATE.REC FROM F.WORK,WORK.ID ELSE RATE.REC = ''
+             IF RATE.REC # '' THEN 
+               RATE = RATE.REC<1>
+             END ELSE
+		   RATE = ''
+		 END
+           TEMP.STATE.LIST<ROW,POS> = RATE
+           TEMP.STATE.LIST<ROW,NUM.STATES+1> = CARRIER
+		 RANK.ID = CARRIER:'*TOTAL'
+		 READV RANK FROM F.WORK,RANK.ID,1 ELSE RANK = 0
+		 TEMP.STATE.LIST<ROW,NUM.STATES+2> = RANK		 
+           END
+         REPEAT
+RETURN
+
+
+***********************************************************************
+* Build spreadsheet info
+*
+TRANSPOSE.INFO:***
+   NUM.STATES = DCOUNT(TEMP.STATE.LIST<1>,@VM)
+   TEMP.STATE.LIST<6> = TEMP.STATE.LIST<1>
+   TEMP.STATE.LIST  = INSERT(TEMP.STATE.LIST,1,1,0,"Benchmark Info")
+   TEMP.STATE.LIST  = INSERT(TEMP.STATE.LIST,2,1,0,"Shipments")
+   TEMP.STATE.LIST  = INSERT(TEMP.STATE.LIST,3,1,0,"Revenue")
+   TEMP.STATE.LIST  = INSERT(TEMP.STATE.LIST,4,1,0,"Miles")
+   TEMP.STATE.LIST  = INSERT(TEMP.STATE.LIST,5,1,0,"Benchmark")
+   TEMP.STATE.LIST  = INSERT(TEMP.STATE.LIST,6,1,0,"Carrier Name")
+   TEMP.STATE.LIST<6,NUM.STATES+2>  = "Carrier Number"
+   TEMP.STATE.LIST<6,NUM.STATES+3>  = "Ranking"
+
+   ROW = 6 + CARRIER.NUM
+   LINE.NUM = 7
+   LINES.TO.CHECK = NUM.CARRIERS
+   LINES.CHECKED = 0
+
+   LOOP
+     CARRIER.NUM = TEMP.STATE.LIST<LINE.NUM,NUM.STATES+1>
+     NEXT.CARRIER.NUM = TEMP.STATE.LIST<LINE.NUM+1,NUM.STATES+1>
+   UNTIL LINES.CHECKED = LINES.TO.CHECK
+     IF CARRIER.NUM = '' THEN
+       TEMP.STATE.LIST = DELETE(TEMP.STATE.LIST,LINE.NUM)
+     END ELSE
+       READV CARRIER.NAME FROM F.CARRIER,CARRIER.NUM,1 ELSE CARRIER.NAME = "Unknown"
+       TEMP.STATE.LIST = INSERT(TEMP.STATE.LIST,LINE.NUM,1,0,CARRIER.NAME)
+       LINE.NUM = LINE.NUM + 1
+     END
+     LINES.CHECKED += 1
+   REPEAT
+
+RETURN
+
+***********************************************************************
+* Set printer info
+*
+SETUP.PTR:***
+      LASER=''
+      LASER<1>=0                         ;* LANDSCAPE
+      LASER<2>=6                         ;* Lines per inch
+      LASER<3>=61                        ;* Page length
+      LASER<4>=12                        ;* Characters per inch
+      LASER<5>=0                         ;* Set spacing (1=NonPro,1=Proprotional)
+      LASER<6>=0                         ;* Italics (0=off,1=on)
+      LASER<7>=1                         ;* Bin selection
+      LASER<8>=0                         ;* Paper output
+      WIDTH = 96
+      IF WIDTH GT 154 THEN TEMP=154 ELSE TEMP=WIDTH
+      LENGTH=LASER<3>-1
+      EXECUTE 'TERM ,,,,,,':WIDTH:',':LENGTH
+      MARGIN=0
+      LASER.STR=''
+      LASER.STR= ESC:"E"
+      LASER.STR:= ESC:"&l":LASER<1>:"O"  ;* Set orientation
+      LASER.STR:= ESC:"&l":LASER<2>:"D"  ;* Lines per inch
+      LASER.STR:= ESC:"&l":LASER<3>:"F"  ;* Page length
+      LASER.STR:= ESC:"(s":LASER<4>:"h"  ;* Char Per Inch (PITCH)
+      LASER.STR:= LASER<5>:"p"           ;* Set spacing
+      LASER.STR:= LASER<6>:"s"           ;* Italics off
+      LASER.STR:= "0b"                   ;* Stroke Weight
+      LASER.STR:= "8.50v"                ;* Point Size
+      LASER.STR:= LASER<9>:"T"           ;* FONT
+      LASER.STR:= ESC:"(8U"              ;* SELECT SYMBOL SET
+      LASER.STR:= ESC:"&l":LASER<7>:"H"  ;* Bin selection
+      LASER.STR:= ESC:"&a":MARGIN:"L"
+      LASER.STR:= ESC:'"g':LASER<8>:'F'  ;* Paper output
+      PRINT LASER.STR:
+RETURN
+
+
+***********************************************************************
+* Print Analysis Report
+*
+PRINT.REPORT:***
+      PRINTER ON
+      GOSUB SETUP.PTR
+      TITLE='Truckload Bid Analysis'
+      CTR=INT(WIDTH/2)
+      L.TAB=CTR-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):TITLE
+      R.TAB=WIDTH-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE())
+      HEAD1=PROG.NAME:SPACE(L.TAB):TITLE:SPACE(R.TAB):TIMEDATE():"'L'"
+      TITLE='For Client: ':CLIENT.ID:' ':CLIENT.NAME
+      L.TAB=CTR-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+      R.TAB=(WIDTH-LEN(TEMP))-20
+      HEAD2=TEMP:SPACE(R.TAB):USER'L(#10 )':"PAGE 'PL'"
+      TITLE='for Equipment Type of ':EQUIP.DESC
+      L.TAB=CTR-(LEN(TITLE)/2)
+      TEMP=SPACE(L.TAB):TITLE
+      HEAD3=TEMP:"'L'"
+      IF DIVISIONS= 'Y' THEN 
+        TITLE = ' for Division ':DIV.ARR<1,DIV.SEL>
+        L.TAB=CTR-(LEN(TITLE)/2)
+        TEMP=SPACE(L.TAB):TITLE
+        HEAD4=TEMP:"'L'"
+      END ELSE
+        HEAD4="'L'"
+      END
+      HEAD5="'L'"
+      HEAD6 =SPACE(38)
+      HEAD7="Carrier #"
+      HEAD7:=SPACE(10):"Carrier"  
+      HEAD7:=SPACE(13)
+      IF SELECTED.IOT<1,1> = 'I' THEN
+        HEAD6:=SPACE(5):"Inbound  "
+        HEAD7:=SPACE(5):" Rank  "
+      END 
+      IF SELECTED.IOT<1,2> = 'O' THEN
+        HEAD6:=SPACE(4):"Outbound"
+        HEAD7:=SPACE(5):"  Rank  "       
+      END 
+      IF SELECTED.IOT<1,3> = 'T' THEN
+        HEAD6:=SPACE(4):"Third Party"
+        HEAD7:=SPACE(5):"   Rank    "
+      END 
+      HEAD6:=SPACE(4):" Total "
+      HEAD7:=SPACE(3.):" Rank  "
+      HEAD8='--------- ------------------------------' 
+      IF SELECTED.IOT<1,1> = 'I' THEN
+        HEAD8:=SPACE(2):"-----------"
+      END 
+      IF SELECTED.IOT<1,2> = 'O' THEN
+        HEAD8:=SPACE(2):"-----------"
+      END 
+      IF SELECTED.IOT<1,3> = 'T' THEN
+        HEAD8:=SPACE(2):"-----------"
+      END 
+      HEAD8:=SPACE(2):"-----------"
+      HEAD6:="'L'"
+      HEAD7:="'L'"
+      HEAD8:="'L'"
+      HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6:HEAD7:HEAD8
+      VIN=''
+      VIN<3>='R'
+      HEADING HED
+      I.TOTAL = 0
+      O.TOTAL = 0
+      T.TOTAL = 0
+      TOTAL = 0
+      FOR X = 1 TO NUM.CARRIERS
+        CARRIER.NUM = CARRIER.ARRAY<1,X>
+        CARRIER.NAME = CARRIER.ARRAY<2,X>
+        CARRIER.TOTAL = CARRIER.ARRAY<3,X>
+        CARRIER.I = CARRIER.ARRAY<4,X>
+        CARRIER.O = CARRIER.ARRAY<5,X>
+        CARRIER.T = CARRIER.ARRAY<6,X>
+        LINE = '  ':CARRIER.NUM'R%5':'   '
+        LINE:= CARRIER.NAME'L#30':'    '        
+        IF SELECTED.IOT<1,1> = 'I' THEN
+          LINE := CARRIER.I'R#8':'     '
+          I.TOTAL += CARRIER.I         
+        END 
+        IF SELECTED.IOT<1,2> = 'O' THEN
+          LINE := CARRIER.O'R#8':'     '
+          O.TOTAL += CARRIER.O
+        END 
+
+        IF SELECTED.IOT<1,3> = 'T' THEN
+           LINE := CARRIER.T'R#8':'     '
+           T.TOTAL += CARRIER.T
+        END 
+        LINE := CARRIER.TOTAL'R#8'
+        PRINT LINE
+      NEXT X      
+      
+RETURN
+
+9999: * End of Program
+     PRINTER OFF
+     EXECUTE "TERM ,,,,,,,60"
+     STOP

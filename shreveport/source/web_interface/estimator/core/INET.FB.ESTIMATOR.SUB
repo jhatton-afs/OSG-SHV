@@ -1,0 +1,1379 @@
+      SUBROUTINE INET.FB.ESTIMATOR.SUB(CLIENT.ID,CARRIER.ID,OSHIP.DATE,IOT,ORIG.ZIP,DEST.ZIP,TEMP.CLASSES,TEMP.WEIGHTS,TEMP.MISC.CHG.CODES,USER.NAME,USER.PWD,QUOTE.PERCENT,MARK.UP.PERCENT,VOUT)
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: TAMI SEAGO AND OWEN HOLMAN
+* DATE: SEPTEMBER 6, 2000
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE EXPRESS
+* WRITTEN CONSENT OF SAME.
+*
+* 091302 - JMK01 - ADD CANADA TO AUDIT PROCESS
+* 012103 - JMK02 - ADD MAX.LTL TO PROCESS
+* 111504 - JMK03 - ADD FORCED BENCHMARK MINIMUM TO OLA
+* 111504 - JMK04 - ADD CARRIER ONLY FSC FIELD
+* 022805 - JMK05 - COLLECT THREE SETS OF FSC FOR REVIEW
+* 063005 - JMK06 - CORRECT MISING AUDIT VARIABLE
+* 080805 - JMK07 - ADD RESPONSE TO ACTIVITY LOG
+* 102405 - JMK08 - CORRECT BLOWOUT IF BAD CARRIER IN CHECK.LIST
+* 112305 - JMK09 - ADD TIME IN TRANSIT AND JOINT/DIRECT SVC FROM RATEWARE SERVER
+* 121305 - JMK10 - CHANGE JOINT/DIRECT TO APPLY ONLY FOR INBOUND SHIPMENTS
+* 121305 - JMK11 - EXPAND CARRIER CONNECT INFO FROM RWS
+* 121505 - JMK12 - SEND ALERT EMAIL IF CARRIER SCAC IS MISSING
+* 121605 - JMK13 - REFORMAT ALERT EMAIL
+* 122705 - JMK14 - SETUP CARRIERS TO EXCLDUE FROM SCAC ALERTS
+* 011806 - JMK15 - SETUP ADDL CARRIERS TO EXCLDUE FROM SCAC ALERTS
+* 020206 - JMK16 - SETUP ADDL CARRIERS TO EXCLDUE FROM SCAC ALERTS
+* 021306 - JMK17 - CHECK FOR ACTIVITY PRIOR TO WRITING UPDATE AT EOP
+* 030706 - JMK18 - ADD FSC AND ACCESSORIALS TO RESULTS FOR WEB INQUIRY
+* 030906 - JMK19 - CHANGE FORMAT FOR ACTIVITY FILE DATA
+* 031406 - BOH01 - ADD SCAC LOOKUP TO TRANSLATE TO CARRIER.ID
+* 032507 - BOH02 - Added 16818 to the Don't Email about SCAC Code list
+* 031706 - JMK20 - CONVERT DATE TO INTERNAL FORMAT FOR ACTIVITY RECORD
+* 031706 - JMK21 - ADD RWS CARRIER DATA DATE TO RESULTS FOR WEB INQUIRY
+* 051006 - JCW01 - CHANGES TO @SELECTED, CLEARSELECT, AND STMT<X>
+* 091206 - JMK22 - ADD LOGISTICS AND OLA GROUP TO MISSING SCAC EMAIL
+* 092606 - JMK23 - MARKUP QUOTES FOR FOR-SHOR 01215
+* 100406 - JMK24 - ADD 1 TRANSIT DAYS FOR EACH INDIRECT POINT
+* 013107 - JMK25 - C200612050004(revised) / due 12/15/06 / rate estimate display benchmark / true cost
+* 053007 - JCW02 - C200705240006 / fix error message; specific message being overridden by generic message
+* 062107 - JMK26 - C200706210001 / 6/22/07 / changes to web service
+* 071007 - JMK27 - ATK Web Rate Quote Results
+* 072607 - JMK28 - T200707260005  /    / RE: Accessorial Error on Web Rater
+* 121107 - JMK29 - T071372 - AFS Website NOT quoting commission - Contract ONLY
+* 011008 - NPR01 - Added code for calc. of a Percentage increase on quotes as per CLIENTS file attr 227, 228 & 229
+* 032408 - JMK30 - T080897 - Changes to Ward Kraft website quoting
+* 040308 - JMK31 - T080932 - Marlite FSC is set wrong - correct ASAP
+* 042208 - NPR02 - T081042 - Added update to new FB.IEFA.XREF file based ID = CLIENT*Activity Date
+* 042408 - JMK32 - C081107 - Rate Estimator Carrier Message
+* 052908 - NPR03 - T081436 - Removed adjustments for web rate estimates for client #1215
+* 061808 - JMK33 - Converted to subroutine for web service setup
+****************************************************************
+* Initialize variables
+****************************************************************
+
+      CARRIER.EST.ARRAY=''
+      DEST.CITY = ''
+      DEST.ST = ''
+      ORIG.CITY = ''
+      ORIG.ST = ''
+      CALL GET.USER(USER)
+      CALL CHANNEL(CH.NUM)
+      ACTIVITY.REC=''                    ; * JMK17
+      ACTIVITY.ID=''                     ; * JMK17
+      CRLF=CHAR(13):CHAR(10)             ; * JMK33
+
+      UPL.VIN = 'FBBP'
+      UPL.VIN<2> = 'INET.FB.ESTIMATOR.SUB'
+      UPL.VIN<3> = USER
+      UPL.VIN<4> = CH.NUM
+      UPL.VOUT = ''     ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+
+*      CLIENT.ID=VIN<1>
+*      CARRIER.ID=VIN<2>
+*      OSHIP.DATE=VIN<3>
+*      IOT=VIN<4>
+*      ORIG.ZIP=VIN<5>
+*      DEST.ZIP=VIN<6>
+*      TEMP.CLASSES=VIN<7>
+*      TEMP.WEIGHTS=VIN<8>
+*      TEMP.MISC.CHG.CODES=VIN<9>
+*      USER.NAME=VIN<10>
+*      USER.PWD=VIN<11>
+*      QUOTE.PERCENT=VIN<12>
+*      MARK.UP.PERCENT=VIN<13>
+*
+
+      CLIENT.ID=CLIENT.ID'R%5'           ; * JMK26
+      IF CARRIER.ID#'ALL' THEN CARRIER.ID=CARRIER.ID'R%5'    ; * JMK26
+      IOT=OCONV(IOT,'MCU')               ; * JMK26
+      TEMP.CLASSES=CHANGE(TEMP.CLASSES,"|",@VM)
+      TEMP.WEIGHTS=CHANGE(TEMP.WEIGHTS,"|",@VM)
+      TEMP.MISC.CHG.CODES=CHANGE(TEMP.MISC.CHG.CODES,"|",@VM)
+* Added routine on 01-16-02 to compensate for users not Tabbing and
+*  entering classes and weights out of order.  Owen
+      CLASSES=''
+      WEIGHTS=''
+      TIMES = DCOUNT(TEMP.CLASSES<1>,@VM)
+      FOR X = 1 TO TIMES
+         CLASS=TEMP.CLASSES<1,X>
+         IF CLASS='92.5' THEN CLASS=92
+         IF CLASS='77.5' THEN CLASS=77
+         WEIGHT=TEMP.WEIGHTS<1,X>'R0'    ; *** Rounded the weight to the nearest LB OH 07-07-04
+         IF WEIGHT+0>0 THEN
+            CLASSES<1,-1>=CLASS
+            WEIGHTS<1,-1>=WEIGHT
+         END
+      NEXT X
+      ZIP.VOUT = ""
+      TIMES = DCOUNT(TEMP.MISC.CHG.CODES<1>,@VM)
+      MISC.CHG.CODES=''
+      ACC.ERROR=''                       ; * JMK27
+      FOR X = 1 TO TIMES
+         CODE=TEMP.MISC.CHG.CODES<1,X>
+         IF CODE='LIFT' THEN CODE = 'L25'          ; * 11-10-03 Owen Per Scott
+         IF CODE#'' THEN MISC.CHG.CODES<1,-1>=CODE
+      NEXT X
+      MISC.CHG.CODES=OCONV(MISC.CHG.CODES,'MCU')
+
+*NPR03      IF CLIENT.ID='01215' THEN          ; * JMK23
+*NPR03         MARK.UP.PERCENT+=35             ; * JMK23
+*NPR03      END                                ; * JMK23
+*dfIF USER.NAME='Covington' THEN
+*df      OPEN '','FB.TABLES' TO F.TABLES ELSE
+*df         ERROR = "CANNOT OPEN FILE F.TABLES"
+*df         GO 9000
+*df      END
+*df  WRITE '.':QUOTE.PERCENT:'.' ON F.TABLES,'DAVID'
+*dfEND
+      IF QUOTE.PERCENT#'' THEN
+         QUOTE.PERCENT=QUOTE.PERCENT*100           ; ** 100% Passed from SQL is 100
+      END
+      CANADIAN=0
+      IF NOT(NUM(ORIG.ZIP)) THEN
+         ORIG.ZIP=OCONV(ORIG.ZIP,'MCU')
+         IF NOT(ORIG.ZIP MATCHES '1A1N1A1N1A1N') THEN
+            PRINT "%ERROR:Origin Zip-Canadian Zips must be formatted A1A1A1"
+            STOP
+         END
+         CANADIAN=1
+      END ELSE
+         IF NOT(ORIG.ZIP MATCHES '5N') THEN
+            PRINT "%ERROR:Origin Zip-US Zips must be 5 numeric digits"
+            STOP
+         END
+      END
+      IF NOT(NUM(DEST.ZIP)) THEN
+         DEST.ZIP=OCONV(DEST.ZIP,'MCU')
+         IF NOT(DEST.ZIP MATCHES '1A1N1A1N1A1N') THEN
+            PRINT "%ERROR:Destination Zip-Canadian Zips must be formatted A1A1A1"
+            STOP
+         END
+         CANADIAN=1
+      END ELSE
+         IF NOT(DEST.ZIP MATCHES '5N') THEN
+            PRINT "%ERROR:Destination Zip-US Zips must be 5 numeric digits"
+            STOP
+         END
+      END
+*--------------------------------------------
+      USER.NAME=OCONV(USER.NAME,'MCU')
+      USER.PWD=OCONV(USER.PWD,'MCU')
+*--------------------------------------------
+
+      OPEN '','INET.FBESTIMATOR.ACTIVITY' TO F.ACTIVITY ELSE
+         PRINT "%ERROR:COULD NOT OPEN ACTIVITY"
+         STOP
+      END
+      OPEN '','SCAC.XREF' TO F.SCAC.XREF ELSE      ; * BOH01
+         PRINT "%ERROR:COULD NOT OPEN SCAC.XREF"   ; * BOH01
+         STOP                            ; * BOH01
+      END                                ; * BOH01
+      IF NOT(NUM(CARRIER.ID)) AND CARRIER.ID#'ALL' THEN      ; * BOH01
+         UP.CARRIER.ID=OCONV(CARRIER.ID,'MCU')
+         READV SCAC FROM F.SCAC.XREF,UP.CARRIER.ID,1 THEN    ; * BOH01
+            CARRIER.ID=SCAC              ; * BOH01
+         END                             ; * BOH01
+      END                                ; * BOH01
+
+*--------------------------------------------
+*      OPEN '','INET.USER' TO F.INET.USER ELSE
+*        PRINT "%ERROR:COULD NOT OPEN INET.USER FILE"
+*        STOP
+*      END
+*--------------------------------------------
+
+*
+* Open general files
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         ERROR = "CANNOT OPEN FILE CLIENTS"
+         GO 9000
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         ERROR = "CANNOT OPEN FILE CARRIERS"
+         GO 9000
+      END
+      OPEN '','FB.BC.FSC' TO F.NFSC ELSE
+         ERROR = "CANNOT OPEN FILE FB.BC.FSC"
+         GO 9000
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         ERROR = "CANNOT OPEN FILE FB.TABLES"
+         GO 9000
+      END
+
+*---- Open mileage input and output files
+
+      OPEN '','PCIN' TO F.PCIN ELSE
+         ERROR = "CANNOT OPEN FILE PCIN"
+         GO 9000
+      END
+      OPEN '','PCOUT' TO F.PCOUT ELSE
+         ERROR = "CANNOT OPEN FILE PCOUT "
+         GO 9000
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+         ERROR = "CANNOT OPEN ZIPS FILE "
+         GO 9000
+      END
+      OPEN '','FB.MILEAGE' TO F.MILEAGE ELSE
+         ERROR = "CANNOT OPEN MILEAGE FILE "
+         GO 9000
+      END
+*
+*NPR02
+*
+      XREF.OPEN = "Y"
+      OPEN '','FB.IEFA.XREF' TO F.IEFA.XREF ELSE
+         XREF.OPEN = "N"
+      END
+*
+*NPR02
+*
+      IF NUM(ORIG.ZIP) THEN              ; * JMK01
+         READ T.REC FROM F.ZIPS,ORIG.ZIP THEN
+            ORIG.CITY = T.REC<1>
+            ORIG.ST = T.REC<2>
+         END ELSE
+            VIN=ORIG.ZIP
+            CALL ADD.ZIP(VIN,VOUT)
+            ORIG.CITY=VOUT<1>
+            ORIG.STATE=VOUT<2>
+            IF ORIG.CITY='' THEN
+               ERROR=ORIG.ZIP:' ZIP NOT ON FILE, PLEASE TRY ANOTHER ZIP'
+               GO 9000
+            END
+         END
+      END ELSE                           ; * JMK01
+         ORIG.CITY = ''                  ; * JMK01
+         ORIG.ST = ''                    ; * JMK01
+      END                                ; * JMK01
+      IF NUM(DEST.ZIP) THEN              ; * JMK01
+         READ T.REC FROM F.ZIPS,DEST.ZIP THEN
+            DEST.CITY = T.REC<1>
+            DEST.ST = T.REC<2>
+         END ELSE
+            VIN=DEST.ZIP
+            CALL ADD.ZIP(VIN,VOUT)
+            DEST.CITY=VOUT<1>
+            DEST.STATE=VOUT<2>
+            IF DEST.CITY='' THEN
+               ERROR=DEST.ZIP:' ZIP NOT ON FILE, PLEASE TRY ANOTHER ZIP'
+               GO 9000
+            END
+         END
+      END ELSE                           ; * JMK01
+         DEST.CITY = ''                  ; * JMK01
+         DEST.ST = ''                    ; * JMK01
+      END                                ; * JMK01
+
+*--------------------------------------------
+      ACTIVITY.ID = USER.NAME:'*':USER.PWD:'*':DATE():'*':TIME()
+*--------------------------------------------
+      ACTIVITY.REC = ''
+      ACTIVITY.REC<2> = CLIENT.ID
+      ACTIVITY.REC<3> = CARRIER.ID
+*     ACTIVITY.REC<4> = OSHIP.DATE       ; * JMK20
+      ACTIVITY.REC<4> = ICONV(OSHIP.DATE,'D')      ; * JMK20
+      ACTIVITY.REC<5> = IOT
+      ACTIVITY.REC<6> = ORIG.ZIP
+      ACTIVITY.REC<7> = DEST.ZIP
+      ACTIVITY.REC<8> = CLASSES
+      ACTIVITY.REC<9> = WEIGHTS
+      ACTIVITY.REC<10> = MISC.CHG.CODES
+      ACTIVITY.REC<11> = QUOTE.PERCENT
+      ACTIVITY.REC<12> = MARK.UP.PERCENT
+      WRITE ACTIVITY.REC ON F.ACTIVITY,ACTIVITY.ID
+*
+* NPR02
+*
+      IF XREF.OPEN = "Y" THEN
+         ID.XREF = CLIENT.ID:"*":DATE()
+         READ XREF.REC FROM F.IEFA.XREF, ID.XREF ELSE XREF.REC = ""
+         LOCATE ACTIVITY.ID IN XREF.REC SETTING POS ELSE
+            XREF.REC<-1> = ACTIVITY.ID
+            WRITE XREF.REC ON F.IEFA.XREF, ID.XREF
+         END
+      END
+*
+* NPR02
+
+      CLIENT.AUDIT=1
+      ERROR=''
+      PROG.NAME='FB.ESTIMATOR'
+      PROG.DESC="Estimate freight on shipments using OLA setups"
+      PACK.NAME="Freight Billing"
+
+      IF ORIG.ZIP GE 96701 AND ORIG.ZIP LE 96898 THEN
+         ERROR = "Cannot Estimate LTL Shipments to Hawaii"
+         GO 9000
+      END
+      IF ORIG.ZIP GE 99501 AND ORIG.ZIP LE 99950 THEN
+         ERROR = "Cannot Estimate LTL Shipments to Alaska"
+         GO 9000
+      END
+      IF DEST.ZIP GE 96701 AND DEST.ZIP LE 96898 THEN
+         ERROR = "Cannot Estimate LTL Shipments to Hawaii"
+         GO 9000
+      END
+      IF DEST.ZIP GE 99501 AND DEST.ZIP LE 99950 THEN
+         ERROR = "Cannot Estimate LTL Shipments to Alaska"
+         GO 9000
+      END
+      CONTR.AMT=''
+      BENCH.AMT=''
+      TAB=CHAR(9)
+*    X=LEN(OSHIP.DATE)
+*    CALL DATE.IN(OSHIP.DATE,"",1)
+      SHIP.DATE=ICONV(OSHIP.DATE,'D')
+      IF SHIP.DATE='' THEN
+         ERROR='Invalid Ship Date of ':OSHIP.DATE
+         GOTO 9000
+      END
+      IF CLIENT.ID="01250" AND DATE() < 13413 ELSE
+         IF SHIP.DATE > DATE() THEN
+            ERROR='Ship date cannot be in the future. Use today as the date.'
+            GOTO 9000
+         END
+      END
+
+      NUM.WEIGHTS = DCOUNT(WEIGHTS,@VM)
+      TOT.WEIGHT = 0
+      TOT.WEIGHT = SUM(WEIGHTS)
+
+*     BEGIN CASE
+*        CASE CLIENT.ID = "10340"
+*           IF TOT.WEIGHT > "23999" THEN
+*              ERROR = "TOTAL WEIGHT EXCEEDS PROGRAM LIMITS. PLEASE CONTACT AFS."
+*              GOTO 9000
+*           END
+*        CASE TOT.WEIGHT GT 15000
+*           ERROR = "TOTAL WEIGHT EXCEEDS PROGRAM LIMITS. PLEASE CONTACT AFS."
+*           GOTO 9000
+*     END CASE
+
+
+*----
+* READ TABLES THAT MAY BE NEEDED
+*----
+      BEGIN CASE
+         CASE IOT = "I"
+            IOT.DESC = "Inbound"
+         CASE IOT = "O"
+            IOT.DESC = "Outbound"
+         CASE IOT = "T"
+            IOT.DESC = "Third Party"
+      END CASE
+      READ DTARIFF.DATE.XREF FROM F.TABLES,'TARIFF.DATE.XREF' ELSE DTARIFF.DATE.XREF=''
+      READ DTARIFFS FROM F.TABLES,'TARIFFS' ELSE DTARIFFS=''
+      READ LI.CODES FROM F.TABLES,'LI.CODES' ELSE LI.CODES=''
+
+*--------------------------------------------
+*      INET.USER.ID=USER.NAME:"*":USER.PWD
+*      READ DINET.USER FROM F.INET.USER,INET.USER.ID ELSE DINET.USER=''
+*--------------------------------------------
+
+      READ DCLIENTS FROM F.CLIENTS,CLIENT.ID ELSE
+         ERROR = "Client ":CLIENT.ID:" not on file."
+         GO 9000
+      END
+      CL.LOG.FSC=DCLIENTS<111>
+      MAX.LTL=15000                      ; * JMK02
+      IF DCLIENTS<150>#'' THEN MAX.LTL=DCLIENTS<150>         ; * JMK02
+
+
+      IF TOT.WEIGHT GT MAX.LTL THEN
+* ERROR = "TOTAL WEIGHT EXCEEDS PROGRAM LIMITS. PLEASE CONTACT AFS." ; * JCW02
+         ERROR = 'For shipments over ':MAX.LTL:' lbs., please contact AFS Customer Service at (866) 533-2111 x286'       ; * JCW02
+         GOTO 9000
+      END
+
+      IF CLIENT.ID='00866' AND TOT.WEIGHT<50 THEN
+         ERROR='CANNOT ESTIMATE FOR WEIGHTS LESS THAN 50 POUNDS. PLEASE CONTACT AFS.'
+         GOTO 9000
+      END
+
+
+      CARR.ONLY.FSC=DCLIENTS<189>        ; * JMK04
+
+      QUOTE.OFFSET=INDEX("IOT",IOT,1)
+      IF QUOTE.OFFSET < 1 OR QUOTE.OFFSET > 3 THEN
+         ERROR="Program ERROR: QUOTE.OFFSET is out of range"
+         GO 9000
+      END
+
+*--------------------------------------------
+*      QUOTE.PERC = DINET.USER<5+QUOTE.OFFSET>
+      QUOTE.PERC = QUOTE.PERCENT
+      IF QUOTE.PERC = '' THEN            ; * No User OverrideUse Client Default
+         QUOTE.PERC = DCLIENTS<135+QUOTE.OFFSET,1>
+      END
+*--------------------------------------------
+
+      IF QUOTE.PERC = 'NO' THEN
+         ERROR="No Estimates for ":IOT.DESC:" Type freight allowed!"
+         GO 9000
+      END
+      IF QUOTE.PERC = '' THEN
+         ERROR="Cannot Quote ":IOT.DESC:" shipments. Your account has not been setup for this function.  Please contact customer service at AFS and ask that your Quote Percent for ":IOT.DESC:" shipments be setup."
+*       ERROR="Quote Percentage set to NULL for ":IOT.DESC:" type freight!"
+         GO 9000
+      END
+
+      IF NOT(NUM(QUOTE.PERC)) THEN
+         ERROR="Invalid Quote Percentage set up for ":IOT.DESC:" type freight!"
+         GO 9000
+      END
+      LOGISTICS=DCLIENTS<93>='Y'
+
+*
+* Open client's files.
+*
+      AUDIT.CLIENT.ID = CLIENT.ID
+      OPEN '','FB.AUDIT,':CLIENT.ID TO F.AUDIT THEN
+         READV SUB.CLIENT FROM F.AUDIT,'SUBSTITUTE',1 THEN
+            AUDIT.CLIENT.ID = SUB.CLIENT
+            OPEN '','FB.AUDIT,':AUDIT.CLIENT.ID TO F.AUDIT ELSE CLIENT.AUDIT=0
+         END ELSE
+            AUDIT.CLIENT.ID = CLIENT.ID
+         END
+      END ELSE CLIENT.AUDIT=0
+      IF CLIENT.AUDIT=0 THEN
+         ERROR = "Client ":CLIENT.ID:" is not setup for freight estimates"
+         GO 9000
+      END
+      OPEN '','FB.AUDIT.TABLES,':AUDIT.CLIENT.ID TO F.AUDIT.TABLES ELSE
+         ERROR = "Cannot open file FB.AUDIT.TABLES,":AUDIT.CLIENT.ID
+         GO 9000
+      END
+      OPEN '','FB.AUDIT.ZIPS,':AUDIT.CLIENT.ID TO F.AUDIT.ZIPS ELSE
+         ERROR = "Cannot open FB.AUDIT.ZIPS,":AUDIT.CLIENT.ID:" No On-Line Audit Allowed!"
+         GO 9000
+      END
+
+*
+* Select Carrier(s) (Even if only one) to Loop thru
+*
+      STMT= 'SELECT FB.AUDIT,':AUDIT.CLIENT.ID
+      STMT:=' WITH 1 = "LTLALL"'
+      IF CARRIER.ID # 'ALL' THEN
+         OLA.CARRIER.ID=CARRIER.ID
+         IF CARRIER.ID='13171' THEN OLA.CARRIER.ID='01625'
+         STMT:=" AND WITH CARRIER# '":OLA.CARRIER.ID:"'"
+      END ELSE
+         STMT:=' AND WITH 11 = "ENABLE"'
+         IF LOGISTICS THEN STMT:=' AND WITH 13 = "Y""I"'     ; * Core Carrier Flag = "Y"
+      END
+      EXECUTE STMT RTNLIST CHECK.LIST CAPTURING OUTPUT
+*     IF NOT(@SELECTED) THEN ; * JCW01
+      IF @SELECTED < 1 THEN              ; * JCW01
+         IF CARRIER.ID # 'ALL' THEN
+            ERROR='Carrier ':CARRIER.ID:' is not set up for freight estimates'
+         END ELSE
+            ERROR='There are no core carriers set up for freight estimates'
+         END
+         GO 9000
+      END
+*
+* Setup AUDIT.VIN
+*
+*    SHIP.DATE=OSHIP.DATE
+*    IF SHIP.DATE='' THEN
+*      ERROR='Invalid Ship Date of ':OSHIP.DATE
+*      GO 9000
+*    END
+
+      AUDIT=''                           ; * JMK06
+      A.VIN=''
+      A.VIN<3>=SHIP.DATE
+      A.VIN<11>=AUDIT.CLIENT.ID
+      A.VIN<12>=IOT
+      A.VIN<13,1>=ORIG.ZIP
+      A.VIN<13,2>=ORIG.CITY
+      A.VIN<13,3>=ORIG.ST
+      A.VIN<14,1>=DEST.ZIP
+      A.VIN<14,2>=DEST.CITY
+      A.VIN<14,3>=DEST.ST
+      A.VIN<16>=USER.NAME
+
+      A.VIN<17>=0                        ; *Misroute Flag to Ignore Misc Charge Code Errors
+      A.VIN<18>=CLASSES
+      A.VIN<19>=WEIGHTS
+      A.VIN<21>=MISC.CHG.CODES
+      A.VIN<24>=LOGISTICS
+      A.VIN<25>=''
+      A.VIN<35>=CL.LOG.FSC='N'           ; * Flag to NOT Calculate Log FSC
+      A.VIN<46>=MAX.LTL                  ; * JMK02
+      A.VIN<48>=DCLIENTS<188>            ; * JMK03 Forced Benchmark Minimum Flag Y/N
+      A.VIN<49>=CARR.ONLY.FSC            ; * JMK05
+*
+**** Begin "Loop" of all Carriers *****
+*
+**********************************************************************
+      CARRIER.EST.ARRAY=''
+*<1>=Amount (MV Lowest to Highest)
+*<2>=Carrier #
+*<3>=Carrier Name
+*<4>=Carrier Address
+*<5>=Carrier City
+*<6>=Carrier State
+*<7>=Error (If Any)
+*<8>=Flag
+*<9>=Client's True Cost (Contract Amount + Logistics Commission)
+*<10>=Contract Amount
+*<11>=Benchmark Amount
+*<12>=Logistics Commission Amount
+      ACC.ERROR=''                       ; * JMK28
+GET.NEXT.CARRIER:
+      READNEXT CHECK.CARRIER.ID FROM CHECK.LIST ELSE
+         GO 9000
+      END
+      ERROR=''
+      IF AUDIT.CLIENT.ID='01505' THEN    ; * JMK31
+         CARR.ONLY.FSC=DCLIENTS<189>     ; * JMK31
+         IF CARR.ONLY.FSC='Y' OR CARR.ONLY.FSC='C' THEN      ; * JMK31
+            BEGIN CASE                   ; * JMK31
+               CASE CHECK.CARRIER.ID='00124'       ; * JMK31
+                  CARR.ONLY.FSC='N'      ; * JMK31
+               CASE CHECK.CARRIER.ID='01786'       ; * JMK31
+                  CARR.ONLY.FSC='N'      ; * JMK31
+               CASE CHECK.CARRIER.ID='05156'       ; * JMK31
+                  CARR.ONLY.FSC='N'      ; * JMK31
+               CASE CHECK.CARRIER.ID='08924'       ; * JMK31
+                  CARR.ONLY.FSC='N'      ; * JMK31
+            END CASE                     ; * JMK31
+         END                             ; * JMK31
+         A.VIN<49>=CARR.ONLY.FSC         ; * JMK31
+      END                                ; * JMK31
+      GOSUB GET.CARRIER.INFO
+*     IF ERROR#'' AND CHECK.CARRIER.ID # 'ALL' THEN ; * JMK08
+      IF ERROR#'' AND CARRIER.ID # 'ALL' THEN      ; * JMK08
+         ERROR='Carrier ':CARRIER.ID:' is not set up for freight estimates'
+         GO 9000
+      END
+**********************************************************************
+      A.VIN<10>= CHECK.CARRIER.ID        ; * Add "Current" Carrier to AUDIT.VIN
+      A.VIN<50>= CARRIER.SCAC            ; * JMK09
+      A.VIN<51>= CARRIER.TYPE            ; * JMK09
+      VIN=A.VIN
+      IF USER='OWEN' AND CHECK.CARRIER.ID='02653' THEN
+         CALL ELINE('Owen Press Break for Conway Start Routine....')
+      END
+      CALL FB.AUTO(VIN,A.VOUT,D.AUDIT,CONTR.DFSC,BENCH.DFSC,DTARIFFS,DTARIFF.DATE.XREF,LI.CODES,F.AUDIT.TABLES,F.AUDIT.ZIPS,F.PCIN,F.PCOUT,F.TABLES)
+      IF USER='OWEN' AND CHECK.CARRIER.ID='02653' THEN
+         CALL ELINE('Owen Press Break for Conway End Routine....')
+      END
+      WHY=A.VOUT<24>                     ; * Save for Debugging purposes
+      IF USER='OWEN' THEN
+         CRT WHY
+         CRT @(0,23):'Press Break: ':
+         INPUT NUL:
+      END
+      IF USER='DAVID' THEN
+         CRT WHY
+         CRT @(0,23):'Press Break: ':
+         INPUT NUL:
+      END
+      IF USER='OWEN1' THEN
+         CRT WHY
+         INPUT NUL
+      END
+      A.VOUT<24>=''                      ; * Kill Why So you can look at A.VOUT with Debugger
+      CONTR.AMT = A.VOUT<8>
+      IF CONTR.AMT GE 1000000 THEN
+         ERROR='Unable to Quote.. Please call Customer Service'
+         CONTR.AMT=0
+      END ELSE
+         BENCH.AMT = A.VOUT<9>
+         ERROR=A.VOUT<1>
+         AUDIT=A.VOUT<2>
+         ZIP.MESSAGE=A.VOUT<29>
+      END
+      CONTR.FSC.PARMS=A.VOUT<46>         ; * JMK18
+      BENCH.FSC.PARMS=A.VOUT<47>         ; * JMK18
+      AFS.FSC.PARMS=A.VOUT<48>           ; * JMK18
+      CONTR.FSC.AMT=CONTR.FSC.PARMS<1,7>           ; * JMK18
+      BENCH.FSC.AMT=BENCH.FSC.PARMS<1,7>           ; * JMK18
+      TRANSIT.TIME=A.VOUT<49>            ; * JMK09
+      ORIG.DIRECT.FLAG=A.VOUT<50>        ; * JMK09
+      IF ORIG.DIRECT.FLAG='I' THEN TRANSIT.TIME+=1           ; * JMK24
+      DEST.DIRECT.FLAG=A.VOUT<51>        ; * JMK09
+      IF DEST.DIRECT.FLAG='I' THEN TRANSIT.TIME+=1           ; * JMK24
+      COMB.DIRECT.FLAG=A.VOUT<52>        ; * JMK09
+      ORIG.TERM.NAME=A.VOUT<53>          ; * JMK11
+      ORIG.TERM.CODE=A.VOUT<54>          ; * JMK11
+      ORIG.TERM.ADR1=A.VOUT<55>          ; * JMK11
+      ORIG.TERM.ADR2=A.VOUT<56>          ; * JMK11
+      ORIG.TERM.CITY=A.VOUT<57>          ; * JMK11
+      ORIG.TERM.ST=A.VOUT<58>            ; * JMK11
+      ORIG.TERM.ZIP=A.VOUT<59>           ; * JMK11
+      ORIG.TERM.PHONE=A.VOUT<60>         ; * JMK11
+      ORIG.TERM.TPHONE=A.VOUT<61>        ; * JMK11
+      ORIG.TERM.FAX=A.VOUT<62>           ; * JMK11
+      ORIG.TERM.EMAIL=A.VOUT<63>         ; * JMK11
+      ORIG.TERM.CNAME=A.VOUT<64>         ; * JMK11
+      ORIG.TERM.CTITLE=A.VOUT<65>        ; * JMK11
+      DEST.TERM.NAME=A.VOUT<66>          ; * JMK11
+      DEST.TERM.CODE=A.VOUT<67>          ; * JMK11
+      DEST.TERM.ADR1=A.VOUT<68>          ; * JMK11
+      DEST.TERM.ADR2=A.VOUT<69>          ; * JMK11
+      DEST.TERM.CITY=A.VOUT<70>          ; * JMK11
+      DEST.TERM.ST=A.VOUT<71>            ; * JMK11
+      DEST.TERM.ZIP=A.VOUT<72>           ; * JMK11
+      DEST.TERM.PHONE=A.VOUT<73>         ; * JMK11
+      DEST.TERM.TPHONE=A.VOUT<74>        ; * JMK11
+      DEST.TERM.FAX=A.VOUT<75>           ; * JMK11
+      DEST.TERM.EMAIL=A.VOUT<76>         ; * JMK11
+      DEST.TERM.CNAME=A.VOUT<77>         ; * JMK11
+      DEST.TERM.CTITLE=A.VOUT<78>        ; * JMK11
+      ACC.CODES=CHANGE(A.VOUT<79>,@VM,@SVM)        ; * JMK18
+      ACC.CONTR=CHANGE(A.VOUT<80>,@VM,@SVM)        ; * JMK18
+      ACC.BENCH=CHANGE(A.VOUT<81>,@VM,@SVM)        ; * JMK18
+      CARR.DATA.DATE=A.VOUT<82>          ; * JMK21
+      IF ERROR # "" THEN
+         IF CARRIER.ID # 'ALL' AND CONTR.AMT+0=0 THEN
+            GO 9000
+         END
+      END
+      IF CLIENT.ID='01365' THEN          ; * JMK27
+         IF A.VOUT<49>+0=0 THEN GO GET.NEXT.CARRIER          ; * JMK27
+      END                                ; * JMK27
+      IF MISC.CHG.CODES#'' AND INDEX(ERROR,'Accessorial',1) THEN       ; * JMK28
+         LOCATE ERROR IN ACC.ERROR<1> SETTING EPOS ELSE      ; * JMK28
+            ACC.ERROR<1,-1>=ERROR        ; * JMK28
+         END                             ; * JMK28
+      END                                ; * JMK28
+      IF AUDIT # "Y" AND CARRIER.ID="ALL" THEN GO GET.NEXT.CARRIER
+      IF AUDIT = "MA" THEN ERROR = "Not an approved carrier for this shipment!"
+*     IF USER='OWEN' THEN CALL ELINE('OWEN PRESS BREAK')
+      IF CONTR.AMT+0=0 THEN GO GET.NEXT.CARRIER
+      IF LOGISTICS AND BENCH.AMT+0=0 THEN GO GET.NEXT.CARRIER
+*     IF COMB.DIRECT.FLAG='I' THEN GO GET.NEXT.CARRIER ; * JMK09 ; * JMK10
+      IF COMB.DIRECT.FLAG='I' AND IOT='I' THEN GO GET.NEXT.CARRIER     ; * JMK09 ; * JMK10
+*
+*** Add Quote Percentage Logic Here ***
+**********************************************************************
+
+*** Locate and set percentages for quotes and commissions
+
+      IF LOGISTICS THEN
+         LOCATE SHIP.DATE IN DCLIENTS<84> BY 'AR' SETTING POS ELSE
+            POS=POS-1
+         END
+         IF POS<1 THEN
+            ERROR="Cannot Estimate! Ship date is before 1st Charge Date in Client Maintenance"
+            GO 9000
+         END
+         COMM.PERC = DCLIENTS<85,POS>/100
+         IF CLIENT.ID='00735' THEN COMM.PERC='0' ; * JMK - UNTIL WE CAN ADD PERCENT BY MODE
+         SAVINGS = BENCH.AMT-CONTR.AMT
+         LOG.COMM = (SAVINGS*COMM.PERC/100)'R0'
+         CLIENT.COST = CONTR.AMT + LOG.COMM
+         CL.SAVINGS = SAVINGS - LOG.COMM
+         SAVINGS.QUOTE.AMT = CL.SAVINGS*(1-QUOTE.PERC/10000)
+         QUOTE.AMT=OCONV(CONTR.AMT + LOG.COMM + SAVINGS.QUOTE.AMT,'MR0')
+*
+* CALCULATE FSC QUOTE AMT
+*
+         FSC.SAVINGS = BENCH.FSC.AMT-CONTR.FSC.AMT           ; * JMK18
+         FSC.LOG.COMM = (FSC.SAVINGS*COMM.PERC/100)'R0'      ; * JMK18
+         FSC.CLIENT.COST = CONTR.FSC.AMT + FSC.LOG.COMM      ; * JMK18
+         FSC.CL.SAVINGS = FSC.SAVINGS - FSC.LOG.COMM         ; * JMK18
+         FSC.SAVINGS.QUOTE.AMT = FSC.CL.SAVINGS*(1-QUOTE.PERC/10000)   ; * JMK18
+         FSC.QUOTE.AMT=OCONV(CONTR.FSC.AMT + FSC.LOG.COMM + FSC.SAVINGS.QUOTE.AMT,'MR0')   ; * JMK18
+*
+* CALCULATE ACCESSORIAL QUOTE AMTS
+*
+         ACC.QUOTE=''                    ; * JMK18
+         NSVAL=DCOUNT(ACC.CODES<1>,@SVM)           ; * JMK18
+         FOR SVAL=1 TO NSVAL
+            BENCH.ACC.AMT=ACC.BENCH<1,1,SVAL>      ; * JMK18
+            CONTR.ACC.AMT=ACC.CONTR<1,1,SVAL>      ; * JMK18
+            ACC.SAVINGS = BENCH.ACC.AMT-CONTR.ACC.AMT        ; * JMK18
+            ACC.LOG.COMM = (ACC.SAVINGS*COMM.PERC/100)'R0'   ; * JMK18
+            ACC.CLIENT.COST = CONTR.ACC.AMT + ACC.LOG.COMM   ; * JMK18
+            ACC.CL.SAVINGS = ACC.SAVINGS - ACC.LOG.COMM      ; * JMK18
+            ACC.SAVINGS.QUOTE.AMT = ACC.CL.SAVINGS*(1-QUOTE.PERC/10000)          ; * JMK18
+            ACC.QUOTE<1,1,SVAL>=OCONV(CONTR.ACC.AMT + ACC.LOG.COMM + ACC.SAVINGS.QUOTE.AMT,'MR0')    ; * JMK18
+         NEXT VAL                        ; * JMK18
+      END ELSE
+         QUOTE.AMT=CONTR.AMT
+         CLIENT.COST=CONTR.AMT
+         FSC.QUOTE.AMT=CONTR.FSC.AMT     ; * JMK18
+         FSC.CLIENT.COST=CONTR.FSC.AMT   ; * JMK18
+         ACC.QUOTE=ACC.CONTR             ; * JMK18
+         ACC.CLIENT.COST=ACC.CONTR       ; * JMK18
+      END
+*********************************************************************
+* Special deal for BFG Quincy Compressor
+*********************************************************************
+*
+      OB.QUOTE.INCR.PERC = (DCLIENTS<227>/100)     ; *NPR01
+      IB.QUOTE.INCR.PERC = (DCLIENTS<228>/100)     ; *NPR01
+      TP.QUOTE.INCR.PERC = (DCLIENTS<229>/100)     ; *NPR01
+*
+      BEGIN CASE
+         CASE IOT='O' AND OB.QUOTE.INCR.PERC NE "0"          ; *NPR01
+            OB.QUOTE.INCR.AMT = QUOTE.AMT * (OB.QUOTE.INCR.PERC/100)   ; *NPR01
+            QUOTE.AMT=(QUOTE.AMT + OB.QUOTE.INCR.AMT)'R0'    ; *NPR01
+*
+            OB.FSC.QUOTE.INCR.AMT = FSC.QUOTE.AMT * (OB.QUOTE.INCR.PERC/100)     ; *NPR01
+            FSC.QUOTE.AMT=(FSC.QUOTE.AMT + OB.FSC.QUOTE.INCR.AMT)'R0'  ; *NPR01
+*
+            NVAL=DCOUNT(ACC.CODES,@VM)   ; *NPR01
+            FOR VAL=1 TO NVAL            ; *NPR01
+               INCR.AMT = ACC.QUOTE<1,VAL> * (OB.QUOTE.INCR.PERC/100)  ; *NPR01
+               IF INCR.AMT NE "0" THEN   ; *NPR01
+                  ACC.QUOTE<1,VAL> = ACC.QUOTE<1,VAL> + INCR.AMT       ; *NPR01
+               END                       ; *NPR01
+            NEXT VAL                     ; *NPR01
+         CASE IOT='I' AND IB.QUOTE.INCR.PERC NE "0"          ; *NPR01
+            IB.QUOTE.INCR.AMT = QUOTE.AMT * (IB.QUOTE.INCR.PERC/100)   ; *NPR01
+            QUOTE.AMT=(QUOTE.AMT + IB.QUOTE.INCR.AMT)'R0'    ; *NPR01
+*
+            IB.FSC.QUOTE.INCR.AMT = FSC.QUOTE.AMT * (IB.QUOTE.INCR.PERC/100)     ; *NPR01
+            FSC.QUOTE.AMT=(FSC.QUOTE.AMT + IB.FSC.QUOTE.INCR.AMT)'R0'  ; *NPR01
+*
+            NVAL=DCOUNT(ACC.CODES,@VM)   ; *NPR01
+            FOR VAL=1 TO NVAL            ; *NPR01
+               INCR.AMT = ACC.QUOTE<1,VAL> * (IB.QUOTE.INCR.PERC/100)  ; *NPR01
+               IF INCR.AMT NE "0" THEN   ; *NPR01
+                  ACC.QUOTE<1,VAL> = ACC.QUOTE<1,VAL> + INCR.AMT       ; *NPR01
+               END                       ; *NPR01
+            NEXT VAL                     ; *NPR01
+         CASE IOT='T' AND TP.QUOTE.INCR.PERC NE "0"          ; *NPR01
+            TP.QUOTE.INCR.AMT = QUOTE.AMT * (TP.QUOTE.INCR.PERC/100)   ; *NPR01
+            QUOTE.AMT=(QUOTE.AMT + TP.QUOTE.INCR.AMT)'R0'    ; *NPR01
+*
+            TP.FSC.QUOTE.INCR.AMT = FSC.QUOTE.AMT * (TP.QUOTE.INCR.PERC/100)     ; *NPR01
+            FSC.QUOTE.AMT=(FSC.QUOTE.AMT + TP.FSC.QUOTE.INCR.AMT)'R0'  ; *NPR01
+*
+            NVAL=DCOUNT(ACC.CODES,@VM)   ; *NPR01
+            FOR VAL=1 TO NVAL            ; *NPR01
+               INCR.AMT = ACC.QUOTE<1,VAL> * (TP.QUOTE.INCR.PERC/100)  ; *NPR01
+               IF INCR.AMT NE "0" THEN   ; *NPR01
+                  ACC.QUOTE<1,VAL> = ACC.QUOTE<1,VAL> + INCR.AMT       ; *NPR01
+               END                       ; *NPR01
+            NEXT VAL                     ; *NPR01
+*NPR01        CASE CLIENT.ID='00761' AND IOT='O'
+*NPR01            QUOTE.AMT=(QUOTE.AMT*1.12)'R0'
+*NPR01            FSC.QUOTE.AMT=(FSC.QUOTE.AMT*1.12)'R0'
+*NPR01            NVAL=DCOUNT(ACC.CODES,@VM)   ; * JMK18
+*NPR01            FOR VAL=1 TO NVAL            ; * JMK18
+*NPR01               ACC.QUOTE<1,VAL>=(ACC.QUOTE<1,VAL>*1.12)'R0'  ; * JMK18
+*NPR01            NEXT VAL                     ; * JMK18
+*NPR01         CASE CLIENT.ID='01250'
+*NPR01            QUOTE.AMT=(QUOTE.AMT*1.3)'R0'
+*NPR01            FSC.QUOTE.AMT=(FSC.QUOTE.AMT*1.3)'R0'
+*NPR01            NVAL=DCOUNT(ACC.CODES,@VM)   ; * JMK18
+*NPR01            FOR VAL=1 TO NVAL            ; * JMK18
+*NPR01               ACC.QUOTE<1,VAL>=(ACC.QUOTE<1,VAL>*1.3)'R0'   ; * JMK18
+*NPR01            NEXT VAL                     ; * JMK18
+      END CASE
+*
+*      IF USER.NAME='WARDKRAFT' THEN      ; * JMK30 ; * JMK32
+*         BEGIN CASE                      ; * JMK30 ; * JMK32
+*            CASE QUOTE.AMT>= 75001       ; * JMK30 ; * JMK32
+*               QUOTE.INC=1.3             ; * JMK30 ; * JMK32
+*               QUOTE.INC.PERC=30         ; * JMK30 ; * JMK32
+*            CASE QUOTE.AMT>= 50001       ; * JMK30 ; * JMK32
+*               QUOTE.INC=2               ; * JMK30 ; * JMK32
+*               QUOTE.INC.PERC=100        ; * JMK30 ; * JMK32
+*            CASE 1                       ; * JMK30 ; * JMK32
+*               QUOTE.INC=2.85            ; * JMK30 ; * JMK32
+*               QUOTE.INC.PERC=185        ; * JMK30 ; * JMK32
+*         END CASE                        ; * JMK30 ; * JMK32
+*         QUOTE.INCR.AMT=(QUOTE.AMT*QUOTE.INC.PERC/100)'R0'   ; * JMK30 ; * JMK32
+*         IF QUOTE.INCR.AMT NE "0" THEN   ; * JMK30 ; * JMK32
+*            QUOTE.AMT=(QUOTE.AMT + QUOTE.INCR.AMT)'R0'       ; * JMK30 ; * JMK32
+*         END                             ; * JMK30 ; * JMK32
+*      END                                ; * JMK30 ; * JMK32
+
+      IF CANADIAN THEN
+         QUOTE.AMT=QUOTE.AMT+3000        ; * 10-21-04 Add $30.00 to each Canadian Quote to cover the homeland security fee
+*       ZIP.MESSAGE='This quote includes $30.00 Homeland Security Fee'
+      END
+
+* Rob is still calculating this number.......NOT NOW ; * JMK18
+      IF MARK.UP.PERCENT+0 #0 THEN
+         QUOTE.AMT=(QUOTE.AMT*(100+MARK.UP.PERCENT)/100)'R0'
+         FSC.QUOTE.AMT=(FSC.QUOTE.AMT*(100+MARK.UP.PERCENT)/100)'R0'   ; * JMK18
+         NSVAL=DCOUNT(ACC.CODES<1>,@SVM)           ; * JMK18
+         FOR SVAL=1 TO NSVAL             ; * JMK18
+            ACC.QUOTE<1,1,SVAL>=(ACC.QUOTE<1,1,SVAL>*(100+MARK.UP.PERCENT)/100)'R0'        ; * JMK18
+         NEXT SVAL                       ; * JMK18
+      END
+
+
+
+*********************************************************************
+**********************************************************************
+*
+
+*OH 01-19-04      LOCATE QUOTE.AMT IN CARRIER.EST.ARRAY<1> BY 'AR' SETTING POS ELSE NULL
+** Marshall wanted the carriers listed in Client Cost order
+      LOCATE CLIENT.COST IN CARRIER.EST.ARRAY<9> BY 'AR' SETTING POS ELSE NULL
+      INS QUOTE.AMT BEFORE CARRIER.EST.ARRAY<1,POS>
+      INS CHECK.CARRIER.ID BEFORE CARRIER.EST.ARRAY<2,POS>
+      INS CARRIER.NAME BEFORE CARRIER.EST.ARRAY<3,POS>
+*     INS CARRIER.STREET   BEFORE CARRIER.EST.ARRAY<4,POS>
+*     INS CARRIER.CITY     BEFORE CARRIER.EST.ARRAY<5,POS>
+*     INS CARRIER.STATE    BEFORE CARRIER.EST.ARRAY<6,POS>
+      INS ERROR BEFORE CARRIER.EST.ARRAY<4,POS>
+      INS CARRIER.SCAC BEFORE CARRIER.EST.ARRAY<5,POS>
+      INS ZIP.MESSAGE BEFORE CARRIER.EST.ARRAY<6,POS>
+      INS CLIENT.COST BEFORE CARRIER.EST.ARRAY<9,POS>
+      INS CONTR.AMT BEFORE CARRIER.EST.ARRAY<10,POS>
+      IF LOGISTICS THEN
+         INS BENCH.AMT BEFORE CARRIER.EST.ARRAY<11,POS>
+         INS LOG.COMM BEFORE CARRIER.EST.ARRAY<12,POS>
+      END
+      INS TRANSIT.TIME BEFORE CARRIER.EST.ARRAY<13,POS>      ; * JMK09
+      INS ORIG.DIRECT.FLAG BEFORE CARRIER.EST.ARRAY<14,POS>  ; * JMK09
+      INS DEST.DIRECT.FLAG BEFORE CARRIER.EST.ARRAY<15,POS>  ; * JMK09
+      INS COMB.DIRECT.FLAG BEFORE CARRIER.EST.ARRAY<16,POS>  ; * JMK09
+      INS ORIG.TERM.NAME BEFORE CARRIER.EST.ARRAY<17,POS>    ; * JMK11
+      INS ORIG.TERM.CODE BEFORE CARRIER.EST.ARRAY<18,POS>    ; * JMK11
+      INS ORIG.TERM.ADR1 BEFORE CARRIER.EST.ARRAY<19,POS>    ; * JMK11
+      INS ORIG.TERM.ADR2 BEFORE CARRIER.EST.ARRAY<20,POS>    ; * JMK11
+      INS ORIG.TERM.CITY BEFORE CARRIER.EST.ARRAY<21,POS>    ; * JMK11
+      INS ORIG.TERM.ST BEFORE CARRIER.EST.ARRAY<22,POS>      ; * JMK11
+      INS ORIG.TERM.ZIP BEFORE CARRIER.EST.ARRAY<23,POS>     ; * JMK11
+      INS ORIG.TERM.PHONE BEFORE CARRIER.EST.ARRAY<24,POS>   ; * JMK11
+      INS ORIG.TERM.TPHONE BEFORE CARRIER.EST.ARRAY<25,POS>  ; * JMK11
+      INS ORIG.TERM.FAX BEFORE CARRIER.EST.ARRAY<26,POS>     ; * JMK11
+      INS ORIG.TERM.EMAIL BEFORE CARRIER.EST.ARRAY<27,POS>   ; * JMK11
+      INS ORIG.TERM.CNAME BEFORE CARRIER.EST.ARRAY<28,POS>   ; * JMK11
+      INS ORIG.TERM.CTITLE BEFORE CARRIER.EST.ARRAY<29,POS>  ; * JMK11
+      INS DEST.TERM.NAME BEFORE CARRIER.EST.ARRAY<30,POS>    ; * JMK11
+      INS DEST.TERM.CODE BEFORE CARRIER.EST.ARRAY<31,POS>    ; * JMK11
+      INS DEST.TERM.ADR1 BEFORE CARRIER.EST.ARRAY<32,POS>    ; * JMK11
+      INS DEST.TERM.ADR2 BEFORE CARRIER.EST.ARRAY<33,POS>    ; * JMK11
+      INS DEST.TERM.CITY BEFORE CARRIER.EST.ARRAY<34,POS>    ; * JMK11
+      INS DEST.TERM.ST BEFORE CARRIER.EST.ARRAY<35,POS>      ; * JMK11
+      INS DEST.TERM.ZIP BEFORE CARRIER.EST.ARRAY<36,POS>     ; * JMK11
+      INS DEST.TERM.PHONE BEFORE CARRIER.EST.ARRAY<37,POS>   ; * JMK11
+      INS DEST.TERM.TPHONE BEFORE CARRIER.EST.ARRAY<38,POS>  ; * JMK11
+      INS DEST.TERM.FAX BEFORE CARRIER.EST.ARRAY<39,POS>     ; * JMK11
+      INS DEST.TERM.EMAIL BEFORE CARRIER.EST.ARRAY<40,POS>   ; * JMK11
+      INS DEST.TERM.CNAME BEFORE CARRIER.EST.ARRAY<41,POS>   ; * JMK11
+      INS DEST.TERM.CTITLE BEFORE CARRIER.EST.ARRAY<42,POS>  ; * JMK11
+      INS FSC.QUOTE.AMT BEFORE CARRIER.EST.ARRAY<43,POS>     ; * JMK18
+      INS ACC.CODES BEFORE CARRIER.EST.ARRAY<44,POS>         ; * JMK18
+      INS ACC.QUOTE BEFORE CARRIER.EST.ARRAY<45,POS>         ; * JMK18
+      INS CARR.DATA.DATE BEFORE CARRIER.EST.ARRAY<46,POS>    ; * JMK21
+      INFOMESSAGE=''                     ; * JMK30
+      IF USER.NAME='WARDKRAFT' THEN      ; * JMK30
+         INFOMESSAGE='B. A. S. E. ':'|':CLIENT.COST          ; * JMK30
+      END                                ; * JMK30
+      INS INFOMESSAGE BEFORE CARRIER.EST.ARRAY<47,POS>       ; * JMK30
+      ERROR=''                           ; * JMK28
+      GO GET.NEXT.CARRIER
+
+
+GET.CARRIER.INFO: ***
+      READ CARRIER.REC FROM F.CARRIERS,CHECK.CARRIER.ID ELSE
+         ERROR = "Carrier ":CHECK.CARRIER.ID:" not on file."
+         RETURN
+      END
+      CARRIER.NAME = CARRIER.REC<1>
+      CARRIER.STREET = TRIM(CHANGE(CARRIER.REC<2>,@VM,' '))
+      CARRIER.CITY = CARRIER.REC<3>
+      CARRIER.STATE = CARRIER.REC<4>
+      CARRIER.SCAC = CARRIER.REC<12>     ; *Added By ROB GAUDET 9/23/2003
+      CARRIER.STATUS = CARRIER.REC<89>   ; * JMK14
+      IF CARRIER.STATUS = "I" THEN       ; * JMK14
+         ERROR = "CARRIER IS NOT ACTIVE - CARRIER# ":CHECK.CARRIER.ID  ; * JMK14
+         RETURN                          ; * JMK14
+      END                                ; * JMK14
+      CARRIER.TYPE = 'A'                 ; * JMK09
+      IF CARRIER.REC<44>='6' THEN        ; * JMK09
+         CARRIER.TYPE='B'                ; * JMK09
+      END                                ; * JMK09
+      READ D.AUDIT FROM F.AUDIT, CHECK.CARRIER.ID ELSE
+         ERROR = "CARRIER NOT SETUP FOR AUTO AUDIT - CARRIER#":CHECK.CARRIER.ID
+         RETURN
+      END
+      IF D.AUDIT<11>#'ENABLE' THEN
+         ERROR='Not Considered in On-Line Audit - Carrier Disabled'
+         RETURN
+      END
+
+      READ BENCH.DFSC FROM F.NFSC,'B*':CHECK.CARRIER.ID:'*':AUDIT.CLIENT.ID ELSE 
+         READ BENCH.DFSC FROM F.NFSC,'B*':CHECK.CARRIER.ID ELSE BENCH.DFSC=''
+      END
+      IF BENCH.DFSC<30>='DISABLE' THEN
+         BENCH.DFSC=''                   ; ** No Effect
+         CONTR.DFSC=''
+      END ELSE
+         READ CONTR.DFSC FROM F.NFSC,"C*":CHECK.CARRIER.ID:"*":AUDIT.CLIENT.ID ELSE CONTR.DFSC=BENCH.DFSC
+         IF CONTR.DFSC<30>='DISABLE' THEN CONTR.DFSC=''
+      END
+*     IF DCLIENTS<27> < 13455 THEN       ; * JMK04
+*     IF CARR.ONLY.FSC # "Y" THEN        ; * JMK04 ; * JMK29
+      IF CARR.ONLY.FSC # "C" THEN        ; * JMK04 ; * JMK29
+         BENCH.DFSC=CONTR.DFSC
+      END
+      IF CARRIER.SCAC='' AND CHECK.CARRIER.ID[1,2]#'99' THEN           ; * JMK12
+         BEGIN CASE                      ; * JMK14
+            CASE CHECK.CARRIER.ID[1,2]='99'        ; * JMK14
+            CASE CHECK.CARRIER.ID='00223'          ; * JMK15
+            CASE CHECK.CARRIER.ID='00677'          ; * JMK15
+            CASE CHECK.CARRIER.ID='02441'          ; * JMK15
+            CASE CHECK.CARRIER.ID='03444'          ; * JMK16
+            CASE CHECK.CARRIER.ID='14500'          ; * JMK14
+            CASE CHECK.CARRIER.ID='15523'          ; * JMK15
+            CASE CHECK.CARRIER.ID='16818'          ; * BOH02
+            CASE 1                       ; * JMK14
+               SUBJ='Carrier ':CHECK.CARRIER.ID:' - ':CARRIER.NAME:' does not have a SCAC code'      ; * JMK12
+*              TEXT='A web quote request was made on ':DATE()'d2/':' at ':OCONV(TIME(),'MTHS'):' for '         ; * JMK12 ; * JMK13
+*              TEXT:='Carrier ':CHECK.CARRIER.ID:' - ':CARRIER.NAME:' that does not have a SCAC code '         ; * JMK12 ; * JMK13
+*              TEXT:='from Zip Code ':ORIG.ZIP:' to Zip Code ':DEST.ZIP:'.'      ; * JMK12 ; * JMK13
+*              TEXT:='  This will not allow the Carrier Connect Service information to be returned.'           ; * JMK12 ; * JMK13
+               TEXT='Web quote request was made from a carrier with no SCAC code.  '       ; * JMK13
+               TEXT:='This missing data will prevent Carrier Connect from returning service information.  '    ; * JMK13
+               TEXT:='See details below:'          ; * JMK13
+               TEXT<1,-1>=' '            ; * JMK13
+               TEXT<1,-1>='Request Time':TAB:DATE()'D2/':' ':OCONV(TIME(),'MTHS')          ; * JMK13
+               TEXT<1,-1>='Origin Zip':TAB:TAB:ORIG.ZIP      ; * JMK13
+               TEXT<1,-1>='Destination Zip':TAB:DEST.ZIP     ; * JMK13
+               TEXT<1,-1>='Carrier':TAB:TAB:CARRIER.NAME:' (':CHECK.CARRIER.ID:')'         ; * JMK13
+               TEXT<1,-1>='Client ':TAB:TAB:DCLIENTS<2>:' (':CLIENT.ID:')'       ; * JMK14
+               MVIN=''                   ; * JMK12
+               MVIN<1>='OHolman@afs.net'           ; * JMK12
+               MVIN<1,-1>='ITDepartment@afs.net'   ; * JMK12
+               MVIN<1,-1>='MButts@afs.net'         ; * JMK12
+               MVIN<1,-1>='Logistics@afs.net'      ; * JMK22
+               MVIN<1,-1>='OLA@afs.net'  ; * JMK22
+*              MVIN<3>='MKerbow@afs.net'  ; * JMK12 ; * JMK22
+               MVIN<4>='INET.FB.ESTIMATOR'         ; * JMK12
+               MVIN<5>=SUBJ              ; * JMK12
+               MVIN<6>=TEXT              ; * JMK12
+               CALL SENDMAIL(MVIN,MVOUT)           ; * JMK12
+         END CASE                        ; * JMK14
+      END                                ; * JMK12
+      RETURN
+
+
+9000: ****
+      IF USER='OWEN' THEN
+         CRT 'HAVE ALL CARRIER INFORMATION .. CHECK CARRIER.EST.ARRAY'
+         INPUT NUL
+      END
+*Modified By ROB GAUDET 9/23/2003
+*      METADATA = ""
+*      METADATA<1,1> = "VARCHAR" ; METADATA<1,2> = "Errors" ; METADATA<1,3> = 0
+*      METADATA<2,1> = "VARCHAR" ; METADATA<2,2> = "QuoteAmt" ; METADATA<2,3> = 0
+*      METADATA<3,1> = "VARCHAR" ; METADATA<3,2> = "CarrierID" ; METADATA<3,3> = 0
+*      METADATA<4,1> = "VARCHAR" ; METADATA<4,2> = "CarrierSCAC" ; METADATA<4,3> = 0
+*      METADATA<5,1> = "VARCHAR" ; METADATA<5,2> = "CarrierName" ; METADATA<5,3> = 0
+*      METADATA<6,1> = "VARCHAR" ; METADATA<6,2> = "OCity" ; METADATA<6,3> = 0
+*      METADATA<7,1> = "VARCHAR" ; METADATA<7,2> = "OState" ; METADATA<7,3> = 0
+*      METADATA<8,1> = "VARCHAR" ; METADATA<8,2> = "DCity" ; METADATA<8,3> = 0
+*      METADATA<9,1> = "VARCHAR" ; METADATA<9,2> = "DState" ; METADATA<9,3> = 0
+*      METADATA<10,1> = "VARCHAR" ; METADATA<10,2> = "Messages" ; METADATA<10,3> = 0
+*      METADATA<11,1> = "VARCHAR" ; METADATA<11,2> = "ZipMessage" ; METADATA<11,3> = 0
+*      METADATA<12,1> = "VARCHAR" ; METADATA<12,2> = "TransitTime" ; METADATA<12,3> = 0     ; * JMK09
+*      METADATA<13,1> = "VARCHAR" ; METADATA<13,2> = "OrigDirect" ; METADATA<13,3> = 0      ; * JMK09
+*      METADATA<14,1> = "VARCHAR" ; METADATA<14,2> = "DestDirect" ; METADATA<14,3> = 0      ; * JMK09
+*      METADATA<15,1> = "VARCHAR" ; METADATA<15,2> = "CombDirect" ; METADATA<15,3> = 0      ; * JMK09
+*      METADATA<16,1> = "VARCHAR" ; METADATA<16,2> = "OrigTerminalName" ; METADATA<16,3> = 0          ; * JMK11
+*      METADATA<17,1> = "VARCHAR" ; METADATA<17,2> = "OrigTerminalCode" ; METADATA<17,3> = 0          ; * JMK11
+*      METADATA<18,1> = "VARCHAR" ; METADATA<18,2> = "OrigTerminalAddress1" ; METADATA<18,3> = 0      ; * JMK11
+*      METADATA<19,1> = "VARCHAR" ; METADATA<19,2> = "OrigTerminalAddress2" ; METADATA<19,3> = 0      ; * JMK11
+*      METADATA<20,1> = "VARCHAR" ; METADATA<20,2> = "OrigTerminalCity" ; METADATA<20,3> = 0          ; * JMK11
+*      METADATA<21,1> = "VARCHAR" ; METADATA<21,2> = "OrigTerminalState" ; METADATA<21,3> = 0         ; * JMK11
+*      METADATA<22,1> = "VARCHAR" ; METADATA<22,2> = "OrigTerminalZip" ; METADATA<22,3> = 0           ; * JMK11
+*      METADATA<23,1> = "VARCHAR" ; METADATA<23,2> = "OrigTerminalPhone" ; METADATA<23,3> = 0         ; * JMK11
+*      METADATA<24,1> = "VARCHAR" ; METADATA<24,2> = "OrigTerminalTollFreePhone" ; METADATA<24,3> = 0           ; * JMK11
+*      METADATA<25,1> = "VARCHAR" ; METADATA<25,2> = "OrigTerminalFax" ; METADATA<25,3> = 0           ; * JMK11
+*      METADATA<26,1> = "VARCHAR" ; METADATA<26,2> = "OrigTerminalEmail" ; METADATA<26,3> = 0         ; * JMK11
+*      METADATA<27,1> = "VARCHAR" ; METADATA<27,2> = "OrigTerminalContactName" ; METADATA<27,3> = 0   ; * JMK11
+*      METADATA<28,1> = "VARCHAR" ; METADATA<28,2> = "OrigTerminalContactTitle" ; METADATA<28,3> = 0  ; * JMK11
+*      METADATA<29,1> = "VARCHAR" ; METADATA<29,2> = "DestTerminalName" ; METADATA<29,3> = 0          ; * JMK11
+*      METADATA<30,1> = "VARCHAR" ; METADATA<30,2> = "DestTerminalCode" ; METADATA<30,3> = 0          ; * JMK11
+*      METADATA<31,1> = "VARCHAR" ; METADATA<31,2> = "DestTerminalAddress1" ; METADATA<31,3> = 0      ; * JMK11
+*      METADATA<32,1> = "VARCHAR" ; METADATA<32,2> = "DestTerminalAddress2" ; METADATA<32,3> = 0      ; * JMK11
+*      METADATA<33,1> = "VARCHAR" ; METADATA<33,2> = "DestTerminalCity" ; METADATA<33,3> = 0          ; * JMK11
+*      METADATA<34,1> = "VARCHAR" ; METADATA<34,2> = "DestTerminalState" ; METADATA<34,3> = 0         ; * JMK11
+*      METADATA<35,1> = "VARCHAR" ; METADATA<35,2> = "DestTerminalZip" ; METADATA<35,3> = 0           ; * JMK11
+*      METADATA<36,1> = "VARCHAR" ; METADATA<36,2> = "DestTerminalPhone" ; METADATA<36,3> = 0         ; * JMK11
+*      METADATA<37,1> = "VARCHAR" ; METADATA<37,2> = "DestTerminalTollFreePhone" ; METADATA<37,3> = 0           ; * JMK11
+*      METADATA<38,1> = "VARCHAR" ; METADATA<38,2> = "DestTerminalFax" ; METADATA<38,3> = 0           ; * JMK11
+*      METADATA<39,1> = "VARCHAR" ; METADATA<39,2> = "DestTerminalEmail" ; METADATA<39,3> = 0         ; * JMK11
+*      METADATA<40,1> = "VARCHAR" ; METADATA<40,2> = "DestTerminalContactName" ; METADATA<40,3> = 0   ; * JMK11
+*      METADATA<41,1> = "VARCHAR" ; METADATA<41,2> = "DestTerminalContactTitle" ; METADATA<41,3> = 0  ; * JMK11
+*      METADATA<42,1> = "VARCHAR" ; METADATA<42,2> = "FscAmt" ; METADATA<42,3> = 0          ; * JMK18
+*      METADATA<43,1> = "VARCHAR" ; METADATA<43,2> = "AccessCode1" ; METADATA<43,3> = 0     ; * JMK18
+*      METADATA<44,1> = "VARCHAR" ; METADATA<44,2> = "AccessAmt1" ; METADATA<44,3> = 0      ; * JMK18
+*      METADATA<45,1> = "VARCHAR" ; METADATA<45,2> = "AccessCode2" ; METADATA<45,3> = 0     ; * JMK18
+*      METADATA<46,1> = "VARCHAR" ; METADATA<46,2> = "AccessAmt2" ; METADATA<46,3> = 0      ; * JMK18
+*      METADATA<47,1> = "VARCHAR" ; METADATA<47,2> = "AccessCode3" ; METADATA<47,3> = 0     ; * JMK18
+*      METADATA<48,1> = "VARCHAR" ; METADATA<48,2> = "AccessAmt3" ; METADATA<48,3> = 0      ; * JMK18
+*      METADATA<49,1> = "VARCHAR" ; METADATA<49,2> = "AccessCode4" ; METADATA<49,3> = 0     ; * JMK18
+*      METADATA<50,1> = "VARCHAR" ; METADATA<50,2> = "AccessAmt4" ; METADATA<50,3> = 0      ; * JMK18
+*      METADATA<51,1> = "VARCHAR" ; METADATA<51,2> = "CarrierDataDate" ; METADATA<51,3> = 0           ; * JMK21
+*      METADATA<52,1> = "VARCHAR" ; METADATA<52,2> = "TrueCost" ; METADATA<52,3> = 0        ; * JMK25
+*      METADATA<53,1> = "VARCHAR" ; METADATA<53,2> = "InfoMessage" ; METADATA<53,3> = 0     ; * JMK30
+*
+*
+*
+*      CONVERT @AM TO CHAR(30) IN METADATA
+*      PRINT "%METADATA:":METADATA
+      PCMVIN='BOTH'
+      PCMVIN<2>=CH.NUM
+      PCMVIN<3>=ORIG.ZIP:@VM:DEST.ZIP
+      PCMVIN<4>=1
+      CALL PCMILER(PCMVIN,PCMVOUT,F.PCIN,F.PCOUT,F.MILEAGE)
+      MSG=PCMVOUT<2>
+      IF OCONV(MSG,'MCU')='ERROR' THEN
+         ERROR=PCMVOUT<2>
+         GO 9000
+      END
+      MILES=PCMVOUT<1>
+
+
+      NUM.CARRIERS = DCOUNT(CARRIER.EST.ARRAY<1>,@VM)
+*JCW  IF NUM.CARRIERS = 0 AND ERROR = "" THEN
+*JCW     ERROR = "NO APPROVED CARRIERS AVAILABLE FOR A QUOTE"
+*JCW  END
+*JCW  IF NUM.CARRIERS = 0 AND ERROR # "" THEN
+*JCW     IF CARRIER.ID='ALL' THEN ERROR='There are no approved carriers for this shipment'
+*JCW     CARRIER.EST.ARRAY<4,1> = ERROR
+*JCW     NUM.CARRIERS = 1
+*JCW  END
+      IF NUM.CARRIERS = 0 THEN
+         BEGIN CASE                      ; * JMK28
+            CASE MISC.CHG.CODES#'' AND ACC.ERROR#''          ; * JMK28
+               MESSAGE='Accessorial selected is not applicable. Please re-submit rate request without previously selected accessorial.'      ; * JMK28
+            CASE 1                       ; * JMK28
+               MESSAGE='There are no approved carriers for this shipment.'       ; * JMK28
+         END CASE                        ; * JMK28
+*        IF ERROR = '' THEN ERROR='There are no approved carriers for this shipment'       ; * JCW02 ; * JMK28
+*        CARRIER.EST.ARRAY<4,1> = ERROR  ; * JCW02 ; * JMK28
+         CARRIER.EST.ARRAY<4,1>=MESSAGE  ; * JMK28
+         NUM.CARRIERS = 1                ; * JCW02
+      END                                ; * JCW02
+
+*     ACT.CNT=12                         ; * JMK07 ; * JMK19
+      ACT.CNT=1                          ; * JMK07 ; * JMK19
+
+      IND=0
+      XML.REC='<?xml version="1.0" encoding="ISO-8859-1" ?> '
+      IND+=3
+      XML.REC<-1>=SPACE(IND):'<rate_quoter>'
+      IND+=3
+      XML.REC<-1>=SPACE(IND):'<miles>':MILES:'</miles>'
+      XML.REC<-1>=SPACE(IND):'<quotes>'
+      IND+=3
+* WRITE OUR ARRAY BACK TO PAGE VIA RS
+      FOR X = 1 TO NUM.CARRIERS
+*Added By ROB GAUDET 9/23/2003
+         MESSAGES=TRIM(CARRIER.EST.ARRAY<4,X>:'|':OCONV(CARRIER.EST.ARRAY<1,X>,"MR2"):'|':CARRIER.EST.ARRAY<2,X>:'|':CARRIER.EST.ARRAY<5,X>:'|':CARRIER.EST.ARRAY<3,X>:'|':ORIG.CITY:'|':ORIG.ST:'|':DEST.CITY:'|':DEST.ST)
+
+         QUOTE.AMT = CARRIER.EST.ARRAY<1,X>
+         IF USER.NAME='WARDKRAFT' THEN   ; * JMK32
+            IF X=1 THEN                  ; * JMK32
+               BEGIN CASE                ; * JMK32
+                  CASE QUOTE.AMT>= 75001           ; * JMK32
+                     QUOTE.INC=1.3       ; * JMK32
+                     QUOTE.INC.PERC=30   ; * JMK32
+                  CASE QUOTE.AMT>= 50001           ; * JMK32
+                     QUOTE.INC=2         ; * JMK32
+                     QUOTE.INC.PERC=100  ; * JMK32
+                  CASE 1                 ; * JMK32
+                     QUOTE.INC=2.85      ; * JMK32
+                     QUOTE.INC.PERC=185  ; * JMK32
+               END CASE                  ; * JMK32
+            END                          ; * JMK32
+            QUOTE.INCR.AMT=(QUOTE.AMT*QUOTE.INC.PERC/100)'R0'          ; * JMK32
+            IF QUOTE.INCR.AMT NE "0" THEN          ; * JMK32
+               QUOTE.AMT=(QUOTE.AMT + QUOTE.INCR.AMT)'R0'    ; * JMK32
+            END                          ; * JMK32
+         END                             ; * JMK32
+         CARRIER.ID = CARRIER.EST.ARRAY<2,X>
+         CARRIER.NAME = CARRIER.EST.ARRAY<3,X>
+         ERRORS = CARRIER.EST.ARRAY<4,X>
+         CARRIER.SCAC = CARRIER.EST.ARRAY<5,X>
+         ZIP.MESSAGE = CARRIER.EST.ARRAY<6,X>
+         CLIENT.COST = CARRIER.EST.ARRAY<9,X>      ; * JMK25
+         TRANSIT.TIME = CARRIER.EST.ARRAY<13,X>    ; * JMK09
+         ORIG.DIRECT = CARRIER.EST.ARRAY<14,X>     ; * JMK09
+         DEST.DIRECT = CARRIER.EST.ARRAY<15,X>     ; * JMK09
+         COMB.DIRECT = CARRIER.EST.ARRAY<16,X>     ; * JMK09
+         ORIG.TERM.NAME = CARRIER.EST.ARRAY<17,X>  ; * JMK11
+         ORIG.TERM.CODE = CARRIER.EST.ARRAY<18,X>  ; * JMK11
+         ORIG.TERM.ADR1 = CARRIER.EST.ARRAY<19,X>  ; * JMK11
+         ORIG.TERM.ADR2 = CARRIER.EST.ARRAY<20,X>  ; * JMK11
+         ORIG.TERM.CITY = CARRIER.EST.ARRAY<21,X>  ; * JMK11
+         ORIG.TERM.ST = CARRIER.EST.ARRAY<22,X>    ; * JMK11
+         ORIG.TERM.ZIP = CARRIER.EST.ARRAY<23,X>   ; * JMK11
+         ORIG.TERM.PHONE = CARRIER.EST.ARRAY<24,X>           ; * JMK11
+         ORIG.TERM.TPHONE = CARRIER.EST.ARRAY<25,X>          ; * JMK11
+         ORIG.TERM.FAX = CARRIER.EST.ARRAY<26,X>   ; * JMK11
+         ORIG.TERM.EMAIL = CARRIER.EST.ARRAY<27,X>           ; * JMK11
+         ORIG.TERM.CNAME = CARRIER.EST.ARRAY<28,X>           ; * JMK11
+         ORIG.TERM.CTITLE = CARRIER.EST.ARRAY<29,X>          ; * JMK11
+         DEST.TERM.NAME = CARRIER.EST.ARRAY<30,X>  ; * JMK11
+         DEST.TERM.CODE = CARRIER.EST.ARRAY<31,X>  ; * JMK11
+         DEST.TERM.ADR1 = CARRIER.EST.ARRAY<32,X>  ; * JMK11
+         DEST.TERM.ADR2 = CARRIER.EST.ARRAY<33,X>  ; * JMK11
+         DEST.TERM.CITY = CARRIER.EST.ARRAY<34,X>  ; * JMK11
+         DEST.TERM.ST = CARRIER.EST.ARRAY<35,X>    ; * JMK11
+         DEST.TERM.ZIP = CARRIER.EST.ARRAY<36,X>   ; * JMK11
+         DEST.TERM.PHONE = CARRIER.EST.ARRAY<37,X>           ; * JMK11
+         DEST.TERM.TPHONE = CARRIER.EST.ARRAY<38,X>          ; * JMK11
+         DEST.TERM.FAX = CARRIER.EST.ARRAY<39,X>   ; * JMK11
+         DEST.TERM.EMAIL = CARRIER.EST.ARRAY<40,X>           ; * JMK11
+         DEST.TERM.CNAME = CARRIER.EST.ARRAY<41,X>           ; * JMK11
+         DEST.TERM.CTITLE = CARRIER.EST.ARRAY<42,X>          ; * JMK11
+         FSC.QUOTE.AMT = CARRIER.EST.ARRAY<43,X>   ; * JMK18
+         ACC.CODES = CARRIER.EST.ARRAY<44,X>       ; * JMK18
+         ACC.QUOTE = CARRIER.EST.ARRAY<45,X>       ; * JMK18
+         CARR.DATA.DATE = CARRIER.EST.ARRAY<46,X>  ; * JMK21
+         INFOMESSAGE = CARRIER.EST.ARRAY<47,X>     ; * JMK30
+
+         IF QUOTE.AMT # "" OR ERRORS # "" THEN
+            XML.REC<-1>=SPACE(IND):'<quote>'
+            IND+=3
+            IF ERRORS#'' THEN
+               XML.REC<-1>=SPACE(IND):'<Errors>':ERRORS:'</Errors>'
+            END
+            IF QUOTE.AMT+0#0 THEN
+               XML.REC<-1>=SPACE(IND):'<QuoteAmt>':OCONV(QUOTE.AMT,'MR2'):'</QuoteAmt>'
+            END
+            IF CARRIER.ID#'' THEN
+               XML.REC<-1>=SPACE(IND):'<CarrierID>':CARRIER.ID:'</CarrierID>'
+            END
+            IF CARRIER.SCAC#'' THEN
+               XML.REC<-1>=SPACE(IND):'<CarrierSCAC>':CARRIER.SCAC:'</CarrierSCAC>'
+            END
+            IF CARRIER.NAME#'' THEN
+               XML.REC<-1>=SPACE(IND):'<CarrierName>':CARRIER.NAME:'</CarrierName>'
+            END
+            IF ORIG.CITY#'' THEN
+               XML.REC<-1>=SPACE(IND):'<OCity>':ORIG.CITY:'</OCity>'
+            END
+            IF ORIG.ST#'' THEN
+               XML.REC<-1>=SPACE(IND):'<OState>':ORIG.ST:'</OState>'
+            END
+            IF DEST.CITY#'' THEN
+               XML.REC<-1>=SPACE(IND):'<DCity>':DEST.CITY:'</DCity>'
+            END
+            IF DEST.ST#'' THEN
+               XML.REC<-1>=SPACE(IND):'<DState>':DEST.ST:'</DState>'
+            END
+            IF MESSAGES#'' THEN
+               XML.REC<-1>=SPACE(IND):'<Messages>':MESSAGES:'</Messages>'
+            END
+            IF ZIP.MESSAGE#'' THEN
+               XML.REC<-1>=SPACE(IND):'<ZipMessage>':ZIP.MESSAGE:'</ZipMessage>'
+            END
+            IF TRANSIT.TIME#'' THEN
+               XML.REC<-1>=SPACE(IND):'<TransitTime>':TRANSIT.TIME:'</TransitTime>'
+            END
+            IF ORIG.DIRECT#'' THEN
+               XML.REC<-1>=SPACE(IND):'<OrigDirect>':ORIG.DIRECT:'</OrigDirect>'
+            END
+            IF DEST.DIRECT#'' THEN
+               XML.REC<-1>=SPACE(IND):'<DestDirect>':DEST.DIRECT:'</DestDirect>'
+            END
+            IF COMB.DIRECT#'' THEN
+               XML.REC<-1>=SPACE(IND):'<CombDirect>':COMB.DIRECT:'</CombDirect>'
+            END
+            IF ORIG.TERM.NAME#'' THEN
+               XML.REC<-1>=SPACE(IND):'<OrigTerminalName>':ORIG.TERM.NAME:'</OrigTerminalName>'
+            END
+            IF ORIG.TERM.CODE#'' THEN
+               XML.REC<-1>=SPACE(IND):'<OrigTerminalCode>':ORIG.TERM.CODE:'</OrigTerminalCode>'
+            END
+            IF ORIG.TERM.ADR1#'' THEN
+               XML.REC<-1>=SPACE(IND):'<OrigTerminalAddress1>':ORIG.TERM.ADR1:'</OrigTerminalAddress1>'
+            END
+            IF ORIG.TERM.ADR2#'' THEN
+               XML.REC<-1>=SPACE(IND):'<OrigTerminalAddress2>':ORIG.TERM.ADR2:'</OrigTerminalAddress2>'
+            END
+            IF ORIG.TERM.CITY#'' THEN
+               XML.REC<-1>=SPACE(IND):'<OrigTerminalCity>':ORIG.TERM.CITY:'</OrigTerminalCity>'
+            END
+            IF ORIG.TERM.ST#'' THEN
+               XML.REC<-1>=SPACE(IND):'<OrigTerminalState>':ORIG.TERM.ST:'</OrigTerminalState>'
+            END
+            IF ORIG.TERM.ZIP#'' THEN
+               XML.REC<-1>=SPACE(IND):'<OrigTerminalZip>':ORIG.TERM.ZIP:'</OrigTerminalZip>'
+            END
+            IF ORIG.TERM.PHONE#'' THEN
+               XML.REC<-1>=SPACE(IND):'<OrigTerminalPhone>':ORIG.TERM.PHONE:'</OrigTerminalPhone>'
+            END
+            IF ORIG.TERM.TPHONE#'' THEN
+               XML.REC<-1>=SPACE(IND):'<OrigTerminalTollFreePhone>':ORIG.TERM.TPHONE:'</OrigTerminalTollFreePhone>'
+            END
+            IF ORIG.TERM.FAX#'' THEN
+               XML.REC<-1>=SPACE(IND):'<OrigTerminalFax>':ORIG.TERM.FAX:'</OrigTerminalFax>'
+            END
+            IF ORIG.TERM.EMAIL#'' THEN
+               XML.REC<-1>=SPACE(IND):'<OrigTerminalEmail>':ORIG.TERM.EMAIL:'</OrigTerminalEmail>'
+            END
+            IF ORIG.TERM.CNAME#'' THEN
+               XML.REC<-1>=SPACE(IND):'<OrigTerminalContactName>':ORIG.TERM.CNAME:'</OrigTerminalContactName>'
+            END
+            IF ORIG.TERM.CTITLE#'' THEN
+               XML.REC<-1>=SPACE(IND):'<OrigTerminalContactTitle>':ORIG.TERM.CTITLE:'</OrigTerminalContactTitle>'
+            END
+            IF DEST.TERM.NAME#'' THEN
+               XML.REC<-1>=SPACE(IND):'<DestTerminalName>':DEST.TERM.NAME:'</DestTerminalName>'
+            END
+            IF DEST.TERM.CODE#'' THEN
+               XML.REC<-1>=SPACE(IND):'<DestTerminalCode>':DEST.TERM.CODE:'</DestTerminalCode>'
+            END
+            IF DEST.TERM.ADR1#'' THEN
+               XML.REC<-1>=SPACE(IND):'<DestTerminalAddress1>':DEST.TERM.ADR1:'</DestTerminalAddress1>'
+            END
+            IF DEST.TERM.ADR2#'' THEN
+               XML.REC<-1>=SPACE(IND):'<DestTerminalAddress2>':DEST.TERM.ADR2:'</DestTerminalAddress2>'
+            END
+            IF DEST.TERM.CITY#'' THEN
+               XML.REC<-1>=SPACE(IND):'<DestTerminalCity>':DEST.TERM.CITY:'</DestTerminalCity>'
+            END
+            IF DEST.TERM.ST#'' THEN
+               XML.REC<-1>=SPACE(IND):'<DestTerminalState>':DEST.TERM.ST:'</DestTerminalState>'
+            END
+            IF DEST.TERM.ZIP#'' THEN
+               XML.REC<-1>=SPACE(IND):'<DestTerminalZip>':DEST.TERM.ZIP:'</DestTerminalZip>'
+            END
+            IF DEST.TERM.PHONE#'' THEN
+               XML.REC<-1>=SPACE(IND):'<DestTerminalPhone>':DEST.TERM.PHONE:'</DestTerminalPhone>'
+            END
+            IF DEST.TERM.TPHONE#'' THEN
+               XML.REC<-1>=SPACE(IND):'<DestTerminalTollFreePhone>':DEST.TERM.TPHONE:'</DestTerminalTollFreePhone>'
+            END
+            IF DEST.TERM.FAX#'' THEN
+               XML.REC<-1>=SPACE(IND):'<DestTerminalFax>':DEST.TERM.FAX:'</DestTerminalFax>'
+            END
+            IF DEST.TERM.EMAIL#'' THEN
+               XML.REC<-1>=SPACE(IND):'<DestTerminalEmail>':DEST.TERM.EMAIL:'</DestTerminalEmail>'
+            END
+            IF DEST.TERM.CNAME#'' THEN
+               XML.REC<-1>=SPACE(IND):'<DestTerminalContactName>':DEST.TERM.CNAME:'</DestTerminalContactName>'
+            END
+            IF DEST.TERM.CTITLE#'' THEN
+               XML.REC<-1>=SPACE(IND):'<DestTerminalContactTitle>':DEST.TERM.CTITLE:'</DestTerminalContactTitle>'
+            END
+            IF FSC.QUOTE.AMT+0#0 THEN
+               XML.REC<-1>=SPACE(IND):'<FscAmt>':OCONV(FSC.QUOTE.AMT,'MR2'):'</FscAmt>'
+            END
+            NVAL=DCOUNT(TEMP.MISC.CHG.CODES<1>,@VM)
+            IF NVAL+0#0 THEN
+               XML.REC<-1>=SPACE(IND):'<Access>'
+               IND+=3
+               FOR VAL=1 TO NVAL               ; * JMK18
+                  TEMP.CODE=TEMP.MISC.CHG.CODES<1,VAL>          ; * JMK18
+                  IF TEMP.CODE#'' THEN
+                     IF TEMP.CODE='LIFT' THEN TEMP.CODE='L25'      ; * JMK18
+                     LOCATE TEMP.CODE IN ACC.CODES<1,1> SETTING MPOS THEN    ; * JMK18
+                        XML.REC<-1>=SPACE(IND):'<Code>':TEMP.MISC.CHG.CODES<1,VAL>:'</Code>'
+                        XML.REC<-1>=SPACE(IND):'<Amt>':OCONV(ACC.QUOTE<1,1,MPOS>,'MR2'):'</Amt>'
+                     END                       ; * JMK18
+                  END
+               NEXT VAL                     ; * JMK18
+               IND-=3
+               XML.REC<-1>=SPACE(IND):'</Access>'
+            END
+            IF CARR.DATA.DATE#'' THEN
+               XML.REC<-1>=SPACE(IND):'<CarrierDataDate>':CARR.DATA.DATE:'</CarrierDataDate>'
+            END
+            IF CLIENT.COST#'' THEN
+               XML.REC<-1>=SPACE(IND):'<TrueCost>':OCONV(CLIENT.COST,'MR2'):'</TrueCost>'
+            END
+            IF INFOMESSAGE#'' THEN
+               XML.REC<-1>=SPACE(IND):'<InfoMessage>':INFOMESSAGE:'</InfoMessage>'
+            END
+            IND-=3
+            XML.REC<-1>=SPACE(IND):'</quote>'
+
+            ACTIVITY.REC<13,ACT.CNT> = CARRIER.EST.ARRAY<4,X>          ; * Errors
+            ACTIVITY.REC<14,ACT.CNT> = CARRIER.EST.ARRAY<1,X>          ; * Quote Amount
+            ACTIVITY.REC<15,ACT.CNT> = CARRIER.EST.ARRAY<2,X>          ; * Carrier ID
+            ACTIVITY.REC<16,ACT.CNT> = CARRIER.EST.ARRAY<5,X>          ; * Carrier SCAC
+            ACTIVITY.REC<17,ACT.CNT> = CARRIER.EST.ARRAY<3,X>          ; * Carrier Name
+            ACTIVITY.REC<18,ACT.CNT> = ORIG.CITY
+            ACTIVITY.REC<19,ACT.CNT> = ORIG.ST
+            ACTIVITY.REC<20,ACT.CNT> = DEST.CITY
+            ACTIVITY.REC<21,ACT.CNT> = DEST.ST
+            ACTIVITY.REC<22,ACT.CNT> = MESSAGES
+            ACTIVITY.REC<23,ACT.CNT> = ZIP.MESSAGE
+            ACTIVITY.REC<24,ACT.CNT> = TRANSIT.TIME          ; * JMK09
+            ACTIVITY.REC<25,ACT.CNT> = ORIG.DIRECT           ; * JMK09
+            ACTIVITY.REC<26,ACT.CNT> = DEST.DIRECT           ; * JMK09
+            ACTIVITY.REC<27,ACT.CNT> = COMB.DIRECT           ; * JMK09
+            ACTIVITY.REC<28,ACT.CNT> = ORIG.TERM.NAME        ; * JMK11
+            ACTIVITY.REC<29,ACT.CNT> = ORIG.TERM.CODE        ; * JMK11
+            ACTIVITY.REC<30,ACT.CNT> = ORIG.TERM.ADR1        ; * JMK11
+            ACTIVITY.REC<31,ACT.CNT> = ORIG.TERM.ADR2        ; * JMK11
+            ACTIVITY.REC<32,ACT.CNT> = ORIG.TERM.CITY        ; * JMK11
+            ACTIVITY.REC<33,ACT.CNT> = ORIG.TERM.ST          ; * JMK11
+            ACTIVITY.REC<34,ACT.CNT> = ORIG.TERM.ZIP         ; * JMK11
+            ACTIVITY.REC<35,ACT.CNT> = ORIG.TERM.PHONE       ; * JMK11
+            ACTIVITY.REC<36,ACT.CNT> = ORIG.TERM.TPHONE      ; * JMK11
+            ACTIVITY.REC<37,ACT.CNT> = ORIG.TERM.FAX         ; * JMK11
+            ACTIVITY.REC<38,ACT.CNT> = ORIG.TERM.EMAIL       ; * JMK11
+            ACTIVITY.REC<39,ACT.CNT> = ORIG.TERM.CNAME       ; * JMK11
+            ACTIVITY.REC<40,ACT.CNT> = ORIG.TERM.CTITLE      ; * JMK11
+            ACTIVITY.REC<41,ACT.CNT> = DEST.TERM.NAME        ; * JMK11
+            ACTIVITY.REC<42,ACT.CNT> = DEST.TERM.CODE        ; * JMK11
+            ACTIVITY.REC<43,ACT.CNT> = DEST.TERM.ADR1        ; * JMK11
+            ACTIVITY.REC<44,ACT.CNT> = DEST.TERM.ADR2        ; * JMK11
+            ACTIVITY.REC<45,ACT.CNT> = DEST.TERM.CITY        ; * JMK11
+            ACTIVITY.REC<46,ACT.CNT> = DEST.TERM.ST          ; * JMK11
+            ACTIVITY.REC<47,ACT.CNT> = DEST.TERM.ZIP         ; * JMK11
+            ACTIVITY.REC<48,ACT.CNT> = DEST.TERM.PHONE       ; * JMK11
+            ACTIVITY.REC<49,ACT.CNT> = DEST.TERM.TPHONE      ; * JMK11
+            ACTIVITY.REC<50,ACT.CNT> = DEST.TERM.FAX         ; * JMK11
+            ACTIVITY.REC<51,ACT.CNT> = DEST.TERM.EMAIL       ; * JMK11
+            ACTIVITY.REC<52,ACT.CNT> = DEST.TERM.CNAME       ; * JMK11
+            ACTIVITY.REC<53,ACT.CNT> = DEST.TERM.CTITLE      ; * JMK11
+            ACTIVITY.REC<54,ACT.CNT> = FSC.QUOTE.AMT         ; * JMK18
+            FOR VAL=1 TO 4               ; * JMK18
+               TEMP.CODE=TEMP.MISC.CHG.CODES<1,VAL>          ; * JMK18
+               IF TEMP.CODE='LIFT' THEN TEMP.CODE='L25'      ; * JMK18
+               LOCATE TEMP.CODE IN ACC.CODES<1,1> SETTING MPOS THEN    ; * JMK18
+                  ACTIVITY.REC<55,ACT.CNT,VAL> = TEMP.MISC.CHG.CODES<1,VAL>      ; * JMK18
+                  ACTIVITY.REC<56,ACT.CNT,VAL> = ACC.QUOTE<1,1,MPOS>   ; * JMK18
+               END                       ; * JMK18
+            NEXT VAL                     ; * JMK18
+            ACTIVITY.REC<57,ACT.CNT> = ICONV(CARR.DATA.DATE,'D')       ; * JMK21
+            ACTIVITY.REC<58,ACT.CNT> = CLIENT.COST
+            ACTIVITY.REC<59,ACT.CNT> = INFOMESSAGE           ; * JMK30
+            ACT.CNT+=1                   ; * JMK07 ; * JMK21
+         END
+      NEXT X
+      IND-=3
+      XML.REC<-1>=SPACE(IND):'</quotes>'
+      IND-=3
+      XML.REC<-1>=SPACE(IND):'</rate_quoter>'
+      IND-=3
+      IF ACTIVITY.ID#'' THEN             ; * JMK17
+         WRITE ACTIVITY.REC ON F.ACTIVITY,ACTIVITY.ID        ; * JMK07
+*
+* NPR02
+*
+         IF XREF.OPEN = "Y" THEN
+            ID.XREF = CLIENT.ID:"*":DATE()
+            READ XREF.REC FROM F.IEFA.XREF, ID.XREF ELSE XREF.REC = ""
+            LOCATE ACTIVITY.ID IN XREF.REC SETTING POS ELSE
+               XREF.REC<-1> = ACTIVITY.ID
+               WRITE XREF.REC ON F.IEFA.XREF, ID.XREF
+            END
+         END
+*
+* NPR02
+*
+      END                                ; * JMK17
+      XML.REC=CHANGE(XML.REC,'&','&amp;')
+      XML.REC=CHANGE(XML.REC,@AM,'')
+      VOUT=XML.REC
+      RETURN
+      STOP

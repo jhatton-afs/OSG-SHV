@@ -1,0 +1,580 @@
+*
+*   Freight Bills by Customer/Vendor
+*
+*   AUTHOR: CODY HENDERSON
+*   DATE  : 14 JANUARY, 1997
+*   DATE  : 26 FEBRUARY, 1998  DAVID  CHANGE FROM FB.6.4.2 TO FB.6.4.8
+*                                     TO BE A SUMMARY REPORT
+*   050806 - JCW01 - CHANGES TO '@SELECTED', 'CLEARSELECT', AND 'STMT<X>'
+*******************************************************************
+ $OPTIONS HEADER.EJECT
+ $OPTIONS EXEC.EQ.PERF
+ $OPTIONS INFO.ABORT
+*
+* CALL SCREEN HEADING
+*
+      PROG.NAME='FB.6.4.8'
+      PROG.DESC='Summary Freight Bills by Customer/Vendor'
+      PACK.NAME='FREIGHT PAYMENT'
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.6.4.8' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+*
+* INITIALIZE VARIABLES
+*
+      PROMPT ''
+      CLIENT.ID=''
+      BEG.DATE=''
+      END.DATE=''
+      INBOUND=''
+      OUTBOUND=''
+      COMBINATION=''
+      DATE.1=''
+      STMT=''
+*      USER=OCONV(SYSTEM(19),'MCU')
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)
+      ENDING=0
+      TEMP=0
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+        CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+        EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+        OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+          CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+        END
+      END
+      OPEN 'DICT','FBWORK':CH.NUM TO F.DICT.WORK ELSE
+        CALL OPEN.ABORT('DICT FBWORK':CH.NUM,PROG.NAME)
+      END
+*
+* Create work file dictionary items
+*
+      TEMP=''
+      TEMP<1>='S'
+      TEMP<2>=0
+      TEMP<8>='G0*1'
+      TEMP<9>='R'
+      TEMP<10>=10
+      WRITE TEMP ON F.DICT.WORK,'CARRIER.NUMBER'
+      TEMP<9>='L'
+      TEMP<10>=30
+      TEMP<8>='G1*1' 
+      WRITE TEMP ON F.DICT.WORK,'CUST.VEND'
+      TEMP<8>='F;0(G*1);(TCARRIERS;X;;1)'
+      WRITE TEMP ON F.DICT.WORK,'CARRIER.NAME'
+*
+*  WORK FILE CONSISTS OF ITEMS WITH THE FOLLOWING DETAIL
+*  Variable Attribute Description.....................................
+*               ID
+*                1    # Inbound Shipments
+*                2    # Outbound Shipments
+*                3    Total weight inbound shipments
+*                4    Total weight outbound shipments
+*                5    Total charges inbound shipments
+*                6    Total charges outbound shipments
+*
+* GET CLIENT NUMBER
+*
+50    HELP="Enter the client number. 'EX'=Exit."
+      CALL GEN.IN(0,3,'Enter Client Number #####','',Q,0,20,'','',2,-5,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI='EX' ! QI='X'
+          GOTO EXIT.PROGRAM
+        CASE QI=''
+          GOTO EXIT.PROGRAM
+        CASE NOT(QI MATCHES "0N")
+          CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+          CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+          BEGIN CASE
+            CASE ITEM.LIST=''
+              GOTO 50
+            CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+              GOTO 50
+            CASE ITEM.LIST NE ''
+              IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+              GOTO 50
+          END CASE
+        CASE NUM(QI)
+          Q=QI'R%5'
+        CASE 1
+          GOTO 50
+      END CASE
+      CLIENT.ID=Q
+      CLIENT.ID=CLIENT.ID'R%5'
+      CRT @(20,3):CLIENT.ID:@(-4)
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+        CALL OPEN.ABORT('CLIENTS',PROG,NAME)
+      END
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+        CALL ELINE('ERROR - Client ':CLIENT.ID:' not on file.')
+        GOTO 50
+      END
+      OPEN '','VEND.CUST,':CLIENT.ID TO F.VEND.CUST ELSE
+        CALL OPEN.ABORT('VEND.CUST,':CLIENT.ID,PROG.NAME)
+      END
+      CLIENT.NAME=CLIENT.REC<2>
+      CRT@(27,3):CLIENT.NAME
+*
+* Enter file selections.
+*
+100:  HELP = "File type [1]=Current file, [2]=History file, [3]=Last Processed. 'X'=Back"
+      LN="Enter 1-Temp, 2-History, 3-Last Processed: #"
+      CALL GEN.IN(0,5,LN,'',Q,1,2,'','',0,-1,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      AUTO=0
+      BEGIN CASE
+         CASE Q=1
+            FILE="FB.BILLS,":CLIENT.ID
+            TEMP=1
+         CASE Q=2
+            FILE="FB.BILLS.HIST,":CLIENT.ID
+         CASE Q=3
+            OPEN '','FB.UNPROCESS,':CLIENT.ID TO F.UP ELSE
+              CALL ELINE("Can't open FB.UNPROCESS,":CLIENT.ID:'  "Last" option not available!')
+              GO 100
+            END
+            READ DDATES FROM F.UP,'PROCESS.DATES' ELSE
+              CALL ELINE('FB.UNPROCESS,':CLIENT.ID:' PROCESS.DATES not on file  "Last" option not available')
+              GO 100
+            END
+            FILE="FB.BILLS.HIST,":CLIENT.ID
+            BEG.DATE=DDATES<1>
+            END.DATE=DDATES<2>
+            DAYS=END.DATE-BEG.DATE+1
+            CRT @(0,7):'Beginning date.  ':BEG.DATE'D2/'
+            CRT @(0,9):'Ending date.     ':END.DATE'D2/'
+            AUTO=1
+            GET.LIST=0
+         CASE QI='X'
+            CRT @(0,3):@(-3):
+            GOTO 50
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE 1
+            GOTO 100
+      END CASE
+      OPEN FILE TO FB.BILLS ELSE CALL OPEN.ABORT(FILE,PROG.NAME)
+      IF AUTO THEN GO 300
+*
+* Get current period beginning date
+*
+150   HELP="Enter the beginning date. 'X'=Back to client. 'EX'=Exit."
+      IF DATE.1='' THEN DATE.1=DATE()'D2/' 
+      CALL GEN.IN(0,7,'Beginning date.  ':DATE.1'D2/','DATE',BEG.DATE,1,8,'','',1,17,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI='X'
+          CRT@(0,5):@(-3):
+          GOTO 100
+        CASE QI='EX'
+          GOTO EXIT.PROGRAM
+*       CASE NOT(NUM(QI))
+*         CALL ELINE('Beginning date can only be numerical.')
+*         GOTO 150
+      END CASE
+      CRT @(17,7):BEG.DATE'D2/'
+      DATE.1=BEG.DATE
+*
+* Get current period ending date
+*
+      END.DATE=DATE()
+200   HELP="Enter the ending date. 'X'=Back to beginning date. 'EX'=Exit."
+      CALL GEN.IN(0,9,'Ending date.     ':END.DATE'D2/','DATE',Q,0,8,'','',1,-8,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI=''
+          Q=END.DATE
+        CASE QI='X'
+          CRT@(0,7):@(-3):
+          GOTO 150
+        CASE QI='EX'
+          GOTO EXIT.PROGRAM
+*       CASE NOT(NUM(QI))
+*         CALL ELINE('Ending date can only be numerical.')
+*         GOTO 200
+      END CASE
+      END.DATE=Q
+      IF END.DATE LT BEG.DATE THEN
+        CALL ELINE('Invalid ending date.')
+        GOTO 200
+      END
+      CRT @(17,9):END.DATE'D2/'
+      ENDING=1
+*
+*
+* Inbound only
+*
+300:  HELP="Y=Yes. N=No. X=Back. EX=Exit."
+      IF INBOUND#'' THEN MASK=INBOUND'L#2' ELSE MASK='--'
+      CALL GEN.IN(0,11,'Inbound Only. ':MASK,'',Q,0,2,'','',0,-2,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=INBOUND
+      BEGIN CASE
+         CASE QI='X'
+            IF ENDING=1 THEN
+              CRT@(0,9):@(-3):
+              GOTO 200
+            END ELSE
+              CRT @(0,5):@(-3):
+              GO 100
+            END
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='Y' OR QI='N'
+            IF QI='Y' THEN INBOUND='Y'
+            IF QI='N' THEN INBOUND='N'
+         CASE 1
+            CALL ELINE('Invalid entry. Must be Y, N, X, or EX.')
+            GOTO 300
+      END CASE
+      CRT @(14,11):INBOUND'L#2'
+*
+* Outbound only
+*
+350:  HELP="Y=Yes. N=No. X=Back. EX=Exit."
+      IF OUTBOUND#'' THEN MASK=OUTBOUND'L#2' ELSE MASK='--'
+      CALL GEN.IN(0,13,'Outbound Only. ':MASK,'',Q,0,2,'','',0,-2,13,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=OUTBOUND
+      BEGIN CASE
+         CASE QI='X'
+            CRT@(0,11):@(-3):
+            GOTO 300
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='Y' OR QI='N'
+            IF QI='Y' THEN OUTBOUND='Y'
+            IF QI='N' THEN OUTBOUND='N'
+         CASE 1
+            CALL ELINE('Invalid entry. Must be Y, N, X, or EX.')
+            GOTO 350
+      END CASE
+      CRT @(15,13):OUTBOUND'L#2'
+*
+* Combination
+*
+400:  HELP="Y=Yes. N=No. X=Back. EX=Exit."
+      IF COMBINATION#'' THEN MASK=COMBINATION'L#2' ELSE MASK='--'
+      CALL GEN.IN(0,15,'Combination. ':MASK,'',Q,0,2,'','',0,-2,15,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=COMBINATION
+      BEGIN CASE
+         CASE QI='X'
+            CRT@(0,13):@(-3):
+            GOTO 350
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='Y' OR QI='N'
+            IF QI='Y' THEN COMBINATION='Y'
+            IF QI='N' THEN COMBINATION='N'
+         CASE 1
+            CALL ELINE('Invalid entry. Must be Y, N, X, or EX.')
+            GOTO 400
+      END CASE
+      CRT @(13,15):COMBINATION'L#2'
+*
+*
+* Verify selection criteria is correct.
+*
+450:  HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT@(0,15):@(-3):
+            GOTO 400
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO 450
+      END CASE
+*
+      CLEARFILE F.WORK
+*
+* Select bills to process.
+*
+      IF AUTO THEN
+*       IF USER.NAME='OWEN'!USER.NAME='CODY' THEN CALL ELINE('PRESS BREAK FOR AUTO MODE')
+        EXECUTE 'SELECT FB.UNPROCESS,':CLIENT.ID:' WITH FILE.NAME = "FB.BILLS,':CLIENT.ID:'" ITEM.NAME' PASSLIST CAPTURING OUTPUT
+      END
+      IF TEMP=1 THEN
+        STMT='SELECT FB.BILLS,':CLIENT.ID
+        STMT:=' WITH 30 GE "':BEG.DATE'D2/':'"'
+        STMT:=' AND WITH 30 LE "':END.DATE'D2/':'"'
+      END ELSE
+        STMT='SELECT FB.BILLS.HIST,':CLIENT.ID
+        STMT:=' WITH 37 GE "':BEG.DATE'D2/':'"'
+        STMT:=' AND WITH 37 LE "':END.DATE'D2/':'"'
+      END
+*
+      STMT:=' AND WITH VERSION = "0"'
+*     STMT:=' BY 5'
+*      STMT:=' BY BIG.CUST BY CARRIER.NAME'
+*     STMT:=\ BREAK.ON 5 "'DV'"\
+*      STMT:=\ BREAK.ON BIG.CUST \
+*      STMT:=\ BREAK.ON CARRIER.NAME \
+*      STMT:=' 2 TOTAL 6 TOTAL 8R'
+*      STMT:=' HEADING "':HED:'"'
+*      STMT:=\ DET.SUP ID.SUP LPTR\
+      EXECUTE STMT PASSLIST CAPTURING OUTPUT
+      LOOP
+        DONE=0
+        READNEXT PRO.ID ELSE DONE=1
+      UNTIL DONE=1 DO
+        READ DBILL FROM FB.BILLS,PRO.ID THEN
+          CARRIER.ID=FIELD(PRO.ID,'*',1)
+          FOR I = 1 TO 3
+            IF I = 1 THEN
+               CARRIER.NUM=CARRIER.ID
+            END ELSE
+               CARRIER.NUM='ALL'
+            END
+            CUST.VEND=OCONV(DBILL<17>,'MCU')
+            IF I = 3 THEN CUST.VEND='ALL'
+            WORK.ID=CARRIER.NUM:'*':CUST.VEND
+            READ WORK.REC FROM F.WORK,WORK.ID ELSE WORK.REC=''
+            IF DBILL<2>='I' THEN ADD.ATT=0 ELSE ADD.ATT=1
+            WORK.REC<1+ADD.ATT>=WORK.REC<1+ADD.ATT>+1
+            WORK.REC<3+ADD.ATT>=WORK.REC<3+ADD.ATT>+DBILL<6>
+            WORK.REC<5+ADD.ATT>=WORK.REC<5+ADD.ATT>+DBILL<8>
+            WRITE WORK.REC ON F.WORK,WORK.ID
+          NEXT I
+        END
+      REPEAT
+      IF INBOUND='Y' THEN
+        INBOUND.ONLY=1
+        OUTBOUND.ONLY=0
+        COMBINATION.ONLY=0
+        GOSUB PRINT.REPORT
+      END
+      IF OUTBOUND='Y' THEN 
+        INBOUND.ONLY=0
+        OUTBOUND.ONLY=1
+        COMBINATION.ONLY=0
+        GOSUB PRINT.REPORT
+      END
+      IF COMBINATION='Y' THEN
+        INBOUND.ONLY=0
+        OUTBOUND.ONLY=0
+        COMBINATION.ONLY=1
+        GOSUB PRINT.REPORT
+      END
+*
+EXIT.PROGRAM:*
+      STOP
+
+*
+PRINT.REPORT:*****
+*
+      PREC='SSELECT FBWORK':CH.NUM
+      PREC := ' WITH CUST.VEND # "ALL" '
+      PREC := ' AND WITH CARRIER.NUMBER = "ALL" '
+      PREC := ' BY CUST.VEND'
+      PREC := ' BY CARRIER.NAME'
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+      IF @SELECTED < 1 THEN ; * JCW01
+        CALL ELINE('ERROR - No data retreived')
+        STOP
+      END
+      TOTAL.LINE=''
+      WIDTH=132
+      CTR=INT(WIDTH/2)
+      TITLE='Customer/Vendor Summary Report'
+      L.TAB=CTR-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):TITLE
+      R.TAB=WIDTH-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE())
+      HEAD1=PROG.NAME:SPACE(L.TAB):TITLE:SPACE(R.TAB):TIMEDATE():"'L'"
+*
+      IF INBOUND.ONLY THEN TITLE='Inbound Shipments'
+      IF OUTBOUND.ONLY THEN TITLE='Outbound Shipments'
+      IF COMBINATION.ONLY THEN TITLE='Inbound and Outbound Shipments'
+      L.TAB=CTR-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+*     R.TAB=(WIDTH-LEN(TEMP))-9
+*     HEAD2=TEMP:SPACE(R.TAB):"PAGE 'PL'"
+      R.TAB=(WIDTH-LEN(TEMP))-20
+      HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )':"PAGE 'PL'"
+      TITLE='For Client: ':CLIENT.ID:' ':CLIENT.NAME
+      L.TAB=CTR-(LEN(TITLE)/2)
+      TEMP=SPACE(L.TAB):TITLE
+      HEAD3=TEMP:"'L'"
+      TITLE='Bills processed from ':BEG.DATE'D2/':' to ':END.DATE'D2/'
+      L.TAB=CTR-(LEN(TITLE)/2)
+      TEMP=SPACE(L.TAB):TITLE
+      HEAD4=TEMP:"'L'"
+      HEAD5="'L'"
+*
+      HEAD6="Customer/Vendor"'L#30'
+*DF      HEAD6:=SPACE(2):"Carrier Name"'L#30'
+*DF      HEAD6:=SPACE(2):"In Out"
+      HEAD6:=SPACE(2):"# Shpments"
+      HEAD6:=SPACE(4):"Weight"
+      HEAD6:=SPACE(4):"Act Charge"
+      HEAD6:="'L'"
+*
+      HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6
+      VIN=''
+      VIN<3>='R'
+      CALL LASER.CODE(VIN,VOUT)
+      IF VOUT<1>#'' THEN
+        CALL ELINE(VOUT<1>)
+        STOP
+      END
+      IF VOUT<3>#'' THEN EXECUTE VOUT<3>
+      PRINTER ON
+      IF VOUT<2>#'' THEN PRINT VOUT<2>:
+      HEADING HED
+      DONE = 0
+      OLD.CUST.VEND='*****'
+      LOOP
+        READNEXT ID ELSE DONE = 1
+      UNTIL DONE = 1 DO
+        GOSUB BUILD.DET.LINE
+      REPEAT
+      ID='ALL*ALL'
+      GOSUB BUILD.DET.LINE
+      PRINTER OFF
+      RETURN
+
+BUILD.DET.LINE:***
+      CUST.VEND=FIELD(ID,'*',2)
+      IF OLD.CUST.VEND='*****' THEN OLD.CUST.VEND=CUST.VEND ; NUM.OF.ITEMS=0
+      IF OLD.CUST.VEND#CUST.VEND THEN
+*DF        IF NUM.OF.ITEMS<2 THEN TOTAL.LINE=''
+        IF TOTAL.LINE#'' THEN
+*DF          PRINT 
+          PRINT TOTAL.LINE
+*DF          PRINT
+*DF        END ELSE
+*DF          PRINT
+        END
+        OLD.CUST.VEND=CUST.VEND
+        NUM.OF.ITEMS=0
+      END
+      READ DWORK FROM F.WORK,ID ELSE RETURN
+      IF CUST.VEND='ALL' THEN
+        PRINT 
+        CUST.VEND='Total'
+        CARRIER.NAME=''
+      END ELSE
+        CARRIER.ID=FIELD(ID,'*',1)
+        IF CARRIER.ID='ALL' THEN
+*DF           TOTAL.LINE=CUST.VEND'L#30':SPACE(34)
+           CUST.VEND.INFO=CUST.VEND
+           READV CUST.VEND.NAME FROM F.VEND.CUST,CUST.VEND,1 ELSE CUST.VEND.NAME=''
+           IF CUST.VEND.NAME#'' THEN
+             CUST.VEND.INFO=CUST.VEND:'-':CUST.VEND.NAME
+           END
+           TOTAL.LINE=CUST.VEND.INFO'L#30':SPACE(2)
+           IF INBOUND.ONLY THEN
+*DF              TOTAL.LINE:='  I   ':SPACE(2)
+              IF DWORK<1>+0=0 THEN
+                 TOTAL.LINE=''
+              END ELSE
+                 TOTAL.LINE:=DWORK<1>'R#8':SPACE(2)
+                 TOTAL.LINE:=DWORK<3>'R#10':SPACE(2)
+                 TOTAL.LINE:=DWORK<5>'R26,#12'
+              END
+           END
+           IF OUTBOUND.ONLY THEN
+*DF              TOTAL.LINE:='  O   ':SPACE(2)
+              IF DWORK<2>+0=0 THEN
+                 TOTAL.LINE=''
+              END ELSE
+                 TOTAL.LINE:=DWORK<2>'R#8':SPACE(2)
+                 TOTAL.LINE:=DWORK<4>'R#10':SPACE(2)
+                 TOTAL.LINE:=DWORK<6>'R26,#12'
+              END
+           END
+           IF COMBINATION.ONLY THEN
+*DF              TOTAL.LINE:='      ':SPACE(2)
+              IF DWORK<1>+DWORK<2>+0=0 THEN
+                 TOTAL.LINE=''
+              END ELSE
+                 TOTAL.LINE:=(DWORK<1>+DWORK<2>)'R#8':SPACE(2)
+                 TOTAL.LINE:=(DWORK<3>+DWORK<4>)'R#10':SPACE(2)
+                 TOTAL.LINE:=(DWORK<5>+DWORK<6>)'R26,#12'
+              END
+           END
+           RETURN
+        END ELSE
+          READV CARRIER.NAME FROM F.CARRIERS,CARRIER.ID,1 ELSE
+            CARRIER.NAME="** Not On File **"
+          END
+        END
+     END
+*DF     LINE=CUST.VEND'L#30':SPACE(2):CARRIER.NAME'L#30':SPACE(2)
+     LINE=CUST.VEND'L#30':SPACE(2)
+     IF INBOUND.ONLY THEN
+*DF        LINE:='  I   ':SPACE(2)
+        IF DWORK<1>+0=0 THEN
+           LINE=''
+        END ELSE
+           LINE:=DWORK<1>'R#8':SPACE(2)
+           LINE:=DWORK<3>'R#10':SPACE(2)
+           LINE:=DWORK<5>'R26,#12'
+        END
+     END
+     IF OUTBOUND.ONLY THEN
+*DF        LINE:='  O   ':SPACE(2)
+        IF DWORK<2>+0=0 THEN
+           LINE=''
+        END ELSE
+           LINE:=DWORK<2>'R#8':SPACE(2)
+           LINE:=DWORK<4>'R#10':SPACE(2)
+           LINE:=DWORK<6>'R26,#12'
+        END
+     END
+     IF COMBINATION.ONLY THEN
+*DF        IF CUST.VEND#'ALL' THEN
+*DF          LINE:='  I   ':SPACE(2)
+*DF          IF DWORK<1>+0=0 THEN
+*DF             LINE=''
+*DF          END ELSE
+*DF             LINE:=DWORK<1>'R#8':SPACE(2)
+*DF             LINE:=DWORK<3>'R#10':SPACE(2)
+*DF             LINE:=DWORK<5>'R26,#12'
+*DF          END
+*DF          IF LINE#'' THEN
+*DF            PRINT LINE
+*DF            NUM.OF.ITEMS=NUM.OF.ITEMS+1
+*DF          END
+*DF          LINE=CUST.VEND'L#30':SPACE(2):CARRIER.NAME'L#30':SPACE(2)
+*DF          LINE:='  O   ':SPACE(2)
+*DF          IF DWORK<2>+0=0 THEN
+*DF             LINE=''
+*DF          END ELSE
+*DF             LINE:=DWORK<2>'R#8':SPACE(2)
+*DF             LINE:=DWORK<4>'R#10':SPACE(2)
+*DF             LINE:=DWORK<6>'R26,#12'
+*DF          END
+*DF          IF LINE#'' THEN
+*DF             PRINT LINE
+*DF             NUM.OF.ITEMS=NUM.OF.ITEMS+1
+*DF          END
+*DF        END
+*        LINE=CUST.VEND'L#30':SPACE(2):CARRIER.NAME'L#30':SPACE(2)
+*DF        LINE:='      ':SPACE(2)
+        LINE=CUST.VEND'L#30':SPACE(2)
+        IF (DWORK<1>+0=0 OR DWORK<2>+0=0) AND CUST.VEND#'ALL' THEN
+           LINE=''
+        END ELSE
+           LINE:=(DWORK<1>+DWORK<2>)'R#8':SPACE(2)
+           LINE:=(DWORK<3>+DWORK<4>)'R#10':SPACE(2)
+           LINE:=(DWORK<5>+DWORK<6>)'R26,#12'
+        END
+     END
+     IF LINE#'' THEN
+       PRINT LINE
+       NUM.OF.ITEMS=NUM.OF.ITEMS+1
+     END
+     RETURN

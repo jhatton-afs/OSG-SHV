@@ -1,0 +1,248 @@
+      SUBROUTINE FB.ADJUST(VIN,VOUT,MAT CLIENT.REC,ORIG.BILL.REC,BILL.REC)
+* PROGRAM TO PROCESS A SINGLE BILL INTO OR OUT OFF YTD FIGURES
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.ADJUST' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+*
+* FREIGHT BILL PACKAGE
+*
+*    VIN<1>='A' OR 'U'      Adjust bill or unprocess bill
+*    VIN<2>=BILL.ID         Pro or Bill id
+*    VIN<3>=CLIENT          Client id
+*
+      $INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Initialize variables
+*
+*
+      PROMPT''
+      POST=VIN<1>
+      BILL.ID=VIN<2>
+      CLIENT=VIN<3>
+*
+* Open files
+*
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         CALL ELINE("Cannot open FB.BILLS.CRX file!")
+         VOUT<1>='ERROR'
+         RETURN
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL ELINE("Cannot open FB.TABLES file!")
+         VOUT<1>='ERROR'
+         RETURN
+      END
+      OPEN 'FB.BILLS.HIST,':CLIENT TO F.HIST ELSE
+         CALL ELINE("Cannot open FB.BILLS.HIST,":CLIENT:" file!")
+         VOUT<1>='ERROR'
+         RETURN
+      END
+      OPEN 'FB.BILLS,':CLIENT TO F.BILLS ELSE
+         CALL ELINE("Cannot open FB.BILLS,":CLIENT:" file!")
+         VOUT<1>='ERROR'
+         RETURN
+      END
+      OPEN '','FB.UNPROCESS,':CLIENT TO F.UP ELSE
+         CALL ELINE('Unable to open uprocess file')
+         VOUT<1>='ERROR'
+         RETURN
+      END
+      READV LAST.PROCESS.BEG.DATE FROM F.UP,'PROCESS.DATES',1 ELSE
+         CALL ELINE('There is not beginning process date')
+         VOUT<1>='ERROR'
+         RETURN
+      END
+*
+* Check the A/R Bridge - If exists, "poke the user in the eye" and
+* request client again.
+*
+      OPEN '','AR-BRIDGE' TO F.BDG THEN
+         READ DUMMY FROM F.BDG,CLIENT THEN
+            IF DUMMY<1>='' THEN
+*DF            CALL ELINE('Error! Can not process until A/R from client ':CLIENT:' is posted!')
+               CALL ELINE('Error! Cannot process as freight payment account is being processed.')
+               VOUT<1>='ERROR'
+               RETURN
+            END
+         END
+      END
+      READ DUMMY FROM F.TABLES,'FP_PROCESS' THEN
+         LOCATE CLIENT IN DUMMY<1> SETTING POS THEN
+            CALL ELINE('Error! Cannot process as freight payment account is being processed.')
+            VOUT<1>='ERROR'
+            RETURN
+         END
+      END
+      READ NO.PROCESS FROM F.TABLES,'TABLES*':CLIENT THEN
+         CALL ELINE(NO.PROCESS<1>)
+         VOUT<1>='ERROR'
+         RETURN
+      END
+*
+* Display screen heading
+*
+      LOCK 1 ELSE
+         CALL ELINE('Process is lock by another terminal - Try Again in 15 minutes')
+         VOUT<1>='ERROR'
+         RETURN
+      END
+      UNLOCK 1
+
+*
+* Calculate fiscal year beginning date
+*
+      LAST.PROCESS.DATE = CLIENT.REC(82)
+      LAST.PROCESS.MONTH=OCONV(LAST.PROCESS.DATE,'DM')
+      LAST.PROCESS.DAY=OCONV(LAST.PROCESS.DATE,'DD')
+      LAST.PROCESS.YEAR=OCONV(LAST.PROCESS.DATE,'DY')
+      FISC.MONTH=FIELD(CLIENT.REC(29),'.',1)
+      FISC.DAY=FIELD(CLIENT.REC(29),'.',2)
+      IF FISC.MONTH < 1 OR FISC.MONTH > 12 OR FISC.DAY < 1 OR FISC.DAY > 31 THEN
+         CALL ELINE('Invalid Fisc Date :':CLIENT.REC(29):' - Please setup in client maintenance')
+         VOUT<1>='ERROR'
+         RETURN
+      END
+      LAST.PROCESS.INFO=LAST.PROCESS.MONTH:LAST.PROCESS.DAY
+      LAST.PROCESS.INFO=LAST.PROCESS.INFO+0
+      FISC.INFO=FISC.MONTH:FISC.DAY
+      FISC.INFO=FISC.INFO+0
+      IF LAST.PROCESS.INFO <= FISC.INFO THEN
+         FISC.YEAR=LAST.PROCESS.YEAR-1
+         IF FISC.YEAR < 0 THEN FISC.YEAR='99'
+      END ELSE
+         FISC.YEAR=LAST.PROCESS.YEAR'R%2'
+      END
+      FYR.DATE=FISC.MONTH:'.':FISC.DAY:'.':FISC.YEAR
+      FYR.DATE=ICONV(FYR.DATE,'D2.')
+      IF BILL.REC<37>='' THEN
+         CALL ELINE('Bill does not have a process date')
+         VOUT<1>='ERROR'
+         RETURN
+      END
+      IF BILL.REC<37> < FYR.DATE ELSE
+         READ DUNPROCESSED FROM F.UP,'UNPROCESSED' ELSE
+            IF BILL.REC<37> < LAST.PROCESS.BEG.DATE THEN
+               ADJ.VIN='R'
+               ADJ.VIN<2>='U'
+               ADJ.VIN<3>=BILL.ID
+               ADJ.VIN<4>=CLIENT
+               CALL FB.ADJUST.YTD(ADJ.VIN,ADJ.VOUT,MAT CLIENT.REC,ORIG.BILL.REC)
+               IF ADJ.VOUT<1>='ERROR' THEN
+                  VOUT<1>='ERROR'
+                  RETURN
+               END
+            END ELSE
+               UP.ID='FB.BILLS,':CLIENT:'*':BILL.ID
+               DELETE F.UP,UP.ID
+            END
+            ADJ.VIN='R'
+            ADJ.VIN<2>='Y'
+            ADJ.VIN<3>=BILL.ID
+            ADJ.VIN<4>=CLIENT
+            CALL FB.ADJUST.YTD(ADJ.VIN,ADJ.VOUT,MAT CLIENT.REC,ORIG.BILL.REC)
+            IF ADJ.VOUT<1>='ERROR' THEN
+               VOUT<1>='ERROR'
+               RETURN
+            END
+            IF POST='A' THEN
+               IF BILL.REC<37> < LAST.PROCESS.BEG.DATE THEN
+                  ADJ.VIN='A'
+                  ADJ.VIN<2>='U'
+                  ADJ.VIN<3>=BILL.ID
+                  ADJ.VIN<4>=CLIENT
+                  CALL FB.ADJUST.YTD(ADJ.VIN,ADJ.VOUT,MAT CLIENT.REC,BILL.REC)
+                  IF ADJ.VOUT<1>='ERROR' THEN
+                     VOUT<1>='ERROR'
+                     RETURN
+                  END
+               END ELSE
+                  UP.ID='FB.BILLS,':CLIENT:'*':BILL.ID
+                  UP.ARRAY=''
+                  UP.ARRAY<1>=BILL.REC<9>
+                  WRITE UP.ARRAY ON F.UP,UP.ID
+               END
+               ADJ.VIN='A'
+               ADJ.VIN<2>='Y'
+               ADJ.VIN<3>=BILL.ID
+               ADJ.VIN<4>=CLIENT
+               CALL FB.ADJUST.YTD(ADJ.VIN,ADJ.VOUT,MAT CLIENT.REC,BILL.REC)
+               IF ADJ.VOUT<1>='ERROR' THEN
+                  VOUT<1>='ERROR'
+                  RETURN
+               END
+            END ELSE
+               BILL.REC<37>=''
+               WRITE BILL.REC ON F.BILLS,BILL.ID
+               WRITE BILL.REC ON F.HIST,BILL.ID
+               REC = ''
+               REC<1> = CLIENT
+               REC<2> = BILL.REC<1>
+               REC<7> = BILL.REC<7>
+               REC<8> = BILL.REC<8>
+               REC<10> = BILL.REC<10>
+               REC<11> = BILL.REC<11>
+               REC<12> = BILL.REC<12>
+               REC<30> = BILL.REC<30>
+               REC<37> = BILL.REC<37>
+               REC<41> = BILL.REC<41>
+               REC<53> = BILL.REC<53>
+               REC<54> = BILL.REC<54>
+               REC<55> = BILL.REC<55>
+               REC<63> = BILL.REC<63>
+               WRITE REC ON F.CRX,BILL.ID
+*NPR00 012510 CALL UPD.CRX.DF.FILE("FB.ADJUST","",BILL.ID,REC)
+            END
+         END
+      END
+
+*      *
+*      * Update History File
+*      *
+*      BILL.HIST.REC=BILL.REC
+*      PROC.DATE=END.DATE
+*
+*      IF NOT(HOLD.FLAG) THEN
+*         BILL.HIST.REC<40>=BANK
+*         BILL.HIST.REC<37>=PROC.DATE
+*
+*
+*         IF BANK='N' THEN
+*            * Set Check Date, Amount, and Number for NO Voucher Bills
+*            BILL.HIST.REC<13>=BILL.HIST.REC<8>
+*            BILL.HIST.REC<14>='999999'
+*            BILL.HIST.REC<15>=PROC.DATE
+*         END
+*      END
+*
+*      WRITE BILL.HIST.REC ON F.HIST,BILL.ID
+*      READ D.CRX FROM F.CRX,BILL.ID THEN
+*        IF BANK='N' THEN
+*           * Set Check Date, Amount, and Number for NO Voucher Bills
+*           D.CRX<13>=BILL.HIST.REC<8>
+*           D.CRX<14>='999999'
+*           D.CRX<15>=PROC.DATE
+*        END
+*        D.CRX<37>=PROC.DATE
+*        WRITE D.CRX ON F.CRX,BILL.ID
+*      END
+*
+*
+*
+*      DATA 'STD',CLIENT,'3',B.DATE,E.DATE,'N','','','','','',''
+*      EXECUTE 'FB.3.1.NEW'
+*      IF CLIENT.REC<81>='V' THEN ; * Automatically Process Vouchers
+*        EXECUTE 'FB.5.1 AUTO ':CLIENT ; * Select Voucher to Print
+*        DATA 'V','P','','','Y'
+*        EXECUTE 'FB.5.4'
+*      END
+*      IF CLIENT='00816' THEN
+*         DATA CLIENT,'2',B.DATE,E.DATE,''
+*         EXECUTE 'FB.6.4.2'
+*      END
+*      IF CLIENT='00729' THEN
+*         DATA CLIENT,B.DATE,E.DATE
+*         EXECUTE 'FB.6.1'
+*      END
+**********************************************************************
+*
+9999: * EXIT PROGRAM
+      RETURN

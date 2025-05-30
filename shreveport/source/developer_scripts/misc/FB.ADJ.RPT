@@ -1,0 +1,551 @@
+*
+* PROGRAM TO PRINT ADJUSTMENTS TO FREIGHT BILLS AFTER PROCESSING
+* VALERIE DOTY
+* NOVEMBER 22, 1993
+*
+* FREIGHT BILLING PACKAGE
+*
+***********************************************************************
+* 100605 - JMK01 - Send output to download file
+* 092408 - JMK02 - ADJUST REPORT FOR NEW BANK CODE DEFINITION
+* 060910 - JMK03 - ADDED EDI/PPR TO DOWNLOAD REPORT.
+* 060324 - DRF01 - INT-343 Have the BTPS EDI data show as PPr not EDI
+*
+      $OPTIONS HEADER.EJECT
+      $OPTIONS EXEC.EQ.PERF
+      $OPTIONS INFO.ABORT
+*
+* Initialize variables.
+*
+      PROCESS.TYPE='STD'
+      PROMPT ''
+      EQU TB TO CHAR(9)                  ; * JMK01
+      VM = CHAR(253)
+      SM = CHAR(252)
+      PROG.NAME = 'FB.3.1.15 (FB.ADJ.RPT)'
+*   PROG.DESC = "Freight Payment Adjustments Report by Client by Carrier"
+      PROG.DESC='Freight Bill Adjustments Report'
+      PACK.NAME = "Freight Billing"
+      TOTAL.ADJ = 0
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.ADJ.RPT' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      ERRMSG=''
+      OLD.CLIENT = ''
+      OLD.CARRIER = ''
+      CALL GET.USER(USER)                ; * JMK01
+      CALL CHANNEL(CH.NUM)               ; * JMK01
+*
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      IF FILE.ID='' THEN FILE.ID='1000.1' ; * JMK01
+*
+* Open general files
+*
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT( 'CARRIERS', PROG.NAME )
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT( 'CLIENTS', PROG.NAME )
+      END
+      OPEN '','FB.BILLS.CRX' TO FB.BILLS.CRX ELSE
+         CALL OPEN.ABORT( 'FB.BILLS.CRX', PROG.NAME )
+      END
+      OPEN '','FB.MODS' TO FB.MODS ELSE
+         CALL OPEN.ABORT( 'FB.MODS', PROG.NAME )
+      END
+      OPEN '','FB.BANKS' TO F.BANK ELSE
+         CALL OPEN.ABORT("FB.BANKS",PROG.NAME)
+      END
+      OPEN '','AR.SLSMAN.':FILE.ID TO F.SLSMAN ELSE          ; * JMK01
+         CALL OPEN.ABORT("AR.SLSMAN.":FILE.ID,PROG.NAME)     ; * JMK01
+      END                                ; * JMK01
+      OPEN '','BILLDATA.':USER TO BILLDATA ELSE    ; * JMK01
+         OPEN 'VOC' TO F.VOC ELSE CALL OPEN.ABORT('VOC',PROG.NAME)     ; * JMK01
+         READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE        ; * JMK01
+            CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')      ; * JMK01
+            STOP                         ; * JMK01
+         END                             ; * JMK01
+         BILLDATA.REC<2>:='\':USER       ; * JMK01
+         WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER ELSE   ; * JMK01
+            CALL ELINE("YOUR USER NAME '":USER:"' IS NOT IN THE BILLDATA FOLDER - PLEASE SEE OWEN/DAVID/MIKE")           ; * JMK01
+            STOP                         ; * JMK01
+         END                             ; * JMK01
+         OPEN '','BILLDATA.':USER TO BILLDATA ELSE           ; * JMK01
+            CALL ELINE('UNABLE TO OPEN "BILLDATA.":USER')    ; * JMK01
+            STOP                         ; * JMK01
+         END                             ; * JMK01
+      END                                ; * JMK01
+*
+* Enter beginning date.
+*
+160: *
+      HELP = "Enter beginning date. nn=Day. nn/nn=Month & Day. X=Exit. EX=Exit."
+      LN = 'Enter the beginning date of the report. ':DATE()'D2/'
+      CALL GEN.IN(0,7,LN,'DATE',Q,0,8,'','',0,-8,7,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI = 'X' OR QI = 'EX' THEN
+         STOP
+      END
+      BEG.DATE = Q
+      CRT @(40,7):BEG.DATE'D2/'
+*
+* Enter ending date.
+*
+170: *
+      HELP = "Enter ending date. nn=Day. nn/nn=Month & Day. X=Back to Beg Date. EX=Exit."
+      LN = 'Enter the ending date of the report.    ':DATE()'D2/'
+      CALL GEN.IN(0,9,LN,'DATE',Q,0,9,'','',0,-8,9,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'X'
+            CRT @(0,9):@(-3):
+            GOTO 160
+         CASE QI = 'EX'
+            STOP
+      END CASE
+      END.DATE = Q
+      IF BEG.DATE GT END.DATE THEN
+         GOTO 170
+      END
+      DAYS = END.DATE-BEG.DATE+1
+      CRT @(40,9):END.DATE'D2/'
+*
+* Enter Bank Code
+*
+175: *
+*     HELP="Enter bank ID. X=Back or EX=Exit"
+      HELP="Enter bank ID. A=All or X=Back or EX=Exit"      ; * JMK03
+      LN = 'Enter bank id.                          --'
+      CALL GEN.IN(0,11,LN,'',Q,0,2,'','',0,-2,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,11):@(-3)
+            GOTO 170
+         CASE QI='EX'
+            STOP
+         CASE QI='A'                     ; * JMK03
+            BANK='ALL'                   ; * JMK03
+         CASE ALPHA(QI)
+            READ DUMMY FROM F.BANK,'BANK*':QI ELSE
+               CALL ELINE("Invalid bank ID.")
+               GOTO 175
+            END
+            BANK=QI
+         CASE 1
+            GOTO 175
+      END CASE
+*
+* Select bill for payment.
+*
+180: *
+      HELP = "Enter [A] for All Bills or [B] for Bills Previously Selected for Payment"
+      LN = 'Enter selection please.                 --'
+      CALL GEN.IN(0,13,LN,'',Q,0,2,'','',0,-2,13,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'X'
+            CRT @(0,13):@(-3):
+            GOTO 175
+         CASE QI = 'EX'
+            STOP
+         CASE QI = '' OR QI='A' OR QI='B'
+            NULL
+         CASE 1
+            GOTO 180
+      END CASE
+      BILL.SELECTED=QI
+      IF BILL.SELECTED = 'B' THEN
+         CRT @(40,13):'B  - Bills Prev Selected for Payment'
+      END ELSE
+         CRT @(40,13):'A  - All Bills'
+      END
+*
+* Output to file or printer.
+*
+190: *
+      HELP = "Output to [F]ile or [P]rinter"
+      LN = 'Enter selection please.                 P-'
+      CALL GEN.IN(0,15,LN,'',Q,0,2,'','',0,-2,15,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN QI='P' ; * JMK01
+      BEGIN CASE
+         CASE QI = 'X'
+            CRT @(0,15):@(-3):
+            GOTO 180
+         CASE QI = 'EX'
+            STOP
+         CASE QI = '' OR QI='F' OR QI='P'
+            NULL
+         CASE 1
+            GOTO 190
+      END CASE
+      OUT.DIR=QI
+      IF OUT.DIR = 'P' THEN
+         CRT @(40,15):'P - Printer'
+      END ELSE
+         CRT @(40,15):'F - File'
+      END
+*
+* Verify selection criteria is correct.
+*
+300: *
+      HELP = "X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'X'
+            CRT @(0,22):@(-3):
+            GOTO 190
+         CASE QI = 'EX'
+            STOP
+         CASE QI = ''
+            NULL
+         CASE 1
+            GOTO 300
+      END CASE
+*
+***********************************************************************
+* Start processing
+***********************************************************************
+*
+400: *
+      TEXT = "Processing Report - Please Wait."
+      CALL CENTER(TEXT,80)
+      CRT @(0,13):@(-3):TEXT
+*
+* Set up report heading.
+*
+      RPT.DESC = PROG.DESC
+      HEAD1 = "'LL'" : PROG.NAME:SPACE(22):RPT.DESC:SPACE(22):"'TL'"
+      CO.NAME = 'AFS Logistics, LLC'
+      TAB = INT(55-(LEN(CO.NAME)/2))
+      HEAD2 = SPACE(TAB):CO.NAME:SPACE(TAB):"Page 'PL'"
+      IF BILL.SELECTED = 'B' THEN
+         HEAD2 = HEAD2:SPACE(20):"Prev. Selected for Payment Adjustments Made From "
+      END ELSE
+         HEAD2 = HEAD2:SPACE(35):"Adjustments Made From "
+      END
+      HEAD2 = HEAD2:OCONV(BEG.DATE,'D2/'):" to ":OCONV(END.DATE,'D2/'):"'LL'"
+*     HEAD3 = STR('-',127):"'L'"         ; * JMK03
+      HEAD3 = STR('-',131):"'L'"         ; * JMK03
+      HEAD3 = HEAD3:"Client Name":SPACE(14):"Carrier Name":SPACE(13)
+      HEAD3 = HEAD3:"Pro Number":SPACE(10):"Pro Date  Adj Date"
+*     HEAD3 = HEAD3:"  Orig Act Chg  New Act Chg   Variance'L'"        ; * JMK03
+*     HEAD3 = HEAD3:STR('-',127):"'L'"   ; * JMK03
+      HEAD3 = HEAD3:"  Orig Act Chg  New Act Chg   Variance  E/P'L'"        ; * JMK03
+      HEAD3 = HEAD3:STR('-',131):"'L'"   ; * JMK03
+*
+* Select bills to process.
+*
+      STMT = 'SSELECT FB.MODS WITH DATE GE "':OCONV(BEG.DATE,'D2/'):'"'
+      STMT = STMT:' AND WITH DATE LE "':OCONV(END.DATE,'D2/'):'"'
+*DF   STMT = STMT:' AND WITH BANK = "F"'
+*     STMT = STMT:' AND WITH BANK = "':BANK:'"'    ; * JMK02
+*DFSTMT = STMT:' AND WITH CLIENT# = "01244"'
+      IF BILL.SELECTED = 'B' THEN
+         STMT = STMT:' AND WITH 6 = "Y"'
+      END
+      STMT = STMT:' BY DATE BY CLIENT# BY FBM.CARRIER BY FBM.PRO'
+      EXECUTE STMT PASSLIST CAPTURING OUTPUT
+      NUM.ITEMS = @SELECTED
+*
+* Start processing report.
+*
+      IF OUT.DIR='P' THEN                 ; * JMK01
+         VIN=''
+         VIN<3>='R'
+         CALL LASER.CODE(VIN,VOUT)
+         IF VOUT<1>#'' THEN
+            CALL ELINE(VOUT<1>)
+            STOP
+         END
+         IF VOUT<3>#'' THEN EXECUTE VOUT<3>
+         PRINTER ON
+         IF VOUT<2>#'' THEN PRINT VOUT<2>:
+         HEADING HEAD1:HEAD2:HEAD3
+      END ELSE                           ; * JMK01
+         ODATE = BEG.DATE'D2/':' to ':END.DATE'D2/'          ; * JMK01
+         EXP.REC = ''                    ; * JMK01
+         EXP.REC<-1> = PROG.DESC:' for ':ODATE     ; * JMK01
+         LINE.FMT = 'HDG'                ; * JMK01
+         GOSUB EXP.LINE                  ; * JMK01
+      END                                ; * JMK01
+*
+      CARRIER.COUNT = 0
+*
+***********************************************************************
+* Get next item to process.
+***********************************************************************
+*
+      COUNTER = 0
+      DONE = 0
+      LOOP
+         READNEXT ADJ.ID ELSE DONE = 1
+      UNTIL DONE = 1 DO
+         COUNTER = COUNTER+1
+         CALL PROG.BAR(23,COUNTER,NUM.ITEMS,PER)
+*
+         READ ADJ.REC FROM FB.MODS, ADJ.ID THEN
+            CLIENT = FIELD( ADJ.ID, '*', 2 )
+            ADJ.DT = ADJ.REC<1> 'D2/'    ; * JMK01
+            ADJ.AMT = ADJ.REC<2> 'R26,'  ; * JMK01
+            CARRIER = ADJ.REC<3> 'R%5'
+            PRO.NUM = ADJ.REC<5>
+            IF OLD.CLIENT # CLIENT THEN
+               GOSUB READ.CLIENT
+               OLD.CLIENT = CLIENT
+            END
+            IF OLD.CARRIER NE CARRIER THEN
+               GOSUB READ.CARRIER
+               OLD.CARRIER = CARRIER
+            END
+            GOSUB READ.BILL
+*           IF BILL.REC<40>=BANK THEN    ; * JMK02 ; * JMK03
+            IF BILL.REC<40>=BANK OR BANK='ALL' THEN          ; * JMK02 ; * JMK03
+               IF ADJ.REC<7>='' THEN     ; * JMK01
+                  ORIG.AMT = ( BILL.REC<8> - ADJ.REC<2> ) 'R26,'       ; * JMK01
+               END ELSE                  ; * JMK01
+                  ORIG.AMT = ( ADJ.REC<7> ) 'R26,' ; * JMK01
+               END                       ; * JMK01
+               IF ADJ.REC<8>='' THEN     ; * JMK01
+                  CURR.AMT = BILL.REC<8> 'R26,'    ; * JMK01
+               END ELSE                  ; * JMK01
+                  CURR.AMT = ADJ.REC<8> 'R26,'     ; * JMK01
+               END                       ; * JMK01
+               IF OUT.DIR='P' THEN       ; * JMK01
+                  GOSUB PRINT.DETAIL
+               END ELSE                  ; * JMK01
+                  LINE.FMT='DTL'         ; * JMK01
+                  GOSUB EXP.LINE         ; * JMK01
+               END                       ; * JMK01
+            END                          ; * JMK02
+         END
+      REPEAT
+      IF OUT.DIR='P' THEN                 ; * JMK01
+         GOSUB PRINT.TOTALS
+         PRINTER OFF
+         PRINTER CLOSE
+      END ELSE                           ; * JMK01
+         BDATE = BEG.DATE'D2-'           ; * JMK01
+         EDATE = END.DATE'D2-'           ; * JMK01
+         BILLDATA.ID = 'FBMOD_':BDATE:'_':EDATE:'.xls'       ; * JMK01
+         WRITE EXP.REC ON BILLDATA,BILLDATA.ID THEN          ; * JMK01
+            EXP.UPD = 1                  ; * JMK01
+         END ELSE                        ; * JMK01
+            EXP.UPD = 0                  ; * JMK01
+            CALL ELINE('This report is currently open and cannot be updated.  Please close this report.')      ; * JMK01
+            WRITE EXP.REC ON BILLDATA,BILLDATA.ID THEN       ; * JMK01
+               EXP.UPD = 1               ; * JMK01
+            END ELSE                     ; * JMK01
+               EXP.UPD = 0               ; * JMK01
+               CALL ELINE('This report cannot be updated.  Please try again.')   ; * JMK01
+            END                          ; * JMK01
+         END                             ; * JMK01
+         IF EXP.UPD THEN                 ; * JMK01
+            CALL ELINE('This report can be found on your "U:" drive as ':BILLDATA.ID)      ; * JMK01
+         END                             ; * JMK01
+      END                                ; * JMK01
+      STOP
+*
+*----------------------------------------------------------------------
+* INTERNAL SUBROUTINES
+*----------------------------------------------------------------------
+*
+***********************************************************************
+PRINT.DETAIL: *
+***********************************************************************
+*
+      PRINT.LINE = SPACE(132)
+      PRINT.LINE[1,24] = CLIENT.NAME 'L#24'
+      PRINT.LINE[26,24] = CARRIER.NAME 'L#24'
+      PRINT.LINE[51,20] = PRO.NUM
+      PRINT.LINE[71,8] = OCONV(BILL.REC<37>,'D2/')
+      PRINT.LINE[81,8] = OCONV( FIELD(ADJ.ID,'*',1), 'D2/' )
+      IF ADJ.REC<7>='' THEN
+         PRINT.LINE[89,12] = ( BILL.REC<8> - ADJ.REC<2> ) 'R26,#12'
+      END ELSE
+         PRINT.LINE[89,12] = ( ADJ.REC<7> ) 'R26,#12'
+      END
+      IF ADJ.REC<8>='' THEN
+         PRINT.LINE[104,11] = BILL.REC<8> 'R26,#11'
+      END ELSE
+         PRINT.LINE[104,11] = ADJ.REC<8> 'R26,#11'
+      END
+      PRINT.LINE[117,10] = ADJ.REC<2> 'R26,#10'
+      PRINT.LINE[127,5] = EDI.PPR 'R#5'  ; * JMK03
+*
+      PRINT PRINT.LINE
+*
+      TOTAL.ADJ += ADJ.REC<2>
+*
+      RETURN
+*
+***********************************************************************
+READ.BILL: *
+***********************************************************************
+*
+      BILL.ID = CARRIER : '*' : PRO.NUM : '*0'
+*     READ BILL.REC FROM FB.BILLS.CRX, BILL.ID ELSE          ; * JMK03
+      READ BILL.REC FROM F.HIST, BILL.ID ELSE      ; * JMK03
+         BILL.REC = ''
+      END
+      PROC.DT = BILL.REC<37> 'D2/'       ; * JMK01
+*
+      TEMP.ADJ.DESC = BILL.REC<41>
+      ADJ.DESC = ''
+      NUM.VALS = DCOUNT( TEMP.ADJ.DESC,VM )
+      FOR I = 1 TO NUM.VALS
+         NUM.SUBS = DCOUNT( TEMP.ADJ.DESC<1,I>,SM )
+         FOR J = 1 TO NUM.SUBS
+            ADJ.DESC := TEMP.ADJ.DESC<1,I,J> : ' '
+         NEXT J
+      NEXT I
+      ADJ.DESC = TRIM(ADJ.DESC)
+*
+      EDI.PPR='PPR'    ; * JMK03
+      IF BILL.REC<88>#'' OR BILL.REC<53>[1,12]='EBILL.IMPORT' THEN      ; * JMK03
+         IF BILL.REC<295>='' THEN    ; * DRF01
+            EDI.PPR='EDI'           ; * JMK03
+         END     ; * DRF01
+      END           ; * JMK03
+*
+      RETURN
+*
+***********************************************************************
+READ.CLIENT: *
+***********************************************************************
+*
+      READ CLIENT.REC FROM F.CLIENTS, CLIENT ELSE
+         IF PROCESS.TYPE = 'STD' THEN
+            CALL ELINE('ERROR - Client ':CLIENT:' not on file.')
+         END
+         CLIENT.REC = ''
+         CLIENT.REC<2> = CLIENT : ' not on file.'
+      END
+      CLIENT.NAME = CLIENT.REC<2>
+      SLSMN.ID = CLIENT.REC<115>         ; * JMK01
+      READV SLSMN.NAME FROM F.SLSMAN,SLSMN.ID,1 ELSE SLSMN.NAME='** Unknown **'  ; * JMK01
+      OPEN '','FB.BILLS.HIST,':CLIENT TO F.HIST ELSE         ; * JMK02
+         CALL OPEN.ABORT( 'FB.BILLS.HIST,':CLIENT, PROG.NAME )         ; * JMK02
+      END                                ; * JMK02
+*
+      RETURN
+*
+***********************************************************************
+READ.CARRIER: *
+***********************************************************************
+*
+      READ CAR.REC FROM F.CARRIERS, CARRIER ELSE
+         CAR.REC = CARRIER
+      END
+      CARRIER.NAME = CAR.REC<1>
+      CARRIER.COUNT = CARRIER.COUNT+1
+*
+      RETURN
+*
+***********************************************************************
+PRINT.TOTALS: *
+***********************************************************************
+*
+      PRINT.LINE = SPACE(127)
+      PRINT.LINE[115,12] = '============'
+      PRINT PRINT.LINE
+      PRINT.LINE = SPACE(127)
+      PRINT.LINE[115,12] = TOTAL.ADJ 'R26,#12'
+      PRINT PRINT.LINE
+      PRINT
+*
+      RETURN
+*
+***********************************************************************
+EXP.LINE: ***
+***********************************************************************
+      EXP.LN=''
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,1>='Client #'
+         CASE 1
+            EXP.LN<1,1>=CLIENT
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,2>='Client Name'
+         CASE 1
+            EXP.LN<1,2>=CLIENT.NAME
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,3>='Salesman #'
+         CASE 1
+            EXP.LN<1,3>=SLSMN.ID
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,4>='Salesman Name'
+         CASE 1
+            EXP.LN<1,4>=SLSMN.NAME
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,5>='Carrier #'
+         CASE 1
+            EXP.LN<1,5>=CARRIER
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,6>='Carrier Name'
+         CASE 1
+            EXP.LN<1,6>=CARRIER.NAME
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,7>='Pro'
+         CASE 1
+            EXP.LN<1,7>=PRO.NUM
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,8>='Process Date'
+         CASE 1
+            EXP.LN<1,8>=PROC.DT
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,9>='Adjust Date'
+         CASE 1
+            EXP.LN<1,9>=ADJ.DT
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,10>='Original Amount'
+         CASE 1
+            EXP.LN<1,10>=ORIG.AMT
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,11>='Current Amount'
+         CASE 1
+            EXP.LN<1,11>=CURR.AMT
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,12>='Adjust Amount'
+         CASE 1
+            EXP.LN<1,12>=ADJ.AMT
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,13>='Adjust Reason'
+         CASE 1
+            EXP.LN<1,13>=ADJ.DESC
+      END CASE
+      BEGIN CASE
+         CASE LINE.FMT='HDG'
+            EXP.LN<1,14>='EDI/PPR'
+         CASE 1
+            EXP.LN<1,14>=EDI.PPR
+      END CASE
+      CONVERT @VM TO TB IN EXP.LN
+      EXP.REC<-1>=EXP.LN
+      RETURN
+      END

@@ -1,0 +1,511 @@
+*---- PROGRAM: FB.3.20.15
+* AUTHOR: JAY WEBERT
+* DATE: JANUARY 4, 2007
+* DESCRIPTION: MISROUTE ANALYSIS REPORT
+
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE EXPRESS
+* WRITTEN CONSENT OF SAME.
+*-----------------------------------------------------------------------
+* 031208 - JMK01 - T080799 - Remove duplicates in FB History Reporting
+* 100813 - JMK02 - SysAid#7328 - FBBP FB.3.20.15 has an error in lines 247, 442 and 461
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Initialize variables
+*
+      EQU TAB TO CHAR(9)
+*
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='FB.3.20.15'
+      PROG.DESC='Misroute Analysis Report'
+      PACK.NAME='Freight Billing'
+      PER.FLAG = ''
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.3.20.15' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      BEG.DATE = DATE()
+      END.DATE = DATE()
+
+*
+* Open files
+*
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+         END
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      OPEN 'DICT','FBWORK':CH.NUM TO F.DICT.WORK ELSE
+         CALL OPEN.ABORT('DICT FBWORK':CH.NUM,PROG.NAME)
+      END
+      OPEN '','VOC' TO F.VOC ELSE
+         CALL OPEN.ABORT('VOC',PROG.NAME)
+      END
+      READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE
+         CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')
+         STOP
+      END
+      BILLDATA.REC<2>:='\':USER.NAME
+      WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER.NAME ELSE
+         CALL ELINE("YOUR USER NAME '":USER.NAME:"' IS NOT IN THE BILLDATA FOLDER - PLEASE SEE OWEN/DAVID")
+         STOP
+      END
+      OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+         CALL ELINE('UNABLE TO OPEN "BILLDATA."':USER.NAME:"'")
+         STOP
+      END
+*
+*  WORK FILE CONSISTS OF ITEMS WITH THE FOLLOWING DETAIL
+*  Variable Attribute Description.....................................
+*               ID    CLIENT*N  - where "N" is an integer between 1 and 5 inclusive
+*                         1 - Client's LTL Counts
+*                         2 - Client's LTL Amts
+*                         3 - Client's Commission Amts
+*                         4 - Client's Misroute Amts
+*                         5 - Client's Misroute Commission Amts
+*                1    Client ID
+*                2    Client Description
+*                3    Field Displayed Description (refer to work file ID above)
+*                4... One value for each period included in the report
+
+*
+* Display screen heading
+*
+30:   CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+
+*
+* Get client number to process or all
+*
+50:
+      HELP='Enter the client number to report. [ENTER]=All Clients  [EX]=Exit'
+      CRT @(0,3):@(-4)
+      CALL GEN.IN(0,3,'Enter client number.  #####','',Q,0,8,'','',1,-5,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      ALL.ONE=''
+      BEGIN CASE
+        CASE Q='X'!Q='EX'
+          GOTO EXIT.PROGRAM
+        CASE Q=''
+          ALL.ONE='ALL'
+        CASE NOT(QI MATCHES "0N")
+          CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+          CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+          BEGIN CASE
+             CASE ITEM.LIST = ''
+                GOTO 50                            ;* START OVER
+             CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                GOTO 50                            ;* START OVER
+             CASE 1
+                IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                GOTO 50                            ;* START OVER
+          END CASE
+        CASE NUM(QI)
+          QI = QI'R%5'
+          READ CLIENT.REC FROM F.CLIENTS,QI ELSE
+            CALL ELINE('Client ':QI:' is not on file.')
+            GOTO 50
+          END
+        CASE 1
+          CALL ELINE('Something is wrong.')
+          GOTO 50
+      END CASE
+      IF ALL.ONE#'ALL' THEN
+        TEMP.NAME=CLIENT.REC<2>
+        CLIENT.RPT.ID = QI
+      END ELSE
+        QI='ALL'
+        TEMP.NAME='All clients.'
+      END
+      CRT@(22,3):QI:' - ':TEMP.NAME
+      IF QI#'ALL' THEN CLIENT.ID=QI'R%5' ELSE CLIENT.ID=''
+      ORIG.CLIENT.ID=QI'R%5'
+
+*
+* Get monthly or weekly option
+*
+90:
+      HELP='View report in monthly or weekly periods [M]onthly [W]eekly [X]=Back [EX]=Exit'
+      CALL GEN.IN(0,7,'Monthly or weekly periods (M/W).','',Q,0,2,'','',0,32,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN CRT @(32,7):@(-4); GOTO 50
+      IF QI='EX' THEN GOTO EXIT.PROGRAM
+      IF QI = '' AND PER.FLAG # '' THEN QI = PER.FLAG
+      IF QI # 'M' AND QI # 'W' THEN
+        CALL ELINE('Invalid option of "':QI:'"; You must enter "M" or "W".')
+        GOTO 90
+      END
+      PER.FLAG = QI
+      IF PER.FLAG = 'W' THEN PER.STR = ' Weekly ' ELSE PER.STR = ' Monthly'
+      CRT @(32,7):PER.FLAG:PER.STR
+
+*
+* Get current period beginning date
+*
+100:  HELP='Enter the data processed beginning date [X]=Back [EX]=Exit'
+      CALL GEN.IN(0,8,'Data processed beginning date.  ':BEG.DATE'D2/','DATE',Q,0,8,'','',0,32,8,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN CRT @(32,8):@(-4); GOTO 90
+      IF QI='EX' THEN GOTO EXIT.PROGRAM
+      BEG.DATE = Q
+      CRT @(32,8):BEG.DATE'D2/'
+*
+* Get current period ending date
+*
+200:  HELP='Enter the data processed ending date [X]=Back [EX]=Exit'
+      CALL GEN.IN(0,9,'Data processed ending date.     ':END.DATE'D2/','DATE',Q,0,8,'','',0,32,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN CRT @(32,9):@(-4); GOTO 100
+      IF QI='EX' THEN GOTO EXIT.PROGRAM
+      END.DATE = Q
+      IF END.DATE LT BEG.DATE THEN
+         CALL ELINE('Invalid ending date.')
+         GOTO 200
+      END
+      CRT @(32,9):END.DATE'D2/'
+
+*
+*  Date Range Validation
+*
+      BEG.DAY = OCONV(BEG.DATE,'DD')
+      END.DAY = OCONV(END.DATE,'DD')
+      BEG.MONTH = OCONV(BEG.DATE,'DM')
+      END.MONTH = OCONV(END.DATE,'DM')
+      BEG.YEAR = OCONV(BEG.DATE,'DY')
+      END.YEAR = OCONV(END.DATE,'DY')
+      IF PER.FLAG = 'M' THEN
+        IF BEG.MONTH = END.MONTH AND BEG.YEAR = END.YEAR THEN
+          CALL ELINE('Date range must be at least two months wide for monthly report.')
+          CRT @(32,9):@(-4)
+          CRT @(32,8):@(-4)
+          CRT @(32,7):@(-4)
+          GOTO 90
+        END
+      END ELSE
+        IF (END.DATE - BEG.DATE) < 7 THEN
+          CALL ELINE('Date range must be at least two weeks wide for weekly report.')
+          CRT @(32,9):@(-4)
+          CRT @(32,8):@(-4)
+          CRT @(32,7):@(-4)
+          GOTO 90
+        END
+      END
+
+*
+* Determine Report Periods and load dates into PERIODS array
+*
+      PERIODS = ''
+      PER.CTR = 0
+      IF PER.FLAG = 'M' THEN
+        *** Monthly Periods; Set Beginning Dates
+        CURR.MONTH = BEG.MONTH
+        CURR.YEAR = BEG.YEAR
+        DONE = 0
+        LOOP UNTIL DONE DO
+          CURR.DATE = CURR.MONTH:'/01/':CURR.YEAR
+          PER.CTR += 1
+          PERIODS<PER.CTR> = ICONV(CURR.DATE,'D')
+          IF CURR.MONTH = END.MONTH AND CURR.YEAR = END.YEAR THEN DONE = 1
+          CURR.MONTH += 1
+          IF CURR.MONTH = 13 THEN
+            CURR.MONTH = 1
+            CURR.YEAR += 1
+          END
+        REPEAT
+        *** Monthly Periods; Set Ending Dates
+        FOR I = 2 TO PER.CTR
+          PERIODS<I-1,2> = PERIODS<I,1> - 1
+        NEXT I
+        CURR.DATE = CURR.MONTH:'/01/':CURR.YEAR
+        PERIODS<PER.CTR,2> = ICONV(CURR.DATE,'D')-1
+      END ELSE
+        *** Weekly Periods
+        STUB = REM(BEG.DATE,7)
+        BEG.DATE -= STUB
+        FILL = 6 - REM(END.DATE,7)
+        END.DATE += FILL
+        DONE = 0
+        CURR.DATE = BEG.DATE
+        LOOP UNTIL DONE DO
+          PER.CTR += 1
+          PERIODS<PER.CTR,1> = CURR.DATE
+          PERIODS<PER.CTR,2> = CURR.DATE + 6
+          CURR.DATE += 7
+          IF CURR.DATE > END.DATE THEN DONE = 1
+        REPEAT
+      END
+
+*
+*  Verify date entry range
+*
+500:  
+      *** Adjust Beginning and Ending Dates
+      BEG.DATE = PERIODS<1,1>
+      END.DATE = PERIODS<PER.CTR,2>
+      IF PER.FLAG = 'M' THEN
+        TEXT1 = 'This will be a monthly report of ':PER.CTR:' months,'
+*       TEXT2 = OCONV(PERIODS<1,1>,'DMY2/'):' through ':OCONV(PERIODS<PER.CTR,2>,'DMY2/')  ; * JMK02
+        TEXT2 = OCONV(PERIODS<1,1>,'D/MY2'):' through ':OCONV(PERIODS<PER.CTR,2>,'D/MY2')  ; * JMK02
+      END ELSE
+        TEXT1 = 'This will be a weekly report of ':PER.CTR:' weeks,'
+        TEXT2 = OCONV(PERIODS<1,1>,'D2/'):' thru ':OCONV(PERIODS<PER.CTR,2>,'D2/')
+      END
+        TEXT3 = 'Is this correct?'
+      CRT @(0,11):TEXT1
+      CRT TEXT2; CRT TEXT3
+      HELP="Are these dates correct?  X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      CRT @(0,11):@(-4)
+      CRT @(0,12):@(-4)
+      CRT @(0,13):@(-4)
+      CRT @(32,8):BEG.DATE'D2/'
+      CRT @(32,9):END.DATE'D2/'
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X' OR QI = 'N'
+            CRT @(0,22):@(-3):
+            GO 200
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='' OR QI = 'Y'
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO 500
+      END CASE
+
+*
+* Start processing
+*
+600:  TEXT="Processing Date Range - Please Wait ..."
+      CALL CENTER(TEXT,80)
+      CRT @(0,15):@(-3):TEXT
+      CLEARFILE F.WORK
+*
+* Select data from CLIENTS file
+*
+      TEXT='Selecting Clients.'
+      CALL CENTER(TEXT,80)
+      CRT @(0,12):TEXT
+      IF ALL.ONE = 'ALL' THEN
+        STMT =  "SELECT VOC 'FB.BILLS.HIST' *A7"
+        EXECUTE STMT RTNLIST CLIENT.LIST CAPTURING OUTPUT
+        ITEMS = @SELECTED
+        IF @SELECTED < 1 THEN
+          CALL ELINE('ERROR - No clients on file.')
+          GOTO EXIT.PROGRAM
+        END
+      END ELSE
+        STMT = 'SELECT CLIENTS "':ORIG.CLIENT.ID:'"'
+        EXECUTE STMT RTNLIST CLIENT.LIST CAPTURING OUTPUT
+        ITEMS = @SELECTED
+        IF ITEMS < 1 THEN
+          CALL ELINE('ERROR - Client ':ORIG.CLIENT.ID:' not on file.')
+          GOTO 30
+        END
+      END
+      COUNTER.1=0
+      PER=0
+      LOOP
+        READNEXT CLIENT.ID FROM CLIENT.LIST ELSE CLIENT.ID='DONE'
+      UNTIL CLIENT.ID='DONE' DO
+        COUNTER.1=COUNTER.1+1
+        IF CLIENT.ID='FB.BILLS.HIST' OR CLIENT.ID[1,2]='99' THEN GO SKIP.CLIENT
+        READ DCLIENT FROM F.CLIENTS,CLIENT.ID THEN
+          IF DCLIENT<30> # 'A' THEN GO SKIP.CLIENT
+        END ELSE
+          GO SKIP.CLIENT
+        END
+        CLIENT.NAME=DCLIENT<2>
+        CALL PROG.BAR(20,COUNTER.1,ITEMS,PER.1)
+        CRT @(0,17):CLIENT.ID:" ":CLIENT.NAME:" - Now selecting freight bills":@(-4):
+*
+* Select and Process Freight Bill Records
+*
+        STMT='SSELECT FB.PROC.DATE.XREF,':CLIENT.ID:' WITH DATE >= "':OCONV(BEG.DATE,'D2/'):'" AND WITH DATE <= "':OCONV(END.DATE,'D2/'):'"'
+        EXECUTE STMT RTNLIST CAPTURING RESULTS
+        IF @SELECTED > 0 THEN
+          STMT = 'QSELECT FB.PROC.DATE.XREF,':CLIENT.ID
+          EXECUTE STMT PASSLIST RTNLIST CAPTURING RESULTS
+        END ELSE
+          GOTO SKIP.CLIENT
+        END
+        OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS THEN
+          STMT='SELECT FB.BILLS.HIST,':CLIENT.ID
+          STMT:=' WITH 21 = "1"'  ; * LTL records only
+          STMT:=' AND WITH 39 # "R"'  ; * exclude rejected bills
+          STMT:=' AND WITH VERSION = "0"' ; * exclude duplicates
+*         STMT:=' SAVING UNIQUE @ID'     ; * JMK01
+          EXECUTE STMT PASSLIST RTNLIST BILLS.LIST CAPTURING OUTPUT
+          NUM.BILLS = @SELECTED
+          CRT @(0,17):CLIENT.ID:" ":CLIENT.NAME:" - Now processing ":NUM.BILLS:" Freight Bills":@(-4):
+          COUNTER.2=0
+          LOOP
+            DONE=0
+            READNEXT PRO.ID FROM BILLS.LIST ELSE DONE=1
+          UNTIL DONE=1 DO
+            COUNTER.2=COUNTER.2+1
+            IF NUM.BILLS>0 THEN CALL PROG.BAR(22,COUNTER.2,NUM.BILLS,PER.2)
+            *** Exclude "Additional Due" and "Ballance Due" records
+            PRO.NUM = FIELD(PRO.ID,'*',2)
+            TEST.STR = PRO.NUM[LEN(PRO.NUM)-1,2]
+            IF TEST.STR = 'AD' OR TEST.STR = 'BD' THEN GOTO NEXT.BILL
+            *** Read Bill Data
+            READ BILL.REC FROM F.BILLS,PRO.ID ELSE GOTO NEXT.BILL
+            PROC.DATE = BILL.REC<37>
+            PROC.MONTH = OCONV(PROC.DATE,'DM')
+            LTL.AMT = BILL.REC<8>
+            COMM.AMT = BILL.REC<32,1>
+            IF BILL.REC<63> = '' THEN A63 = 0 ELSE A63 = BILL.REC<63>
+            IF A63 = 0 THEN MISR.AMT = 0 ELSE MISR.AMT = BILL.REC<8>
+            MISR.COMM = BILL.REC<203,1>
+            *** Determine Period
+            PERIOD.FOUND = 0
+            CURR.PER = 0
+            LOOP UNTIL PERIOD.FOUND DO
+              CURR.PER += 1
+              IF CURR.PER > PER.CTR THEN EXIT
+              IF PERIODS<CURR.PER,1> <= PROC.DATE AND PERIODS<CURR.PER,2> >= PROC.DATE THEN
+                PERIOD.FOUND = 1
+              END
+            REPEAT
+            IF CURR.PER > PER.CTR THEN GOTO NEXT.BILL
+            *** Add Data to Work File
+            FOR I = 1 TO 5
+              WORK.ID = CLIENT.ID:'*':I
+              READ WORK.REC FROM F.WORK, WORK.ID ELSE WORK.REC = ''
+              *** Initialize New Work Records
+              IF WORK.REC = '' THEN
+                WORK.REC<1> = CLIENT.ID'R%5'
+                WORK.REC<2> = CLIENT.NAME
+                BEGIN CASE
+                  CASE I = 1
+                    WORK.REC<3> = 'LTL Count'
+                  CASE I = 2
+                    WORK.REC<3> = 'LTL Amt'
+                  CASE I = 3
+                    WORK.REC<3> = 'Comm Amt'
+                  CASE I = 4
+                    WORK.REC<3> = 'Misr Amt'
+                  CASE I = 5
+                    WORK.REC<3> = 'Misr Comm'
+                END CASE
+              END
+              *** Add Data to Work Records
+              BEGIN CASE
+                CASE I = 1
+                  WORK.REC<3+CURR.PER> += 1
+                CASE I = 2
+                  WORK.REC<3+CURR.PER> += LTL.AMT
+                CASE I = 3
+                  WORK.REC<3+CURR.PER> += COMM.AMT
+                CASE I = 4
+                  WORK.REC<3+CURR.PER> += MISR.AMT
+                CASE I = 5
+                  WORK.REC<3+CURR.PER> += MISR.COMM
+              END CASE
+              WRITE WORK.REC TO F.WORK, WORK.ID
+            NEXT I
+NEXT.BILL:
+          REPEAT
+        END
+SKIP.CLIENT:
+      REPEAT
+
+*
+* Format data in work file
+*
+      STMT = 'SELECT FBWORK':CH.NUM:' # "[*1"'
+      EXECUTE STMT CAPTURING MSG
+      DONE = 0
+      LOOP UNTIL DONE DO
+        READNEXT WORK.ID THEN
+          READ WORK.REC FROM F.WORK, WORK.ID THEN
+            FOR I = 1 TO PER.CTR
+              WORK.REC<3+I> = OCONV(WORK.REC<3+I>,'MD2,$')
+            NEXT I
+            WRITE WORK.REC ON F.WORK, WORK.ID
+          END
+        END ELSE
+          DONE = 1
+        END
+      REPEAT
+
+*
+*  Create report headings
+*
+      *** Main Report Heading
+      HEAD1 = PROG.DESC:'  ':PROG.NAME:'  ':TIMEDATE()
+      *** Second Report Heading
+      HEAD2 = ' '
+      IF PER.FLAG = 'M' THEN
+        HEAD2 = '     Monthly Report of ':PER.CTR:' months, '
+*       HEAD2 := OCONV(PERIODS<1,1>,'DMY2/'):' through ':OCONV(PERIODS<PER.CTR,2>,'DMY2/') ; * JMK02
+        HEAD2 := OCONV(PERIODS<1,1>,'D/MY2'):' through ':OCONV(PERIODS<PER.CTR,2>,'D/MY2') ; * JMK02
+      END ELSE
+        HEAD2 = '     Weekly Report of ':PER.CTR:' weeks, '
+        HEAD2 := OCONV(PERIODS<1,1>,'D2/'):' thru ':OCONV(PERIODS<PER.CTR,2>,'D2/')
+      END
+      IF ALL.ONE = 'ALL' THEN
+        HEAD2 := ', for all Clients.'
+      END ELSE
+        HEAD2 := ', for Client ':CLIENT.RPT.ID:', ':TEMP.NAME
+      END
+      *** Blank Line
+      HEAD3 = ' '
+      *** Period Column Headings
+      HEAD4 = ''
+      HEAD4<-1> = 'Client ID'
+      HEAD4<-1> = 'Client Name'
+      HEAD4<-1> = 'Field'
+      FOR I = 1 TO PER.CTR
+        IF PER.FLAG = 'M' THEN
+*         HEAD4<-1> = 'Month of ':OCONV(PERIODS<I,1>,'DMY2/')          ; * JMK02
+          HEAD4<-1> = 'Month of ':OCONV(PERIODS<I,1>,'D/MY2')          ; * JMK02
+        END ELSE
+          HEAD4<-1> = 'Week of ':OCONV(PERIODS<I,1>,'D2/')
+        END
+      NEXT I
+      CONVERT CHAR(254) TO CHAR(9) IN HEAD4
+
+*
+* Create spreadsheet and save to U drive
+*
+      OUTPUT.REC = ''
+      D = DATE()'D4/'
+      T = OCONV(TIME(),'MT')
+      RECORD.NAME = 'MisrouteAnalysisReport-'
+      RECORD.NAME:=D[7,4]:D[1,2]:D[4,2]
+      RECORD.NAME:='-':T[1,2]:T[4,2]:'.XLS'
+      OUTPUT.REC<-1> = HEAD1
+      OUTPUT.REC<-1> = HEAD2
+      OUTPUT.REC<-1> = HEAD3
+      OUTPUT.REC<-1> = HEAD4
+      STMT = 'SSELECT FBWORK':CH.NUM
+      EXECUTE STMT RTNLIST WORK.LIST CAPTURING MSG
+      IF @SELECTED < 1 THEN
+        CALL ELINE('No items selected from the work file; program stopped.')
+        GOTO EXIT.PROGRAM
+      END
+      DONE = 0
+      LOOP UNTIL DONE DO
+        READNEXT WORK.ID FROM WORK.LIST THEN
+          READ WORK.REC FROM F.WORK, WORK.ID THEN
+            CONVERT CHAR(254) TO CHAR(9) IN WORK.REC
+            OUTPUT.REC<-1> = WORK.REC
+          END
+        END ELSE
+          DONE = 1
+        END
+      REPEAT
+      WRITE OUTPUT.REC TO F.BILLDATA, RECORD.NAME
+      FOR I = 12 TO 21
+        CRT @(0,I):@(-4)
+      NEXT I
+      CRT @(0,12):'Report file  "':RECORD.NAME:'"'
+      CRT @(0,13):'has been written to the BILLDATA/':USER.NAME:' folder'
+      CALL ELINE(' ')
+
+EXIT.PROGRAM:***
+      STOP

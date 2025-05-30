@@ -1,0 +1,308 @@
+      $OPTIONS HEADER.EJECT
+      ERRMSG=''
+*
+      $OPTIONS EXEC.EQ.PERF
+      $OPTIONS INFO.ABORT
+*
+* PROGRAM: FB.1.10
+* PROGRAM TO FORMAT REPORTS
+*
+* FREIGHT PAYMENT PACKAGE
+*
+* AUTHOR: Brian M. Queen
+* DATE: May 5, 1993
+*
+* FORMATTING MODS:
+* Cody Henderson - October 29, 1996
+*
+* Initialize variables
+*
+      PROMPT ''
+      PROG.NAME="FB.1.10"
+      PROG.DESC="Weekly Report Editor"
+      PACK.NAME="Freight Payment"
+*
+* Open files
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      OPEN '','FB.REPORT' TO F.REPORT ELSE CALL OPEN.ABORT('FB.REPORT',PROG.NAME)
+*
+* Enter client number.
+*
+100:  CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      HELP="Enter client number. Word of name for search. X=Exit. EX=Exit."
+      CALL GEN.IN(0,3,'Enter client number #####','',Q,0,20,'','',2,-5,3,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='' ! QI='EX' ! QI='X'
+            STOP
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 100
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 100
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO 100
+            END CASE
+         CASE NUM(QI)
+            Q=QI'R%5'
+         CASE 1
+            GOTO 100
+      END CASE
+*
+      CLIENT.ID=Q
+      READ CLIENT.REC FROM F.CLIENTS,Q ELSE
+         CALL ELINE('ERROR - Client ':CLIENT.ID:' not on file.')
+         GOTO 100
+      END
+      CLIENT.NAME=CLIENT.REC<2>
+      CRT @(0,3):'Client number ':CLIENT.ID:' ':CLIENT.NAME
+*
+* Get report type
+*
+      LOOP
+         HELP="Enter report type. [W]=Weekly. [T]=Traffic. [X]=Back. [EX]=Exit."
+         CALL GEN.IN(0,22,'Enter report selection. W ','',Q,0,2,'','',2,-2,22,1,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         IF QI='' THEN QI='W'
+      UNTIL QI='X' ! QI='W' ! QI='T' ! QI='EX' DO
+      REPEAT
+*
+      BEGIN CASE
+         CASE QI='W'
+            REPORT.ID=CLIENT.ID
+            STD.ID='STD'
+         CASE QI='T'
+            REPORT.ID=CLIENT.ID:'*T'
+            STD.ID='STD*T'
+         CASE QI='X'
+            GOTO 100
+         CASE QI='EX'
+            STOP
+      END CASE
+*
+* Get report record
+*
+      READ REPORT.REC FROM F.REPORT,REPORT.ID ELSE
+         READ REPORT.REC FROM F.REPORT,STD.ID ELSE
+            REPORT.REC=''
+            REPORT.REC<1,1>=132
+            REPORT.REC<1,2>=60
+            REPORT.REC<1,3>=6
+         END
+      END
+      TOTAL.WIDTH=0
+      X=DCOUNT(REPORT.REC,CHAR(254))
+      FOR I=2 TO X
+         TOTAL.WIDTH=TOTAL.WIDTH+REPORT.REC<I,3>+1
+      NEXT I
+*
+* Start edits
+*
+      PAGE=1
+      GOSUB 8000                         ; * Display screen
+      GOSUB 8100                         ; * Display data
+*
+* Make selection
+*
+200:  HELP="Enter line. [I]=Insert. [X]=Abort. [U]=Update. [cr]=Next page. [B]=Back page."
+      CALL GEN.IN(0,22,'Enter selection please. ##','',Q,0,2,'','',2,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            STOP
+         CASE QI='U'
+            X=DCOUNT(REPORT.REC,CHAR(254))
+            FOR I=X TO 1 STEP -1
+               IF REPORT.REC<I,1>='' THEN REPORT.REC=DELETE(REPORT.REC,I,0,0)
+            NEXT I
+            WRITE REPORT.REC ON F.REPORT,REPORT.ID
+            STOP
+         CASE QI=''
+            PAGE=PAGE+1
+            GOSUB 8110
+         CASE QI='B'
+            PAGE=PAGE-1
+            IF PAGE LE 0 THEN PAGE=1
+            GOSUB 8110
+         CASE QI='I'
+            HELP="Enter line to insert before. [X]=Abort insert."
+            CALL GEN.IN(0,22,'Insert before line ##','',Q,1,2,'','',2,-2,22,1,QI,HELP,0,23)
+            QI=OCONV(QI,'MCU')
+            IF QI='X' ELSE
+               IF NUM(QI) THEN
+                  IF QI GE START.POS+2 & QI LE STOP.POS+2 THEN
+                     REPORT.POS=QI-2
+                     REPORT.REC=INSERT(REPORT.REC,REPORT.POS,0,0,'')
+                     GOSUB 8100          ; * Display data
+                     DATA QI
+                     GOTO 200
+                  END
+               END
+            END
+         CASE QI=1
+            VAL=REPORT.REC<1,1>'R#3'
+            HELP="Enter new page width. [cr]=Accept.  Valid widths are 132, 170, and 198."
+            CALL GEN.IN(23,4,VAL,'',Q,0,3,'','',2,-3,4,0,QI,HELP,0,23)
+            BEGIN CASE
+               CASE QI LE TOTAL.WIDTH
+                  CALL ELINE('Value is less than width of report.')
+               CASE QI='132'
+                  REPORT.REC<1,1>=QI
+               CASE QI='170'
+                  REPORT.REC<1,1>=QI
+                  REPORT.REC<1,2>=63
+               CASE QI='198'
+                  REPORT.REC<1,1>=QI
+                  REPORT.REC<1,2>=63
+               CASE 1
+                  CALL ELINE('Invalid entry. Can only be 132, 170, or 198.')
+            END CASE
+            IF REPORT.REC<1,1> GT 132 THEN REPORT.REC<1,3>=8 ELSE REPORT.REC<1,3>=6
+            CRT @(23,4):REPORT.REC<1,1>'R#3'
+            CRT @(23,5):REPORT.REC<1,2>'R#3'
+            CRT @(23,6):REPORT.REC<1,3>'R#3'
+            GOSUB 8300
+         CASE QI=2
+            VAL=REPORT.REC<1,2>'R#3'
+            HELP="Enter new page depth. [cr]=Accept."
+            CALL GEN.IN(23,5,VAL,'',Q,0,3,'','',2,-3,5,0,QI,HELP,0,23)
+            IF QI='' THEN QI=REPORT.REC<1,2>
+            IF NUM(QI) THEN
+               IF QI GT 64 THEN
+                  CALL ELINE('Maximum value is 64.')
+               END ELSE
+                  REPORT.REC<1,2>=QI
+               END
+            END
+            CRT @(23,5):REPORT.REC<1,2>'R#3'
+         CASE QI=3
+            VAL=REPORT.REC<1,3>'R#3'
+            HELP="Enter lines per inch (6 or 8). [cr]=Accept."
+            CALL GEN.IN(23,6,VAL,'',Q,0,3,'','',2,-3,6,0,QI,HELP,0,23)
+            IF QI='' THEN QI=REPORT.REC<1,3>
+            IF QI=6 THEN REPORT.REC<1,3>=6
+            IF QI=8 THEN REPORT.REC<1,3>=8
+            CRT @(23,6):REPORT.REC<1,3>'R#3'
+         CASE QI GE START.POS+2 & QI LE STOP.POS+2
+            REPORT.POS=QI-2
+            ROW=REPORT.POS+8
+            LOOP
+            UNTIL ROW LT 20 DO
+               ROW=ROW-10
+            REPEAT
+*
+            HELP="Enter new value. [D]=Delete. [cr]=Accept."
+            VAL=REPORT.REC<REPORT.POS,1>'L#10'
+            CALL GEN.IN(3,ROW,VAL,'',Q,0,10,'','',2,-10,ROW,0,QI,HELP,0,23)
+            QI=OCONV(QI,'MCU')
+            IF QI='' THEN Q=REPORT.REC<REPORT.POS,1>
+            IF QI='D' THEN
+               TOTAL.WIDTH=TOTAL.WIDTH-1
+               TOTAL.WIDTH=TOTAL.WIDTH-REPORT.REC<REPORT.POS,3>
+               REPORT.REC=DELETE(REPORT.REC,REPORT.POS,0,0)
+               GOSUB 8100
+               GOTO 200
+            END ELSE
+               REPORT.REC<REPORT.POS,1>=OCONV(Q,'MCU')
+               CRT @(3,ROW):REPORT.REC<REPORT.POS,1>'L#10'
+            END
+*
+            HELP="Enter new format. [cr]=Accept."
+            VAL=REPORT.REC<REPORT.POS,2>'L#10'
+            CALL GEN.IN(14,ROW,VAL,'',Q,0,10,'','',2,-10,ROW,0,QI,HELP,0,23)
+            Q=OCONV(Q,'MCU')
+            IF QI='' THEN Q=REPORT.REC<REPORT.POS,2>
+            REPORT.REC<REPORT.POS,2>=Q
+            CRT @(14,ROW):REPORT.REC<REPORT.POS,2>'L#10'
+*
+            HELP="Enter new width. [cr]=Accept."
+            VAL=REPORT.REC<REPORT.POS,3>'R0'
+            CALL GEN.IN(25,ROW,VAL'R#5','',Q,0,5,'','',2,-5,ROW,0,QI,HELP,0,23)
+            IF QI='' THEN Q=VAL
+            IF REPORT.REC<REPORT.POS,2>[1,2]='D2' THEN
+               IF Q#8 THEN
+                  CALL ELINE("Error D2/ requires a width of 8... Changed to 8")
+                  Q=8
+               END
+            END
+            REPORT.REC<REPORT.POS,3>=Q
+            CRT @(25,ROW):REPORT.REC<REPORT.POS,3>'R#5'
+            TOTAL.WIDTH=TOTAL.WIDTH-VAL
+            TOTAL.WIDTH=TOTAL.WIDTH+REPORT.REC<REPORT.POS,3>
+            GOSUB 8300
+*
+            HELP="Enter total flag (Y or N). [cr]=Accept."
+            VAL=REPORT.REC<REPORT.POS,4>'R#5'
+            CALL GEN.IN(31,ROW,VAL,'',Q,0,5,'','',2,-5,ROW,0,QI,HELP,0,23)
+            QI=OCONV(QI,'MCU')
+            Q=REPORT.REC<REPORT.POS,4>
+            IF Q='' & QI='' THEN QI='N'
+            IF QI='Y' THEN Q=QI
+            IF QI='N' THEN Q=QI
+            REPORT.REC<REPORT.POS,4>=Q
+            CRT @(31,ROW):REPORT.REC<REPORT.POS,4>'R#5'
+*
+            WIDTH=REPORT.REC<REPORT.POS,3>
+            FORMAT='ML#':WIDTH
+            HELP="Enter column description. [cr]=Accept."
+            IF REPORT.REC<REPORT.POS,5>='' THEN
+               VAL=OCONV(' ',FORMAT)
+            END ELSE
+               VAL=OCONV(REPORT.REC<REPORT.POS,5>,FORMAT)
+            END
+            CALL GEN.IN(37,ROW,VAL,'',Q,0,WIDTH,'','',2,37,ROW,0,QI,HELP,0,23)
+            IF QI='' THEN Q=REPORT.REC<REPORT.POS,5>
+            REPORT.REC<REPORT.POS,5>=Q
+            CRT @(37,ROW):REPORT.REC<REPORT.POS,5>
+*
+         CASE 1
+            CALL ELINE('Invalid entry!')
+      END CASE
+      GOTO 200
+*-------------------------------------------------------------------------
+*
+*  INTERNAL SUBROUTINES
+*
+*-------------------------------------------------------------------------
+*
+* Display screen
+*
+8000: CRT @(0,4):' 1 Page width..........'
+      CRT @(0,5):' 2 Page depth..........'
+      CRT @(0,6):' 3 Lines per inch......'
+      RETURN
+*
+* Display data
+*
+8100: CRT @(23,4):REPORT.REC<1,1>'R#3'
+      CRT @(23,5):REPORT.REC<1,2>'R#3'
+      CRT @(23,6):REPORT.REC<1,3>'R#3'
+      CRT @(0,8):'LN Value      Format     Width Total Description'
+      CRT @(0,9):STR('-',79)
+*
+8110: CRT @(0,10):@(-3)
+      COL.COUNT=DCOUNT(REPORT.REC,CHAR(254))
+      START.POS=(PAGE*10)-9+1
+      STOP.POS=(PAGE*10)+1
+*     IF STOP.POS GT COL.COUNT THEN STOP.POS=COL.COUNT
+      ROW=9
+      FOR I=START.POS TO STOP.POS
+         ROW=ROW+1
+         POS=I+2
+         CRT @(0,ROW):POS'R#2':' ':REPORT.REC<I,1>'l#10':' ':REPORT.REC<I,2>'L#10':'   ':REPORT.REC<I,3>'R#3':'     ':REPORT.REC<I,4>:' ':REPORT.REC<I,5>'L#20'
+      NEXT I
+      GOSUB 8300
+      RETURN
+*
+* Display remaining characters
+*
+8300: REPORT.WIDTH=REPORT.REC<1,1>'R0'
+      REMAIN=REPORT.WIDTH-TOTAL.WIDTH
+      CRT @(60,21):'Remaining width ':REMAIN'L#3'
+      IF REMAIN LT 0 THEN CALL ELINE('Report width greater than page width.')
+      RETURN

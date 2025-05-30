@@ -1,0 +1,409 @@
+$OPTIONS HEADER.EJECT
+ERRMSG=''
+*
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+*
+* PROGRAM FB.3.3
+* PROGRAM TO PROCESS "FREIGHT COSTS BY CARRIER" REPORT - CURRENT MONTH
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: Brian M. Queen
+* DATE: March 27, 1991
+*
+* Initialize variables
+*
+      INPUT PROCESS.TYPE
+      PROMPT''
+      CALL CHANNEL(CH.NUM)
+      CALL GET.USER(USER.NAME)
+      PROG.NAME='FB.3.3'
+      PROG.DESC='Monthly Carrier Freight Cost Analysis Report'
+      PACK.NAME='Freight Billing'
+*
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.3.3' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      DIM MONTHS(12)
+      DIM PRINT.LINE(6)
+      DIM CAR.TOT(6)
+      DIM RUN.TOT(4,6)
+      MAT RUN.TOT=0
+*
+* Open files
+*
+      OPEN '','BCUST' TO F.CLIENT ELSE CALL OPEN.ABORT('BCUST',PROG.NAME)
+      OPEN '','CARRIERS' TO F.CARRIER ELSE CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      OPEN '','FB.CONTROL' TO F.CONTROL ELSE CALL OPEN.ABORT('FB.CONTROL',PROG.NAME)
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+        EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+        OPEN '','FBWORK':CH.NUM TO F.WORK ELSE CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+      END
+      OPEN '','DICT FBWORK':CH.NUM TO F.DICT.WORK ELSE CALL OPEN.ABORT('DICT FBWORK':CH.NUM,PROG.NAME)
+*
+      MATREAD MONTHS FROM F.CONTROL,'MONTHS' ELSE CALL READ.ABORT('FB.CONTROL','MONTHS',PROG.NAME)
+*
+* Create work file dictionary items
+*
+      TEMP=''
+      TEMP<1>='A'
+      TEMP<2>='10'
+      TEMP<3,1>='Carrier'
+      TEMP<3,2>='Name'
+      TEMP<9>='L'
+      TEMP<10>=30
+      WRITE TEMP ON F.DICT.WORK,'CARRIER.NAME'
+*
+*  WORK FILE CONSISTS OF ITEMS WITH THE FOLLOWING DETAIL
+*    ATTRIBUTE   DESCRIPTION
+*      ID          CARRIER NUMBER
+*      1           NUMBER OF INBOUND SHIPMENTS
+*      2           NUMBER OF OUTBOUND SHIPMENTS
+*      3           NUMBER OF THIRD PARTY SHIPMENTS
+*      4           TOTAL INBOUND FREIGHT DOLLARS
+*      5           TOTAL OUTBOUND FREIGHT DOLLARS
+*      6           TOTAL THRID PARTY FREIGHT DOLLARS
+*      7           TOTAL INBOUND WEIGHT
+*      8           TOTAL OUTBOUND WEIGHT
+*      9           TOTAL THIRD PARTY WEIGHT
+*     10           CARRIER NAME
+*
+* Display screen heading
+*
+30    CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+* Get client number to process
+*
+50    CRT @(0,3):@(-3)
+      HELP.PROMPT="Enter the client number you want to process. S=Search. ''=Exit."
+      CALL GEN.IN(0,3,'Enter Client Number #####','',Q,0,5,'R','0',1,-5,3,0,QI,HELP.PROMPT,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' ! QI='EX' ! QI='X' THEN STOP
+      IF QI='S' THEN
+        HELP.PROMPT="Enter one complete word of the client's name."
+        CALL GEN.IN(0,3,'-------------------------','',Q,0,25,'','',1,-25,3,0,QI,HELP.PROMPT,0,23)
+        CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+        CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+          IF ITEM.LIST='' ! DCOUNT(ITEM.LIST<1>,@VM) > 1 THEN GOTO 50
+          IF NOT(NUM(ITEM.LIST<1,1>)) THEN GOTO 50
+          Q=ITEM.LIST<1,1>'R%5'
+      END
+      CLIENT.ID=Q
+      READ CLIENT.REC FROM F.CLIENT,CLIENT.ID ELSE
+        IF PROCESS.TYPE='STD' THEN CALL ELINE("Client ":CLIENT.ID:" not on file.")
+        GOTO 50
+      END
+      CLIENT.NAME=CLIENT.REC<2>
+      FYBD=CLIENT.REC<29>
+*
+* Get current period beginning and ending dates
+*
+100   HELP='Enter the current period beginning date.'
+      CALL GEN.IN(0,5,'Current period beginning date. ':DATE()'D2/','DATE',BEG.DATE,1,8,'','',1,-8,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN GOTO 50
+      IF QI='EX' THEN STOP
+      CRT @(31,5):BEG.DATE'D2/'
+*
+* Get current period ending date
+*
+200   HELP='Enter the current period ending date.'
+      CALL GEN.IN(0,7,'Current period ending date.    ':DATE()'D2/','DATE',END.DATE,1,8,'','',1,-8,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN GOTO 100
+      IF QI='EX' THEN STOP
+      IF END.DATE LT BEG.DATE THEN
+        IF PROCESS.TYPE='STD' THEN CALL ELINE('Invalid ending date.')
+        GOTO 200
+      END
+      CRT @(31,7):END.DATE'D2/'
+*
+* Ask if data correct
+*
+      HELP="Enter Y if information correct or N if incorrect."
+      CALL GEN.IN(0,22,'Is the information correct? Y','',Q,0,1,'','',2,-1,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='Y' ! QI='' ELSE GOTO 30
+*
+* Create beginning of year and monthly descriptions
+*
+      BEG.MO=OCONV(BEG.DATE,'DM')
+      BEG.YR=OCONV(BEG.DATE,'DY')
+      FISCAL.MO=FIELD(FYBD,'.',1)'R0'
+      IF BEG.MO LT FISCAL.MO THEN FISCAL.YR=BEG.YR-1 ELSE FISCAL.YR=BEG.YR
+      F.DATE=FISCAL.MO'R%2':'.01.':FISCAL.YR
+      F.DATE=ICONV(F.DATE,'D2.')
+*
+      END.MO=OCONV(END.DATE,'DM')
+      BEG.MO=MONTHS(BEG.MO)
+      END.MO=MONTHS(END.MO)
+      IF BEG.MO=END.MO THEN
+        MONTH.DESC=BEG.MO
+      END ELSE
+        MONTH.DESC=BEG.MO:' to ':END.MO
+      END
+*
+      CRT @(0,2):@(-3)
+      LINE='Processing Client ':CLIENT.ID:' ':CLIENT.NAME
+      CALL CENTER(LINE,80)
+      CRT @(0,10):LINE
+      CRT
+*
+* Clear work file
+*
+      CLEARFILE F.WORK
+*
+* Select data for current client
+*
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS ELSE CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,PROG.NAME)
+      EXECUTE 'SELECT FB.BILLS.HIST,':CLIENT.ID:' WITH 37 GE "':OCONV(BEG.DATE,'D2/'):'"':' AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'" AND WITH 39 # "R"' PASSLIST CAPTURING OUTPUT
+      IF SYSTEM(11) ELSE
+        IF PROCESS.TYPE='STD' THEN CALL ELINE('No data present with the selected criteria.')
+        GOTO 50
+      END
+      NUM.ITEMS = @SELECTED
+      COUNTER=0
+*
+* Get next record
+*
+      LOOP
+        READNEXT HIST.ID ELSE HIST.ID=''
+      UNTIL HIST.ID='' DO
+        COUNTER=COUNTER+1
+        CALL PROG.BAR(21,COUNTER,NUM.ITEMS,PER)
+        IF FIELD(HIST.ID,'*',3) GT 0 ELSE
+          READ HIST.REC FROM F.BILLS,HIST.ID THEN
+            CRT @(0,19):'Processing item ':HIST.ID:@(-4):
+            PRO=FIELD(HIST.ID,'*',2)
+            START=LEN(PRO)-1
+            BAL.DUE=0
+            IF PRO[START,2]='BD' ! PRO[START,2]='AD' THEN BAL.DUE=1
+*
+* Update carrier total record in work file
+*
+            CARRIER=FIELD(HIST.ID,'*',1)
+            IOT.STAT=HIST.REC<2>
+            WORK.ID=CARRIER
+            READ WORK.REC FROM F.WORK,WORK.ID ELSE
+              WORK.REC=''
+              READV CARRIER.NAME FROM F.CARRIER,CARRIER,1 ELSE CARRIER.NAME='~~~ Unknown ~~~'
+              WORK.REC<10>=CARRIER.NAME
+            END
+*
+* Update inbound shipments
+*
+*           IF HIST.REC<15> GE BEG.DATE & HIST.REC<15> LE END.DATE THEN
+            IF HIST.REC<37> GE BEG.DATE & HIST.REC<37> LE END.DATE THEN
+              BEGIN CASE
+                CASE IOT.STAT='I'
+                  IF NOT(BAL.DUE) THEN WORK.REC<1>=WORK.REC<1>+1
+                  WORK.REC<4>=WORK.REC<4>+HIST.REC<8>
+                  WORK.REC<7>=WORK.REC<7>+HIST.REC<6>
+                CASE IOT.STAT='O'
+                  IF NOT(BAL.DUE) THEN WORK.REC<2>=WORK.REC<2>+1
+                  WORK.REC<5>=WORK.REC<5>+HIST.REC<8>
+                  WORK.REC<8>=WORK.REC<8>+HIST.REC<6>
+               CASE 1
+                  IF NOT(BAL.DUE) THEN WORK.REC<3>=WORK.REC<3>+1
+                  WORK.REC<6>=WORK.REC<6>+HIST.REC<8>
+                  WORK.REC<9>=WORK.REC<9>+HIST.REC<6>
+              END CASE
+            END
+            WRITE WORK.REC ON F.WORK,WORK.ID
+          END
+        END
+      REPEAT
+*
+* Print report
+*
+      L.TAB=66-(LEN(PROG.DESC)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):PROG.DESC
+      R.TAB=132-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE())
+      HEAD1=PROG.NAME:SPACE(L.TAB):PROG.DESC:SPACE(R.TAB):TIMEDATE():"'L'"
+*
+      TITLE='For Client: ':CLIENT.ID:' ':CLIENT.NAME
+      L.TAB=66-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+*     R.TAB=(132-LEN(TEMP))-9
+*     HEAD2=TEMP:SPACE(R.TAB):"PAGE 'PL'"
+      R.TAB=(132-LEN(TEMP))-20
+      HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )':"PAGE 'PL'"
+      HEAD3='Entered from ':BEG.DATE'D2/':' to ':END.DATE'D2/'
+      CALL CENTER(HEAD3,132)
+      HEAD3=HEAD3:"'L'"
+      HEAD4=MONTH.DESC
+      CALL CENTER(HEAD4,132)
+      HEAD4=HEAD4:"'LL'"
+*
+      HEAD5=STR('-',132):"'L'"
+      HEAD6=SPACE(36):"Number of          Billed         Freight         Per 100         Average         Average'L'"
+      HEAD7="Carrier Name"'L#31':"     Shipments          Weight         Dollars          Weight         Dollars          Weight'L'"
+      HEAD8=STR('-',132):"'L'"
+*
+      HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6:HEAD7:HEAD8
+      VIN=''
+      VIN<3>='R'
+      CALL LASER.CODE(VIN,VOUT)
+      IF VOUT<1>#'' THEN
+         CALL ELINE(VOUT<1>)
+         STOP
+      END
+      IF VOUT<3>#'' THEN EXECUTE VOUT<3>
+      PRINTER ON
+      IF VOUT<2>#'' THEN PRINT VOUT<2>:
+      HEADING HED
+*
+      EXECUTE 'SSELECT FBWORK':CH.NUM:' BY CARRIER.NAME' PASSLIST CAPTURING OUTPUT
+      LOOP
+        READNEXT ID ELSE ID=''
+      UNTIL ID='' DO
+        READ REC FROM F.WORK,ID THEN
+          CARRIER.NAME=REC<10>
+          MAT CAR.TOT=0
+*
+* Inbound statistics
+*
+          MAT PRINT.LINE=0
+          PRINT.LINE(1)=REC<1>'R0'
+          PRINT.LINE(2) = REC<7>'R0'
+          PRINT.LINE(3)=REC<4>'R0'
+          IF PRINT.LINE(2) NE 0 THEN
+            PRINT.LINE(4)=(PRINT.LINE(3)/(PRINT.LINE(2)/100))'R0'
+          END ELSE
+            PRINT.LINE(4)=0
+          END
+          IF PRINT.LINE(1) NE 0 THEN
+            PRINT.LINE(5)=(PRINT.LINE(3)/PRINT.LINE(1))'R0'
+            PRINT.LINE(6)=(PRINT.LINE(2)/PRINT.LINE(1))'R0'
+          END ELSE
+            PRINT.LINE(5)=0
+            PRINT.LINE(6)=0
+          END
+          IF PRINT.LINE(1) NE 0 THEN
+            IF SYSTEM(4) LT 5 THEN PAGE
+            PRINT CARRIER.NAME'L#30':' Inbound  ':PRINT.LINE(1)'R#5':
+            PRINT PRINT.LINE(2)'R,#16':PRINT.LINE(3)'R26,#16':
+            PRINT PRINT.LINE(4)'R26,#16':PRINT.LINE(5)'R26,#16':
+            PRINT PRINT.LINE(6)'R,#16'
+            CARRIER.NAME=''
+            FOR I=1 TO 5
+              CAR.TOT(I)=CAR.TOT(I)+PRINT.LINE(I)
+              RUN.TOT(1,I)=RUN.TOT(1,I)+PRINT.LINE(I)
+            NEXT I
+          END
+*
+* Outbound statistics
+*
+          MAT PRINT.LINE=0
+          PRINT.LINE(1)=REC<2>'R0'
+          PRINT.LINE(2) = REC<8>'R0'
+          PRINT.LINE(3)=REC<5>'R0'
+          IF PRINT.LINE(2) NE 0 THEN
+            PRINT.LINE(4)=(PRINT.LINE(3)/(PRINT.LINE(2)/100))'R0'
+          END ELSE
+            PRINT.LINE(4)=0
+          END
+          IF PRINT.LINE(1) NE 0 THEN
+            PRINT.LINE(5)=(PRINT.LINE(3)/PRINT.LINE(1))'R0'
+            PRINT.LINE(6)=(PRINT.LINE(2)/PRINT.LINE(1))'R0'
+          END ELSE
+            PRINT.LINE(5)=0
+            PRINT.LINE(6)=0
+          END
+          IF PRINT.LINE(1)'R0' NE 0 THEN
+            PRINT CARRIER.NAME'L#30':' Outbound ':PRINT.LINE(1)'R#5':
+            PRINT PRINT.LINE(2)'R,#16':PRINT.LINE(3)'R26,#16':
+            PRINT PRINT.LINE(4)'R26,#16':PRINT.LINE(5)'R26,#16':
+            PRINT PRINT.LINE(6)'R,#16'
+            FOR I=1 TO 5
+              CAR.TOT(I)=CAR.TOT(I)+PRINT.LINE(I)
+              RUN.TOT(2,I)=RUN.TOT(2,I)+PRINT.LINE(I)
+            NEXT I
+          END
+*
+* Third Party statistics
+*
+          MAT PRINT.LINE=0
+          PRINT.LINE(1)=REC<3>'R0'
+          PRINT.LINE(2) = REC<9>'R0'
+          PRINT.LINE(3)=REC<6>'R0'
+          IF PRINT.LINE(2) NE 0 THEN
+            PRINT.LINE(4)=(PRINT.LINE(3)/(PRINT.LINE(2)/100))'R0'
+          END ELSE
+            PRINT.LINE(4)=0
+          END
+          IF PRINT.LINE(1) NE 0 THEN
+            PRINT.LINE(5)=(PRINT.LINE(3)/PRINT.LINE(1))'R0'
+            PRINT.LINE(6)=(PRINT.LINE(2)/PRINT.LINE(1))'R0'
+          END ELSE
+            PRINT.LINE(5)=0
+            PRINT.LINE(6)=0
+          END
+          IF PRINT.LINE(1)'R0' NE 0 THEN
+            PRINT CARRIER.NAME'L#30':' 3rd Party':PRINT.LINE(1)'R#5':
+            PRINT PRINT.LINE(2)'R,#16':PRINT.LINE(3)'R26,#16':
+            PRINT PRINT.LINE(4)'R26,#16':PRINT.LINE(5)'R26,#16':
+            PRINT PRINT.LINE(6)'R,#16'
+            FOR I=1 TO 5
+              CAR.TOT(I)=CAR.TOT(I)+PRINT.LINE(I)
+              RUN.TOT(3,I)=RUN.TOT(3,I)+PRINT.LINE(I)
+            NEXT I
+          END
+*
+* Print carrier totals
+*
+          CAR.TOT(6)=(CAR.TOT(2)/CAR.TOT(1))'R0'
+          PRINT SPACE(31):STR('-',101)
+          PRINT SPACE(31):'Total    ':CAR.TOT(1)'R#5':CAR.TOT(2)'R,#16':
+          PRINT CAR.TOT(3)'R26,#16':CAR.TOT(4)'R26,#16':
+          IF CAR.TOT(5)'R0' NE 0 THEN
+            PRINT (CAR.TOT(3)/CAR.TOT(1))'R26,#16':
+          END ELSE
+            PRINT CAR.TOT(5)'R26,#16':
+          END
+          PRINT CAR.TOT(6)'R,#16'
+          PRINT
+        END
+      REPEAT
+*
+* Print total line
+*
+      FOR I=1 TO 5
+        RUN.TOT(4,I)=RUN.TOT(1,I)+RUN.TOT(2,I)+RUN.TOT(3,I)
+      NEXT I
+      FOR I=1 TO 4
+        IF RUN.TOT(I,1)'R0' NE 0 THEN
+          RUN.TOT(I,6)=(RUN.TOT(I,2)/RUN.TOT(I,1))'R0'
+        END ELSE
+          RUN.TOT(I,1)=0
+        END
+      NEXT I
+      PRINT STR('=',132)
+      TEXT='Report Totals'
+      CALL CENTER(TEXT,132)
+      PRINT TEXT
+      PRINT SPACE(31):'Inbound  ':RUN.TOT(1,1)'R#5':RUN.TOT(1,2)'R,#16':
+      PRINT RUN.TOT(1,3)'R26,#16':RUN.TOT(1,4)'R26,#16':RUN.TOT(1,5)'R26,#16':
+      PRINT RUN.TOT(1,6)'R,#16'
+      PRINT SPACE(31):'Outbound ':RUN.TOT(2,1)'R#5':RUN.TOT(2,2)'R,#16':
+      PRINT RUN.TOT(2,3)'R26,#16':RUN.TOT(2,4)'R26,#16':RUN.TOT(2,5)'R26,#16':
+      PRINT RUN.TOT(2,6)'R,#16'
+      PRINT SPACE(31):'3rd Party':RUN.TOT(3,1)'R#5':RUN.TOT(3,2)'R,#16':
+      PRINT RUN.TOT(3,3)'R26,#16':RUN.TOT(3,4)'R26,#16':RUN.TOT(3,5)'R26,#16':
+      PRINT RUN.TOT(3,6)'R,#16'
+      PRINT SPACE(31):STR('-',101)
+      PRINT SPACE(31):'Totals   ':RUN.TOT(4,1)'R#5':RUN.TOT(4,2)'R,#16':
+      PRINT RUN.TOT(4,3)'R26,#16':RUN.TOT(4,4)'R26,#16':
+      IF RUN.TOT(4,5)'R0' NE 0 THEN
+        PRINT (RUN.TOT(4,3)/RUN.TOT(4,1))'R26,#16':
+      END ELSE
+        PRINT RUN.TOT(4,5)'R26,#16':
+      END
+      PRINT RUN.TOT(4,6)'R,#16'
+      PRINT STR('=',132)
+      PRINTER OFF
+      PRINTER CLOSE
+      STOP

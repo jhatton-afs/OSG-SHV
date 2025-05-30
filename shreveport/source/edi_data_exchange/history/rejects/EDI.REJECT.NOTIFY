@@ -1,0 +1,478 @@
+***********************************************************************
+* Program name : EDI.REJECT.NOTIFY
+* Author       : Greg Bino
+* Date written : January 31, 2020
+* Library      : FBBP
+* COPYRIGHT (C) 2019 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* SEND CARRIERS Outstanding Returned Bills Report
+*
+* Last updated by afs (AFSLOGISTICS\gbino) at 07:52:42 on 02/18/2020.
+*
+* Start modification history
+
+* End modification history
+*
+************************************************************************
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+
+* Initialize general variables
+      PROMPT''
+      CALL GET.USER.NEW(USER.NAME,CH.NUM)
+
+      PROG.NAME='EDI.REJECT.NOTIFY'
+      PROG.DESC='Email Carrier of EDI Reject'
+      PACK.NAME='Freight Payment'
+      TAB=CHAR(9)
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'EDI.REJECT.NOTIFY' ; UPL.VOUT = ''
+      UPL.VIN<3> = USER.NAME
+      UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+      ESC=CHAR(27)
+      MASK.CHAR='-'
+
+      CLIENT.ID=''
+      CLIENT.SAVE=''
+      CARRIER.ID=''
+      CARRIER.SAVE=''
+      LAST.ACTIVITY.DATE=DATE()
+
+*Assign column positions for columns that are being adjusted
+      BILLED.POS = 7
+      AUDITOR.POS = 8
+      ENTERED.BY.POS = 9
+      RETURNED.BY.POS = 10
+      RETURNED.ON.POS = 11
+*The following column can 'float' based on how many Reject Code Groups
+*there are. Therefore, we are only initialing the variable holding it's
+*column number.
+      FF.COL.POS = ''
+      NO.GRP.COL.POS = ''
+      ACCT.MGR.POS = ''
+
+      LINE.WRAP.STRING = ' & CHAR(10) & '
+      DOUBLE.LINE.WRAP.STRING = ' & CHAR(10) & CHAR(10) & '
+
+      REJECT.COL.CTRL = ''
+
+* Setup the screen
+      GOSUB DISPLAY.SCREEN
+      GOSUB OPEN.FILES
+      GOSUB READ.FILES
+
+* SELECT REJECT FILE BY CARRIER
+
+      TEXT='Selecting REJECTS'
+      CALL CENTER(TEXT,80)
+      CRT @(0,10):TEXT:@(-4)
+    
+      EXECUTE 'SSELECT EDI.REJECT.FILE WITH NO SEND.DT BY CARRIER BY CLIENT  ' RTNLIST REJECT.DATA.LIST CAPTURING OUTPUT
+      NUM.CLIENTS=@SELECTED
+      TEXT=NUM.CLIENTS:' Clients Selected'
+      CALL CENTER(TEXT,80)
+      CRT @(0,10):TEXT:@(-4)
+      IF NUM.CLIENTS=0 THEN
+         CRT @(0,21):'No clients on file with these criteria.'
+         CRT @(0,22):SS.FILENAME:' could not be written.'
+         GOTO THE.END
+      END
+
+      COUNTER.1=0 ; PER.1=0
+      LAST.CARRIER = ""
+      LAST.CLIENT = ""
+      EOJ=0
+      LOOP
+         READNEXT REJECT.ID FROM REJECT.DATA.LIST ELSE EOJ = 1
+      UNTIL EOJ DO
+         COUNTER.1+=1
+         CARRIER.ID = FIELD(REJECT.ID,"*",2)
+         CLIENT.ID = FIELD(REJECT.ID,"*",1)
+         PRO.NUM = FIELD(REJECT.ID,"*",3)
+
+         READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID THEN
+            CLIENT.NAME = CLIENT.REC<2>
+            
+         END
+         
+
+         READ EDI.REC FROM F.EDI,REJECT.ID ELSE EDI.REC =''
+        
+         PRO.ID = CARRIER.ID:"*":PRO.NUM:"*0"
+       
+         IF CARRIER.ID # LAST.CARRIER AND LAST.CARRIER # "" THEN
+            GOSUB WRITE.REPORT
+         END
+         READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID THEN
+            CARRIER.NAME = CARRIER.REC<1>
+            EMAIL.ADD = CARRIER.REC<91>
+         END
+         
+         IF LAST.CARRIER = "" THEN
+            LAST.CARRIER = CARRIER.ID
+            * Setup for processing
+            OLADATE=OCONV(DATE(),'D4/')
+            ODATE=OLADATE[7,4]:OLADATE[1,2]:OLADATE[4,2]
+            SS.FILENAME='ORB-':CARRIER.ID:'-':ODATE:'.XLS'
+            CARRIER.SAVE = CARRIER.NAME
+            GOSUB SET.UP.HEADINGS        ; * 4 lines of headings
+            START.POS=4
+            COUNTER=0
+         END ELSE
+            IF CARRIER.ID # LAST.CARRIER THEN
+               OLADATE=OCONV(DATE(),'D4/')
+               ODATE=OLADATE[7,4]:OLADATE[1,2]:OLADATE[4,2]
+               SS.FILENAME='ORB-':CARRIER.ID:'-':ODATE:'.XLS'
+               CARRIER.SAVE = CARRIER.NAME
+               GOSUB SET.UP.HEADINGS     ; * 4 lines of headings
+               START.POS=4
+               COUNTER=0
+               LAST.CARRIER = CARRIER.ID
+            END
+         END
+
+         **      IF USER.NAME = 'GBINO' THEN DEBUG
+         OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS THEN
+            CUSTOMER.VENDOR=1
+            OPEN '','VEND.CUST,':CLIENT.ID TO F.VEND.CUST ELSE CUSTOMER.VENDOR=0
+
+            NUM.BILLS=@SELECTED
+            IF NUM.BILLS=0 THEN
+               CRT @(0,21):'No bills on file with these criteria.'
+               CRT @(0,22):SS.FILENAME:' could not be written.'
+               GOTO THE.END
+            END
+
+            COUNTER.2=0 ; PER.2=0
+            COUNTER.2+=1
+
+            READ BILL.REC FROM F.BILLS,PRO.ID THEN
+               PRO.NUMBER=FIELD(PRO.ID,'*',2)      ; *GRB02
+               PRO.CHK = LEN(PRO.NUMBER)           ; *GRB02
+               IF PRO.NUMBER[PRO.CHK-1,2]= "BD" OR PRO.NUMBER[PRO.CHK-1,2]= "AD" THEN CONTINUE
+               GOSUB FIND.LATEST         ; * Find latest date and auditor
+               IF BILL.LATEST.DATE<=LAST.ACTIVITY.DATE THEN
+                  GOSUB ASSIGN.DATA.IN   ; * Include this data
+               END
+            END
+         END
+
+         WRITEV DATE() ON F.EDI,REJECT.ID,1
+      REPEAT
+      GOSUB WRITE.REPORT
+      GOTO THE.END
+**********************************************
+WRITE.REPORT:***
+**********************************************
+      IF COUNTER>0 THEN
+         OLD.RETURNED.BILLS=CHANGE(OLD.RETURNED.BILLS,@VM,TAB)
+
+         WRITE OLD.RETURNED.BILLS ON F.BILLDATA,SS.FILENAME THEN
+            CRT @(0,22):SS.FILENAME:' written to BILLDATA\':USER.NAME:' folder.'
+         END ELSE
+            CRT @(0,21):'File system error.'
+            CRT @(0,22):SS.FILENAME:' could not be written.'
+         END
+      END ELSE
+         CRT @(0,21):'No data generated with these criteria.'
+         CRT @(0,22):SS.FILENAME:' could not be written.'
+      END
+      GOSUB SEND.MAIL
+      RETURN
+
+**********************************************
+FIND.LATEST:***
+*********************************************
+* Find the latest date that a bill was rejected and the auditor of it
+
+      BILL.LATEST.AUDITOR=BILL.REC<60,1,1>
+      BILL.LATEST.DATE=BILL.REC<60,1,2>
+
+      NUM.DATES=DCOUNT(BILL.REC<60>,@VM)
+      FOR X=1 TO NUM.DATES
+         IF BILL.REC<60,X,2> GE BILL.LATEST.DATE THEN
+            BILL.LATEST.AUDITOR=BILL.REC<60,X,1>
+            BILL.LATEST.DATE=BILL.REC<60,X,2>
+         END
+      NEXT X
+      NUM.DATES=DCOUNT(BILL.REC<62>,@VM)
+      FOR X=1 TO NUM.DATES
+         IF BILL.REC<62,X,2> GE BILL.LATEST.DATE THEN
+            BILL.LATEST.AUDITOR=BILL.REC<62,X,1>
+            BILL.LATEST.DATE=BILL.REC<62,X,2>
+         END
+      NEXT X
+      BILL.LATEST.AUDITOR=OCONV(BILL.LATEST.AUDITOR,'MCU')
+
+      RETURN
+
+**********************************************
+SET.UP.HEADINGS:***
+*********************************************
+      OLD.RETURNED.BILLS=''
+      OLD.RETURNED.BILLS<1, 1>=PROG.DESC:' for Carrier ':CARRIER.SAVE:' with a Last Activity Date of ':OCONV(DATE(),'D4-')
+      **    OLD.RETURNED.BILLS<1, 1>=PROG.DESC:' for Client ':CLIENT.SAVE:' and for Carrier ':CARRIER.SAVE:' with a Last Activity Date of ':OCONV(DATE(),'D4-')
+ **     OLD.RETURNED.BILLS<2, 1>='This report was run by ':USER.NAME:' on ':DATE()'D4-':' at ':OCONV(TIME(),'MTHS')
+      OLD.RETURNED.BILLS<4, 1>='Client Number'
+      OLD.RETURNED.BILLS<4, 2>='Client Name'
+      OLD.RETURNED.BILLS<4, 3>='Carrier Number'
+      OLD.RETURNED.BILLS<4, 4>='Carrier Name'
+      OLD.RETURNED.BILLS<4, 5>='Pro Number'
+      OLD.RETURNED.BILLS<4, 6>='Bill Date'
+      OLD.RETURNED.BILLS<4,7>='Amount Billed'
+
+      REJECT.COL.CTRL = ''
+      REJECT.START.COL = 8
+      REJECT.COL.OFFSET = REJECT.GROUP.CNT
+      CTRL.COL = 0
+      REJECT.END.COL = REJECT.START.COL + REJECT.COL.OFFSET - 1
+      FOR RGS = 1 TO REJECT.GROUP.CNT
+         REJ.COL.NO = REJECT.CODE.GROUPS<3, RGS> -8
+         LOCATE REJ.COL.NO IN REJECT.COL.CTRL<2>, 1 SETTING RCN.POS ELSE
+            REJECT.COL.CTRL = INSERT(REJECT.COL.CTRL, 2, RCN.POS, 0, REJ.COL.NO)
+            REJECT.COL.CTRL = INSERT(REJECT.COL.CTRL, 1, RCN.POS, 0, REJECT.CODE.GROUPS<1, RGS>)
+            OLD.RETURNED.BILLS<4,REJ.COL.NO>=REJECT.CODE.GROUPS<2, RGS>
+         END
+      NEXT RGS
+
+* Assign Reject Codes with no assigned Grouping to REM-MISC column (17)
+
+      NO.GRP.COL.POS = 7
+
+      RETURN
+
+**********************************************
+ASSIGN.DATA.IN:**** Assign data from BILL.REC to array for output
+*********************************************
+
+      COUNTER+=1
+      ARRAY.POS=START.POS+COUNTER
+      OLD.RETURNED.BILLS<ARRAY.POS,1>=CLIENT.ID    ; * 1 Client Number
+      OLD.RETURNED.BILLS<ARRAY.POS,2>=CLIENT.NAME  ; * 2 Client Name
+      CARRIER=FIELD(PRO.ID,'*',1)
+      OLD.RETURNED.BILLS<ARRAY.POS,3>=CARRIER.ID   ; * 3 Carrier Number
+      READV CARRIER.NAME FROM F.CARRIERS,CARRIER,1 ELSE CARRIER.NAME=''
+      OLD.RETURNED.BILLS<ARRAY.POS,4>=CARRIER.NAME           ; * 4 Carrier Name
+      PRO.NUMBER=FIELD(PRO.ID,'*',2)
+      OLD.RETURNED.BILLS<ARRAY.POS,5>=PRO.NUMBER   ; * 5 Pro Number
+      BILL.DATE=OCONV(BILL.REC<1>,'D4-')
+      PROCESS.DATE=BILL.REC<37>'D4'
+      CURR.STATUS = BILL.REC<39>
+      PAY.TYPE = BILL.REC<66>
+      REJECT.CODE = BILL.REC<59>
+      OLD.RETURNED.BILLS<ARRAY.POS,6>=BILL.DATE    ; * 6 Bill Date
+
+      AMOUNT.BILLED=(BILL.REC<8>-BILL.REC<10>-BILL.REC<11>)'R26,#10'
+      OLD.RETURNED.BILLS<ARRAY.POS,7>=AMOUNT.BILLED          ; * 19 Amount Billed
+      BILL.AUDITOR=OCONV(BILL.REC<89>,'MCU')
+      ***  OLD.RETURNED.BILLS<ARRAY.POS,AUDITOR.POS>=BILL.AUDITOR           ; * 20 Auditor
+      BILL.ENTERED.BY=OCONV(BILL.REC<53>,'MCU')
+      ***  OLD.RETURNED.BILLS<ARRAY.POS,ENTERED.BY.POS>=BILL.ENTERED.BY     ; * 21 Bill Entered By
+
+* 22 Bill Verified By
+
+      BILL.RETURNED.BY=BILL.LATEST.AUDITOR
+      **    OLD.RETURNED.BILLS<ARRAY.POS,RETURNED.BY.POS>=BILL.RETURNED.BY   ; * 23 Bill Returned By
+      BILL.RETURNED.ON=BILL.LATEST.DATE'D4-'
+      **     OLD.RETURNED.BILLS<ARRAY.POS,RETURNED.ON.POS>=BILL.RETURNED.ON   ; * 24 Bill Returned On (date)
+
+*   * 25 Rejection Reasons
+*Pass an impossibly large number as the amount of characters of text to
+*have on a line before 'wrapping' by means of a value mark in order to
+*not have to deal with artificially broken up text later when trying to
+*put in Excel line breaks (char 10)
+      VIN='9999'
+      VIN<3>='FB.1.8'
+      VOUT=''
+      CALL FORMAT.REJECT.REASONS(VIN,BILL.REC,VOUT)
+*
+*Now build the information for the Rejects codes and text. Each code
+*should belong to a group. Each group has a column with an additional
+*column for codes that don't have an assigned group. And, there are
+*2 more columns, 1 for 'REM' text and one for 'Free Form' text.
+
+      IF VOUT<1>=-1 THEN
+*Put the error message in the first Reject column
+         OLD.RETURNED.BILLS<ARRAY.POS,REJECT.START.COL>=VOUT<2,1>      ; * Error occurred
+      END ELSE
+         WORK = ''
+         FOR X=1 TO VOUT<1>
+            T=VOUT<2,X>
+* Only show the newest rejection code/text - DRF 08/19/13
+            GOSUB DETERMINE.WHICH.REJECT.COLUMN
+
+            VOUT<3> = CHANGE(VOUT<3>, '"', '')
+            VOUT<3> = CHANGE(VOUT<3>, "'", "")
+            IF T='' THEN
+               T='    '
+            END ELSE
+               T.NUM=T
+               T=T'R#2':') '
+            END
+
+            IF T.NUM = 1 THEN
+               WORK<1,ASGND.REJECT.COL.POS,-1>=CHANGE(VOUT<3,X>,@VM,@SVM)
+            END ELSE
+*T.NUM is greater than 1
+               IF TRIM(T) # '' THEN
+*This is the beginning of a line of text as denoted by a #) so put
+*a LINE BREAK before it and put the opening double quote mark in front
+*of the text.
+                  WORK<1,ASGND.REJECT.COL.POS,-1>=CHANGE(VOUT<3,X>,@VM,@SVM)
+               END ELSE
+*This is in the middle of a line of text so don't line break
+                  WORK<1,ASGND.REJECT.COL.POS,-1>=CHANGE(VOUT<3,X>,@VM,@SVM)
+               END
+            END
+
+         NEXT X
+*Append the closing quote mark to the last line of text.
+
+*Change any pairs of "" to "
+         WORK.VAL.CNT = DCOUNT(WORK, @VM)
+         FOR WVC = 1 TO WORK.VAL.CNT
+            WORK.VAL = WORK<1, WVC>
+            IF WORK.VAL # '' THEN
+               SV.CNT = DCOUNT(WORK.VAL, @SVM)
+               FOR SC = 1 TO SV.CNT
+                  WORK<1, WVC, SC> = DQUOTE(SC 'R#2':') ':WORK<1, WVC, SC>)
+               NEXT SC
+               WORK<1, WVC> = CHANGE(WORK<1, WVC>, @SVM, DOUBLE.LINE.WRAP.STRING)
+               OLD.RETURNED.BILLS<ARRAY.POS, WVC> = '=':WORK<1, WVC>
+            END
+         NEXT WVC
+      END
+
+      RETURN
+
+***********************************************
+DISPLAY.SCREEN:***
+**********************************************
+
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+
+      RETURN
+
+******************************************************
+DETERMINE.WHICH.REJECT.COLUMN:
+******************************************************
+
+      REJECT.TYPE = UPCASE(VOUT<4,X>)
+      BEGIN CASE
+         CASE REJECT.TYPE[1, 2] = 'CN'
+            CODE.NUM = REJECT.TYPE[3, LEN(REJECT.TYPE) - 2]
+*LOCATE the Group the Code belongs to and put the text in the column
+*for that Group.
+            ASGND.REJECT.COL.POS = NO.GRP.COL.POS
+
+            LOCATE CODE.NUM IN REJECT.CODES<1>, 1 SETTING CODE.POS THEN
+               REJECT.GROUP = REJECT.CODES<5, CODE.POS>
+               IF REJECT.GROUP # '' THEN
+                  LOCATE REJECT.GROUP IN REJECT.COL.CTRL<1>, 1 SETTING RG.POS THEN
+                     ASGND.REJECT.COL.POS = REJECT.COL.CTRL<2, RG.POS>
+                  END
+               END
+            END
+         CASE REJECT.TYPE[1, 3] = 'REM'
+            REJECT.TYPE = 'REM'
+            LOCATE REJECT.TYPE IN REJECT.COL.CTRL<1>, 1 SETTING RG.POS THEN
+               ASGND.REJECT.COL.POS = REJECT.COL.CTRL<2, RG.POS>
+            END
+         CASE 1
+            ASGND.REJECT.COL.POS = 8
+      END CASE
+
+      RETURN
+********************************************************
+SEND.MAIL:
+********************************************************
+      MVIN=''
+      SUBJ='EDI REJECTS'
+   **   TEXT=USER.NAME:' ran the  and it is complete '
+   ***   TEXT<1,-1>='on ':DATE()'D2/':' ':OCONV(TIME(),'MTHS')
+      MVIN=''
+
+      MVIN<1>=''
+**      MVIN<2>='nmeddaugh@afs.net'
+      ***  MVIN<1,-1>='MARY@AFS.NET'
+      ADD.CNT = DCOUNT(EMAIL.ADD,@VM)
+      FOR I = 1 TO ADD.CNT
+         MVIN<1,-1>=EMAIL.ADD<I>
+      NEXT I
+      MVIN<4>='AFS@AFS.NET'
+      MVIN<5>=SUBJ
+      **   MVIN<6>=TEXT
+      MVIN<6,-1>=' '
+      MVIN<6,-1>='Please see the attached rejected bill report of items needing resolution'
+      MVIN<6,-1>='You may submit the requested documents to resolution@afs.net'
+
+      MVIN<11,-1> = 'e:\Ardent\public\billdata\':USER.NAME:'\':SS.FILENAME
+      CALL SENDMAIL(MVIN,MVOUT)
+
+      RETURN
+
+********************************************************
+READ.FILES:
+********************************************************
+* Read in transportation modes
+      TRANSPORT.MODE.LIST=''
+      EXECUTE "SSELECT FB.TRANSPORT" CAPTURING OUTPUT
+      LOOP
+         READNEXT TRANSPORT.ID ELSE TRANSPORT.ID='MODE.ENTRY.IS.FINISHED'
+      UNTIL TRANSPORT.ID='MODE.ENTRY.IS.FINISHED'
+         READ TRANSPORT.REC FROM F.TRANSPORT,TRANSPORT.ID THEN
+            TRANSPORT.MODE.LIST<1,-1>=TRANSPORT.ID
+            TRANSPORT.MODE.LIST<2,-1>=TRANSPORT.REC<1>
+         END
+      REPEAT
+      MODE.COUNT=DCOUNT(TRANSPORT.MODE.LIST<1>,@VM)
+
+      READ REJECT.CODES FROM F.TABLES,'REJECT.CODES' THEN
+         REJECT.CODE.CNT = DCOUNT(REJECT.CODES<1>, @VM)
+      END ELSE
+         CALL ELINE('Reject Codes table is missing. Notify I.T.')
+         STOP
+      END
+
+      READ REJECT.CODE.GROUPS FROM F.TABLES, 'REJECT.CODE.GROUPS' THEN
+         REJECT.GROUP.CNT = DCOUNT(REJECT.CODE.GROUPS<1>, @VM)
+      END ELSE
+         CALL ELINE('Reject Code Groups table is missing. Notify I.T.')
+         STOP
+      END
+
+      RETURN
+*********************************************************
+OPEN.FILES:
+**********************************************************
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+         CALL OPEN.ABORT('BILLDATA.':USER.NAME,PROG.NAME)
+      END
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+         CALL OPEN.ABORT('FB.TRANSPORT',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+
+      OPEN '','OPERATOR' TO F.OP ELSE
+         CALL OPEN.ABORT("OPERATOR",PROG.NAME)
+      END
+      OPEN '','EDI.REJECT.FILE' TO F.EDI ELSE
+         CALL OPEN.ABORT("EDI.REJECT.FILE",PROG.NAME)
+      END
+
+      RETURN
+***********************************************************************
+THE.END:***
+* End of program
+      CRT @(0,23):@(-4):
+   END

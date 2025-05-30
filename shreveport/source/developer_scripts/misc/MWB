@@ -1,0 +1,557 @@
+      SUBROUTINE MWB(VIN,VOUT,DIN,TDIN,DOUT,F.PCIN,F.PCOUT)
+*
+ UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'MWB' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+ CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      PROG.NAME='MWB'
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR:      OWEN HOLMAN
+* DATE:        MAY 30, 1996
+* DESCRIPTION: THIS PROGRAM WILL SUBMIT A TEXT FILE TO MWB AND RATE
+*              TO RATE A BILL AND EXTRACT THE RESULTS
+*
+* DIN - Data Sent In to Be Processed
+* DOUT - Data Returned that was processed (Answers)
+* NOTE:  On Mode READ DIN MUST BE SUPPLIED for DOUT to be Created!
+*
+* Tariff is being sent into DIN<1,7> so that either AFS500 (US Only) or
+* AFS525 (Canada) is to be used to rate the bill. If is unknow then
+* AFS95 is sent and the program will determine which tariff to use.
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE EXPRESS
+* WRITTEN CONSENT OF SAME.
+*
+* 011708 - NPR01 - ADDED CALL TO UPD.PROCESS.LOG Which monitors who uses this program. Temporary change - may be removed
+* 012508 - NPR02 - ADDED TABLE FOR ZIP SUBSTITUTIONS TO GET AWAY FROM HARD CODING  - SEE FB.1.11.19 FOR TAB MAINT.
+* 102908 - JMK01 - T082417 - ProComm errors RWS
+*********************************************************************
+*
+*
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+*    VIN<1>   SEND=Submit job, READ=Get Results, BOTH=Send & Get
+      MODE=VIN<1>
+      MAX.DISC.WEIGHT=VIN<2>
+*    IF MAX.DISC.WEIGHT='' THEN MAX.DISC.WEIGHT='10000'
+      CALL CHANNEL(CH.NUM)
+      VOUT=''
+      CRLF=CHAR(13):CHAR(10)
+*
+      OPEN '','FB.TABLES' TO F.TABLES ELSE     ; * NPR02
+         ERRLINE = 'UNABLE TO OPEN FB.TABLES'  ; * NPR02
+         GOTO 9995                             ; * NPR02
+      END                                      ; * NPR02
+*
+      SUB.ZIP=''
+*    Put REAL (Bad) zip in <1> (MV) and Substitute (one to use) in <2> same val
+* NPR02      SUB.ZIP<1,1>='28113' ; SUB.ZIP<2,1>='28112'
+* NPR02      SUB.ZIP<1,2>='21062' ; SUB.ZIP<2,2>='21061'
+* NPR02      SUB.ZIP<1,3>='28360' ; SUB.ZIP<2,3>='28359'
+* NPR02      SUB.ZIP<1,3>='76085' ; SUB.ZIP<2,3>='76084'
+*
+* Start changes for NPR02
+*
+      READ ZIP.SUBST.ARRAY FROM F.TABLES, 'ZIP.SUBSTITUTIONS' THEN
+*        N.ZIPS = DCOUNT(ZIP.SUBST.ARRAY<1>,@VM)   ; * JMK01
+*        FOR I.ZIP = 1 TO N.ZIPS         ; * JMK01
+*           FROM.ZIP = ZIP.SUBST.ARRAY<1,I.ZIP>    ; * JMK01
+*           TO.ZIP   = ZIP.SUBST.ARRAY<2,I.ZIP>    ; * JMK01
+*    Put REAL (Bad) zip in <1> (MV) and Substitute (one to use) in <2> same val
+*           SUB.ZIP<1,I.ZIP> = FROM.ZIP ; SUB.ZIP<2,I.ZIP> = TO.ZIP    ; * JMK01
+*        NEXT I.ZIP                      ; * JMK01
+         SUB.ZIP=ZIP.SUBST.ARRAY         ; * JMK01
+      END
+*
+*
+* NPR02   - ***** IT IS NO LONGER NECESSARY TO HARD CODE THE ZIP SUBSTITUTUIONS
+*         - ***** SEE FB.1.11.18 FOR MAINT OF TABLE USED - WAYNE PARDUE AND SYDNEY BIRD CAN DO THEIR OWN NOW
+*
+* End changes for NPR02
+*
+* Initialize variables
+*
+      PROMPT ''
+*     USER=OCONV(@LOGNAME,'MCU')
+      TESTING=0
+      CALL GET.USER(USER)
+      IF USER='OWEN' THEN OWEN=1 ELSE OWEN=0
+*     IF USER='MKERBOW' THEN OWEN=1
+      IF USER='DAVID' THEN DAVID=1 ELSE DAVID=0
+      DAVID=0
+      IF OWEN OR DAVID AND TESTING THEN
+         OPEN 'TEMP' TO TEMP ELSE ABORT
+         WRITE DIN ON TEMP,'DIN'
+         CRT @(0,23):"Writting TEMP DIN":
+      END
+      BEGIN CASE
+         CASE MODE='READ' ; GO 300
+         CASE MODE='SEND' ; NULL
+         CASE MODE='BOTH' ; NULL
+         CASE 1
+            CALL ELINE("Mode '":MODE:"' in MWB is wrong... Call programming")
+      END CASE
+* Create TDIN (Multi-Lines for Weights > MAX.DISC.WEIGHT
+      BILLS=DCOUNT(DIN,@AM)
+      TDIN=''                            ; * MWB DIN
+      * <1,10> = Attribute of DIN bill Belongs To
+      * <1,11> = Value of DIN bill Belongs To
+      * <1,12> = Y-Special Calculations, N-Report Bill As Stated
+      FOR BC = 1 TO BILLS
+         LINE=DIN<BC>
+         BILL.WEIGHT=SUM(LINE<1,5>)
+*      IF BILL.WEIGHT > MAX.DISC.WEIGHT-1 AND BILL.WEIGHT < 20000 THEN
+         IF BILL.WEIGHT > MAX.DISC.WEIGHT-1 THEN
+            TEMP.LINE=LINE               ; * To Save Orig, Dest, Tariff, Eff Date, Factor
+            DET.TIMES=DCOUNT(LINE<1,4>,@SVM)       ; * Number of Classes
+            FOR DET = 1 TO DET.TIMES
+               TEMP.LINE<1,4>=LINE<1,4,DET>        ; * Class
+               TEMP.LINE<1,5>=MAX.DISC.WEIGHT-1
+               TEMP.LINE<1,10>=BC        ; * Attribute of DIN Source
+               TEMP.LINE<1,11>=DET       ; * Value of DIN Source
+               TEMP.LINE<1,12>='Y'       ; * Perform the Weight * Rate Extension
+               TDIN<-1>=TEMP.LINE
+            NEXT DET
+         END ELSE
+            LINE<1,10>=BC                ; * Attribute of DIN that this bill comes from
+            LINE<1,12>='N'               ; * Don't Perform the Weight * Rate Extension
+            TDIN<-1>=LINE
+         END
+      NEXT BC
+* Build Record to submit
+      BODY=''
+      BILLS=DCOUNT(TDIN,@AM)
+      FOR BC = 1 TO BILLS
+         BILL=TDIN<BC>
+         PRO=BILL<1,1>
+         ORIG.ZIP=BILL<1,2>
+         LOCATE ORIG.ZIP IN SUB.ZIP<1> SETTING POS THEN
+            ORIG.ZIP=SUB.ZIP<2,POS>
+         END
+         DEST.ZIP=BILL<1,3>
+         LOCATE DEST.ZIP IN SUB.ZIP<1> SETTING POS THEN
+            DEST.ZIP=SUB.ZIP<2,POS>
+         END
+         TARIFF=BILL<1,7>
+         IF TARIFF='AFS95' THEN
+            IF NOT(NUM(ORIG.ZIP)) OR NOT(NUM(DEST.ZIP)) THEN
+               TARIFF='AFS525'
+            END ELSE
+               TARIFF='AFS500'
+            END
+         END
+         IF ORIG.ZIP='93725' AND DEST.ZIP='V1M3B1' THEN
+            DOUT=''
+            DOUT<1,3>='NOTRATED'
+            VOUT<1>='ERROR'
+            GOTO 9999
+         END
+         LINE=STR(' ',500)
+         LINE[01,06]=ORIG.ZIP'L#6'
+         LINE[07,06]=DEST.ZIP'L#6'
+         LINE[13,88]=0'L%88'             ; * Discounts
+         LINE.ITEMS=DCOUNT(BILL<1,5>,@SVM)
+         IF LINE.ITEMS > 10 THEN
+            CALL ELINE('PRO ':PRO:' Contains More than 10 Lines... Cut to 10!')
+            LINE.ITEMS=10
+         END
+         FOR X = 1 TO LINE.ITEMS
+            CURR.CLASS=BILL<1,4,X>
+            IF CURR.CLASS=92 THEN CURR.CLASS=92.5
+            IF CURR.CLASS=77 THEN CURR.CLASS=77.5
+            LINE[(X-1)*23+101,4]=CURR.CLASS        ; * CLASS
+            WEIGHT=BILL<1,5,X>
+*        IF WEIGHT > MAX.DISC.WEIGHT THEN WEIGHT=MAX.DISC.WEIGHT
+            LINE[(X-1)*23+105,6]=WEIGHT'R%6'
+         NEXT X
+         BODY<-1>=LINE
+      NEXT BC
+      IF OWEN OR DAVID AND TESTING THEN
+         WRITE BODY ON TEMP,'BODY'
+         CRT @(0,23):"Writing TEMP BODY":
+      END
+      LINE=BC<1>
+*FOR X = 1 TO 20
+*PRINT (X-1)*25+1'L#2':">":LINE[(X-1)*25+1,25]:"<"
+*NEXT X
+*INPUT NUL
+*OPEN 'TEMP' TO TEMP ELSE ABORT
+*WRITEV LINE ON TEMP,'TEST',1
+*INPUT NUL
+* Submit Record
+      WAD='FORM WAD':CHAR(13)
+      CHUNK.DATA='USER: ':USER
+      CHUNK.DATA<-1>='HOSTPROGRAM: ':PROG.NAME
+      CHUNK.DATA<-1>='SUBMIT TIME: ':OCONV(TIME(),'MTHS')
+      CHUNK.ID='DESC' ; GOSUB BUILD.CHUNK
+      CHUNK.DATA='TRUE'
+      CHUNK.ID='GHME' ; GOSUB BUILD.CHUNK
+
+      BEGIN CASE
+         CASE TARIFF='AFS500'
+            IF USER='OWEN' AND TARIFF='' THEN
+               CALL ELINE('OWEN HERE IS THE PROBLEM')
+            END
+            CHUNK.DATA='C:\AFSBATCH\AFSDATA.TMP'
+            CHUNK.ID='P_IN' ; GOSUB BUILD.CHUNK
+
+            CHUNK.DATA='C:\AFSBATCH\AFSDATA.OUT'
+            CHUNK.ID='POUT' ; GOSUB BUILD.CHUNK
+
+            CHUNK.DATA='EXECUTE CD \AFSBATCH':CRLF:'BATCHRAT AFSDATA.TMP AFSDATA.OUT'
+
+         CASE TARIFF='AFS500'
+            CHUNK.DATA='C:\AFSBATCH\AFSDATA.TMP'
+            CHUNK.ID='P_IN' ; GOSUB BUILD.CHUNK
+
+            CHUNK.DATA='C:\AFSBATCH\AFSDATA.OUT'
+            CHUNK.ID='POUT' ; GOSUB BUILD.CHUNK
+
+            CHUNK.DATA='EXECUTE CD \AFSBATCH':CRLF:'BATCHRAT AFSDATA.TMP AFSDATA.OUT'
+
+         CASE TARIFF='AFS525'
+            CHUNK.DATA='C:\AFS525B\AFSDATA.TMP'
+            CHUNK.ID='P_IN' ; GOSUB BUILD.CHUNK
+
+            CHUNK.DATA='C:\AFS525B\AFSDATA.OUT'
+            CHUNK.ID='POUT' ; GOSUB BUILD.CHUNK
+
+            CHUNK.DATA='EXECUTE CD \AFS525B':CRLF:'BATCHCAN AFSDATA.TMP AFSDATA.OUT'
+         CASE TARIFF='INP500'
+            CHUNK.DATA='C:\INPBATCH\AFSDATA.TMP'
+            CHUNK.ID='P_IN' ; GOSUB BUILD.CHUNK
+
+            CHUNK.DATA='C:\INPBATCH\AFSDATA.OUT'
+            CHUNK.ID='POUT' ; GOSUB BUILD.CHUNK
+
+            CHUNK.DATA='EXECUTE CD \INPBATCH':CRLF:'BATCHRAT AFSDATA.TMP AFSDATA.OUT'
+
+         CASE 1
+            CALL ELINE('No Tariff Setup. Call Programming!!')
+            RETURN
+      END CASE
+      CHUNK.ID = 'HEAD' ; GOSUB BUILD.CHUNK
+      CHUNK.DATA=BODY
+      CHUNK.ID = 'BODY' ; GOSUB BUILD.CHUNK
+      IF OWEN OR DAVID AND TESTING THEN
+         WRITE WAD ON TEMP,'WAD.IN'
+         CRT @(0,23):'Writing TEMP WAD.IN':
+      END
+      GOSUB SEND.WAD
+      IF MODE='SEND' THEN GO 9999
+300:*** Jump to Here for MODE = "READ"
+      GOSUB READ.WAD
+*LINE=BC<1>
+*FOR X = 1 TO 20
+*PRINT (X-1)*25+1'L#2':">":LINE[(X-1)*25+1,25]:"<"
+*NEXT X
+*INPUT NUL
+*OPEN 'TEMP' TO TEMP ELSE ABORT
+*WRITEV LINE ON TEMP,'TEST',1
+*INPUT NUL
+* Submit Record
+      WAD='FORM WAD':CHAR(13)
+      CHUNK.DATA='USER: ':USER
+      IF OWEN OR DAVID AND TESTING THEN
+         WRITE WAD.OUT ON TEMP,'WAD.OUT'
+         CRT @(0,23):"Writing TEMP WAD.OUT":
+      END
+*CRT 'GOT WAD.OUT......PRESS BREAK' ; INPUT NUL
+      IF MODE='READ' THEN
+         BILLS=DCOUNT(TDIN,@AM)
+      END
+      IF DCOUNT(WAD.OUT,@AM) # BILLS THEN
+         CALL ELINE('WAD Line Count Does Not Match BODY Line Count! Call Owen !')
+         GO 300
+      END
+      DOUT=''
+      DOUT.LINE=''                       ; * Line to Be added to DOUT
+      PREV.DIN.ATT=''
+      FOR BC = 1 TO BILLS
+         BILL=TDIN<BC>
+         CHK.TOTAL=0
+         PRO=BILL<1,1>
+         FACTOR=TDIN<BC,9>
+         DIN.ATT=TDIN<BC,10>
+         DIN.VAL=TDIN<BC,11>
+         IF DIN.ATT # PREV.DIN.ATT THEN
+            IF PREV.DIN.ATT='' ELSE
+               DOUT<-1>=DOUT.LINE
+               DOUT.LINE=''
+            END
+            PREV.DIN.ATT=DIN.ATT
+         END
+         FACTOR.TOTAL.CHARGE=0
+*      IF FACTOR="1000000" THEN FACTOR="" ; * Ignore if 100.00%
+         IF FACTOR="" THEN FACTOR="1000000"
+         IF OWEN AND TESTING THEN CALL ELINE("NOW EXPLODING AMOUNTS")
+         LINE.OUT=WAD.OUT<BC>
+         BILL.TYPE=TRIM(LINE.OUT[331,7])
+         IF BILL.TYPE='DEFICIT' THEN
+*OH      IF BILL.WEIGHT > MAX.DISC.WEIGHT-1 AND BILL.WEIGHT < 20000 THEN
+            IF TDIN<BC,12>='Y' THEN
+               BILL.TYPE='ACTUAL'
+               CHK.TOTAL+=TRIM(LINE.OUT[354,7])+0
+            END
+         END
+         IF BILL.TYPE='MINIMUM' ELSE
+            LINE.ITEMS=DCOUNT(BILL<1,5>,@SVM)
+            TOTAL.WEIGHT=0
+            FOR X = 1 TO LINE.ITEMS
+               WEIGHT=TRIM(LINE.OUT[(X-1)*23+105,6])+0       ; * WEIGHT
+               RATE=TRIM(LINE.OUT[(X-1)*23+111,6])+0         ; * RATE
+               CHARGE=TRIM(LINE.OUT[(X-1)*23+117,7])+0       ; * CHARGE
+               CHK.TOTAL+=CHARGE         ; * Add BEFORE change due to MAX.DISC.WGT
+*           BILL.WGHT=BILL<1,5,X>+0
+*           IF WEIGHT+0 # BILL.WGHT+0 THEN
+*             CHARGE=OCONV(RATE*BILL.WEIGHT/100,'MR0')
+*           END
+               IF FACTOR='' AND TDIN<BC,12>="N" THEN
+                  DOUT.LINE<1,1,X>=RATE
+                  DOUT.LINE<1,2,X>=CHARGE
+               END ELSE
+                  FACTOR.RATE=OCONV(RATE*FACTOR/1000000,'MR0')
+                  IF TDIN<BC,12>='N' THEN DIN.VAL=X          ; * Set to line Counter
+                  DOUT.LINE<1,1,DIN.VAL>=FACTOR.RATE
+                  FACTOR.CHARGE=OCONV(DIN<DIN.ATT,5,DIN.VAL>*FACTOR.RATE/100,'MR0')
+                  DOUT.LINE<1,2,DIN.VAL>=FACTOR.CHARGE
+                  FACTOR.TOTAL.CHARGE+=FACTOR.CHARGE
+                  TOTAL.WEIGHT+=DIN<DIN.ATT,5,DIN.VAL>+0     ; * Billed Weight
+               END
+            NEXT X
+         END
+         IF TDIN<BC,12>='Y' THEN
+            DOUT.LINE<1,4>+=TOTAL.WEIGHT+0         ; * Billed Weight
+         END ELSE
+            DOUT.LINE<1,4>=TRIM(LINE.OUT[361,6])+0           ; * Billed Weight
+         END
+         TOTAL.CHARGE=TRIM(LINE.OUT[367,8])+0      ; * sub-TOTAL Charge No-Discnt
+         IF TOTAL.CHARGE+0=0 AND BILL.TYPE='' THEN
+            BILL.TYPE='NOTRATED'
+         END
+         DOUT.LINE<1,3>=BILL.TYPE
+         IF BILL.TYPE='MINIMUM' THEN
+            IF FACTOR="1000000" ELSE
+               FACTOR.TOTAL.CHARGE=OCONV(TOTAL.CHARGE*FACTOR/1000000,'MR0')
+            END
+         END
+         IF FACTOR="1000000" AND TDIN<BC,12>='N' THEN
+            BILL.CHARGE=TOTAL.CHARGE
+         END ELSE
+            BILL.CHARGE=FACTOR.TOTAL.CHARGE
+         END
+         DOUT.LINE<1,5>+=BILL.CHARGE
+         IF BILL.TYPE='DEFICIT' THEN
+            DOUT.LINE<1,6>=TRIM(LINE.OUT[338,4])   ; * Deficit Class
+            DEF.WEIGHT=TRIM(LINE.OUT[342,6])+0     ; * Deficit Weight
+            DOUT.LINE<1,7>=DEF.WEIGHT
+            DEF.RATE=TRIM(LINE.OUT[348,6])+0       ; * Deficit Rate
+            DEF.CHARGE=TRIM(LINE.OUT[354,7])+0     ; * Deficit Charge
+            IF FACTOR="1000000" THEN
+               DOUT.LINE<1,8>=DEF.RATE
+               DOUT.LINE<1,9>=DEF.CHARGE
+            END ELSE
+               FACTOR.DEF.RATE=OCONV(DEF.RATE*FACTOR/1000000,'MR0')
+               FACTOR.DEF.CHARGE=OCONV(FACTOR.DEF.RATE*DEF.WEIGHT/100,'MR0')
+               DOUT.LINE<1,5>+=FACTOR.DEF.CHARGE
+               DOUT.LINE<1,8>=FACTOR.DEF.RATE
+               DOUT.LINE<1,9>=FACTOR.DEF.CHARGE
+            END
+*DF         DOUT.LINE<1,9>=DEF.CHARGE
+            CHK.TOTAL+=DEF.CHARGE
+         END
+         IF TOTAL.CHARGE#CHK.TOTAL AND BILL.TYPE#'MINIMUM' THEN
+            CALL ELINE('Bill ':PRO:' all charges were not broken out')
+         END
+*DF       DOUT<-1>=DOUT.LINE
+      NEXT BC
+      DOUT<-1>=DOUT.LINE
+      GO 9999
+
+SEND.WAD:***
+      READ.WAD.FLAG=1
+      READ TEST FROM F.PCIN,'taskman.dwn' THEN
+         CALL ELINE("Task Manager is Down!!!  Notify Programmer")
+      END
+
+      TRY.CNT = 0
+DEL.FIN:
+      TASK.ATTEMPT='SEND.WAD: DELETE F.PCIN,CH.NUM:.fin'
+      DELETE F.PCIN,CH.NUM:'.fin' ON ERROR
+         RQM
+         TRY.CNT+=1
+         IF TRY.CNT > 5 THEN GOSUB CALL.JIM.OR.OWEN
+         IF TRY.CNT > 0 THEN GOTO DEL.FIN
+      END
+
+      TRY.CNT = 0
+DEL.DAT:
+      TASK.ATTEMPT='SEND.WAD: DELETE F.PCOUT,CH.NUM:.dat'
+      DELETE F.PCOUT,CH.NUM:'.dat' ON ERROR
+         RQM
+         TRY.CNT+=1
+         IF TRY.CNT > 5 THEN GOSUB CALL.JIM.OR.OWEN
+         IF TRY.CNT > 0 THEN GOTO DEL.DAT
+      END
+
+      TRY.CNT = 0
+DEL.WAD:
+      TASK.ATTEMPT='SEND.WAD: WRITE WAD ON F.PCIN,CH.NUM:.wad'
+      WRITE WAD ON F.PCIN,CH.NUM:'.wad' ON ERROR
+         RQM
+         TRY.CNT+=1
+         IF TRY.CNT > 5 THEN GOSUB CALL.JIM.OR.OWEN
+         IF TRY.CNT > 0 THEN GOTO DEL.WAD
+      END
+
+      TRY.CNT = 0
+DEL.FLG:
+      TASK.ATTEMPT='SEND.WAD: WRITE 1 ON F.PCIN,CH.NUM:.flg'
+      WRITE 1 ON F.PCIN,CH.NUM:'.flg' ON ERROR
+         RQM
+         TRY.CNT+=1
+         IF TRY.CNT > 5 THEN GOSUB CALL.JIM.OR.OWEN
+         IF TRY.CNT > 0 THEN GOTO DEL.FLG
+      END
+      RETURN
+
+
+READ.WAD:***
+      DONE=0
+      COUNT=0
+      LOOP UNTIL DONE=1 DO
+         COUNT=COUNT+1
+         READ NUL FROM F.PCIN,CH.NUM:'.fin' THEN
+            DONE=1
+            REREAD.WAD=0
+REREAD.WAD:***
+            READ WAD.OUT FROM F.PCOUT,CH.NUM:'.dat' ELSE
+               RQM
+               REREAD.WAD+=1
+               IF REREAD.WAD<50 THEN GO REREAD.WAD
+               CALL ELINE("Taskman Error.. FIN found but no DAT .. Call Programming")
+               WAD.OUT=''
+            END
+
+            TRY.CNT = 0
+DEL.FIN2:
+            TASK.ATTEMPT='READ.WAD: DELETE F.PCIN,CH.NUM:.fin'
+            DELETE F.PCIN,CH.NUM:'.fin' ON ERROR
+               RQM
+               TRY.CNT+=1
+               IF TRY.CNT > 5 THEN GOSUB CALL.JIM.OR.OWEN
+               IF TRY.CNT > 0 THEN GOTO DEL.FIN2
+            END
+
+            TRY.CNT = 0
+DEL.DAT2:
+            TASK.ATTEMPT='READ.WAD: DELETE F.PCOUT,CH.NUM:.dat'
+            DELETE F.PCOUT,CH.NUM:'.dat' ON ERROR
+               RQM
+               TRY.CNT+=1
+               IF TRY.CNT > 5 THEN GOSUB CALL.JIM.OR.OWEN
+               IF TRY.CNT > 0 THEN GOTO DEL.DAT2
+            END
+
+            READ.WAD.FLAG=0
+            RETURN
+         END
+
+         READ TEST FROM F.PCIN,'taskman.dwn' THEN
+            CALL ELINE("Task Manager is Down!!!  Notify Programmer, Press <Enter> to retry")
+         END
+         RQM
+      REPEAT
+
+BUILD.CHUNK:***
+      CHUNK.DATA=CHANGE(CHUNK.DATA:@AM,@AM,CHAR(13):@AM)
+      WAD<-1>=CHUNK.ID'L#4':(OCONV((LEN(CHUNK.DATA)),'MCD'))'R%8':CHAR(13)
+      WAD<-1>=CHUNK.DATA
+
+* JIMR - ADDED THE FOLLOWING LINE FOR UNIVERSE VERSION 9.XX
+      WAD = CHANGE(WAD,CHAR(13):@AM,@AM)
+      RETURN
+
+9995:*** Error - Problem with data
+      CALL ELINE(ERRLINE)
+      VOUT<1>='ERROR'
+9999:*** Exit Program
+      IF OWEN OR DAVID AND TESTING THEN
+         IF MODE#'SEND' THEN
+            WRITE DOUT ON TEMP,'DOUT'
+            CRT @(0,23):"Writting TEMP DOUT":
+         END
+      END
+      RETURN
+
+
+*-------------------------------------------------------------------------
+* CALL.JIM.OR.OWEN
+*-------------------------------------------------------------------------
+CALL.JIM.OR.OWEN:
+
+      *
+      * Clear KB Buffer
+      *
+      LOOP
+         INPUT INPUTBUFFER,-1
+      UNTIL INPUTBUFFER=0
+         INPUT JUNK,1:
+      REPEAT
+
+GET.PASS:
+      CRT @(0,22):'YOU MUST CALL JIM OR OWEN, NOW!':CHAR(7):@(-3)
+      CRT @(0,23):CHAR(7):CHAR(7):CHAR(7):@(-3):
+      INPUT PASSWORD
+      IF PASSWORD = 'AFS' OR PASSWORD='MKERBOW' OR PASSWORD='OWEN' THEN
+         IF PASSWORD = 'AFS' THEN
+            TRY.CNT = -99
+            GOSUB SEND.JIM.OWEN.MAIL
+         END
+      END ELSE
+         GOTO GET.PASS
+      END
+
+      CRT TASK.ATTEMPT:'  STATUS()=':STATUS():@(-3)
+
+      RETURN
+
+
+*-------------------------------------------------------------------------
+* SEND.JIM.OWEN.MAIL
+*-------------------------------------------------------------------------
+SEND.JIM.OWEN.MAIL:
+
+      SUBJECT = ''
+      DATE.STR = OCONV(DATE(),"D2/")
+      TIME.STR = OCONV(TIME(),"MR2")
+
+      MSG = STR('-',80)
+      MSG<1,-1> ='Automated Email:  MWB Blew Chunks!'
+      MSG<1,-1> = STR('-',80)
+      MSG<1,-1> = '':CHAR(10)
+      MSG<1,-1> = '':CHAR(10)
+      MSG<1,-1> = '':CHAR(10)
+      MSG<1,-1> = 'SUBROUTINE MWB() croked trying to':CHAR(10)
+      MSG<1,-1> = TASK.ATTEMPT:CHAR(10)
+      MSG<1,-1> = ' ON DATE:':DATE.STR:' TIME: ':TIME.STR:CHAR(10)
+      MSG<1,-1> = '':CHAR(10)
+      MSG<1,-1> = '':CHAR(10)
+
+      TO.EMAIL=''
+      TO.EMAIL<1,1> = "MKERBOW@AFSLOGISTICS.COM"
+      TO.EMAIL<1,2> = "OWEN@AFSLOGISTICS.COM"
+
+      VIN=''
+      VIN<1>= TO.EMAIL                   ; * TO Address(s)
+      VIN<2>= ''                         ; * CC Address(s)
+      VIN<3>= ''                         ; * BCC Address(s)
+      VIN<4>= 'AFS'                      ; * FROM Address (AFS@AFSLOGISTICS.COM)
+      VIN<5>= 'MWB/Taskman puked'        ; * Subject
+      VIN<6>= MSG                        ; * Message
+      VOUT=''
+      CALL SENDMAIL(VIN,VOUT)
+
+   END

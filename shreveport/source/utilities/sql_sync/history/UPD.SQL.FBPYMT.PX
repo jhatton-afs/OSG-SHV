@@ -1,0 +1,134 @@
+***********************************************************************
+* Analyze bills acted upon by auditors
+* Copyright (c) AFS Logistics, LLC., 2002
+*
+* AUTHOR : Owen Holman
+* Date   : January 2002
+***********************************************************************
+***********************************************************************
+!
+* Include the ODBC definitions
+!
+$INCLUDE UNIVERSE.INCLUDE ODBC.H
+
+      form = "T##########"
+      dash = "----------"
+      Expect = ""
+      NULL=""
+      TOT.NUM.BILLS=0
+      PROG.NAME='UPD.SQL.FBPYMT.PX'
+
+      CALL GET.USER(USER)
+* Begin GRB01
+      VIN1=""
+      VIN1<1> = "UPD.SQL.FBPYMT.PX"
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "S"
+      CALL PROGTRACK(VIN1,VOUT1)
+* End GRB01
+      GET (ARG.,1) OBEG.DATE THEN
+         BEG.DATE=ICONV(OBEG.DATE,'D')
+      END ELSE
+         BEG.DATE=DATE()
+      END
+      GET (ARG.,2) OEND.DATE THEN
+         END.DATE=ICONV(OEND.DATE,'D')
+      END ELSE
+         END.DATE=DATE()
+      END
+      IF END.DATE = "" THEN
+         END.DATE = DATE()
+      END
+      IF BEG.DATE = "" THEN
+         BEG.DATE = END.DATE - 7
+      END
+      GET (ARG.,3) CLIENT.LIST ELSE CLIENT.LIST=''
+      GET (ARG.,4) START.TIME ELSE START.TIME=''
+      IF START.TIME#'' THEN
+         STMT="SLEEP ":START.TIME
+         EXECUTE STMT CAPTURING TIME.RESULTS
+      END
+      STMT='QSELECT FB.CHECK.DATE.XREF '
+      FOR X=BEG.DATE TO END.DATE
+         STMT:=QUOTE(X)
+      NEXT X
+      EXECUTE STMT RTNLIST NDX.LIST CAPTURING NDX.RESULTS
+      STMT='SSELECT FB.CHECKS.HDR WITH POST.DT >= "':BEG.DATE'D2/':'" AND WITH POST.DT <= "':END.DATE'D2/':'" AND WITH BANK.TYPE = "F"'
+****      STMT='SSELECT FB.CHECKS.HDR WITH CHECK.DATE >= "':BEG.DATE'D2/':'" AND WITH CHECK.DATE <= "':END.DATE'D2/':'" AND WITH BANK.TYPE = "F"'
+      EXECUTE STMT PASSLIST NDX.LIST RTNLIST CHECK.LIST CAPTURING CHECK.RESULTS
+      NUM.CHECKS=@SELECTED
+
+      OPEN '','FB.CHECKS.HDR' TO F.CK.HDR ELSE ABORT 201,'FB.CHECKS.HDR'
+      OPEN '','FB.CHECKS.DTL' TO F.CK.DTL ELSE ABORT 201,'FB.CHECKS.DTL'
+      CLIENT.LIST.REC=''
+      IF CLIENT.LIST#'' THEN
+         OPEN '','&SAVEDLISTS&' TO F.SL ELSE ABORT 201,'&SAVEDLISTS&'
+         READ CLIENT.LIST.REC FROM F.SL,CLIENT.LIST ELSE CLIENT.LIST.REC=''
+      END
+      CRT @(0,0):@(-1):@(0,3):'UPD.SQL.FBPYMT.PX - Processing Clients from ':BEG.DATE'D2/':' to ':END.DATE'D2/':'...'
+
+      CHECK.EOF=0
+      CHECK.CNT=0
+      CHECK.PER=0
+      DTL.PER=0
+      LOOP
+         READNEXT CHECK.ID FROM CHECK.LIST ELSE CHECK.EOF=1
+      UNTIL CHECK.EOF DO
+         CHECK.CNT+=1
+         CHECK.PCT=ICONV(CHECK.CNT/NUM.CHECKS*100,'MR2')
+         READ CHECK.REC FROM F.CK.HDR,CHECK.ID THEN
+            CRT @(0,5):@(-4):CHECK.CNT'R#4':' - ':CHECK.PCT'R26#6':'% ':CHECK.ID:' - ':CHECK.REC<2>'D2/'
+            CALL PROG.BAR(8,CHECK.CNT,NUM.CHECKS,CHECK.PER)
+            PRV.CLIENT.ID=''
+            CLEAR.DATE=CHECK.REC<5>
+            NDTL=CHECK.REC<25>
+            FOR DTL=1 TO NDTL
+               CALL PROG.BAR(10,DTL,NDTL,DTL.PER)
+               CHECK.DTL.ID=CHECK.ID:'*':DTL
+               READ CHECK.DTL.REC FROM F.CK.DTL,CHECK.DTL.ID THEN
+                  NVAL=DCOUNT(CHECK.DTL.REC<1>,@VM)
+                  FOR VAL=1 TO NVAL
+                     CLIENT.ID=CHECK.DTL.REC<3,VAL>
+                     IF CLIENT.LIST.REC#'' THEN
+                        LOCATE CLIENT.ID IN CLIENT.LIST.REC SETTING CPOS ELSE
+                           GO SKIP.BILL
+                        END
+                     END
+                     IF CLIENT.ID#PRV.CLIENT.ID THEN
+                        IF PRV.CLIENT.ID#'' THEN
+                           CLOSE F.HIST
+                        END
+                        OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.HIST ELSE GO SKIP.BILL
+                        PRV.CLIENT.ID=CLIENT.ID
+                     END
+                     BILL.ID=CHECK.DTL.REC<1,VAL>
+                     READ BILL.REC FROM F.HIST,BILL.ID THEN
+                        SQLVIN=''
+                        SQLVIN<1>=USER
+                        SQLVIN<2>=CLIENT.ID
+                        SQLVIN<3>=BILL.ID
+                        SQLVIN<4>=CLEAR.DATE
+                        SQLVOUT=''
+                        CALL UPD.SQL.FBPYMT.SUB(SQLVIN,SQLVOUT,BILL.REC)
+                     END
+                  NEXT VAL
+               END
+SKIP.BILL:     *
+            NEXT DTL
+         END
+SKIP.CHECK:*
+      REPEAT
+
+
+THE.END:***
+*     End of program
+* Begin GRB01
+      VIN1=''
+      VIN1<1> = "UPD.SQL.FBPYMT.PX"
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "E"
+      CALL PROGTRACK(VIN1,VOUT1)
+* End GRB01
+      STOP

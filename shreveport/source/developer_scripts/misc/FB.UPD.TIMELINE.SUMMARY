@@ -1,0 +1,317 @@
+      SUBROUTINE FB.UPD.TIMELINE.SUMMARY(VIN, VOUT, F.SUMMARY)
+************************************************************************
+* PROGRAM: FB.UPD.TIMELINE.SUMMARY - Subroutine to update Summary records for
+*                           tracking the amount of days it takes from
+*                           the time a Freight Bill is received in the
+*                           Mail Room to the day it is Keyed to the day
+*                           it is processed.
+*
+* PROGRAMMER: Steve Barbee
+*
+************************************************************************
+* PARAMETERS:
+* VIN<1>  - Login if of User
+* VIN<2>  - Client the activity is for
+* VIN<3>  - Carrier the activity is for
+* VIN<4>  - Date Freight Bill was received in Mail Room
+* VIN<5>  - Date Freight Bill was entered
+* VIN<6>  - Elapsed Business Days from Mail Room to Keying of Freight
+*           Bill. Calculated in FB.2.1.NW and stored in FB.BILLS field
+* VIN<7>  - Date Freight Bill was processed. Normally null except
+*           from FB.2.3.NW.
+* VIN<8>  - Elapsed Business Days from Keying of Freight Bill to
+*           Processing of Freight Bill. Normall null except from
+*           FB.2.3.NW. Calculated in FB.2.3.NW and stored in FB.BILLS
+*           field
+* VIN<9>  - Freight Bill number. Used only in the event of an error.
+*           The Freight Bill number that causes the count to go negative
+*           is NOT necessarily the Freight Bill that caused the problem
+*           but is included in case it helps trace the problem.
+* VIN<10> - Transaction Type
+*           'FN'   - Freight Bill entry 'Normal'
+*                    'Normal' is defined as the 'First Touch' of a
+*                    previously unknown Freight Bill that will add
+*                    to the Count of Freight Bills and the number of
+*                    Elapsed Days
+*           'RFN'  - For rebuilding the summary records from the
+*                    FB.BILLS.HIST files. Code only used from
+*                    FB.BUILD.TIMELINE.SUMMARY program.
+*           'DEL'  - Freight Bill deleted
+*           'PN'   - Freight Bill Processing
+*           'RPN'  - A code from FB.BUILD.TIMELINE.SUMMARY used to
+*                    rebuild FB.TIMELINE.SUMMARY from FB.BILLS.HIST
+*                    records that have already been Processed. As such,
+*                    it ONLY updates the PROCESSED Summary records.
+*           'UNP'  - Freight Bill Un-Processing
+*
+* VOUT<1> - Used to pass back list of ids with count in field
+*           1 < 0
+* VOUT<2> - Used to pass back list of the 'Counts' in the Summary
+*           Record(s) in values associated with VOUT<1>.
+* VOUT<3> - Used to pass back value associated list of the TRANS.TYPE
+*           for the related id in value 1
+* VOUT<4> - Used to pass back value associated list of the Freight Bill
+*           number for the related id in value 1
+*
+* F.SUMMARY - File variable for the FB.TIMELINE.SUMMARY file
+************************************************************************
+*Initialization:
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+
+      VOUT=''
+      ID.ERR.LIST = ''
+      SUMMARY.REC.FB.CNT = ''
+      TRANS.TYPE.ERR.LIST = ''
+      FB.ERR.LIST = ''
+
+      ENTERED.SUMMARY.UPDATED = FALSE
+
+      USER = VIN<1>
+      CLIENT = VIN<2>
+      CARRIER = VIN<3>
+      INT.MAIL.ROOM.DATE = VIN<4>
+      INT.FB.KEY.DATE = VIN<5>
+      ELAPSED.DAYS.MR.TO.KEY = VIN<6>
+      INT.FB.PROCESS.DATE = VIN<7>
+      ELAPSED.DAYS.KEY.TO.PROCESS = VIN<8>
+      FB.NUM = VIN<9>
+      TRANS.TYPE = VIN<10>
+
+      SUMMARY.ENTERED.IDS = ''
+      SUMMARY.ENTERED.IDS<1> = USER:'*':CLIENT:'*':CARRIER:'*':INT.MAIL.ROOM.DATE:'*':INT.FB.KEY.DATE:'*'
+      SUMMARY.ENTERED.IDS<2> = USER:'*':CLIENT:'*ALL*':INT.MAIL.ROOM.DATE:'*':INT.FB.KEY.DATE:'*'
+      SUMMARY.ENTERED.IDS<3> = USER:'*ALL*ALL*':INT.MAIL.ROOM.DATE:'*':INT.FB.KEY.DATE:'*'
+      SUMMARY.ENTERED.IDS<4> = USER:'*ALL*':CARRIER:'*':INT.MAIL.ROOM.DATE:'*':INT.FB.KEY.DATE:'*'
+      SUMMARY.ENTERED.IDS<5> = 'ALL*':CLIENT:'*':CARRIER:'*':INT.MAIL.ROOM.DATE:'*':INT.FB.KEY.DATE:'*'
+      SUMMARY.ENTERED.IDS<6> = 'ALL*':CLIENT:'*ALL*':INT.MAIL.ROOM.DATE:'*':INT.FB.KEY.DATE:'*'
+      SUMMARY.ENTERED.IDS<7> = 'ALL*ALL*':CARRIER:'*':INT.MAIL.ROOM.DATE:'*':INT.FB.KEY.DATE:'*'
+*      SUMMARY.ENTERED.IDS<8> = 'ALL*ALL*ALL*':INT.MAIL.ROOM.DATE:'*':INT.FB.KEY.DATE:'*'
+      MAX.ID.CNT = DCOUNT(SUMMARY.ENTERED.IDS, @FM)
+
+* Main Process
+
+      FOR MIC = 1 TO MAX.ID.CNT
+
+         ENTERED.SUMMARY.UPDATED = FALSE
+         PROCESSED.SUMMARY.UPDATED = FALSE
+         IDS.UPDATE = FALSE
+         ENTERED.ID = SUMMARY.ENTERED.IDS<MIC>
+         PROCESSED.ID = ENTERED.ID:INT.FB.PROCESS.DATE
+
+         IF ENTERED.ID # '' THEN
+            LOOP
+               BEGIN CASE
+                  CASE TRANS.TYPE = 'FN'
+                     GOSUB READ.ENTERED.SUMMARY.RECORD
+                     GOSUB UPDATE.ENTERED.SUMMARY.RECORD
+                     IDS.UPDATED = ENTERED.SUMMARY.UPDATED
+                  CASE TRANS.TYPE = 'RFN'
+                     GOSUB READ.ENTERED.SUMMARY.RECORD
+                     GOSUB UPDATE.ENTERED.SUMMARY.RECORD
+                     IDS.UPDATED = ENTERED.SUMMARY.UPDATED
+                  CASE TRANS.TYPE = 'PN'
+                     GOSUB READ.ENTERED.SUMMARY.RECORD
+                     GOSUB READ.PROCESSED.SUMMARY.RECORD
+                     GOSUB UPDATE.PROCESSED.SUMMARY.RECORD
+                     IDS.UPDATED = PROCESSED.SUMMARY.UPDATED
+                     GOSUB UPDATE.ENTERED.SUMMARY.RECORD
+                     IF IDS.UPDATED AND ENTERED.SUMMARY.UPDATED THEN IDS.UPDATED = TRUE
+                  CASE TRANS.TYPE = 'RPN'
+                     GOSUB READ.PROCESSED.SUMMARY.RECORD
+                     GOSUB UPDATE.PROCESSED.SUMMARY.RECORD
+                     IDS.UPDATED = PROCESSED.SUMMARY.UPDATED
+                  CASE TRANS.TYPE = 'DEL'
+                     GOSUB READ.ENTERED.SUMMARY.RECORD
+                     GOSUB UPDATE.ENTERED.SUMMARY.RECORD
+                     IDS.UPDATED = ENTERED.SUMMARY.UPDATED
+                  CASE TRANS.TYPE = 'UNP'
+                     GOSUB READ.PROCESSED.SUMMARY.RECORD
+                     GOSUB READ.ENTERED.SUMMARY.RECORD
+                     GOSUB UPDATE.ENTERED.SUMMARY.RECORD
+                     IDS.UPDATED = ENTERED.SUMMARY.UPDATED
+                     GOSUB UPDATE.PROCESSED.SUMMARY.RECORD
+                     IF IDS.UPDATED AND PROCESSED.SUMMARY.UPDATED THEN IDS.UPDATED = TRUE
+                  CASE 1
+                     VOUT = 'TRANS.TYPE=':TRANS.TYPE
+                     RETURN
+               END CASE
+            UNTIL IDS.UPDATED DO REPEAT
+         END
+
+      NEXT MC
+
+      IF ID.ERR.LIST # '' THEN
+         VOUT = ID.ERR.LIST
+         VOUT<2> = SUMMARY.REC.FB.CNT
+         VOUT<3> = TRANS.TYPE.ERR.LIST
+         VOUT<4> = FB.ERR.LIST
+      END
+      RETURN
+
+****************************
+READ.ENTERED.SUMMARY.RECORD:
+****************************
+
+      READU D.ENT.SUMMARY FROM F.SUMMARY, ENTERED.ID LOCKED
+         WLVIN = STATUS()
+         CALL WHOS.LOCKING(WLVIN, WLVOUT)
+         CALL ELINE('Record ':ENTERED.ID:' in the FB Summary file is locked. Please press Enter.')
+
+      END THEN
+         UPDATE.ENTERED.SUMMARY = TRUE
+
+      END ELSE
+         D.ENT.SUMMARY = ''
+         D.ENT.SUMMARY<2> = ELAPSED.DAYS.MR.TO.KEY
+         UPDATE.ENTERED.SUMMARY = TRUE
+
+      END
+
+      RETURN
+
+******************************
+UPDATE.ENTERED.SUMMARY.RECORD:
+******************************
+
+      UPDATE.ENTERED.SUMMARY = TRUE
+      BEGIN CASE
+         CASE TRANS.TYPE = 'FN'
+
+            D.ENT.SUMMARY<1> += 1
+
+         CASE TRANS.TYPE = 'RFN'
+
+            D.ENT.SUMMARY<1> += 1
+
+         CASE TRANS.TYPE = 'PN'
+
+*In the event the counter below goes from 0 (zero) or null to -1,
+*recreate the record.
+            D.ENT.SUMMARY<1> -= 1
+
+         CASE TRANS.TYPE = 'DEL'
+
+*In the event that we are Deleting a record and it causes the
+*counter to go from 0 (or null) to -1, recreate (WRITE) the
+*'Entered' record.
+            D.ENT.SUMMARY<1> -= 1
+
+         CASE TRANS.TYPE = 'UNP'
+
+            D.ENT.SUMMARY<1> += 1
+
+         CASE 1
+
+            UPDATE.ENTERED.SUMMARY = FALSE
+
+      END CASE
+
+      BEGIN CASE
+         CASE D.ENT.SUMMARY<1> > 0
+            NULL
+         CASE D.ENT.SUMMARY<1> + 0 = 0
+            DELETE F.SUMMARY, ENTERED.ID
+            UPDATE.ENTERED.SUMMARY = FALSE
+         CASE 1
+*In the event that we are Processing a record and it causes the
+*counter to go from 0 (or null) to -1, recreate (WRITE) the
+*'Entered' record.
+
+            ID.ERR.LIST = INSERT(ID.ERR.LIST, 1, -1, 0, ENTERED.ID)
+            SUMMARY.REC.FB.CNT = INSERT(SUMMARY.REC.FB.CNT, 1, -1, 0, D.ENT.SUMMARY<1>)
+            TRANS.TYPE.ERR.LIST = INSERT(TRANS.TYPE.ERR.LIST, 1, -1, 0, TRANS.TYPE)
+            FB.ERR.LIST = INSERT(FB.ERR.LIST, 1, -1, 0, FB.NUM)
+      END CASE
+
+      ENTERED.SUMMARY.UPDATED = TRUE
+      IF UPDATE.ENTERED.SUMMARY THEN
+         WRITE D.ENT.SUMMARY ON F.SUMMARY, ENTERED.ID
+      END ELSE
+         RELEASE F.SUMMARY, ENTERED.ID
+      END
+
+      RETURN
+
+******************************
+READ.PROCESSED.SUMMARY.RECORD:
+******************************
+
+      READU D.PROC.SUMMARY FROM F.SUMMARY, PROCESSED.ID LOCKED
+         WLVIN = STATUS()
+         CALL WHOS.LOCKING(WLVIN, WLVOUT)
+         CALL ELINE('Record ':PROCESSED.ID:' in the FB Summary file is locked. Please press Enter.')
+
+      END THEN
+         D.PROC.SUMMARY<2> = ELAPSED.DAYS.MR.TO.KEY
+         IF TRANS.TYPE = 'PN' OR TRANS.TYPE = 'RPN' THEN
+            D.PROC.SUMMARY<3> = ELAPSED.DAYS.KEY.TO.PROCESS
+         END
+
+      END ELSE
+         D.PROC.SUMMARY = ''
+         D.PROC.SUMMARY<2> = ELAPSED.DAYS.MR.TO.KEY
+         IF TRANS.TYPE = 'PN' OR TRANS.TYPE = 'RPN' THEN
+            D.PROC.SUMMARY<3> = ELAPSED.DAYS.KEY.TO.PROCESS
+         END
+
+      END
+
+      RETURN
+
+********************************
+UPDATE.PROCESSED.SUMMARY.RECORD:
+********************************
+
+      UPDATE.PROCESSED.SUMMARY = TRUE
+      BEGIN CASE
+
+         CASE TRANS.TYPE = 'PN'
+
+            D.PROC.SUMMARY<1> += 1
+
+         CASE TRANS.TYPE = 'RPN'
+
+            D.PROC.SUMMARY<1> += 1
+
+         CASE TRANS.TYPE = 'UNP'
+
+*In the event that we are UnProcessing a record and it causes the
+*counter to go from 0 (or null) to -1, recreate (WRITE) the
+*'Processed' record.
+            D.PROC.SUMMARY<1> -= 1
+
+         CASE 1
+
+            UPDATE.PROCESSED.SUMMARY = FALSE
+
+      END CASE
+
+      BEGIN CASE
+         CASE D.PROC.SUMMARY<1> > 0
+            NULL
+         CASE D.PROC.SUMMARY<1> +0 = 0
+            DELETE F.SUMMARY, PROCESSED.ID
+            UPDATE.PROCESSED.SUMMARY = FALSE
+         CASE 1
+*In the event that we are UnProcessing a record and it causes the
+*counter to go from 0 (or null) to -1, recreate (WRITE) the
+*'Processed' record.
+
+            ID.ERR.LIST = INSERT(ID.ERR.LIST, 1, -1, 0, PROCESSED.ID)
+            SUMMARY.REC.FB.CNT = INSERT(SUMMARY.REC.FB.CNT, 1, -1, 0, D.ENT.SUMMARY<1>)
+            TRANS.TYPE.ERR.LIST = INSERT(TRANS.TYPE.ERR.LIST, 1, -1, 0, TRANS.TYPE)
+            FB.ERR.LIST = INSERT(FB.ERR.LIST, 1, -1, 0, FB.NUM)
+
+      END CASE
+
+      PROCESSED.SUMMARY.UPDATED = TRUE
+      IF UPDATE.PROCESSED.SUMMARY THEN
+         WRITE D.PROC.SUMMARY ON F.SUMMARY, PROCESSED.ID
+      END ELSE
+         RELEASE F.SUMMARY, PROCESSED.ID
+      END
+
+      RETURN
+
+   END

@@ -1,0 +1,943 @@
+********************************************************************************
+* PROGRAM FB.3.2
+* PROGRAM TO PROCESS "FREIGHT COSTS BY CARRIER" REPORT
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: BRIAN M. QUEEN
+* DATE:   AUGUST 30, 1990
+*
+* Last updated by AFS (valerie) at 09:22:08 on 03/31/1994.
+*   UPDATED FOR UNIVERSE.
+*
+* Further modifications by James Barberousse on November 7, 2001
+* 031710 - JMK01 - Add Report by Parent Client
+********************************************************************************
+*
+      $INCLUDE PROG.ADMIN INC_OPTIONS
+
+*
+* Initialize variables
+*
+      INPUT PROCESS.TYPE
+      PROMPT''
+      STATUS=''
+      ERRMSG=''
+      MASK.CHAR='-'
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='FB.3.2'
+      PROG.DESC='Carrier Freight Cost Analysis Report'
+      PACK.NAME='Freight Billing'
+
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.3.2' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+*
+* Diminsion arrays
+*
+      DIM MONTHS(12)
+
+*
+* Open files
+*
+      OPEN '','CLIENTS' TO F.CLIENT ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIER ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','FB.CONTROL' TO F.CONTROL ELSE
+         CALL OPEN.ABORT('FB.CONTROL',PROG.NAME)
+      END
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+         CALL OPEN.ABORT('FB.TRANSPORT',PROG.NAME)
+      END
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+         END
+      END
+      OPEN '','DICT FBWORK':CH.NUM TO F.DICT.WORK ELSE
+         CALL OPEN.ABORT('DICT FBWORK':CH.NUM,PROG.NAME)
+      END
+*
+      MATREAD MONTHS FROM F.CONTROL,'MONTHS' ELSE
+         CALL READ.ABORT('FB.CONTROL','MONTHS',PROG.NAME)
+      END
+*     USER=OCONV(SYSTEM(19),'MCU')
+      CALL GET.USER(USER)
+
+*
+* Create work file dictionary items
+*
+      TEMP=''
+      TEMP<1>='A'
+      TEMP<2>='5'
+      TEMP<9>='R'
+      TEMP<10>=15
+      WRITE TEMP ON F.DICT.WORK,'SORTER'
+      TEMP<2>='1'
+      TEMP<10>='1'
+      WRITE TEMP ON F.DICT.WORK,'IO.STATUS'
+      TEMP<1>='S'
+      TEMP<2>='0'
+      TEMP<8>='G2*3'
+      TEMP<10>='5'
+      WRITE TEMP ON F.DICT.WORK,'DIVISION'
+*
+*  WORK FILE CONSISTS OF ITEMS WITH THE FOLLOWING DETAIL
+*    ATTRIBUTE   DESCRIPTION
+*      ID          2 CARRIER NUMBER:*:I/O STATUS (EX:00351*I OR 00351*O)
+*      1           I/O STATUS (I OR O)
+*      2           NUMBER OF SHIPMENTS (CURRENT PERIOD)
+*      3           NUMBER OF SHIPMENTS (YEAR TO DATE)
+*      4           TOTAL FREIGHT DOLLARS (CURRENT PERIOD)
+*      5           TOTAL FREIGHT DOLLARS (YEAR TO DATE)
+*      6           TOTAL WEIGHT (CURRENT PERIOD)
+*      7           TOTAL WEIGHT (YEAR TO DATE)
+*      8           MILEAGE SHIPMENTS (CURRENT PERIOD)
+*      9           MILEAGE SHIPMENTS (YEAR TO DATE)
+*     10           TOTAL MILEAGES (CURRENT PERIOD)
+*     11           TOTAL MILEAGES (YEAR TO DATE)
+*
+*
+* Display screen heading
+*
+30:   CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+
+*
+* Get client number
+*
+50:   MASK=STR(MASK.CHAR,20)
+      HELP='Enter the client number or name to search. [X]=Exit [EX]=Exit'
+      CALL GEN.IN(0,3,'Client Number:       ':MASK,'',Q,0,20,'','',2,-20,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX' OR QI='X'
+            GOTO THE.END
+         CASE ALPHA(QI)
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,3):'Client Number:'
+            IF ITEM.LIST='' OR DCOUNT(ITEM.LIST<1>,@VM) > 1 THEN GOTO 50
+            IF NOT(NUM(ITEM.LIST<1,1>)) THEN GOTO 50
+            QI=ITEM.LIST<1,1>'R%5'
+         CASE QI=''
+            CALL ELINE('Enter a client number.')
+            GOTO 50
+      END CASE
+      CLIENT.ID=QI'R%5'
+      READ CLIENT.REC FROM F.CLIENT,CLIENT.ID ELSE
+         IF PROCESS.TYPE='STD' THEN
+            CALL ELINE('Error: Client ':CLIENT.ID:' not on file.')
+         END
+         GOTO 50
+      END
+      CLIENT.NAME=CLIENT.REC<2>
+      FYBD=CLIENT.REC<29>
+      CRT @(21,3):CLIENT.ID:' ':CLIENT.NAME:@(-4)
+      IF CLIENT.ID[1,1]='8' THEN ; * JMK01
+         MULTI.CLIENT=1 ; * JMK01
+      END ELSE ; * JMK01
+         MULTI.CLIENT=0  ; * JMK01
+      END ; * JMK01
+
+*
+* Get transportation mode
+*
+75:   MASK='ALL':STR(MASK.CHAR,1)
+      HELP='Enter transportation mode. [ENTER]=All Modes [L]=List Modes [X]=Back [EX]=Exit'
+      CALL GEN.IN(0,5,'Transportation Mode: ':MASK,'',Q,0,4,'','',2,-4,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            CRT @(0,3):@(-4)
+            GOTO 50
+         CASE QI='L'
+            HED=CO.NAME:' Transportation Modes':"'L'"
+            HED:=STR(MASK.CHAR,40)
+            EXECUTE 'SORT FB.TRANSPORT 1 2 HEADING "':HED:'" (H'
+            CALL ELINE('')
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,3):'Client Number:':@(21,3):CLIENT.ID:' ':CLIENT.NAME
+            GOTO 75
+         CASE QI=''
+            QI='ALL'
+      END CASE
+      TRANSPORT.MODE=QI
+      IF TRANSPORT.MODE#'ALL' THEN
+         READ TRANSPORT.REC FROM F.TRANSPORT,TRANSPORT.MODE ELSE
+            CALL ELINE('Transportation Mode ':TRANSPORT.MODE:' not on file.')
+            GOTO 75
+         END
+      END
+      IF TRANSPORT.MODE='ALL' THEN
+         TRANSPORT.DESCRIP=''
+      END ELSE
+         TRANSPORT.DESCRIP=TRANSPORT.REC<1>
+      END
+      CRT @(21,5):TRANSPORT.MODE:' ':TRANSPORT.DESCRIP:@(-4)
+
+*
+* Get current period beginning date
+*
+100:  MASK='MM/DD/YYYY'
+      HELP='Enter the current period beginning date. [T]=Today [X]=Back [EX]=Exit'
+      CALL GEN.IN(0,7,'Beginning Date:      ':MASK,'',Q,0,10,'','',2,-10,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            CRT @(0,5):@(-4)
+            GOTO 75
+         CASE QI='T'
+            QI=DATE()'D4/'
+         CASE QI=''
+            CALL ELINE('Enter a date.')
+            GOTO 100
+         CASE QI MATCHES '0N'
+            BEGIN CASE
+               CASE LEN(QI)=4
+                  QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,4]
+               CASE LEN(QI)=6
+                  IF QI[5,2]<50 THEN
+                     QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,2]:QI[5,2]
+                  END ELSE
+                     QI=QI[1,2]:'.':QI[3,2]:'.':'19':QI[5,2]           ; * ((DATE()-365)'D4/')[7,2]:QI[5,2]
+                  END
+               CASE LEN(QI)=8
+                  QI=QI[1,2]:'.':QI[3,2]:'.':QI[5,4]
+               CASE 1
+                  CALL ELINE('Use one of the following formats: MMDD or MMDDYY or MMDDYYYY.')
+                  GOTO 100
+            END CASE
+      END CASE
+      BEG.DATE=ICONV(QI,'D')
+      IF BEG.DATE='' THEN
+         CALL ELINE('Invalid Date.')
+         GOTO 100
+      END
+      CRT @(21,7):BEG.DATE'D4/'
+
+*
+* Get current period ending date
+*
+200:  MASK=DATE()'D4/'
+      HELP='Enter the current period ending date. [T]=Today [X]=Back [EX]=Exit'
+      CALL GEN.IN(0,9,'Ending Date:         ':MASK,'',Q,0,10,'','',2,-10,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            CRT @(0,7):@(-4)
+            GOTO 100
+         CASE QI='T'
+            QI=DATE()'D4/'
+         CASE QI=''
+            QI=MASK
+         CASE QI MATCHES '0N'
+            BEGIN CASE
+               CASE LEN(QI)=4
+                  QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,4]
+               CASE LEN(QI)=6
+                  IF QI[5,2]<50 THEN
+                     QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,2]:QI[5,2]
+                  END ELSE
+                     QI=QI[1,2]:'.':QI[3,2]:'.':'19':QI[5,2]           ; * ((DATE()-365)'D4/')[7,2]:QI[5,2]
+                  END
+               CASE LEN(QI)=8
+                  QI=QI[1,2]:'.':QI[3,2]:'.':QI[5,4]
+               CASE 1
+                  CALL ELINE('Use one of the following formats: MMDD or MMDDYY or MMDDYYYY.')
+                  GOTO 200
+            END CASE
+      END CASE
+      END.DATE=ICONV(QI,'D')
+      IF END.DATE='' THEN
+         CALL ELINE('Invalid Date.')
+         GOTO 200
+      END
+      CRT @(21,9):END.DATE'D4/'
+      IF END.DATE LT BEG.DATE THEN
+         IF PROCESS.TYPE='STD' THEN CALL ELINE('Error: End date must be before beginning date.')
+         GOTO 200
+      END
+
+*
+* Create beginning of year and monthly descriptions
+*
+      BEG.MO=OCONV(BEG.DATE,'DM')
+      BEG.YR=OCONV(BEG.DATE,'DY')
+      FISCAL.MO=FIELD(FYBD,'.',1)'R0'
+      IF FISCAL.MO=0 THEN FISCAL.MO=1
+      FISCAL.DAY=FIELD(FYBD,'.',2)'R0'
+      IF FISCAL.DAY=0 THEN FISCAL.DAY=1
+      IF BEG.MO<FISCAL.MO THEN
+         FISCAL.YR=BEG.YR-1
+      END ELSE
+         FISCAL.YR=BEG.YR
+      END
+      F.DATE=FISCAL.MO'R%2':'.':FISCAL.DAY'R%2':'.':FISCAL.YR
+      F.DATE=ICONV(F.DATE,'D2.')
+
+300:  IF F.DATE='' THEN MASK='MM/DD/YYYY' ELSE MASK=F.DATE'D4/'
+      HELP='Enter the date to start calculating YTD data. [T]=Today [X]=Back [EX]=Exit'
+      CALL GEN.IN(0,11,'YTD Beginning Date:  ':MASK,'',Q,0,10,'','',2,-10,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            CRT @(0,9):@(-4)
+            GOTO 200
+         CASE QI='T'
+            QI=DATE()'D4/'
+         CASE QI=''
+            QI=MASK
+         CASE QI MATCHES '0N'
+            BEGIN CASE
+               CASE LEN(QI)=4
+                  QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,4]
+               CASE LEN(QI)=6
+                  IF QI[5,2]<50 THEN
+                     QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,2]:QI[5,2]
+                  END ELSE
+                     QI=QI[1,2]:'.':QI[3,2]:'.':'19':QI[5,2]           ; * ((DATE()-365)'D4/')[7,2]:QI[5,2]
+                  END
+               CASE LEN(QI)=8
+                  QI=QI[1,2]:'.':QI[3,2]:'.':QI[5,4]
+               CASE 1
+                  CALL ELINE('Use one of the following formats: MMDD or MMDDYY or MMDDYYYY.')
+                  GOTO 300
+            END CASE
+      END CASE
+      F.DATE=ICONV(QI,'D')
+      IF F.DATE='' THEN
+         CALL ELINE('Invalid Date.')
+         GOTO 300
+      END
+      CRT @(21,11):F.DATE'D4/':@(-4)
+      IF F.DATE>BEG.DATE THEN
+         CALL ELINE('YTD beginning date cannot be later than current beginning date.')
+         F.DATE=''
+         GOTO 300
+      END
+      IF F.DATE<(END.DATE-365) THEN
+         CALL ELINE('Warning: YTD beginning date is more than a year before the ending date.')
+      END
+
+*
+* Check for mileages
+*
+      IF CLIENT.REC<26>='Y' THEN MILES=1 ELSE MILES=0
+      IF CLIENT.REC<16>='Y' THEN WEIGHTS=1 ELSE WEIGHTS=0
+
+      TEMP.DATE=FISCAL.MO'R%2':'.':FISCAL.DAY'R%2':'.':(FISCAL.YR+1)'R%2'
+      TEMP.DATE=ICONV(TEMP.DATE,'D2.')
+      IF TEMP.DATE<=END.DATE THEN
+         YTD.TOTAL=0
+         CALL ELINE('YTD Figures WILL NOT PRINT with this Fiscal Year Date.')
+      END ELSE
+         YTD.TOTAL=1
+         CALL ELINE('YTD Figures WILL PRINT with this Fiscal Year Date.')
+      END
+
+*
+* Ask if data correct
+*
+400:  HELP='[Enter]=Continue [X]=Back [EX]=Exit'
+      CALL GEN.IN(0,22,'Select: --','',Q,0,2,'','',2,-2,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='EX' THEN GOTO THE.END
+      IF QI='X' THEN
+         CRT @(0,22):@(-4)
+         CRT @(21,11):@(-4)
+         GOTO 300
+      END
+      IF QI#'' THEN GOTO 400
+*
+      END.MO=OCONV(END.DATE,'DM')
+      BEG.MO=MONTHS(BEG.MO)
+      END.MO=MONTHS(END.MO)
+      IF BEG.MO=END.MO THEN
+         MONTH.DESC=BEG.MO
+      END ELSE
+         MONTH.DESC=BEG.MO:' to ':END.MO
+      END
+
+      CRT @(0,2):@(-3)
+      LINE='Processing Client ':CLIENT.ID:' ':CLIENT.NAME
+      CALL CENTER(LINE,80)
+      CRT @(0,10):LINE
+      CRT
+
+*
+* Clear work file
+*
+      CLEARFILE F.WORK
+      IF MULTI.CLIENT THEN ; * JMK01
+         MULTI.STMT='SSELECT CLIENTS WITH 147 = "':CLIENT.ID:'"' ; * JMK01
+         EXECUTE MULTI.STMT RTNLIST MULTI.LIST CAPTURING MULTI.OUTPUT ; * JMK01
+         IF @SELECTED < 1 THEN ; * JMK01
+            MULTI.CLIENT='' ; * JMK01
+            GO END.MULTI.CLIENT ; * JMK01
+         END ; * JMK01
+         MULTI.EOF=0 ; * JMK01
+         MULTI.CNT=0 ; * JMK01
+         MULTI.PER='' ; * JMK01
+BEG.MULTI.CLIENT: * JMK01
+         READNEXT CLIENT.ID FROM MULTI.LIST ELSE ; * JMK01
+            MULTI.CLIENT=0 ; * JMK01
+            GO END.MULTI.CLIENT ; * JMK01
+         END ; * JMK01
+         IF CLIENT.ID[1,1]='8' OR CLIENT.ID[1,1]='9' THEN ; * JMK01
+            GO BEG.MULTI.CLIENT ; * JMK01
+         END            ; * JMK01
+      END ; * JMK01
+
+*
+* Select data for current client
+*
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS ELSE
+         CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,PROG.NAME)
+      END
+      IF YTD.TOTAL THEN
+         STMT='SELECT FB.BILLS.HIST,':CLIENT.ID
+         IF TRANSPORT.MODE#'ALL' THEN
+            STMT:=' WITH 21 = "':TRANSPORT.MODE:'"'
+         END
+         STMT:=' AND WITH 37 GE "':OCONV(F.DATE,'D2/'):'"'
+         STMT:=' AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'
+         STMT:=' AND WITH 39 # "R"'
+         EXECUTE STMT PASSLIST CAPTURING OUTPUT
+*       EXECUTE 'SELECT FB.BILLS.HIST,':CLIENT.ID:' WITH 37 GE "':OCONV(F.DATE,'D2/'):'"':AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'" AND WITH 39 # "R"' PASSLIST CAPTURING OUTPUT
+      END ELSE
+         STMT='SELECT FB.BILLS.HIST,':CLIENT.ID
+         IF TRANSPORT.MODE#'ALL' THEN
+            STMT:=' WITH 21 = "':TRANSPORT.MODE:'"'
+         END
+         STMT:=' AND WITH 37 GE "':OCONV(BEG.DATE,'D2/'):'"'
+         STMT:=' AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'
+         STMT:=' AND WITH 39 # "R"'
+         EXECUTE STMT PASSLIST CAPTURING OUTPUT
+*       EXECUTE 'SELECT FB.BILLS.HIST,':CLIENT.ID:' WITH 37 GE "':OCONV(BEG.DATE,'D2/'):'"':AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'" AND WITH 39 # "R"' PASSLIST CAPTURING OUTPUT
+      END
+      IF SYSTEM(11) ELSE
+         IF PROCESS.TYPE='STD' THEN
+            IF MULTI.CLIENT THEN ; * JMK01
+               GO BEG.MULTI.CLIENT ; * JMK01
+            END ; * JMK01
+            CALL ELINE('No data present with the selected criteria.')
+         END
+         GOTO THE.END
+      END
+      NUM.ITEMS=@SELECTED
+      COUNTER=0
+*
+* Get next record
+*
+      DONE=0
+      LOOP
+         READNEXT HIST.ID ELSE DONE=1
+      UNTIL DONE=1 DO
+         COUNTER=COUNTER+1
+         CALL PROG.BAR(21,COUNTER,NUM.ITEMS,PER)
+         IF FIELD(HIST.ID,'*',3) GT 0 ELSE
+            READ HIST.REC FROM F.BILLS,HIST.ID THEN
+               IF HIST.REC<6>='LX' THEN HIST.REC<6>=1
+               BALDUE=0
+               PRO=FIELD(HIST.ID,'*',2)
+               START=LEN(PRO)-1
+               IF PRO[START,2]='BD' ! PRO[START,2]='AD' THEN BALDUE=1
+*
+* Update carrier total record in work file
+*
+               IO.STAT=HIST.REC<2>
+               IF IO.STAT='' THEN IO.STAT='O'
+               CARRIER=FIELD(HIST.ID,'*',1)
+               WORK.ID=CARRIER:'*':IO.STAT
+               BOTH.ID=CARRIER:'*B'
+               READ WORK.REC FROM F.WORK,WORK.ID ELSE WORK.REC=''
+               WORK.REC<1>=IO.STAT
+               READ BOTH.REC FROM F.WORK,BOTH.ID ELSE BOTH.REC=''
+               BOTH.REC<1>='B'
+*
+* Update current totals
+*
+               IF HIST.REC<37> GE BEG.DATE THEN
+                  WORK.REC<4>=WORK.REC<4>+HIST.REC<8>
+                  BOTH.REC<4>=BOTH.REC<4>+HIST.REC<8>
+                  IF NOT(BALDUE) THEN
+                     WORK.REC<2>=WORK.REC<2>+1
+                     BOTH.REC<2>=BOTH.REC<2>+1
+                     WORK.REC<6>=WORK.REC<6>+HIST.REC<6>
+                     BOTH.REC<6>=BOTH.REC<6>+HIST.REC<6>
+                     IF HIST.REC<19>'R0' NE 0 THEN
+                        WORK.REC<8>=WORK.REC<8>+1
+                        BOTH.REC<8>=BOTH.REC<8>+1
+                        WORK.REC<10>=WORK.REC<10>+HIST.REC<19>
+                        BOTH.REC<10>=BOTH.REC<10>+HIST.REC<19>
+                     END
+                  END
+               END
+*
+* Update year to date totals
+*
+               WORK.REC<5>=WORK.REC<5>+HIST.REC<8>
+               BOTH.REC<5>=BOTH.REC<5>+HIST.REC<8>
+               IF NOT(BALDUE) THEN
+                  WORK.REC<3>=WORK.REC<3>+1
+                  BOTH.REC<3>=BOTH.REC<3>+1
+                  WORK.REC<7>=WORK.REC<7>+HIST.REC<6>
+                  BOTH.REC<7>=BOTH.REC<7>+HIST.REC<6>
+                  IF HIST.REC<19>'R0' NE 0 THEN
+                     WORK.REC<9>=WORK.REC<9>+1
+                     BOTH.REC<9>=BOTH.REC<9>+1
+                     WORK.REC<11>=WORK.REC<11>+HIST.REC<19>
+                     BOTH.REC<11>=BOTH.REC<11>+HIST.REC<19>
+                  END
+               END
+               WRITE WORK.REC ON F.WORK,WORK.ID
+               WRITE BOTH.REC ON F.WORK,BOTH.ID
+*
+* Update total work record
+*
+               TOT.WORK.ID='TOTAL*':IO.STAT
+               TOT.BOTH.ID='TOTAL*B'
+               READ TOT.WORK.REC FROM F.WORK,TOT.WORK.ID ELSE
+                  TOT.WORK.REC=''
+               END
+               READ TOT.BOTH.REC FROM F.WORK,TOT.BOTH.ID ELSE
+                  TOT.BOTH.REC=''
+               END
+*
+* Update current totals
+*
+               IF HIST.REC<37> GE BEG.DATE THEN
+                  TOT.WORK.REC<4>=TOT.WORK.REC<4>+HIST.REC<8>
+                  TOT.BOTH.REC<4>=TOT.BOTH.REC<4>+HIST.REC<8>
+                  IF NOT(BALDUE) THEN
+                     TOT.WORK.REC<2>=TOT.WORK.REC<2>+1
+                     TOT.BOTH.REC<2>=TOT.BOTH.REC<2>+1
+                     TOT.WORK.REC<6>=TOT.WORK.REC<6>+HIST.REC<6>
+                     TOT.BOTH.REC<6>=TOT.BOTH.REC<6>+HIST.REC<6>
+                     IF HIST.REC<19>'R0' NE 0 THEN
+                        TOT.WORK.REC<8>=TOT.WORK.REC<8>+1
+                        TOT.BOTH.REC<8>=TOT.BOTH.REC<8>+1
+                        TOT.WORK.REC<10>=TOT.WORK.REC<10>+HIST.REC<19>
+                        TOT.BOTH.REC<10>=TOT.BOTH.REC<10>+HIST.REC<19>
+                     END
+                  END
+               END
+*
+* Update year to date totals
+*
+               TOT.WORK.REC<5>=TOT.WORK.REC<5>+HIST.REC<8>
+               TOT.BOTH.REC<5>=TOT.BOTH.REC<5>+HIST.REC<8>
+               IF NOT(BALDUE) THEN
+                  TOT.WORK.REC<3>=TOT.WORK.REC<3>+1
+                  TOT.BOTH.REC<3>=TOT.BOTH.REC<3>+1
+                  TOT.WORK.REC<7>=TOT.WORK.REC<7>+HIST.REC<6>
+                  TOT.BOTH.REC<7>=TOT.BOTH.REC<7>+HIST.REC<6>
+                  IF HIST.REC<19>'R0' NE 0 THEN
+                     TOT.WORK.REC<9>=TOT.WORK.REC<9>+1
+                     TOT.BOTH.REC<9>=TOT.BOTH.REC<9>+1
+                     TOT.WORK.REC<11>=TOT.WORK.REC<11>+HIST.REC<19>
+                     TOT.BOTH.REC<11>=TOT.BOTH.REC<11>+HIST.REC<19>
+                  END
+               END
+               WRITE TOT.WORK.REC ON F.WORK,TOT.WORK.ID
+               WRITE TOT.BOTH.REC ON F.WORK,TOT.BOTH.ID
+            END
+         END
+      REPEAT
+
+*
+* Print report
+*
+END.MULTI.CLIENT: * ; * JMK01
+      IF MULTI.CLIENT THEN ; * JMK01
+         GO BEG.MULTI.CLIENT ; * JMK01
+      END ; * JMK01
+*
+* Build heading
+*
+      IF WEIGHTS THEN
+         WIDTH=198
+         EXECUTE 'TERM ,,,,,,198,60'        ; * Set page Length to 67
+         SPACING=0
+         PRINTER ON
+         CTR=INT(WIDTH/2)
+         ESC=CHAR(27)
+         LASER.STR=''
+         LASER.STR:= ESC:'E'
+         LASER.STR:= ESC:'&l1O'
+         LASER.STR:= ESC:'&l8D'
+         LASER.STR:= ESC:'&l61F'
+         LASER.STR:= ESC:'(8U'
+         LASER.STR:= ESC:'(s0p'
+         LASER.STR:= '19h'
+         LASER.STR:= '0s'
+         LASER.STR:= '0b'
+         LASER.STR:= '4102T'
+         PRINT LASER.STR                    ; * Configure Laser Printer
+         IF NOT(YTD.TOTAL) THEN
+            WIDTH=115
+            SPACING=0
+            CALL FB.LASER.SET('S',WIDTH,62,8)
+            PRINTER ON
+         END
+      END ELSE
+         WIDTH=132
+         IF NOT(YTD.TOTAL) THEN
+            WIDTH=84
+            IF MILES THEN WIDTH=81
+         END
+         CALL FB.LASER.SET('R',WIDTH,60,6)
+         PRINTER ON
+      END
+*
+2000: CALL FB.RPT.STAT(CLIENT.ID,STATUS)
+      IF STATUS='' THEN
+         IF CLIENT.REC<102,2>='Y' THEN
+            DATA PROCESS.TYPE,CLIENT.ID,BEG.DATE,END.DATE,F.DATE,TEMP.DATE
+            EXECUTE 'FB.3.2.DIVS'
+            CALL FB.LASER.SET('R',132,60,6)
+         END
+         PRINTER CLOSE
+         GOTO THE.END
+      END
+*
+      LEFT=PROG.NAME:' ':USER
+      RIGHT=TIMEDATE()
+      L.LEN=LEN(LEFT)
+      R.LEN=LEN(RIGHT)
+      IF R.LEN>L.LEN THEN
+         DIF=R.LEN-L.LEN
+         LEFT:=SPACE(DIF)
+      END ELSE
+         DIF=L.LEN-R.LEN
+         RIGHT=SPACE(DIF):RIGHT
+      END
+      HEAD1=LEFT:"'G'":PROG.DESC:"'G'":RIGHT:"'L'"
+*
+      TITLE='For Client: ':CLIENT.ID:' ':CLIENT.NAME
+      HEAD2=CO.NAME:"'G'":TITLE:"'G'        PAGE 'PL'"
+      HEAD3='Current Statistics are for bills entered from ':BEG.DATE'D2/':' to ':END.DATE'D2/':"'CL'"
+      IF YTD.TOTAL THEN HEAD3:='YTD Statistics are for bills entered from ':F.DATE'D2/':' to ':END.DATE'D2/':"'CL'"
+*
+      BEGIN CASE
+         CASE STATUS='I'
+            HEAD4='Inbound Report'
+         CASE STATUS='O'
+            HEAD4='Outbound Report'
+         CASE STATUS='T'
+            HEAD4='Third Party Report'
+         CASE STATUS='B'
+            HEAD4='Inbound, Outbound & Third Party Report'
+      END CASE
+      HEAD4=HEAD4:' for ':MONTH.DESC:' with ':'Transportation Mode: ':TRANSPORT.MODE:' ':TRANSPORT.DESCRIP
+*JR   CALL CENTER(HEAD4,WIDTH)
+      HEAD4=HEAD4:"'CLL'"
+      HEAD5=STR('-',WIDTH):"'L'"
+*
+      BEGIN CASE
+         CASE NOT(MILES) & NOT(WEIGHTS)
+            HEAD6=SPACE(42):"----------- CURRENT STATISTICS ----------- "
+            IF YTD.TOTAL THEN HEAD6=HEAD6:SPACE(5):"--------- YEAR TO DATE STATISTICS --------"
+            HEAD6=HEAD6:"'L'"
+            HEAD7=SPACE(42):"Number of       Freight     Average     %":SPACE(7)
+            IF YTD.TOTAL THEN HEAD7=HEAD7:"Number of       Freight     Average     %"
+            HEAD7=HEAD7:"'L'"
+            HEAD8=" Line Carrier Name":SPACE(24):"Shipments       Dollars     Dollars    Rev":SPACE(6)
+            IF YTD.TOTAL THEN HEAD8=HEAD8:"Shipments       Dollars     Dollars    Rev"
+            HEAD8=HEAD8:"'L'"
+         CASE WEIGHTS
+            HEAD6=SPACE(36):"----------------------------- CURRENT STATISTICS ----------------------------- ----"
+            IF YTD.TOTAL THEN HEAD6=HEAD6:"--------------------------- YEAR TO DATE STATISTICS ---------------------------"
+            HEAD6=HEAD6:"'L'"
+            TEXT=' Line Carrier Name'
+            HEAD7=TEXT'L#37':"Number       Freight    Average       Total   Avg  Cost Per Cost Per     %     "
+            IF YTD.TOTAL THEN HEAD7=HEAD7:"Number       Freight    Average       Total   Avg  Cost Per Cost Per     %"
+            HEAD7=HEAD7:"'L'"
+            HEAD8=SPACE(37): "Shpmts       Dollars    Dollars     Weights Miles    Pound    Mile     Rev     "
+            IF YTD.TOTAL THEN HEAD8=HEAD8: "Shpmts       Dollars    Dollars     Weights Miles    Pound    Mile     Rev"
+            HEAD8=HEAD8:"'L'"
+         CASE MILES
+            HEAD6=SPACE(35):"------------- CURRENT STATISTICS -------------     "
+            IF YTD.TOTAL THEN HEAD6=HEAD6:"---------- YEAR TO DATE STATISTICS -----------"
+            HEAD6=HEAD6:"'L'"
+            TEXT=' Line Carrier Name'
+            HEAD7=TEXT'L#35':"Number       Freight Average    Average      %     "
+            IF YTD.TOTAL THEN HEAD7=HEAD7:"Number       Freight Average    Average      %"
+            HEAD7=HEAD7:"'L'"
+            HEAD8=SPACE(35):"Shpmts       Dollars Dollars      Miles    Rev     "
+            IF YTD.TOTAL THEN HEAD8=HEAD8:"Shpmts       Dollars Dollars      Miles    Rev"
+            HEAD8=HEAD8:"'L'"
+      END CASE
+*DF      HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6:HEAD7:HEAD8:HEAD5
+      HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD6:HEAD7:HEAD8:HEAD5
+
+      FOOT1="'L'":'Note: If a shipment has a "0" value, this is the result of a balance due issued by the carrier.':"'CL'"
+      FOOT2= '      It is not considered a shipment; however, it does result in a change in freight dollars. ':"'CL'"
+      FOT=FOOT1:FOOT2
+
+      PRINTER ON
+      HEADING HED
+      FOOTING FOT
+
+*
+* Select data
+*
+      COUNTER=0
+      BEGIN CASE
+         CASE STATUS='I'
+            EXECUTE 'SSELECT FBWORK':CH.NUM:' BY-DSND SORTER WITH IO.STATUS = "I"' PASSLIST CAPTURING OUTPUT
+         CASE STATUS='O'
+            EXECUTE 'SSELECT FBWORK':CH.NUM:' BY-DSND SORTER WITH IO.STATUS = "O"' PASSLIST CAPTURING OUTPUT
+         CASE STATUS='T'
+            EXECUTE 'SSELECT FBWORK':CH.NUM:' BY-DSND SORTER WITH IO.STATUS = "T"' PASSLIST CAPTURING OUTPUT
+         CASE STATUS='B'
+            EXECUTE 'SSELECT FBWORK':CH.NUM:' BY-DSND SORTER WITH IO.STATUS = "B"' PASSLIST CAPTURING OUTPUT
+      END CASE
+      READ TOTAL.REC FROM F.WORK,'TOTAL*':STATUS ELSE TOTAL.REC=''
+      TOT.CUR.AMT=TOTAL.REC<4>'R0'
+      TOT.YTD.AMT=TOTAL.REC<5>'R0'
+*
+      DONE=0
+      LOOP
+         READNEXT ID ELSE DONE=1
+      UNTIL DONE=1 DO
+         IF ID[1,5]='TOTAL' ELSE
+            READ REC FROM F.WORK,ID THEN
+               CARRIER=FIELD(ID,'*',1)
+*
+* Current period statistics
+*
+               CUR.SHIP=REC<2>'R0'
+               CUR.AMT=REC<4>'R0'
+               CUR.WGHT=REC<6>
+               YTD.WGHT=REC<7>
+               CUR.MILES=REC<10>
+               YTD.MILES=REC<11>
+               IF CUR.SHIP NE 0 & CUR.AMT NE 0 THEN
+                  AVG.CUR.AMT=CUR.AMT/CUR.SHIP
+               END ELSE
+                  AVG.CUR.AMT=0
+               END
+               IF TOT.CUR.AMT#0 THEN
+                  CUR.PERCENT.REV=(CUR.AMT/TOT.CUR.AMT)*100
+               END ELSE
+                  CUR.PERCENT.REV=0
+               END
+               IF MILES & REC<8>'R0' NE 0 THEN
+                  CUR.AVG.MILES=((REC<10>/REC<8>)*100)'R0'
+               END ELSE
+                  CUR.AVG.MILES=0
+               END
+               IF CUR.WGHT+0 NE 0 THEN
+                  CUR.COST.PER.POUND=((CUR.AMT/CUR.WGHT))'R0'
+               END ELSE
+                  CUR.COST.PER.POUND=0
+               END
+               IF REC<10>+0 NE 0 THEN
+                  CUR.COST.PER.MILE=((CUR.AMT/REC<10>))'R0'
+               END ELSE
+                  CUR.COST.PER.MILE=0
+               END
+*CALL ELINE('PRESS STOP':CUR.AVG.MILES)
+               COUNTER=COUNTER+1
+               READV CARRIER.NAME FROM F.CARRIER,CARRIER,1 ELSE
+                  CARRIER.NAME='Unknown'
+               END
+               BEGIN CASE
+                  CASE NOT(MILES) & NOT(WEIGHTS)
+                     LINE=COUNTER'R#5':' ':CARRIER.NAME'L#40':CUR.SHIP'R#5'
+                     LINE := CUR.AMT'R26,#14':AVG.CUR.AMT'R26,#12'
+                     LINE := CUR.PERCENT.REV'R2,#7'
+                  CASE WEIGHTS
+                     LINE=COUNTER'R#5':' ':CARRIER.NAME'L#30':CUR.SHIP'R0,#7'
+                     LINE := CUR.AMT'R26,#14':AVG.CUR.AMT'R26,#11'
+                     LINE := CUR.WGHT'R0,#12':CUR.AVG.MILES'R06,#6'
+                     LINE := CUR.COST.PER.POUND'R26,#9':CUR.COST.PER.MILE'R26,#9'
+                     LINE := CUR.PERCENT.REV'R2,#7'
+                  CASE MILES
+                     LINE=COUNTER'R#5':' ':CARRIER.NAME'L#30':CUR.SHIP'R#5'
+                     LINE := CUR.AMT'R26,#14':AVG.CUR.AMT'R26,#8'
+                     LINE := CUR.AVG.MILES'R26,#11':CUR.PERCENT.REV'R2,#7'
+               END CASE
+*
+* Year to date statistics
+*
+               YTD.SHIP=REC<3>'R0'
+               YTD.AMT=REC<5>'R0'
+               IF YTD.SHIP#0 & YTD.AMT#0 THEN
+                  AVG.YTD.AMT=YTD.AMT/YTD.SHIP
+               END ELSE
+                  AVG.YTD.AMT=0
+               END
+               IF TOT.YTD.AMT#0 THEN
+                  YTD.PERCENT.REV=(YTD.AMT/TOT.YTD.AMT)*100
+               END ELSE
+                  YTD.PERCENT.REV=0
+               END
+               IF MILES & REC<9>'R0' NE 0 THEN
+                  YTD.AVG.MILES=((REC<11>/REC<9>)*100)'R0'
+               END ELSE
+                  YTD.AVG.MILES=0
+               END
+               IF YTD.WGHT+0 NE 0 THEN
+                  YTD.COST.PER.POUND=((YTD.AMT/YTD.WGHT))'R0'
+               END ELSE
+                  YTD.COST.PER.POUND=0
+               END
+               IF REC<11>+0 NE 0 THEN
+                  YTD.COST.PER.MILE=((YTD.AMT/REC<11>))'R0'
+               END ELSE
+                  YTD.COST.PER.MILE=0
+               END
+               IF YTD.TOTAL THEN
+                  BEGIN CASE
+                     CASE NOT(MILES) & NOT(WEIGHTS)
+                        LINE := '  #':YTD.SHIP'R#12':YTD.AMT'R26,#14'
+                        LINE := AVG.YTD.AMT'R26,#12':YTD.PERCENT.REV'R2,#7'
+                     CASE WEIGHTS
+                        LINE := '  # ':YTD.SHIP'R0,#7':YTD.AMT'R26,#14'
+                        LINE := AVG.YTD.AMT'R26,#11':YTD.WGHT'R0,#12'
+                        LINE := YTD.AVG.MILES'R06,#6'
+                        LINE := YTD.COST.PER.POUND'R26,#9':YTD.COST.PER.MILE'R26,#9'
+                        LINE := YTD.PERCENT.REV'R2,#7'
+                     CASE MILES
+                        LINE := '  #   ':YTD.SHIP'R#5':YTD.AMT'R26,#14'
+                        LINE := AVG.YTD.AMT'R26,#8':YTD.AVG.MILES'R26,#11'
+                        LINE := YTD.PERCENT.REV'R2,#7'
+                  END CASE
+               END
+               PRINT SPACE(SPACING):LINE
+            END
+         END
+      REPEAT
+
+*
+* Print total line
+*
+      PRINT STR('=',WIDTH)
+      TOT.CUR.SHIP=TOTAL.REC<2>'R0'
+      TOT.YTD.SHIP=TOTAL.REC<3>'R0'
+      TOT.CUR.WGHT=TOTAL.REC<6>'R0'
+      TOT.YTD.WGHT=TOTAL.REC<7>'R0'
+      IF TOT.CUR.SHIP#0 & TOT.CUR.AMT#0 THEN
+         TOT.AVG.CUR.AMT=TOT.CUR.AMT/TOT.CUR.SHIP
+      END ELSE
+         TOT.AVG.CUR.AMT=0
+      END
+      IF TOT.YTD.SHIP#0 & TOT.YTD.AMT#0 THEN
+         TOT.AVG.YTD.AMT=TOT.YTD.AMT/TOT.YTD.SHIP
+      END ELSE
+         TOT.AVG.YTD.AMT=0
+      END
+      IF TOT.CUR.WGHT+0 NE 0 THEN
+         TOT.CUR.COST.PER.POUND=((TOT.CUR.AMT/TOT.CUR.WGHT))'R0'
+      END ELSE
+         TOT.CUR.COST.PER.POUND=0
+      END
+      IF TOTAL.REC<10>+0 NE 0 THEN
+         TOT.CUR.COST.PER.MILE=((TOT.CUR.AMT/TOTAL.REC<10>))'R0'
+      END ELSE
+         TOT.CUR.COST.PER.MILE=0
+      END
+      IF TOT.YTD.WGHT+0 NE 0 THEN
+         TOT.YTD.COST.PER.POUND=((TOT.YTD.AMT/TOT.YTD.WGHT))'R0'
+      END ELSE
+         TOT.YTD.COST.PER.POUND=0
+      END
+      IF TOTAL.REC<11>+0 NE 0 THEN
+         TOT.YTD.COST.PER.MILE=((TOT.YTD.AMT/TOTAL.REC<11>))'R0'
+      END ELSE
+         TOT.YTD.COST.PER.MILE=0
+      END
+      BEGIN CASE
+         CASE NOT(WEIGHTS) & NOT(MILES)
+            LINE='      Total':SPACE(31)
+            BEGIN CASE
+               CASE STATUS='I'
+                  LINE := 'In  '
+               CASE STATUS='O'
+                  LINE := 'Out '
+               CASE STATUS='T'
+                  LINE := 'T/P '
+               CASE STATUS='B'
+                  LINE := 'ALL '
+            END CASE
+            LINE := TOT.CUR.SHIP'R#5':TOT.CUR.AMT'R26,#14'
+            LINE := TOT.AVG.CUR.AMT'R26,#12':' 100.00'
+            IF YTD.TOTAL THEN LINE := '  #':SPACE(8):TOT.YTD.SHIP'R#4':TOT.YTD.AMT'R26,#14'
+            IF YTD.TOTAL THEN LINE := TOT.AVG.YTD.AMT'R26,#12':' 100.00'
+         CASE WEIGHTS
+            IF MILES & TOTAL.REC<8>'R0' NE 0 THEN
+               TOT.CUR.AVG.MILES=((TOTAL.REC<10>/TOTAL.REC<8>)*100)'R0'
+            END ELSE
+               TOT.CUR.AVG.MILES=0
+            END
+            IF MILES & TOTAL.REC<9>'R0' NE 0 THEN
+               TOT.YTD.AVG.MILES=((TOTAL.REC<11>/TOTAL.REC<9>)*100)'R0'
+            END ELSE
+               TOT.YTD.AVG.MILES=0
+            END
+            LINE='      TOTAL':SPACE(5)
+            BEGIN CASE
+               CASE STATUS='I'
+                  LINE := 'In  '
+               CASE STATUS='O'
+                  LINE := 'Out '
+               CASE STATUS='T'
+                  LINE := 'T/P '
+               CASE STATUS='B'
+                  LINE := 'ALL '
+            END CASE
+            LINE := SPACE(17):TOT.CUR.SHIP'R0,#6':TOT.CUR.AMT'R26,#14'
+            LINE := TOT.AVG.CUR.AMT'R26,#11':TOT.CUR.WGHT'R0,#12'
+            LINE := TOT.CUR.AVG.MILES'R06,#6':TOT.CUR.COST.PER.POUND'R26,#9'
+            LINE := TOT.CUR.COST.PER.MILE'R26,#9':' 100.00'
+            IF YTD.TOTAL THEN LINE := '  #  ':TOT.YTD.SHIP'R0,#6':TOT.YTD.AMT'R26,#14'
+            IF YTD.TOTAL THEN LINE := TOT.AVG.YTD.AMT'R26,#11':TOT.YTD.WGHT'R0,#12'
+            IF YTD.TOTAL THEN LINE := TOT.YTD.AVG.MILES'R06,#6':TOT.YTD.COST.PER.POUND'R26,#9'
+            IF YTD.TOTAL THEN LINE := TOT.YTD.COST.PER.MILE'R26#9':' 100.00'
+         CASE MILES
+            IF TOTAL.REC<8>'R0' NE 0 THEN
+               TOT.CUR.AVG.MILES=((TOTAL.REC<10>/TOTAL.REC<8>)*100)'R0'
+            END ELSE
+               TOT.CUR.AVG.MILES=0
+            END
+            IF TOTAL.REC<9>'R0' NE 0 THEN
+               TOT.YTD.AVG.MILES=((TOTAL.REC<11>/TOTAL.REC<9>)*100)'R0'
+            END ELSE
+               TOT.YTD.AVG.MILES=0
+            END
+            LINE='      TOTAL':SPACE(20)
+            BEGIN CASE
+               CASE STATUS='I'
+                  LINE := 'In  '
+               CASE STATUS='O'
+                  LINE := 'Out '
+               CASE STATUS='T'
+                  LINE := 'T/P '
+               CASE STATUS='B'
+                  LINE := 'ALL '
+            END CASE
+            LINE := ' ':TOT.CUR.SHIP'R#5':TOT.CUR.AMT'R26,#14'
+            LINE := TOT.AVG.CUR.AMT'R26,#8':TOT.CUR.AVG.MILES'R26,#11':' 100.00'
+            IF YTD.TOTAL THEN LINE := '  #   ':TOT.YTD.SHIP'R#5':TOT.YTD.AMT'R26,#14'
+            IF YTD.TOTAL THEN LINE := TOT.AVG.YTD.AMT'R26,#8':TOT.YTD.AVG.MILES'R26,#11':' 100.00'
+      END CASE
+      PRINT SPACE(SPACING):LINE
+      PRINTER OFF
+      GOTO 2000
+*
+THE.END: ***
+      CRT @(0,0):@(-3):@(0,21):PROG.NAME:@(0,22):CO.NAME
+      END

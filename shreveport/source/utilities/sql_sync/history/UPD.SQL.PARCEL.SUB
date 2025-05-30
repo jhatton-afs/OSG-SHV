@@ -1,0 +1,262 @@
+      SUBROUTINE UPD.SQL.PARCEL.SUB(VIN,VOUT,PARCEL.REC)
+****************************************
+* Program name : UPD.SQL.PARCEL.SUB
+* Author       : Owen Holman
+* Date written : January 2002
+* Library      : FBBP
+* COPYRIGHT (c) : AFS, LLC 2016, All Rights Reserved.
+*
+* parcel sql push
+* Last updated by afs (gbino) at 08:48:26 on 01/30/2018.
+*
+* Start modification history
+* Mod nn  mm/dd/yy, init, req #, description
+* 061912 - JMK01 - Choose development SQL server if not production server AFS
+* End modification history
+*
+*******************************************
+     CALL GET.USER.NEW(USER,CH.NUM)
+      
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'UPD.SQL.PARCEL.SUB' ; UPL.VOUT = ''       ; * NPR_UPL 04/23/2010
+      UPL.VIN<3> = USER
+      UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+
+$INCLUDE UNIVERSE.INCLUDE ODBC.H
+      CALL GET.SERVER.INFO(SVR.VIN,SVR.VOUT)       ; * JMK01
+      SVR.NAME=SVR.VOUT<1>               ; * JMK01
+
+      USER=VIN<1>
+
+      form = "T##########"
+      dash = "----------"
+      Expect = ""
+      NULL=""
+      ERROR.CNT=0
+10:   ERRORS=''
+
+      GOSUB SETUP.SQL
+
+* DEFINE FIELDS TO UPDATE FROM CLIENT.REC HERE
+
+      SQL.ACCOUNT.NUM = PARCEL.REC<1>
+      SQL.TRACKING.NUM = PARCEL.REC<2>
+      SQL.PRO.NUMBER = PARCEL.REC<3>
+      SQL.CARRIER.NUM = PARCEL.REC<4>
+      SQL.CLIENT.ID = PARCEL.REC<5>
+      SQL.CARRIER.CHARGE = PARCEL.REC<6>'R26'
+      SQL.ACTUAL.CHARGE = PARCEL.REC<7>'R26'
+      SQL.DISCOUNT.COMMISSION = PARCEL.REC<8>'R26'
+      SQL.OVERCHARGE.COMMISSION = PARCEL.REC<9>'R26'
+      SQL.CONSULTING.COMMISSION = PARCEL.REC<10>'R26'
+      SQL.DISCOUNT.VARIANCE = PARCEL.REC<11>'R26'
+      SQL.OVERCHARGE.VARIANCE = PARCEL.REC<12>'R26'
+      SQL.CONSULTING.VARIANCE = PARCEL.REC<13>'R26'
+      SQL.GROUPID = PARCEL.REC<14>
+      SQL.EXPENSE.CODE = PARCEL.REC<15>
+
+      Fn = "SQLExecute"
+      STATUS = SQLExecute(STMTENV)
+      GOSUB CKSTMTENV
+
+***********************************************************************
+THE.END:***
+***********************************************************************
+*     End of program
+*
+* Now just clean up the environment and leave
+*
+      Fn = "SQLFreeStmt"
+      STATUS = SQLFreeStmt(STMTENV, SQL.DROP)
+      GOSUB CKSTMTENV
+
+      Fn = "SQLDisconnect"
+      STATUS = SQLDisconnect(CONENV)
+      GOSUB CKCONENV
+
+      Fn = "SQLFreeConnect"
+      STATUS = SQLFreeConnect(CONENV)
+      GOSUB CKCONENV
+
+      Fn = "SQLFreeEnv"
+      STATUS = SQLFreeEnv(DBCENV)
+      IF STATUS <> SQL.SUCCESS THEN
+         ERRORS<1,-1>="Failed to release ODBC environment"
+      END
+
+      IF ERRORS#'' THEN
+         ERROR.CNT+=1
+         IF ERROR.CNT>3 THEN
+            MVIN=''
+            MVIN<1>='UPD.SQL.Group@afs.net'
+            MVIN<4>='AFS_UPD.SQL.PARCEL.SUB'
+            MVIN<5>='SQL Parcel Update Errors'
+            TEXT='On ':DATE()'D2/':' ':OCONV(TIME(),'MTHS'):', ':USER:' updated '
+            TEXT<1,-1>='Client ':SQL.CLIENT.ID:' Parcel Information for ':SQL.TRACKING.NUM:' but did not succeed in updating SQL due to:'
+            TEXT<1,-1>=' '
+            TEXT<1,-1>=ERRORS
+            MVIN<6>=TEXT
+            MVIN<7>=1
+            CALL SENDMAIL(MVIN,MVOUT)
+         END ELSE
+            GO 10
+         END
+      END
+
+      RETURN
+
+      STOP
+***********************************************************************
+SETUP.SQL:*
+***********************************************************************
+* Create an ODBC environment & a connection environment. Use the
+* SSQLSetConnectOption to specify the Operating system user ID and
+* password.
+
+      STATUS = SQLAllocEnv(DBCENV)
+      IF STATUS <> SQL.SUCCESS THEN
+         ERRORS<1,-1>="Failed to allocate an ODBC environment"
+         RETURN TO THE.END
+      END
+
+      STATUS = SQLAllocConnect(DBCENV,CONENV)
+      IF STATUS <> SQL.SUCCESS THEN
+         ERRORS<1,-1>="Failed to allocate a CONNECT environment"
+         RETURN TO THE.END
+      END
+
+*
+* Gather the data source name, userid and password for the server O/S and
+* information for the DBMS at the server. The DBMS info is often also
+* a user name and password, but not in all cases.
+*
+
+      BEGIN CASE                         ; * JMK01
+         CASE SVR.NAME='AFS'             ; * JMK01
+            SOURCE='PRODODS'             ; * JMK01
+            UID="uv_sql"                 ; * JMK01
+            PWD="4@gAbreg"               ; * JMK01
+         CASE 1                          ; * JMK01
+            SOURCE='DEVODS'              ; * JMK01
+            UID="uv_sql"                 ; * JMK01
+            PWD="4@gAbreg"               ; * JMK01
+      END CASE                           ; * JMK01
+*
+* Establish a session to the specified data source
+*
+*     PRINT "Connecting to data source: ": SOURCE
+      Fn = "SQLConnect"
+      STATUS = SQLConnect(CONENV,SOURCE,UID,PWD)
+      GOSUB CKCONENV
+*
+* Now allocate an SQL statement environment
+* to be used for executing SQL statements
+*
+      Fn = "SQLAllocStmt"
+      STATUS = SQLAllocStmt(CONENV,STMTENV)
+      GOSUB CKCONENV
+
+*
+* Note that we are using parameter markers in the SQL statement to facilitate
+* loading multiple rows of data efficiently
+*
+      OPT.STR = STR(' ?,',15)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_UpdParcelShipment (":OPT.STR:")}"
+
+      ROWNUM = 0
+      Fn = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*     STATUS = SQLSETPARAM(STMTENV, COL, SQL.B.BASIC, SQL.DATA.TYPE, PREC, SCALE, VAR.NAME) ; GOSUB CKSTMTENV
+*
+      STATUS = SQLSETPARAM(STMTENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.ACCOUNT.NUM) ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(STMTENV, 2, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.TRACKING.NUM) ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(STMTENV, 3, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.PRO.NUMBER) ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(STMTENV, 4, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.CARRIER.NUM) ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(STMTENV, 5, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.CLIENT.ID) ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(STMTENV, 6, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.CARRIER.CHARGE) ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(STMTENV, 7, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.ACTUAL.CHARGE) ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(STMTENV, 8, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.DISCOUNT.COMMISSION) ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(STMTENV, 9, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.OVERCHARGE.COMMISSION) ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(STMTENV, 10, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.CONSULTING.COMMISSION) ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(STMTENV, 11, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.DISCOUNT.VARIANCE) ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(STMTENV, 12, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.OVERCHARGE.VARIANCE) ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(STMTENV, 13, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.CONSULTING.VARIANCE) ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(STMTENV, 14, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.GROUPID) ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(STMTENV, 15, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.EXPENSE.CODE) ; GOSUB CKSTMTENV
+
+      Fn = "SQLPrepare"
+      STATUS = SQLPrepare(STMTENV, INST1)
+      GOSUB CKSTMTENV
+
+      RETURN
+***********************************************************************
+CKCONENV:
+***********************************************************************
+      COUNT = -1
+      IF STATUS EQ -2 THEN
+         ERRORS<1,-1>="INVALID CONNECTION HANDLE"
+         STMT='BBSEND GREGB UPD.SQL.PARCEL.SUB INVALID CONNECTION HANDLE ABORT'
+         EXECUTE STMT CAPTURING RESULTS
+         ABORT
+      END
+      IF STATUS NE 0 THEN
+201:     *
+         ST = SQLERROR(-1,CONENV,-1,STATE,NATCODE,ERRTXT)
+         IF ST <> SQL.NO.DATA.FOUND
+         THEN
+            COUNT = 1
+            IF Expect NE 0 AND STATE = Expect AND ST <> SQL.NO.DATA.FOUND THEN
+               ERRORS<1,-1>="Allowed error of ":STATE:" returned for func ":Fn
+               GOTO 299
+            END ELSE
+               ERRORS<1,-1>="Status for ":Fn:" call is: ":STATUS
+               ERRORS<1,-1>="SQLSTATE,NATCOD are:" : STATE:"  ":NATCODE
+               ERRORS<1,-1>="Error text is"
+               ERRORS<1,-1>="    " : ERRTXT
+            END
+            IF ST = SQL.SUCCESS THEN GOTO 201
+         END
+         IF STATUS = -1 AND COUNT = 1 THEN
+            ERRORS<1,-1>="EXITING CKCONENV"
+            RETURN TO THE.END
+         END
+      END
+299:  *
+      RETURN
+***********************************************************************
+CKSTMTENV:
+***********************************************************************
+      IF STATUS EQ -2 THEN
+         ERRORS<1,-1>="INVALID STATEMENT HANDLE"
+         STMT='BBSEND GREGB UPD.SQL.PARCEL.SUB INVALID STATEMENT HANDLE ABORT ':STATUS
+         EXECUTE STMT CAPTURING RESULTS
+         ABORT
+      END
+
+      IF STATUS EQ 100 THEN RETURN
+      IF STATUS NE 0 THEN
+301:     *
+         ST = SQLERROR(-1,-1,STMTENV,STATE,NATCODE,ERRTXT)
+         IF ST <> SQL.NO.DATA.FOUND
+         THEN
+            COUNT = 1
+            IF Expect NE 0 AND STATE = Expect AND ST <> SQL.NO.DATA.FOUND THEN
+               ERRORS<1,-1>="Allowed error of ":STATE:" returned for func ":Fn
+               GOTO 399
+            END ELSE
+               ERRORS<1,-1>="Status for ":Fn:" call is: ":STATUS
+               ERRORS<1,-1>="SQLSTATE,NATCOD are:" : STATE:"  ":NATCODE
+               ERRORS<1,-1>="Error text is"
+               ERRORS<1,-1>="    " : ERRTXT
+            END
+            IF ST = 0 THEN GOTO 301
+         END
+         IF STATUS = -1 AND COUNT = 1 THEN
+            ERRORS<1,-1>="EXITING CKSTMTENV"
+            RETURN TO THE.END
+         END
+      END
+399:  *
+      RETURN

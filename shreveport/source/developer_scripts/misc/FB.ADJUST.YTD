@@ -1,0 +1,627 @@
+      SUBROUTINE FB.ADJUST.YTD(VIN,VOUT,MAT CLIENT.REC,BILL.REC)
+* PROGRAM TO PROCESS A SINGLE BILL INTO OR OUT OFF YTD FIGURES
+ UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.ADJUST.YTD' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+ CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+*
+* FREIGHT BILL PACKAGE
+*
+*     VIN<1>='A' OR 'R'       ADD TO OR REMOVE FROM YTD.
+*     VIN<2>='U' OR 'Y'       UNPROCESS RECORDS OR YTD FILES
+*     VIN<3>=BILL.ID          BILL.ID FOR PROCESS
+*     VIN<4>=CLIENT           CLIENT.ID
+*
+* 091203 - JMK01 - ADD MISROUTE INFORMATION FOR SOC REPORTS
+      TESTING=0
+$INCLUDE PROG.ADMIN INC_OPTIONS
+      CALL GET.USER(USER)
+      CALL CHANNEL(CH.NUM)
+      IF TESTING THEN
+         CALL ELINE("Warning! FB.ADJUST.YTD in TEST Mode!  No YTD Adjustments will be written!")
+      END
+*
+      PROMPT''
+      VOUT=''
+      MODE=VIN<1>
+      FILES.TO.PROCESS=VIN<2>
+      BILL.ID=VIN<3>
+      CLIENT=VIN<4>
+      CARRIER=FIELD(BILL.ID,'*',1)
+      PRO.NO=FIELD(BILL.ID,'*',2)
+      VERSION=FIELD(BILL.ID,'*',3)       ; * JMK01
+      PRO.LENGTH=LEN(PRO.NO)
+      IF PRO.NO[PRO.LENGTH-1,2] = 'BD' THEN BAL.DUE = 1 ELSE BAL.DUE = 0
+      IF PRO.NO[PRO.LENGTH-1,2] = 'AD' THEN ADD.DUE = 1 ELSE ADD.DUE = 0
+      IF PRO.NO[PRO.LENGTH-1,2] = 'CM' THEN CR.MEMO = 1 ELSE CR.MEMO = 0
+      BILL.DATE=BILL.REC<1>
+      IOT=BILL.REC<2>
+      WEIGHT=BILL.REC<6>
+      IF WEIGHT='LX' THEN WEIGHT = 1
+      CARRIER.CHG=BILL.REC<7>
+      ACTUAL.CHG=BILL.REC<8>
+      DIV=BILL.REC<9>
+      DISC.VAR=BILL.REC<10>
+      OVRCHG.VAR=BILL.REC<11>
+      CONSLT.VAR=BILL.REC<12>
+      BD.DISC=BILL.REC<34>
+      BD.OVRCHG=BILL.REC<35>
+      BD.CONSLT=BILL.REC<36>
+      PROC.DATE=BILL.REC<37>
+      MISROUTE.CHG=BILL.REC<63>          ; * JMK01
+      OVR.CHG=ACTUAL.CHG-MISROUTE.CHG    ; * JMK01
+      IF OVR.CHG < 0 THEN OVR.CHG = 0    ; * JMK01
+      IF VERSION#'0' THEN OVR.CHG=0      ; * JMK01
+      CARRIERS=''
+      INVOICE=''
+      DARRAY=''
+      DIV.REC = ''
+      FOR I=1 TO 8
+         INVOICE<I>=0
+      NEXT I
+      INVOICE<6>=INVOICE<6>+DISC.VAR+BD.DISC
+      IF NOT(BAL.DUE) THEN
+         INVOICE<4>=INVOICE<4>+OVRCHG.VAR
+      END ELSE
+         INVOICE<4>=INVOICE<4>+ACTUAL.CHG+OVRCHG.VAR
+      END
+      INVOICE<5>=INVOICE<5>+CONSLT.VAR+BD.CONSLT
+      DIVISION=CLIENT.REC(12)
+      EXPENSE=CLIENT.REC(13)
+      VARIANCE=CLIENT.REC(7)
+*
+* Open files
+*
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL ELINE("Cannot open CARRIERS file!")
+         VOUT<1>='ERROR'
+         RETURN
+      END
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+         CALL ELINE("Cannot open FB.TRANSPORT file!")
+         VOUT<1>='ERROR'
+         RETURN
+      END
+      OPEN '','FB.BILLS.YTD' TO F.BILLS.YTD ELSE
+         CALL ELINE("Cannot open FB.BILLS.YTD file!")
+         VOUT<1>='ERROR'
+         RETURN
+      END
+      IF DIVISION='Y' THEN
+         OPEN 'DIVISION.CODES,':CLIENT TO F.DIV ELSE
+            CALL ELINE("Cannot open DIVISION.CODES,":CLIENT:" file!")
+            VOUT<1>='ERROR'
+            RETURN
+         END
+      END
+      IF EXPENSE='Y' THEN
+         OPEN '','EXPENSE.CODES,':CLIENT TO F.EXP ELSE
+            CALL ELINE("Cannot open EXPENSE.CODES,":CLIENT:" file!")
+            VOUT<1>='ERROR'
+            RETURN
+         END
+      END
+      IF VARIANCE='Y' OR VARIANCE='A' THEN
+         OPEN '','VARIANCE.CODES,':CLIENT TO F.VAR ELSE
+            CALL ELINE("Cannot open VARIANCE.CODES,":CLIENT:" file!")
+            VOUT<1>='ERROR'
+            RETURN
+         END
+      END
+      OPEN '','FB.UNPROCESS,':CLIENT TO F.UP ELSE
+         CALL ELINE("Cannot open FB.UNPROCESS,":CLIENT:" file!")
+         VOUT<1>='ERROR'
+         RETURN
+      END
+      OPEN '','FB.OPEN.BILLS' TO F.OPEN ELSE
+         CALL ELINE("Cannot open FB.OPEN.BILLS file!")
+         VOUT<1>='ERROR'
+         RETURN
+      END
+      OPEN '','FB.OPEN.DATE.XREF,':CLIENT TO F.OPEN.DATE.XREF ELSE
+         CALL ELINE("Cannot open FB.OPEN.DATE.XREF,":CLIENT:" file!")
+         VOUT<1>='ERROR'
+         RETURN
+      END
+      OPEN '','FB.PROC.DATE.XREF,':CLIENT TO F.PROC.DATE.XREF ELSE
+         CALL ELINE("Cannot open FB.PROC.DATE.XREF,":CLIENT:" file!")
+         VOUT<1>='ERROR'
+         RETURN
+      END
+      READV TRANS.MODE FROM F.CARRIERS,CARRIER,44 ELSE TRANS.MODE = 'NULL'
+      IF TRANS.MODE='' THEN TRANS.MODE='NULL'
+      IF BILL.REC<21>#'' THEN
+         TRANS.MODE=BILL.REC<21>
+      END
+*
+* YTD Files
+*
+      IF FILES.TO.PROCESS='Y' THEN
+         READ CLIENT.YTD FROM F.BILLS.YTD,CLIENT ELSE
+            CALL ELINE('Cannot locate YTD record. REBUILD YTD')
+            VOUT<1>='ERROR'
+            RETURN
+         END
+      END ELSE
+         UP.ID='FB.BILLS.YTD*':CLIENT
+         READ CLIENT.YTD FROM F.UP,UP.ID ELSE
+            CALL ELINE('Cannot locate YTD record for the Unprocess YTD. Call Programming')
+            VOUT<1>='ERROR'
+            RETURN
+         END
+      END
+*CALL ELINE('OWEN PRESS BREAK')
+      LOCATE PROC.DATE IN CLIENT.REC(84)<1> BY 'AR' SETTING POS ELSE POS=POS-1
+      IF POS=0 THEN POS=1
+*DF      DISC.COMM=(INVOICE<6> * (-CLIENT.REC(34)<1,POS>/100))'R0'
+*DF      OVR.CHG.COMM=(INVOICE<4> * (-CLIENT.REC(33)<1,POS>/100))'R0'
+*DF      CONSULT.COMM=(INVOICE<5> * (-CLIENT.REC(85)<1,POS>/100))'R0'
+      DISC.COMM=BILL.REC<42>
+      OVR.CHG.COMM=BILL.REC<43>
+      CONSULT.COMM=BILL.REC<44>
+      MGMT.SVC.FEE=BILL.REC<165>
+      IF MODE='A' THEN
+         CLIENT.YTD<6>=CLIENT.YTD<6>+WEIGHT
+         CLIENT.YTD<7>=CLIENT.YTD<7>+CARRIER.CHG
+         CLIENT.YTD<8>=CLIENT.YTD<8>+ACTUAL.CHG
+         CLIENT.YTD<10>=CLIENT.YTD<10>+DISC.VAR
+         IF CARRIER # "00041" THEN
+            CLIENT.YTD<11>=CLIENT.YTD<11>+OVRCHG.VAR
+         END ELSE
+            CLIENT.YTD<51>=CLIENT.YTD<51>+OVRCHG.VAR
+         END
+         CLIENT.YTD<12>=CLIENT.YTD<12>+CONSLT.VAR
+         CLIENT.YTD<34>=CLIENT.YTD<34>+BD.DISC
+         IF CARRIER # "00041" THEN
+            CLIENT.YTD<35>=CLIENT.YTD<35>+BD.OVRCHG
+         END ELSE
+            CLIENT.YTD<52>=CLIENT.YTD<52>+BD.OVRCHG
+         END
+         CLIENT.YTD<36>=CLIENT.YTD<36>+BD.CONSLT
+         IF BAL.DUE THEN CLIENT.YTD<38>=CLIENT.YTD<38>+ACTUAL.CHG
+         IF ADD.DUE THEN CLIENT.YTD<39>=CLIENT.YTD<39>+ACTUAL.CHG
+         BEGIN CASE
+            CASE IOT='O'
+               IF BILL.REC<88>#'' THEN
+                  CLIENT.YTD<42>=CLIENT.YTD<42>+1
+               END ELSE
+                  IF NOT(CR.MEMO) THEN CLIENT.YTD<15>=CLIENT.YTD<15>+1
+               END
+               CLIENT.YTD<20>=CLIENT.YTD<20>+ACTUAL.CHG
+               CLIENT.YTD<16>=CLIENT.YTD<16>+CARRIER.CHG
+               CLIENT.YTD<27>=CLIENT.YTD<27>+WEIGHT
+*DF            CLIENT.YTD<68>=CLIENT.YTD<68>+DISC.COMM+OVR.CHG.COMM+CONSULT.COMM
+               CLIENT.YTD<68>=CLIENT.YTD<68>+DISC.COMM+OVR.CHG.COMM+CONSULT.COMM+MGMT.SVC.FEE
+               CLIENT.YTD<71>=CLIENT.YTD<71>+OVR.CHG         ; * JMK01
+            CASE IOT='I'
+               IF BILL.REC<88>#'' THEN
+                  CLIENT.YTD<43>=CLIENT.YTD<43>+1
+               END ELSE
+                  IF NOT(CR.MEMO) THEN CLIENT.YTD<17>=CLIENT.YTD<17>+1
+               END
+               CLIENT.YTD<21>=CLIENT.YTD<21>+ACTUAL.CHG
+               CLIENT.YTD<18>=CLIENT.YTD<18>+CARRIER.CHG
+               CLIENT.YTD<26>=CLIENT.YTD<26>+WEIGHT
+*DF            CLIENT.YTD<67>=CLIENT.YTD<67>+DISC.COMM+OVR.CHG.COMM+CONSULT.COMM
+               CLIENT.YTD<67>=CLIENT.YTD<67>+DISC.COMM+OVR.CHG.COMM+CONSULT.COMM+MGMT.SVC.FEE
+               CLIENT.YTD<72>=CLIENT.YTD<72>+OVR.CHG         ; * JMK01
+            CASE 1
+               IF BILL.REC<88>#'' THEN
+                  IF USER = 'TAMI' THEN CALL ELINE('HIT THE BRAKES')
+                  CLIENT.YTD<65>=CLIENT.YTD<65>+1
+               END ELSE
+                  IF NOT(CR.MEMO) THEN CLIENT.YTD<60>=CLIENT.YTD<60>+1
+               END
+               CLIENT.YTD<62>=CLIENT.YTD<62>+ACTUAL.CHG
+               CLIENT.YTD<61>=CLIENT.YTD<61>+CARRIER.CHG
+               CLIENT.YTD<64>=CLIENT.YTD<64>+WEIGHT
+*DF            CLIENT.YTD<69>=CLIENT.YTD<69>+DISC.COMM+OVR.CHG.COMM+CONSULT.COMM
+               CLIENT.YTD<69>=CLIENT.YTD<69>+DISC.COMM+OVR.CHG.COMM+CONSULT.COMM+MGMT.SVC.FEE
+               CLIENT.YTD<73>=CLIENT.YTD<73>+OVR.CHG         ; * JMK01
+         END CASE
+         CLIENT.YTD<25>=CLIENT.YTD<25>+(CARRIER.CHG-ACTUAL.CHG)
+         CLIENT.YTD<28>=CLIENT.YTD<28>+DISC.COMM
+         IF CARRIER # "00041" THEN
+            CLIENT.YTD<29>=CLIENT.YTD<29>+OVR.CHG.COMM
+         END ELSE
+            CLIENT.YTD<54>=CLIENT.YTD<54>+OVR.CHG.COMM
+         END
+         CLIENT.YTD<30>=CLIENT.YTD<30>+CONSULT.COMM
+         CLIENT.YTD<74>=CLIENT.YTD<74>+MGMT.SVC.FEE
+      END
+      IF MODE='R' THEN
+         CLIENT.YTD<6>=CLIENT.YTD<6>-WEIGHT
+         CLIENT.YTD<7>=CLIENT.YTD<7>-CARRIER.CHG
+         CLIENT.YTD<8>=CLIENT.YTD<8>-ACTUAL.CHG
+         CLIENT.YTD<10>=CLIENT.YTD<10>-DISC.VAR
+         IF CARRIER # "00041" THEN
+            CLIENT.YTD<11>=CLIENT.YTD<11>-OVRCHG.VAR
+         END ELSE
+            CLIENT.YTD<51>=CLIENT.YTD<51>-OVRCHG.VAR
+         END
+         CLIENT.YTD<12>=CLIENT.YTD<12>-CONSLT.VAR
+         CLIENT.YTD<34>=CLIENT.YTD<34>-BD.DISC
+         IF CARRIER # "00041" THEN
+            CLIENT.YTD<35>=CLIENT.YTD<35>-BD.OVRCHG
+         END ELSE
+            CLIENT.YTD<52>=CLIENT.YTD<52>-BD.OVRCHG
+         END
+         CLIENT.YTD<36>=CLIENT.YTD<36>-BD.CONSLT
+         IF BAL.DUE THEN CLIENT.YTD<38>=CLIENT.YTD<38>-ACTUAL.CHG
+         IF ADD.DUE THEN CLIENT.YTD<39>=CLIENT.YTD<39>-ACTUAL.CHG
+         BEGIN CASE
+            CASE IOT='O'
+               IF BILL.REC<88>#'' THEN
+                  CLIENT.YTD<42>=CLIENT.YTD<42>-1
+               END ELSE
+                  IF NOT(CR.MEMO) THEN CLIENT.YTD<15>=CLIENT.YTD<15>-1
+               END
+               CLIENT.YTD<20>=CLIENT.YTD<20>-ACTUAL.CHG
+               CLIENT.YTD<16>=CLIENT.YTD<16>-CARRIER.CHG
+               CLIENT.YTD<27>=CLIENT.YTD<27>-WEIGHT
+*DF            CLIENT.YTD<68>=CLIENT.YTD<68>-DISC.COMM-OVR.CHG.COMM-CONSULT.COMM
+               CLIENT.YTD<68>=CLIENT.YTD<68>-DISC.COMM-OVR.CHG.COMM-CONSULT.COMM-MGMT.SVC.FEE
+               CLIENT.YTD<71>=CLIENT.YTD<71>-OVR.CHG         ; * JMK01
+            CASE IOT = 'I'
+               IF BILL.REC<88>#'' THEN
+                  CLIENT.YTD<43>=CLIENT.YTD<43>-1
+               END ELSE
+                  IF NOT(CR.MEMO) THEN CLIENT.YTD<17>=CLIENT.YTD<17>-1
+               END
+               CLIENT.YTD<21>=CLIENT.YTD<21>-ACTUAL.CHG
+               CLIENT.YTD<18>=CLIENT.YTD<18>-CARRIER.CHG
+               CLIENT.YTD<26>=CLIENT.YTD<26>-WEIGHT
+*DF            CLIENT.YTD<67>=CLIENT.YTD<67>-DISC.COMM-OVR.CHG.COMM-CONSULT.COMM
+               CLIENT.YTD<67>=CLIENT.YTD<67>-DISC.COMM-OVR.CHG.COMM-CONSULT.COMM-MGMT.SVC.FEE
+               CLIENT.YTD<72>=CLIENT.YTD<72>-OVR.CHG         ; * JMK01
+            CASE 1
+               IF BILL.REC<88>#'' THEN
+                  CLIENT.YTD<65>=CLIENT.YTD<65>-1
+               END ELSE
+                  IF NOT(CR.MEMO) THEN CLIENT.YTD<60>=CLIENT.YTD<60>-1
+               END
+               CLIENT.YTD<62>=CLIENT.YTD<62>-ACTUAL.CHG
+               CLIENT.YTD<61>=CLIENT.YTD<61>-CARRIER.CHG
+               CLIENT.YTD<64>=CLIENT.YTD<64>-WEIGHT
+*DF            CLIENT.YTD<69>=CLIENT.YTD<69>-DISC.COMM-OVR.CHG.COMM-CONSULT.COMM
+               CLIENT.YTD<69>=CLIENT.YTD<69>-DISC.COMM-OVR.CHG.COMM-CONSULT.COMM-MGMT.SVC.FEE
+               CLIENT.YTD<73>=CLIENT.YTD<73>-OVR.CHG         ; * JMK01
+         END CASE
+         CLIENT.YTD<25>=CLIENT.YTD<25>-(CARRIER.CHG-ACTUAL.CHG)
+         CLIENT.YTD<28>=CLIENT.YTD<28>-DISC.COMM
+         IF CARRIER # "00041" THEN
+            CLIENT.YTD<29>=CLIENT.YTD<29>-OVR.CHG.COMM
+         END ELSE
+            CLIENT.YTD<54>=CLIENT.YTD<54>-OVR.CHG.COMM
+         END
+         CLIENT.YTD<30>=CLIENT.YTD<30>-CONSULT.COMM
+         CLIENT.YTD<74>=CLIENT.YTD<74>-MGMT.SVC.FEE
+      END
+      IF FILES.TO.PROCESS='Y' THEN
+         IF TESTING ELSE WRITE CLIENT.YTD ON F.BILLS.YTD,CLIENT
+      END ELSE
+         UP.ID='FB.BILLS.YTD*':CLIENT
+         IF TESTING ELSE WRITE CLIENT.YTD ON F.UP,UP.ID
+      END
+*
+** Update variance totals
+*
+*DF      IF BILL.REC<51> NE '' THEN
+*DF        TIMES=DCOUNT(BILL.REC<51>,CHAR(253))
+*DF        FOR I=1 TO TIMES STEP 1
+*DF          VAR.CODE=BILL.REC<51,I>
+*DF          VAR.AMT=BILL.REC<52,I>
+*DF          IF VARIANCE='Y' OR VARIANCE='A' THEN
+*DF            IF FILES.TO.PROCESS='Y' THEN
+*DF              READ VAR.REC FROM F.VAR,VAR.CODE ELSE
+*DF                 IF MODE='R' THEN
+*DF                   CALL ELINE('Cannot locate VARIANCE record. REBUILD YTD')
+*DF                   VOUT<1>='ERROR'
+*DF                   RETURN
+*DF                 END
+*DF                 VAR.REC=''
+*DF                 IF VARIANCE='A' THEN
+*DF                    READV DESC FROM F.TRANSPORT,TRANS.MODE,1 ELSE
+*DF                       CALL ELINE("Carrier: ":CARRIER:" has an invalid transportation code of '":TRANS.MODE:"'")
+*DF                       DESC=''
+*DF                    END
+*DF                    VAR.REC<1>=DESC
+*DF                 END
+*DF              END
+*DF            END ELSE
+*DF              UP.ID='VARIANCE.CODES,':CLIENT:'*':VAR.CODE
+*DF              READ VAR.REC FROM F.UP,UP.ID ELSE
+*DF                 IF MODE='R' THEN
+*DF                   GOTO UPDATE.EXPENSE
+*DF*DF                   CALL ELINE('Cannot locate VARIANCE record in Unprocess file. Call Programming')
+*DF*DF                   VOUT<1>='ERROR'
+*DF*DF                   RETURN
+*DF                 END
+*DF                 VAR.REC=''
+*DF                 IF VARIANCE='A' THEN
+*DF                    READV DESC FROM F.TRANSPORT,TRANS.MODE,1 ELSE
+*DF                       CALL ELINE("Carrier: ":CARRIER:" has an invalid transportation code of '":TRANS.MODE:"'")
+*DF                       DESC=''
+*DF                    END
+*DF                    VAR.REC<1>=DESC
+*DF                 END
+*DF              END
+*DF            END
+*DF            IF MODE='A' THEN
+*DF              VAR.REC<2>=VAR.REC<2>+VAR.AMT
+*DF            END
+*DF            IF MODE='R' THEN
+*DF              VAR.REC<2>=VAR.REC<2>-VAR.AMT
+*DF            END
+*DF            IF FILES.TO.PROCESS='Y' THEN
+*DF              IF TESTING ELSE WRITE VAR.REC ON F.VAR,VAR.CODE
+*DF            END ELSE
+*DF              UP.ID='VARIANCE.CODES,':CLIENT:'*':VAR.CODE
+*DF              IF TESTING ELSE WRITE VAR.REC ON F.UP,UP.ID
+*DF            END
+*DF          END
+*DF        NEXT I
+*DF      END
+      IF BILL.REC<21> NE '' THEN
+         VAR.CODE=BILL.REC<21>
+         VAR.AMT=0-BILL.REC<12>
+         IF VARIANCE='Y' OR VARIANCE='A' THEN
+            IF FILES.TO.PROCESS='Y' THEN
+               READ VAR.REC FROM F.VAR,VAR.CODE ELSE
+                  IF MODE='R' AND BILL.REC<12>+0#0 THEN
+                     CALL ELINE('Cannot locate VARIANCE record. REBUILD YTD')
+                     VOUT<1>='ERROR'
+                     RETURN
+                  END
+                  VAR.REC=''
+                  IF VARIANCE='A' THEN
+                     READV DESC FROM F.TRANSPORT,TRANS.MODE,1 ELSE
+                        CALL ELINE("Carrier: ":CARRIER:" has an invalid transportation code of '":TRANS.MODE:"'")
+                        DESC=''
+                     END
+                     VAR.REC<1>=DESC
+                  END
+               END
+            END ELSE
+               UP.ID='VARIANCE.CODES,':CLIENT:'*':VAR.CODE
+               READ VAR.REC FROM F.UP,UP.ID ELSE
+                  IF MODE='R' THEN
+                     GOTO UPDATE.EXPENSE
+                  END
+                  VAR.REC=''
+                  IF VARIANCE='A' THEN
+                     READV DESC FROM F.TRANSPORT,TRANS.MODE,1 ELSE
+                        CALL ELINE("Carrier: ":CARRIER:" has an invalid transportation code of '":TRANS.MODE:"'")
+                        DESC=''
+                     END
+                     VAR.REC<1>=DESC
+                  END
+               END
+            END
+            IF MODE='A' THEN
+               VAR.REC<2>=VAR.REC<2>+VAR.AMT
+            END
+            IF MODE='R' THEN
+               VAR.REC<2>=VAR.REC<2>-VAR.AMT
+            END
+            IF FILES.TO.PROCESS='Y' THEN
+               IF TESTING ELSE WRITE VAR.REC ON F.VAR,VAR.CODE
+            END ELSE
+               UP.ID='VARIANCE.CODES,':CLIENT:'*':VAR.CODE
+               IF TESTING ELSE WRITE VAR.REC ON F.UP,UP.ID
+            END
+         END
+      END
+*
+** Update expense totals
+*
+UPDATE.EXPENSE:***
+      IF BILL.REC<31> NE '' AND EXPENSE = 'Y' THEN
+         EXP.COUNT=DCOUNT(BILL.REC<31>,CHAR(253))
+         FOR I=1 TO EXP.COUNT STEP 1
+            EXPENSE.CODE=BILL.REC<31,I>
+*DF          EXPENSE.AMT=BILL.REC<33,I>
+            EXPENSE.AMT=BILL.REC<33,I>+BILL.REC<32,I>
+*
+            IF FILES.TO.PROCESS='Y' THEN
+               READ EXP.REC FROM F.EXP,EXPENSE.CODE ELSE
+                  IF MODE='R' THEN
+                     CALL ELINE('Cannot locate EXPENSE record. REBUILD YTD')
+                     VOUT<1>='ERROR'
+                     RETURN
+                  END
+                  EXP.REC=EXPENSE.CODE
+               END
+            END ELSE
+               UP.ID='EXPENSE.CODES,':CLIENT:'*':EXPENSE.CODE
+               READ EXP.REC FROM F.UP,UP.ID ELSE
+                  IF MODE='R' THEN
+                     GOTO UPDATE.DIVISIONS
+*DF                CALL ELINE('Cannot locate EXPENSE record in Unprocess file. Call Programming')
+*DF                VOUT<1>='ERROR'
+*DF                RETURN
+                  END
+                  EXP.REC=EXPENSE.CODE
+               END
+            END
+*
+            IF MODE='A' THEN
+               BEGIN CASE
+                  CASE IOT='O'
+                     EXP.REC<2>=EXP.REC<2>+EXPENSE.AMT
+                  CASE IOT='I'
+                     EXP.REC<3>=EXP.REC<3>+EXPENSE.AMT
+                  CASE 1
+                     EXP.REC<4>=EXP.REC<4>+EXPENSE.AMT
+               END CASE
+            END
+            IF MODE='R' THEN
+               BEGIN CASE
+                  CASE IOT='O'
+                     EXP.REC<2>=EXP.REC<2>-EXPENSE.AMT
+                  CASE IOT='I'
+                     EXP.REC<3>=EXP.REC<3>-EXPENSE.AMT
+                  CASE 1
+                     EXP.REC<4>=EXP.REC<4>-EXPENSE.AMT
+               END CASE
+            END
+            IF FILES.TO.PROCESS='Y' THEN
+               IF TESTING ELSE WRITE EXP.REC ON F.EXP,EXPENSE.CODE
+            END ELSE
+               UP.ID='EXPENSE.CODES,':CLIENT:'*':EXPENSE.CODE
+               IF TESTING ELSE WRITE EXP.REC ON F.UP,UP.ID
+            END
+         NEXT I
+      END
+*
+** Update division totals
+*
+UPDATE.DIVISIONS:***
+      IF DIV NE '' AND DIVISION = 'Y' THEN
+         IF FILES.TO.PROCESS='Y' THEN
+            READ DIV.REC FROM F.DIV,DIV ELSE
+               IF MODE='R' THEN
+                  CALL ELINE('Cannot locate DIVISION record. REBUILD YTD')
+                  VOUT<1>='ERROR'
+                  RETURN
+               END
+               DIV.REC=''
+            END
+         END ELSE
+            UP.ID='DIVISION.CODES,':CLIENT:'*':DIV
+            READ DIV.REC FROM F.UP,UP.ID ELSE
+               IF MODE='R' THEN
+                  GOTO UPDATE.DATE.XREF
+*DF                CALL ELINE('Cannot locate DIVISION record in Unprocess file. Call Programming')
+*DF                VOUT<1>='ERROR'
+*DF                RETURN
+               END
+               DIV.REC=''
+            END
+         END
+*
+         IF MODE='A' THEN
+            BEGIN CASE
+               CASE IOT='O'
+                  DIV.REC<2>=DIV.REC<2>+ACTUAL.CHG+BILL.REC<42>+BILL.REC<43>+BILL.REC<44>+BILL.REC<165>
+               CASE IOT='I'
+                  DIV.REC<3>=DIV.REC<3>+ACTUAL.CHG+BILL.REC<42>+BILL.REC<43>+BILL.REC<44>+BILL.REC<165>
+               CASE 1
+                  DIV.REC<10>=DIV.REC<10>+ACTUAL.CHG+BILL.REC<42>+BILL.REC<43>+BILL.REC<44>+BILL.REC<165>
+            END CASE
+         END
+         IF MODE='R' THEN
+            BEGIN CASE
+               CASE IOT='O'
+                  DIV.REC<2>=DIV.REC<2>-ACTUAL.CHG-BILL.REC<42>-BILL.REC<43>-BILL.REC<44>-BILL.REC<165>
+               CASE IOT='I'
+                  DIV.REC<3>=DIV.REC<3>-ACTUAL.CHG-BILL.REC<42>-BILL.REC<43>-BILL.REC<44>-BILL.REC<165>
+               CASE 1
+                  DIV.REC<10>=DIV.REC<10>-ACTUAL.CHG-BILL.REC<42>-BILL.REC<43>-BILL.REC<44>-BILL.REC<165>
+            END CASE
+         END
+         IF FILES.TO.PROCESS='Y' THEN
+            IF TESTING ELSE WRITE DIV.REC ON F.DIV,DIV
+         END ELSE
+            UP.ID='DIVISION.CODES,':CLIENT:'*':DIV
+            IF TESTING ELSE WRITE DIV.REC ON F.UP,UP.ID
+         END
+         IF DIV.REC<45>#'' THEN
+            OPEN 'REGION.CODES,':CLIENT TO F.REG ELSE
+               CALL ELINE("Cannot open REGION.CODES,":CLIENT:" file!")
+               VOUT<1>='ERROR'
+               RETURN
+            END
+            REG.REC = ''
+UPDATE.REGIONS:***
+            IF FILES.TO.PROCESS='Y' THEN
+               READ REG.REC FROM F.REG,DIV.REC<45> ELSE
+                  IF MODE='R' THEN
+                     CALL ELINE('Cannot locate REGION record. REBUILD YTD')
+                     VOUT<1>='ERROR'
+                     RETURN
+                  END
+                  REG.REC=''
+               END
+            END ELSE
+               UP.ID='REGION.CODES,':CLIENT:'*':DIV.REC<45>
+               READ REG.REC FROM F.UP,UP.ID ELSE
+                  IF MODE='R' THEN
+                     GOTO UPDATE.DATE.XREF
+*DF                   CALL ELINE('Cannot locate REGION record in Unprocess file. Call Programming')
+*DF                   VOUT<1>='ERROR'
+*DF                   RETURN
+                  END
+                  REG.REC=''
+               END
+            END
+*
+            IF MODE='A' THEN
+               BEGIN CASE
+                  CASE IOT='O'
+                     REG.REC<2>=REG.REC<2>+ACTUAL.CHG+BILL.REC<42>+BILL.REC<43>+BILL.REC<44>+BILL.REC<165>
+                  CASE IOT='I'
+                     REG.REC<3>=REG.REC<3>+ACTUAL.CHG+BILL.REC<42>+BILL.REC<43>+BILL.REC<44>+BILL.REC<165>
+                  CASE 1
+                     REG.REC<10>=REG.REC<10>+ACTUAL.CHG+BILL.REC<42>+BILL.REC<43>+BILL.REC<44>+BILL.REC<165>
+               END CASE
+            END
+            IF MODE='R' THEN
+               BEGIN CASE
+                  CASE IOT='O'
+                     REG.REC<2>=REG.REC<2>-ACTUAL.CHG-BILL.REC<42>-BILL.REC<43>-BILL.REC<44>-BILL.REC<165>
+                  CASE IOT='I'
+                     REG.REC<3>=REG.REC<3>-ACTUAL.CHG-BILL.REC<42>-BILL.REC<43>-BILL.REC<44>-BILL.REC<165>
+                  CASE 1
+                      REG.REC<10>=REG.REC<10>-ACTUAL.CHG-BILL.REC<42>-BILL.REC<43>-BILL.REC<44>-BILL.REC<165>
+               END CASE
+            END
+            IF FILES.TO.PROCESS='Y' THEN
+               IF TESTING ELSE WRITE REG.REC ON F.REG,DIV.REC<45>
+            END ELSE
+               UP.ID='REGION.CODES,':CLIENT:'*':DIV.REC<45>
+               IF TESTING ELSE WRITE REG.REC ON F.UP,UP.ID
+            END
+         END
+      END
+*
+* Update Date Xref files
+*
+UPDATE.DATE.XREF:***
+      IF PROC.DATE+0=0 ELSE
+         READ DPROC.LIST FROM F.PROC.DATE.XREF,PROC.DATE ELSE
+            CALL ELINE("Cannot locate process date ":PROC.DATE'D2/':" in the FB.PROC.DATE.XREF file")
+            DPROC.LIST=''
+         END
+         READ DOPEN.LIST FROM F.OPEN.DATE.XREF,PROC.DATE ELSE
+            IF BILL.REC<14>='' THEN
+               CALL ELINE("Cannot locate process date ":PROC.DATE'D2/':" in the FB.OPEN.DATE.XREF file")
+            END
+            DOPEN.LIST=''
+         END
+         IF MODE = 'R' THEN
+            LOCATE BILL.ID IN DPROC.LIST SETTING PROC.POS THEN
+               DPROC.LIST = DELETE(DPROC.LIST,PROC.POS)
+            END
+            OPEN.ID=CLIENT:'*':BILL.ID
+            LOCATE OPEN.ID IN DOPEN.LIST SETTING OPEN.POS THEN
+               DOPEN.LIST = DELETE(DOPEN.LIST,OPEN.POS)
+            END
+            IF TESTING ELSE DELETE F.OPEN,OPEN.ID
+         END
+         IF MODE = 'A' THEN
+            LOCATE BILL.ID IN DPROC.LIST BY 'AR' SETTING PROC.POS ELSE
+               INS BILL.ID BEFORE DPROC.LIST<PROC.POS>
+            END
+            IF BILL.REC<14>='' THEN
+* Do not update if a check has been posted already. - DRF 09/28/12
+               OPEN.ID=CLIENT:'*':BILL.ID
+               LOCATE OPEN.ID IN DOPEN.LIST SETTING OPEN.POS THEN
+                  INS OPEN.ID BEFORE DOPEN.LIST<OPEN.POS>
+               END
+               IF TESTING ELSE WRITE BILL.REC ON F.OPEN,OPEN.ID
+            END
+         END
+      END
+**********************************************************************
+*
+9999:* EXIT PROGRAM
+      RETURN

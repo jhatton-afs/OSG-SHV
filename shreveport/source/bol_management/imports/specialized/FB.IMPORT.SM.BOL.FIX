@@ -1,0 +1,628 @@
+***********************************************************************
+* Program name : FB.IMPORT.SM.BOL
+* Author       : James Barberousse
+* Date written : March 2002
+* Library      : FBBP
+* COPYRIGHT (C) 2020 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* Import BOL data from Swedish Match
+*
+* Last updated by AFS (gbino) at 07:57:18 on 05/07/2020.
+*
+* Start modification history
+* 052405 - JMK01 - ADJUST SALES ORDER FORMAT FOR NEW FILES (5-9-05)
+* 122005 - JMK02 - READ THE IMPORT FILES DIRECTLY FROM FTP.SMNA
+* 100208 - JMK03 - ADD NIKKI FASONE TO ACCESS LIST
+* 112608 - NPR01 - T082241 Allow process to be run Automatically
+* 082713 - JMK04 - Ignore files with "TEST" in the filename
+* 050720 - GRB01 - ACCU-865 Modify length of class fields
+* End modification history
+*
+************************************************************************
+* Format of SM Text file                     Format of FB.BOL.CRX,01344
+* Fixed length with possible spaces          ITEM ID = Order Number
+* ----------------------------------------------------------------------
+* (1) Record Type     Len=1   Val=1          H< 1> Amount (flat)
+* (2) Freight Type    Len=2   Val=FW or FC   H< 2> Ship Date (flat)
+* (3) Filler          Len=1   Val=space      A< 3> Total Amount (flat)
+* (4) Order           Len=15                 A< 4> Last Date Updated (flat)
+* (5) Carrier         Len=4   SCAC           A< 5> Amount by Pro (mv)
+* (6) Cases           Len=6                  A< 6> Pro Numbers (mv)
+* (7) Ship from Whse  Len=20                 A< 7> Date of Pro (mv)
+* (8) Ship from Zip   Len=10                 H< 8> Order Number-Suffix
+* (9) Ship from City  Len=15                 H< 9> Account
+*(10) Ship from State Len=2                  H<10> Freight Type
+*(11) Record Type     Len=1   Val=2          H<11> Carrier
+*(12) Ship to Name    Len=20                 H<12> Cases
+*(13) Ship to Zip     Len=10                 H<13> Ship from Whse
+*(14) Ship to City    Len=15                 H<14> Ship from Zip
+*(15) Ship to State   Len=2                  H<15> Ship from City
+*(16) Account         Len=28                 H<16> Ship from State
+*(17) Record Type     Len=1   Val=3          H<17> Ship to Name
+*(18) Class           Len=4   Val=77.5 CHANGE TO 70     OR 1000 CHANGE TO 100     H<18> Ship to Zip
+*(19) Weight (CL70)   Len=8                  H<19> Ship to City
+*(20) Class           Len=4  Val=77.5 CHANGE TO 70     OR 1000 CHANGE TO 100         H<20> Ship to State
+*(21) Weight (CL85)   Len=8                  H<21> Classes (mv)
+*(22) Ship Date       Len=6   (YYMMDD)       H<22> Weights (mv)
+***********************************************************************
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+* Initialize general variables
+      PROMPT''
+      CALL GET.USER.NEW(USER.NAME,CH.NUM)
+      **  CALL CHANNEL(CH.NUM)
+
+      OLD.FILES = 0                      ; * ZZ NPR01 need to switch to new files/directories when going live
+*
+      TESTING = 0
+*
+      CMD.LINE=@SENTENCE
+      NWORDS=DCOUNT(CMD.LINE,' ')
+*
+      IF NWORDS>1 THEN
+         IF TESTING THEN
+            CLIENT.ID=FIELD(CMD.LINE,' ',NWORDS)
+         END ELSE
+            CLIENT.ID=FIELD(CMD.LINE,' ',2)
+         END
+         AUTO=1
+      END ELSE
+         CLIENT.ID = "01344"             ; * NPR01
+         AUTO=0
+      END
+
+      PROG.NAME='FB.IMPORT.SM.BOL'
+      PROG.DESC='Import Swedish Match BOL Data'
+      PACK.NAME='Freight Payment'
+      MASK.CHAR='-'
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.IMPORT.SM.BOL' ; UPL.VOUT = ''         ; * NPR_UPL 04/23/2010
+      UPL.VIN<3> = USER.NAME
+      UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+      EMAIL.SENT=0                       ; *NPR01
+      ERROR.ARRAY = ""
+*
+* Restrict program usage
+*
+      VALID.USER=1
+      BEGIN CASE
+         CASE USER.NAME='GBINO'
+         CASE USER.NAME='OLEDBAFS' AND TESTING=0   ; * NPR01
+         CASE USER.NAME='DAVID'
+
+         CASE 1
+            VALID.USER=0
+      END CASE
+
+      IF USER.NAME='OLEDBAFS' OR AUTO=1 THEN
+         CMD=1
+      END ELSE
+         CMD=0
+
+      END
+*
+      IF NOT(VALID.USER) THEN            ; * NPR01
+         IF CMD THEN                     ; * NPR01
+            ERROR.ARRAY<-1>='**  This is a restricted access application  **'    ; * NPR01
+         END ELSE                        ; * NPR01
+            TEMP='**  This is a restricted access application  **'     ; * NPR01
+            CALL CENTER(TEMP,80)         ; * NPR01
+            CRT @(0,12):TEMP             ; * NPR01
+         END                             ; * NPR01
+         GOTO THE.END                    ; * NPR01
+      END                                ; * NPR01
+*
+      IF CMD THEN                        ; * NPR01
+         NULL                            ; * NPR01
+      END ELSE
+*         Write screen header
+         CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+         CRT @(0,2):STR('=',79)
+      END                                ; * NPR01
+*
+* Open client file and read record for client
+*
+
+      CLIENT.ID = "01344"                ; * NPR01
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         IF CMD THEN                     ; * NPR01
+            ERROR.ARRAY<-1>='Cannot Open CLIENTS File!'      ; * NPR01
+            GOTO THE.END                 ; * NPR01
+         END ELSE                        ; * NPR01
+            CALL OPEN.ABORT('CLIENTS',PROG.NAME)   ; * NPR01
+         END                             ; * NPR01
+      END
+
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         IF CMD THEN                     ; * NPR01
+            ERROR.ARRAY<-1>='Could not read client information.'       ; * NPR01
+            GOTO THE.END                 ; * NPR01
+         END ELSE                        ; * NPR01
+            CALL ELINE('Could not read client file.')
+         END                             ; * NPR01
+         GOTO THE.END                    ; * NPR01
+      END
+***********************************************************************
+100:  ***
+***********************************************************************
+*
+      IF CMD THEN                        ; * NPR01
+         QI='Y'                          ; * NPR01
+      END ELSE                           ; * NPR01
+         LN='Are you ready to import BOL codes from ':CLIENT.ID:' ':CLIENT.REC<2>:'? '
+         MASK='N-'
+         HELP='[Y]=Yes [N]=No [EX]=Exit'
+         CALL GEN.IN(0,5,LN:MASK,'',Q,0,2,'','',2,-2,5,1,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+      END                                ; * NPR01
+      BEGIN CASE
+         CASE QI='EX' OR QI='N' OR QI=''
+            GOTO THE.END
+         CASE QI='Y'
+            NULL
+         CASE 1
+            GOTO 100
+      END CASE
+
+* Open other files
+*
+      IF OLD.FILES THEN                  ; * ZZ NPR01
+         OPEN '','BILLDATA.STC' TO F.BILLDATA ELSE
+            CALL OPEN.ABORT('BILLDATA.STC',PROG.NAME)
+         END
+         OPEN '','FB.BOL.CRX,':CLIENT.ID TO F.BOL ELSE
+            CALL OPEN.ABORT('FB.BOL.CRX,':CLIENT.ID,PROG.NAME)
+         END
+         OPEN '','FTP.SMNA' TO F.FTP ELSE          ; * JMK02
+            CALL OPEN.ABORT('FTP.SMNA',PROG.NAME)  ; * JMK02
+         END                             ; * JMK02
+*
+      END ELSE                           ; * ZZ NPR01
+*
+         OPEN '','FTP.':CLIENT.ID:'.HISTORY' TO F.FTP.HIST ELSE
+            IF CMD THEN
+               ERROR.ARRAY<-1>='Cannot Open FTP.':CLIENT.ID:'.HISTORY File!'
+               GOTO THE.END
+            END ELSE
+               CALL OPEN.ABORT('FTP.':CLIENT.ID:'.HISTORY',PROG.NAME)
+            END
+         END
+         OPEN '','FB.BOL.CRX,':CLIENT.ID TO F.BOL ELSE
+            EXECUTE 'CREATE-FILE DATA FB.BOL.CRX,':CLIENT.ID:' 503,1' CAPTURING OUTPUT
+            OPEN '','FB.BOL.CRX,':CLIENT.ID TO F.BOL ELSE
+               IF CMD THEN
+                  ERROR.ARRAY<-1>='Cannot Open FB.BOL.CRX,':CLIENT.ID:' File!'
+                  GOTO THE.END
+               END ELSE
+                  CALL OPEN.ABORT('FB.BOL.CRX,':CLIENT.ID,PROG.NAME)
+               END
+            END
+         END
+         OPEN '','FTP.':CLIENT.ID TO F.FTP ELSE
+            IF CMD THEN
+               ERROR.ARRAY<-1>='Cannot Open FTP.':CLIENT.ID:' File!'
+               GOTO THE.END
+            END ELSE
+               CALL OPEN.ABORT('FTP.':CLIENT.ID,PROG.NAME)
+            END
+         END
+      END
+
+      UPDATE.DATE=CLIENT.REC<82>+1       ; * Last processed + 1 day
+      IF UPDATE.DATE<DATE() THEN
+         UPDATE.DATE=DATE()
+      END
+
+      ST.DATE = DATE()                   ; * NPR99
+      ST.TIME = TIME()                   ; * NPR99
+*
+* Start processing any files
+*
+
+      IF OLD.FILES THEN                  ; * ZZ NPR01
+         CMND='SSELECT FTP.SMNA = "TB]"'           ; * JMK02
+      END ELSE
+         CMND=\SSELECT FTP.\:CLIENT.ID:\ = "SM-]"\           ; * JMK02
+      END
+      EXECUTE CMND RTNLIST CAPTURING RESULTS       ; * JMK02
+
+      NITMS=@SELECTED                    ; * JMK02
+      IF NITMS=0 THEN                    ; * JMK02
+
+         IF CMD THEN                     ; * NPR01
+            ERROR.ARRAY<-1>='No file to process for ':CLIENT.REC<2>:'.'          ; * NPR01
+         END ELSE                        ; * NPR01
+            CALL ELINE('No file to process for ':CLIENT.REC<2>:'.')    ; * NPR01
+         END                             ; * NPR01
+         GOTO THE.END                    ; * JMK02
+      END                                ; * JMK02
+      EOF=0                              ; * JMK02
+      LOOP                               ; * JMK02
+         READNEXT FTPID ELSE EOF=1       ; * JMK02
+      UNTIL EOF DO                       ; * JMK02
+* Make sure that we have read the file completely and it is not ; * JMK06
+* still transferring via FTP.            ; * JMK06
+
+         IF INDEX(FTPID,'TEST',1) THEN GOTO NEXT.FILE        ; * JMK04
+         PRV.SM.IMPORT=""                ; * JMK06  ; * NPR01
+FTP.READ.AGAIN:*                        ; * JMK06  ; * NPR01
+*
+         READ SM.IMPORT FROM F.FTP,FTPID ELSE      ; * JMK02
+
+            IF CMD THEN                  ; * NPR01
+               ERROR.ARRAY<-1>='Cannot read ':FTPID:'. Aborting process.'        ; * NPR01
+            END ELSE                     ; * NPR01
+               CALL ELINE('Cannot read ':FTPID:'. Aborting process.')  ; * NPR01
+            END                          ; * NPR01
+            GOTO THE.END                 ; * JMK02
+         END                             ; * JMK02
+*
+         IF SM.IMPORT # PRV.SM.IMPORT THEN         ; * JMK06 ; * NPR01
+            SLEEP 10                     ; * JMK06 ; * NPR01
+            PRV.SM.IMPORT = SM.IMPORT    ; * JMK06 ; * NPR01
+            GO FTP.READ.AGAIN            ; * JMK06 ; * NPR01
+         END                             ; * JMK06 ; * NPR01
+*
+         SM.LAST.IMPORT=SM.IMPORT        ; * Save file for writing as "last"
+
+* Status lines
+*
+         NATT=DCOUNT(SM.IMPORT,@AM)
+         IF NOT(CMD) THEN                ; * NPR01
+            CRT @(0,5):'Total items in import file = ':NATT:@(-4)
+            CRT @(0,7):'Total Items processed'
+            CRT @(0,8):'---------------------'
+         END
+* Check for an anticipated complete file transfer
+* by testing the last line in the transfer for all
+* anticipated fields
+*
+         FIRST.LINE=SM.IMPORT<1>
+         LAST.LINE=SM.IMPORT<NATT>
+         IF TRIM(LAST.LINE) <= "16" THEN
+            LAST.LINE=SM.IMPORT<NATT-1>
+         END
+         LFIRST=LEN(FIRST.LINE)
+         LLAST=LEN(LAST.LINE)
+         SECOND.LAST.LINE=SM.IMPORT<NATT-1>
+         NO.DATA.LINES = TRIM(FIELD(LAST.LINE," ",2))
+         FIRST.FIELDS=DCOUNT(FIRST.LINE,@VM)
+         LAST.FIELDS=DCOUNT(LAST.LINE,@VM)
+
+         EST.COMPLETE=0                  ; * NPR01
+
+         IF NO.DATA.LINES EQ NATT-1 THEN
+
+            EST.COMPLETE=1               ; * NPR01
+         END
+         IF LFIRST=LLAST THEN
+            EST.COMPLETE=1
+         END
+*
+         IF EST.COMPLETE=0 THEN
+            IF CMD THEN
+               ERROR.ARRAY<-1>=FTPID:' may have been received incomplete. Please re-send.  Aborting process.'  ; * JMK06
+            END ELSE
+               CALL ELINE(FTPID:' may have been received incomplete. Please re-send.  Aborting process.')
+            END
+            GOTO THE.END
+         END
+
+* Set counters for processing
+*
+         ALREADY.THERE=0
+         ALREADY.THERE.BOTH.MATCH=0
+         ALREADY.THERE.AMOUNTS.MATCH=0
+         ALREADY.THERE.DATES.MATCH=0
+         ALREADY.THERE.NEITHER.MATCH=0
+
+         ALREADY.THERE.NULL=0
+         NOT.THERE=0
+
+         RESULTS.ARRAY=''
+         ERROR.ARRAY=''
+         PERC=0
+
+* Prepare the file for processing
+         FOR ATT=1 TO NATT
+            IF NOT(CMD) THEN             ; * NPR01
+               CRT @(0,9):ATT'R#21'
+               CALL PROG.BAR(11,ATT,NATT,PERC)
+            END                          ; * NPR01
+            SM.LINE=SM.IMPORT<ATT>
+            SM.AMOUNT=0
+            SM.SRTP1=TRIM(SM.LINE[1,1])  ; * SRTP1
+            SM.SFTYP=TRIM(SM.LINE[2,2])  ; * SFTYP
+            SM.SFILL=TRIM(SM.LINE[4,1])  ; * SFILL
+            SM.SORDR=TRIM(SM.LINE[5,15])           ; * SORDR
+            SM.SSCAC=TRIM(SM.LINE[20,4])           ; * SSCAC
+            SM.SCASE=TRIM(SM.LINE[24,6])+0         ; * SCASE
+            SM.SWHSE=TRIM(SM.LINE[30,20])          ; * SWHSE
+            SM.SOZIP=TRIM(SM.LINE[50,10])          ; * SOZIP
+            SM.SOCTY=TRIM(SM.LINE[60,15])          ; * SOCTY
+            SM.SOSTE=TRIM(SM.LINE[75,2])           ; * SOSTE
+            SM.SRTP2=TRIM(SM.LINE[77,1])           ; * SRTP2
+            SM.SNAME=TRIM(SM.LINE[78,20])          ; * SNAME
+            SM.SDZIP=TRIM(SM.LINE[98,10])          ; * SDZIP
+            SM.SDCTY=TRIM(SM.LINE[108,15])         ; * SDCTY
+            SM.SDSTE=TRIM(SM.LINE[123,2])          ; * SDSTE
+            SM.SACCT=TRIM(SM.LINE[125,28])         ; * SACCT
+            SM.SRTP3=TRIM(SM.LINE[153,1])          ; * SRTP3
+      ***      SM.SCLS1=TRIM(SM.LINE[154,4])          ; * SCLS1 GRB01
+      
+       SM.SCLS1=SM.LINE[154,4] 
+             
+            SM.SCLS1= TRIM(SM.SCLS1)     ; * GRB01
+           IF SM.SCLS1 = "77.5" THEN SM.SCLS1 = 77          ; * GRB01
+           IF SM.SCLS1 = "1000" THEN SM.SCLS1 = 100         ; * GRB01
+           SM.SWGT1=TRIM(SM.LINE[158,8])+0        ; * SWGT1
+        ** SM.SWGT1=SM.LINE[158,8]    
+        
+            SM.SCLS2=TRIM(SM.LINE[166,4])          ; * SCLS2 ;* GRB01
+      *** SM.SCLS2=SM.LINE[166,4]  
+         **   SM.SCLS2= TRIM(SM.SCLS2)     ; * GRB01
+            IF SM.SCLS2 = "77.5" THEN SM.SCLS2 = 77          ; * GRB01
+            IF SM.SCLS2 = "1000" THEN SM.SCLS2 = 100         ; * GRB01
+        ***  SM.SWGT2=SM.LINE[170,7]  
+            SM.SWGT2=TRIM(SM.LINE[170,7])+0        ; * SWGT2
+            SM.SSDTE=TRIM(SM.LINE[177,6])'R%6'     ; * SSDTE
+            SM.SSDTE=SM.SSDTE[3,2]:'-':SM.SSDTE[5,2]:'-':SM.SSDTE[1,2]
+            SM.SSDTE=ICONV(SM.SSDTE,'D')
+IF SM.SWGT2 LE 0 THEN
+	SM.SCLS2 = ""
+	SM.SWGT2=""
+END
+            IF SM.SORDR#'' THEN
+               READ BOL.ITEM FROM F.BOL,SM.SORDR THEN
+                  ALREADY.THERE+=1
+                  BEGIN CASE
+                     CASE SM.SORDR=BOL.ITEM<8> AND SM.SSDTE=BOL.ITEM<2>
+* Numbers match, and invoice dates match
+                        ALREADY.THERE.BOTH.MATCH+=1
+
+                     CASE SM.SORDR=BOL.ITEM<8> AND SM.SSDTE#BOL.ITEM<2>
+* Numbers match, but invoice dates do not match
+                        ALREADY.THERE.AMOUNTS.MATCH+=1
+                        LINE=''
+                        LINE<1,1>='BOL ITEM.ID ':SM.SORDR
+                        LINE<1,2>='Order numbers match, but Order Dates do not match. File not changed.'
+                        LINE<1,3>='Sales Order Number    = ':SM.SORDR
+                        LINE<1,4>='Existing Order Date   = ':BOL.ITEM<2>'D4-'
+                        LINE<1,5>='New Order Date        = ':SM.SSDTE'D4-'
+                        ERROR.ARRAY<-1>=LINE
+                        ERROR.ARRAY<-1>=' '
+                        ERROR.ARRAY<-1>=' '
+
+                     CASE SM.SORDR#BOL.ITEM<8> AND SM.SSDTE=BOL.ITEM<2>
+* Numbers do not match, but invoice dates match
+                        ALREADY.THERE.DATES.MATCH+=1
+                        LINE=''
+                        LINE<1,1>='BOL ITEM.ID ':SM.SORDR
+                        LINE<1,2>='Numbers do not match, but Order Dates match. File not changed.'
+                        LINE<1,3>='Existing Order Number = ':BOL.ITEM<8>
+                        LINE<1,4>='New Order Number      = ':SM.SORDR
+                        LINE<1,5>='Order Date            = ':BOL.ITEM<2>'D4-'
+                        ERROR.ARRAY<-1>=LINE
+                        ERROR.ARRAY<-1>=' '
+                        ERROR.ARRAY<-1>=' '
+
+                     CASE SM.SORDR#BOL.ITEM<8> AND SM.SSDTE#BOL.ITEM<2>
+* Numbers do not match, and invoice dates do not match
+                        ALREADY.THERE.NEITHER.MATCH+=1
+                        LINE=''
+                        LINE<1,1>='BOL ITEM.ID ':SM.SORDR
+                        LINE<1,2>='Numbers do not match, and Order Dates do not match. File not changed.'
+                        LINE<1,3>='Existing Order Number = ':BOL.ITEM<8>
+                        LINE<1,4>='New Order Number      = ':SM.SORDR
+                        LINE<1,5>='Existing Order Date   = ':BOL.ITEM<2>'D4-'
+                        LINE<1,6>='New Order Date        = ':SM.SSDTE'D4-'
+                        ERROR.ARRAY<-1>=LINE
+                        ERROR.ARRAY<-1>=' '
+                        ERROR.ARRAY<-1>=' '
+                  END CASE
+
+                  IF (BOL.ITEM<8>)#"" THEN         ; * Existing number is null
+                ***   IF (BOL.ITEM<8>)="" THEN   
+                     ALREADY.THERE.NULL+=1
+                     LINE=''
+                     LINE<1,1>='BOL ITEM.ID ':SM.SORDR
+                     LINE<1,2>='Existing Number was null. Updated to New Number.'
+                     LINE<1,3>='Existing Order Number = ':BOL.ITEM<8>
+                     LINE<1,4>='New Order Number      = ':SM.SORDR
+                     ERROR.ARRAY<-1>=LINE
+                     ERROR.ARRAY<-1>=' '
+                     ERROR.ARRAY<-1>=' '
+                ***     BOL.ITEM<1>=SM.AMOUNT
+                ***     BOL.ITEM<2>=SM.SSDTE
+                ***     BOL.ITEM<4>=UPDATE.DATE
+                ***     BOL.ITEM<8>=SM.SORDR
+                ***     BOL.ITEM<9>=SM.SACCT
+                ***     BOL.ITEM<10>=SM.SFTYP
+                ***     BOL.ITEM<11>=SM.SSCAC
+                ***     BOL.ITEM<12>=SM.SCASE
+              ***       BOL.ITEM<13>=SM.SWHSE
+               ***      BOL.ITEM<14>=SM.SOZIP
+               ***      BOL.ITEM<15>=SM.SOCTY
+               ***      BOL.ITEM<16>=SM.SOSTE
+                ***     BOL.ITEM<17>=SM.SNAME
+               ***      BOL.ITEM<18>=SM.SDZIP
+               ***      BOL.ITEM<19>=SM.SDCTY
+                ***     BOL.ITEM<20>=SM.SDSTE
+                     BOL.ITEM<21,1>=SM.SCLS1
+                     BOL.ITEM<22,1>=SM.SWGT1
+
+                     BOL.ITEM<21,2>=SM.SCLS2
+                     BOL.ITEM<22,2>=SM.SWGT2
+                  END
+               END ELSE
+                  NOT.THERE+=1
+                  BOL.ITEM=''
+                  BOL.ITEM<1>=SM.AMOUNT
+                  BOL.ITEM<2>=SM.SSDTE
+                  BOL.ITEM<4>=UPDATE.DATE
+                  BOL.ITEM<8>=SM.SORDR
+                  BOL.ITEM<9>=SM.SACCT
+                  BOL.ITEM<10>=SM.SFTYP
+                  BOL.ITEM<11>=SM.SSCAC
+                  BOL.ITEM<12>=SM.SCASE
+                  BOL.ITEM<13>=SM.SWHSE
+                  BOL.ITEM<14>=SM.SOZIP
+                  BOL.ITEM<15>=SM.SOCTY
+                  BOL.ITEM<16>=SM.SOSTE
+                  BOL.ITEM<17>=SM.SNAME
+                  BOL.ITEM<18>=SM.SDZIP
+                  BOL.ITEM<19>=SM.SDCTY
+                  BOL.ITEM<20>=SM.SDSTE
+                  BOL.ITEM<21,1>=SM.SCLS1
+                  BOL.ITEM<22,1>=SM.SWGT1
+                  BOL.ITEM<21,2>=SM.SCLS2
+                  BOL.ITEM<22,2>=SM.SWGT2
+               END
+               WRITE BOL.ITEM ON F.BOL,SM.SORDR
+            END
+         NEXT ATT
+
+* Update files
+*
+         FTP.YR=FTPID[4,4]               ; * JMK02
+         FTP.MO=FTPID[8,2]               ; * JMK02
+         FTP.DA=FTPID[10,2]              ; * JMK02
+
+         WRITE SM.LAST.IMPORT ON F.FTP.HIST, 'SM-':FTP.MO:FTP.DA:FTP.YR:'.TXT' THEN        ; * NPR01
+            DELETE F.FTP,FTPID           ; * NPR01
+         END ELSE                        ; * NPR01
+            IF NOT(CMD) THEN             ; * NPR01
+               CALL ELINE('Could not write SM-LAST.TXT. Not deleting ':FTPID:'. Call Greg.')         ; * JMK02
+            END ELSE                     ; * NPR01
+               RESULTS.ARRAY<-1> = 'Could not write SM-LAST.TXT. Not deleting ':FTPID:'. Call Greg.'           ; * NPR01
+            END                          ; * NPR01
+         END
+
+* Screen output of results
+
+         LVIN = ST.DATE                  ; * Date started
+         LVIN<2> = ST.TIME               ; * Time started
+         LVIN<3> = PROG.NAME
+         LVIN<4> = FTPID                 ; * Raw data file worked with
+         LVOUT = ""
+         CALL UPDATE.BOL.FTP.LOG(LVIN,LVOUT,CLIENT.ID)
+
+         IF NOT(CMD) THEN                ; * NPR01
+            CRT @(0,12):'Items already existing in the BOL cross reference file:'
+            CRT @(0,13):'   1 Same Order Numbers, Same Order Dates             (not changed) = ':ALREADY.THERE.BOTH.MATCH'R#8'
+            CRT @(0,14):'   2 Same Order Numbers, Different Order Dates        (not changed) = ':ALREADY.THERE.AMOUNTS.MATCH'R#8'
+            CRT @(0,15):'   3 Different Order Numbers, Same Order Dates        (not changed) = ':ALREADY.THERE.DATES.MATCH'R#8'
+            CRT @(0,16):'   4 Different Order Numbers, Different Order Dates   (not changed) = ':ALREADY.THERE.NEITHER.MATCH'R#8'
+            CRT @(0,17):'---- Total items already in the file                                = ':ALREADY.THERE'R#8'
+            CRT @(0,19):'   5 Zero or Null Order Number (occurs as 1-4 above)      (changed) = ':ALREADY.THERE.NULL'R#8'
+            CRT @(0,20):'---- Total items not in the file                          (written) = ':NOT.THERE'R#8'
+         END                             ; * NPR01
+
+* Email output of results
+         RESULTS.ARRAY<-1>='Items already existing in the BOL cross reference file:'
+         RESULTS.ARRAY<-1>='   1 Same Order Numbers, Same Order Dates             (not changed) = ':ALREADY.THERE.BOTH.MATCH'R#8'
+         RESULTS.ARRAY<-1>='   2 Same Order Numbers, Different Order Dates        (not changed) = ':ALREADY.THERE.AMOUNTS.MATCH'R#8'
+         RESULTS.ARRAY<-1>='   3 Different Order Numbers, Same Order Dates        (not changed) = ':ALREADY.THERE.DATES.MATCH'R#8'
+         RESULTS.ARRAY<-1>='   4 Different Order Numbers, Different Order Dates   (not changed) = ':ALREADY.THERE.NEITHER.MATCH'R#8'
+         RESULTS.ARRAY<-1>='---- Total items already in the file                                = ':ALREADY.THERE'R#8'
+         RESULTS.ARRAY<-1>=' '
+         RESULTS.ARRAY<-1>='   5 Zero or Null Order Number (occurs as 1-4 above)      (changed) = ':ALREADY.THERE.NULL'R#8'
+         RESULTS.ARRAY<-1>='---- Total items not in the file                          (written) = ':NOT.THERE'R#8'
+         EMAIL.OUT=''
+*
+         IF TESTING THEN
+
+         END ELSE
+            EMAIL.OUT<1,1>='Holly.Wahl@SMNA.com'   ; * To: Email addresses
+            EMAIL.OUT<2,2>='rjustice@afs.net'      ; * CC: Email addresses
+            EMAIL.OUT<2,-1> = 'dfriend@afs.net'
+            EMAIL.OUT<2,-1> = 'gbino@afs.net'
+         END
+
+         EMAIL.OUT<4>='Reports@afs.net'  ; * From Email address
+         EMAIL.OUT<5>='Results From Running ':PROG.NAME:' - Import Of New BOL Data For ':CLIENT.ID:' ':CLIENT.REC<2>     ; * Subject of Email
+
+* Email body
+         EMAIL.OUT<6,-1>=USER.NAME:' ran ':PROG.NAME:' (':PROG.DESC:') on ':DATE()'D2/':' at ':OCONV(TIME(),'MTHS'):' with the following results:'
+         EMAIL.OUT<6,-1>=' '
+         NUM=DCOUNT(RESULTS.ARRAY,@AM)
+         FOR X=1 TO NUM
+            EMAIL.OUT<6,-1>='   ':RESULTS.ARRAY<X>
+         NEXT X
+
+         IF ERROR.ARRAY#'' THEN
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>='The following conflicts occurred between existing data and new data:'
+            EMAIL.OUT<6,-1>=' '
+            NUM=DCOUNT(ERROR.ARRAY,@AM)
+            FOR X=1 TO NUM
+               EMAIL.OUT<6,-1>='   ':ERROR.ARRAY<X>
+            NEXT X
+         END
+
+         EMAIL.OUT<7>=1                  ; * Auto format (add carriage returns to end of text)
+         VIN=EMAIL.OUT
+         VOUT=''
+         CALL SENDMAIL(VIN,VOUT)
+         EMAIL.OUT<2> = ''
+*
+         EMAIL.SENT=1                    ; * NPR01
+NEXT.FILE:*                              ; * JMK04
+      REPEAT                             ; * JMK02
+
+      IF NOT(CMD) THEN CALL ELINE('')    ; * NPR01
+
+************************************************************************
+THE.END:***
+************************************************************************
+* End of program
+
+      IF CMD THEN
+         IF EMAIL.SENT=0 AND ERROR.ARRAY#'' THEN
+            EMAIL.OUT=''
+            IF TESTING THEN
+               EMAIL.OUT<1,1>='GBINO@afs.net'      ; * Troubleshooting
+            END ELSE
+               EMAIL.OUT<1,1>='Holly.Wahl@SMNA.com'          ; * To: Email addresses
+               EMAIL.OUT<2,2>='rjustice@afs.net'   ; * CC: Email addresses
+            END
+            EMAIL.OUT<2>=''              ; * CC: Email addresses
+         END
+         EMAIL.OUT<4>='Imports@afs.net'  ; * From Email address
+         EMAIL.OUT<5>='Warnings/Errors From Running ':PROG.NAME:' - Import Of New EDP Bill of Lading Code Data For ':CLIENT.ID:' ':CLIENT.REC<2>       ; * Subject of Email
+*
+* Email body
+*
+         EMAIL.OUT<6,-1>=USER.NAME:' ran ':PROG.NAME:' (':PROG.DESC:') on ':DATE()'D2/':' at ':OCONV(TIME(),'MTHS'):' with the following results:'
+         EMAIL.OUT<6,-1>=' '
+         EMAIL.OUT<6,-1>='The following conflicts occurred between existing data and new data:'
+         EMAIL.OUT<6,-1>=' '
+
+         NUM=DCOUNT(ERROR.ARRAY,@AM)
+         FOR X=1 TO NUM
+            EMAIL.OUT<6,-1>='   ':ERROR.ARRAY<X>
+         NEXT X
+
+         IF TESTING THEN
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>='Dont forget to remove the testing flag!!'
+         END
+
+         EMAIL.OUT<7>=1                  ; * Auto format (add carriage returns to end of text)
+         VIN=EMAIL.OUT
+         VOUT=''
+         CALL SENDMAIL(VIN,VOUT)
+         EMAIL.SENT=1
+      END ELSE
+         CRT @(0,23):
+      END
+*
+99999:*
+*
+   END

@@ -1,0 +1,587 @@
+      SUBROUTINE ACC.TEST(VIN,VOUT)
+****************************************
+* Program name : ACC.TEST
+* Author       : Greg Bino
+* Date written : August 14 2021
+* Library      : FBBP
+* COPYRIGHT (c) : AFS, LLC 2021, All Rights Reserved.
+*
+* Build ACC file for export to tempo from audit files
+* Last updated by afs (AFSLOGISTICS\gbino) at 06:53:01 on 04/26/2021.
+*
+* Start modification history
+* Mod nn  mm/dd/yy, init, req #, description
+
+* End modification history
+*
+*******************************************
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_CLIENTS
+$INCLUDE FILE.DEFS INC_FB.AUDIT
+$INCLUDE FILE.DEFS INC_ADDS60.CODES
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+      EQU REVON TO REV.GRN.ON
+      EQU REVOFF TO TERM.NORM
+      EQU REFRESH TO 300
+      EQU PARTIAL TO "*"
+      BLU.ON = @(-13):@(-11)
+      YEL.ON = @(-13):@(-11)
+      REV.GRN.ON = @(-13)
+      TERM.NORM = @(-14):@(-6):@(-12)
+      RED.ON = @(-5)
+      CLIENT.ID = VIN<1>"R%5"
+      CARRIER.ID = VIN<2>"R%5"
+      
+      
+      
+      OPEN "CLEAN.ROUTE" TO F.ROUTE ELSE STOP
+      OPEN "FB.AUDIT,":CLIENT.ID TO F.AUDIT ELSE STOP
+      OPEN "FB.AUDIT.ZIPS,":CLIENT.ID TO F.AUDIT.ZIPS ELSE STOP
+      OPEN "FB.AUDIT.TABLES,":CLIENT.ID TO F.AUDIT.TABLES ELSE STOP
+      	EXECUTE "CLEAR-FILE DATA CLEAN.ROUTE" CAPTURING STUFF RETURNING JUNK
+      GOSUB INIT.VARS
+
+      
+      FOR XX = 1 TO 2
+     **** 	DEBUG
+         IF XX =1 THEN
+            DIRECTION = "I"
+         END
+         IF XX =2 THEN
+            DIRECTION = "O"
+         END
+         READ AUDIT.REC FROM F.AUDIT,CARRIER.ID THEN
+            RT.EFF.DT.CNT = DCOUNT(AUDIT.REC<2>,@VM)         ; * NUMBER OF ROUTING ZIPS
+            EFF.DT.CNT = DCOUNT(AUDIT.REC<2,1>,@SVM)         ; * NUMBER OF ROUTING ZIPS
+            EFF.DT = AUDIT.REC<2,1,EFF.DT.CNT>
+            BEG.EFF.DATE = EFF.DT
+
+            IF AUDIT.REC<11> # "ENABLE" THEN  RETURN  ; * NEXT CARRIER
+            ROUT.CNT = DCOUNT(AUDIT.REC<8>,@VM)
+            FOR I = 1 TO ROUT.CNT
+               *** FOR I = 1 TO 1
+               ROUTE.ZIP = AUDIT.REC<8,I>
+               IF AUDIT.REC<9,I> # "ENABLE" THEN GO NEXT.ZIP
+
+               ZIP.ID = CARRIER.ID:"*":ROUTE.ZIP:"*":EFF.DT:"*LTLALL*":DIRECTION
+               READ AZIPS.IN.REC FROM F.AUDIT.ZIPS,ZIP.ID THEN
+                  **   BEGIN.ZIPS = ZIP.DATA<2>
+                  **   END.ZIPS = ZIP.DATA<3>
+                  GOSUB PROCESS.IT
+               END
+NEXT.ZIP:
+            NEXT I
+         END
+  ****       DEBUG
+      NEXT XX
+
+      RETURN
+**************************************************
+PROCESS.IT:
+**************************************************
+      AZIPS.REC = AZIPS.IN.REC
+      ZIP.VAR=ROUTE.ZIP
+      CALL FB.READ.ZIP(ZIP.VAR, DEST.CITY, DEST.STATE)
+      TEMP = ROUTE.ZIP:' ':DEST.CITY:', ':DEST.STATE
+      TABLE.HEADING=TEMP'L#25'
+      TABLE.HEADING:=' Valid Shipping Points - INBOUND '
+      PRINT.TABLE.HEADING = ' Valid Shipping Points - INBOUND '
+      BEGIN CASE
+         CASE AZIPS.IN.REC = ''
+            PRINT.TABLE.STATUS = 'Not setup'
+         CASE AZIPS.IN.REC<1> = FBA.ENABLE
+            PRINT.TABLE.STATUS = 'Enabled'
+         CASE 1
+            PRINT.TABLE.STATUS = 'Disabled'
+      END CASE
+      TABLE.HEADING:='    Eff Date ':BEG.EFF.DATE'D2/'
+      IF AZIPS.IN.REC<6>#'' THEN
+         NUM.OF.ITEM=DCOUNT(AZIPS.IN.REC<6>,@VM)
+         FOOTER="Last Updated by ":AZIPS.IN.REC<6,NUM.OF.ITEM>'MCT':" On ":AZIPS.IN.REC<7,NUM.OF.ITEM>'D2/':" At ":OCONV(AZIPS.IN.REC<8,NUM.OF.ITEM>,'MTHS')
+      END ELSE
+         FOOTER=''
+      END
+      GOSUB INPUT.SHIPPING.POINTS
+      AZIPS.IN.REC=AZIPS.REC
+      ****  OPTIONS<OPT.SHIP.IN.STATUS>=REFRESH
+      GOSUB SETUP.AUDIT.ZIPS
+      **   DEBUG
+
+* RESULTS IN STATE.ZIP.REC
+* STATES<1>
+*Y/N<4>
+* TABLE <5>
+* ROUTE.ZIP
+****DEBUG
+      STATE.CNT = DCOUNT(STATE.ZIP.REC<1>,@VM)
+      FOR II = 1 TO STATE.CNT
+         STATE = STATE.ZIP.REC<1,II>
+         YN = STATE.ZIP.REC<4,II>
+         TBL = STATE.ZIP.REC<5,II>
+         TABLE.ID = CARRIER.ID:"*":TBL
+         IF YN = "Y" THEN
+            READ TBL.DATA FROM F.AUDIT.TABLES,TABLE.ID THEN
+               ACC.CNT = DCOUNT(TBL.DATA<26>,@VM)
+               CR.REC = ""
+               FOR J = 1 TO ACC.CNT
+                  ACC.CODE = TBL.DATA<26,J>
+                  ACC.CHARGE = TBL.DATA<27,J>      ; * WHAT ABOUT ASK AND CWT
+                  ACC.MIN = TBL.DATA<49,J>
+                  ACC.MAX = TBL.DATA<50,J> 
+                  IF ACC.MIN = "" THEN ACC.MIN = 0
+                 	IF ACC.MAX = "" THEN ACC.MAX = 0
+                  *CREATE SPREADSHEET REC HERE OR WRITE TO FILE TO ELIM DUPES
+
+                  CR.REC<1,-1> = ACC.CODE
+                  CR.REC<2,-1> = ACC.CHARGE
+                  CR.REC<3,-1> = ACC.MIN
+                  CR.REC<4,-1> = ACC.MAX
+               NEXT J
+               IF CR.REC # "" THEN
+                  WRITE CR.REC ON F.ROUTE,ROUTE.ZIP:"*":STATE:"*":DIRECTION
+               END
+            END
+         END
+      NEXT II
+
+      RETURN
+
+****************************************************************
+SETUP.AUDIT.ZIPS:* Process all states.
+****************************************************************
+      FOR STATE.NUM = 1 TO NUM.ZIPS
+         GOSUB SETUP.STATE.AUDIT.ZIPS
+      NEXT STATE.NUM
+
+      RETURN
+****************************************************************
+SETUP.STATE.AUDIT.ZIPS:
+****************************************************************
+      MIXED.FLAG = FALSE
+      MIXED.TABLE = FALSE
+      EMPTY.TABLE = ''
+      LAST.TABLE.ZIP = STATE.ZIP.REC<2,STATE.NUM>
+      LOCATE LAST.TABLE.ZIP IN ALL.ZIPS<3> SETTING LAST.TABLE.POS ELSE LAST.TABLE.POS-=1
+      LAST.TABLE.CODE = ALL.ZIPS<2,LAST.TABLE.POS>
+      LAST.YN.FLAG = ''                  ; * Must USE NULL,
+      STATE.ZIP.REC<6,STATE.NUM>=''
+
+*
+* Loop though all the zips for the entire state
+*
+
+      LOCATE STATE.ZIP.REC<2,STATE.NUM> IN ALL.ZIPS<3> SETTING STATE.BEG.POS ELSE STATE.BEG.POS-=1
+      LOCATE STATE.ZIP.REC<3,STATE.NUM> IN ALL.ZIPS<3> SETTING STATE.END.POS ELSE STATE.END.POS-=1
+      FOR STATE.RANGE = STATE.BEG.POS TO STATE.END.POS
+         Y=ALL.ZIPS<3,STATE.RANGE>
+         IF ALL.ZIPS<1,STATE.RANGE> # '' THEN
+*
+*  First Table Flag?
+*
+            IF LAST.YN.FLAG='' THEN
+               LAST.YN.FLAG = ALL.ZIPS<1,STATE.RANGE>
+            END ELSE
+*
+*  Change In YN FLAGs?
+*
+               IF LAST.YN.FLAG # ALL.ZIPS<1,STATE.RANGE> THEN MIXED.FLAG=TRUE
+            END
+
+            IF ALL.ZIPS<2,STATE.RANGE> = '' THEN EMPTY.TABLE = TRUE    ; * Is the currect Table Code empty?
+
+*
+*  Change in Table Codes?
+*
+            IF LAST.TABLE.CODE # ALL.ZIPS<2,STATE.RANGE> THEN MIXED.TABLE=TRUE
+         END ELSE
+
+            ALL.ZIPS<1,STATE.RANGE> = 'N'
+            CALL ELINE('CALL PROGRAMMING!')
+
+         END
+      NEXT STATE.RANGE
+
+*
+* Evaluate results... All Tables, All No, or Combos
+*
+
+      IF MIXED.FLAG THEN LAST.YN.FLAG = PARTIAL
+      IF MIXED.TABLE THEN LAST.TABLE.CODE = PARTIAL
+      IF EMPTY.TABLE THEN STATE.ZIP.REC<6,STATE.NUM>=' '
+
+      BEGIN CASE
+         CASE LAST.YN.FLAG # ''
+            STATE.ZIP.REC<4,STATE.NUM> = LAST.YN.FLAG
+            STATE.ZIP.REC<5,STATE.NUM> = LAST.TABLE.CODE
+*
+* Entire state blank
+*
+         CASE 1
+            STATE.ZIP.REC<4,STATE.NUM> = 'N'
+            STATE.ZIP.REC<5,STATE.NUM> = ''
+      END CASE
+
+      RETURN
+*********************************************************
+INPUT.SHIPPING.POINTS:
+*********************************************************
+*
+* Init. return value varables
+*
+      NEW.SHIPPING.POINTS = 0
+      FAILURE=FALSE
+      SCR.PG=1
+
+
+      GOSUB INIT.SCREEN
+      CBVIN=''
+      CBVIN<1>=CLIENT.ID
+
+      GOSUB EXTRACT.AUDIT.ZIPS
+      GOSUB SETUP.AUDIT.ZIPS
+      RETURN
+
+****************************************************************
+ASK.ABOUT.QUITTING:
+****************************************************************
+
+*
+* Perform some boolean magic!
+*
+      CHANGED = (ORG.AZIPS.IN.REC # AZIPS.IN.REC)
+      CHANGED+= (ORG.AZIPS.OUT.REC # AZIPS.OUT.REC)
+      CHANGED+= (ORG.AUDIT.REC # AUDIT.REC)
+
+      IF CHANGED THEN
+         YN.MSG = 'Exit Program and Loose any changes? '
+         YN.MASK = 'N '
+         GOSUB ASK.Y.OR.N
+         EXIT.IT = (YN.ANSWER = 'Y')
+      END ELSE
+         EXIT.IT = TRUE
+      END
+
+      FAILURE+=EXIT.IT
+
+      RETURN
+
+
+****************************************************************
+EXTRACT.AUDIT.ZIPS:
+****************************************************************
+
+      ***  DEBUG
+* Init - Set all to FALSE
+*
+      PER=''
+      ALL.ZIPS = 0
+      FOR ZIP.POS = 1 TO 999             ; * 999+1 = LAST MARKER
+         ALL.ZIPS<1,ZIP.POS> = FALSE
+         ALL.ZIPS<2,ZIP.POS> = ''
+         ALL.ZIPS<3,ZIP.POS> = ZIP.POS'R%3'
+      NEXT ZIP.POS
+      CNT=999
+      FOR A=65 TO 90
+         APOS=CHAR(A)
+         FOR B=0 TO 9
+            BPOS=B
+            FOR C=65 TO 90
+               CPOS=CHAR(C)
+               CNT+=1
+               CAN.ZIP=APOS:BPOS:CPOS
+               ALL.ZIPS<1,CNT>=FALSE
+               ALL.ZIPS<2,CNT>=''
+               ALL.ZIPS<3,CNT>=CAN.ZIP
+            NEXT C
+         NEXT B
+      NEXT A
+      CNT+=1                             ; * JMK08
+      ALL.ZIPS<1,CNT>=FALSE              ; * JMK08
+      ALL.ZIPS<2,CNT>=''                 ; * JMK08
+      ALL.ZIPS<3,CNT>='ZZZ'              ; * JMK08
+      CNT+=1                             ; * GRB06
+      ALL.ZIPS<1,CNT>=FALSE              ; * GRB06
+      ALL.ZIPS<2,CNT>=''                 ; * GRB06
+      ALL.ZIPS<3,CNT>='ZZC'              ; * GRB06
+
+      MAX.ZIPS=DCOUNT(ALL.ZIPS<1>,@VM)+1
+      ALL.ZIPS<1,MAX.ZIPS> = ''
+      ALL.ZIPS<2,MAX.ZIPS> = ''
+      ALL.ZIPS<3,MAX.ZIPS> = ''
+
+*
+* Mark legitimate state ranges as 'N' - Only INVALID
+* zips will then remain marked FALSE!
+*
+      PER=''
+      FOR X = 1 TO NUM.ZIPS
+         ****      CALL PROG.BAR(22,X,NUM.ZIPS,PER)
+         LOCATE STATE.ZIP.REC<2,X> IN ALL.ZIPS<3> SETTING STATE.BEG.POS ELSE STATE.BEG.POS-=1
+         LOCATE STATE.ZIP.REC<3,X> IN ALL.ZIPS<3> SETTING STATE.END.POS ELSE STATE.END.POS-=1
+         FOR STATE.RANGE = STATE.BEG.POS TO STATE.END.POS
+            ZIP.NUM=ALL.ZIPS<3,STATE.RANGE>
+            ZIP.POS=STATE.RANGE
+            ALL.ZIPS<1,STATE.RANGE> = 'N'
+            ALL.ZIPS<2,STATE.RANGE> = ''
+         NEXT STATE.RANGE
+      NEXT X
+
+*
+* Loop though all zips and setup a Zip-to-State(with flags) table
+*
+* NOTE: Zip number 1000 is used for force a N in that position to write
+*       out zip number 999 without any extra code.
+*
+* Do not modify zips that are set to FALSE - They are not legit. zip
+* codes.
+*
+      PER=''
+      NUM.AUDITS = DCOUNT(AZIPS.REC<2>, @VM)
+      FOR AUDIT.NUM = 1 TO NUM.AUDITS
+         ****       CALL PROG.BAR(22,AUDIT.NUM,NUM.AUDITS,PER)
+         LOCATE AZIPS.REC<2,AUDIT.NUM> IN ALL.ZIPS<3> SETTING AZIP.BEG.POS ELSE AZIP.BEG.POS-=1
+         LOCATE AZIPS.REC<3,AUDIT.NUM> IN ALL.ZIPS<3> SETTING AZIP.END.POS ELSE AZIP.END.POS-=1
+         FOR AZIP.RANGE = AZIP.BEG.POS TO AZIP.END.POS
+            ZIP.NUM=ALL.ZIPS<3,AZIP.RANGE>
+            ZIP.POS=AZIP.RANGE
+            IF ALL.ZIPS<1,AZIP.RANGE> # FALSE THEN
+               ALL.ZIPS<1,AZIP.RANGE> = AZIPS.REC<4,AUDIT.NUM>
+               ALL.ZIPS<2,AZIP.RANGE> = AZIPS.REC<5,AUDIT.NUM>
+            END
+         NEXT AZIP.RANGE
+      NEXT AUDIT.NUM
+
+*
+* Remove any FALSE flags - Make ''
+*
+      PER=''
+      FOR ZIP.NUM = 1 TO MAX.ZIPS
+         *****       CALL PROG.BAR(22,ZIP.NUM,MAX.ZIPS,PER)
+         IF ALL.ZIPS<1,ZIP.NUM> = FALSE THEN
+            ALL.ZIPS<1,ZIP.NUM> = ''
+            ALL.ZIPS<2,ZIP.NUM> = ''
+         END
+      NEXT ZIP.NUM
+
+      RETURN
+****************************************************************
+INIT.SCREEN:
+****************************************************************
+
+      **   CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      ***  CRT @(0,2):STR('-',79) ;
+      *** CRT @(0,21):STR('-',79) ;
+      RETURN
+
+****************************************************************
+ASK.Y.OR.N:
+****************************************************************
+      YN.ANSWER = ''
+
+Y.OR.N:
+
+      HELP = CHAR(7):"Entry Options: [Y]-Yes [N]-No [X]-Back"
+      CRT @(0,22):YN.MSG:@(-4):
+      MASK = YN.MASK'L#1'
+      Q=''
+      CALL GEN.IN(LEN(YN.MSG),22,MASK,'',Q,0,1,'','',2,LEN(YN.MSG),22,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+
+*
+* Q & D Translation
+*
+      BEGIN CASE
+         CASE QI = ''
+            QI=MASK
+         CASE QI = '1'
+            QI='Y'
+         CASE QI = '0'
+            QI='N'
+      END CASE
+
+      BEGIN CASE
+         CASE QI = 'Y'
+         CASE QI = 'N'
+         CASE QI = 'X'
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO Y.OR.N
+      END CASE
+
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+      YN.ANSWER = QI
+
+      RETURN
+
+*****************************************
+INIT.VARS:
+*****************************************
+      CDN.ZIP.ARRAY=''
+      CDN.ZIPS=''
+
+      CDN.ZIP.ARRAY<1,-1>='AB'
+      CDN.ZIP.ARRAY<2,-1>='T0A'
+      CDN.ZIP.ARRAY<3,-1>='T9Z'
+      CDN.ZIPS<1,-1>=FALSE
+      CDN.ZIPS<2,-1>=''
+
+      CDN.ZIP.ARRAY<1,-1>='BC'
+      CDN.ZIP.ARRAY<2,-1>='V0A'
+      CDN.ZIP.ARRAY<3,-1>='V9Z'
+      CDN.ZIPS<1,-1>=FALSE
+      CDN.ZIPS<2,-1>=''
+
+      CDN.ZIP.ARRAY<1,-1>='MB'
+      CDN.ZIP.ARRAY<2,-1>='R0A'
+      CDN.ZIP.ARRAY<3,-1>='R9Z'
+      CDN.ZIPS<1,-1>=FALSE
+      CDN.ZIPS<2,-1>=''
+
+      CDN.ZIP.ARRAY<1,-1>='NB'
+      CDN.ZIP.ARRAY<2,-1>='E0A'
+      CDN.ZIP.ARRAY<3,-1>='E9Z'
+      CDN.ZIPS<1,-1>=FALSE
+      CDN.ZIPS<2,-1>=''
+
+      CDN.ZIP.ARRAY<1,-1>='NF'
+      CDN.ZIP.ARRAY<2,-1>='A0A'
+      CDN.ZIP.ARRAY<3,-1>='A9Z'
+      CDN.ZIPS<1,-1>=FALSE
+      CDN.ZIPS<2,-1>=''
+
+      CDN.ZIP.ARRAY<1,-1>='NS'
+      CDN.ZIP.ARRAY<2,-1>='B0A'
+      CDN.ZIP.ARRAY<3,-1>='B9Z'
+      CDN.ZIPS<1,-1>=FALSE
+      CDN.ZIPS<2,-1>=''
+
+      CDN.ZIP.ARRAY<1,-1>='NT'
+      CDN.ZIP.ARRAY<2,-1>='X0E'
+      CDN.ZIP.ARRAY<3,-1>='X1A'
+      CDN.ZIPS<1,-1>=FALSE
+      CDN.ZIPS<2,-1>=''
+
+      CDN.ZIP.ARRAY<1,-1>='NU'
+      CDN.ZIP.ARRAY<2,-1>='X0A'
+      CDN.ZIP.ARRAY<3,-1>='X0C'
+      CDN.ZIPS<1,-1>=FALSE
+      CDN.ZIPS<2,-1>=''
+
+      CDN.ZIP.ARRAY<1,-1>='ON'
+      CDN.ZIP.ARRAY<2,-1>='K0A'
+      CDN.ZIP.ARRAY<3,-1>='P9Z'
+      CDN.ZIPS<1,-1>=FALSE
+      CDN.ZIPS<2,-1>=''
+
+      CDN.ZIP.ARRAY<1,-1>='PE'
+      CDN.ZIP.ARRAY<2,-1>='C0A'
+      CDN.ZIP.ARRAY<3,-1>='C9Z'
+      CDN.ZIPS<1,-1>=FALSE
+      CDN.ZIPS<2,-1>=''
+
+      CDN.ZIP.ARRAY<1,-1>='QC'
+      CDN.ZIP.ARRAY<2,-1>='G0A'
+      CDN.ZIP.ARRAY<3,-1>='J9Z'
+      CDN.ZIPS<1,-1>=FALSE
+      CDN.ZIPS<2,-1>=''
+
+      CDN.ZIP.ARRAY<1,-1>='SK'
+      CDN.ZIP.ARRAY<2,-1>='S0A'
+      CDN.ZIP.ARRAY<3,-1>='S9Z'
+      CDN.ZIPS<1,-1>=FALSE
+      CDN.ZIPS<2,-1>=''
+
+      CDN.ZIP.ARRAY<1,-1>='YT'
+      CDN.ZIP.ARRAY<2,-1>='Y0A'
+      CDN.ZIP.ARRAY<3,-1>='Y9Z'
+      CDN.ZIPS<1,-1>=FALSE
+      CDN.ZIPS<2,-1>=''
+
+      JL.ZIP.ARRAY=''                    ; * JMK08
+      JL.ZIPS=''                         ; * JMK08
+
+      JL.ZIP.ARRAY<1,-1>='JL'            ; * JMK08
+      JL.ZIP.ARRAY<2,-1>='ZZZ'           ; * JMK08 ; * JMK11
+      JL.ZIP.ARRAY<3,-1>='ZZZ'           ; * JMK08 ; * JMK11
+      JL.ZIPS<1,-1>=FALSE                ; * JMK08
+      JL.ZIPS<2,-1>=''                   ; * JMK08
+
+      JL.ZIP.ARRAY<1,-1>='JC'            ; * GRB06
+      JL.ZIP.ARRAY<2,-1>='ZZC'           ; * GRB06
+      JL.ZIP.ARRAY<3,-1>='ZZC'           ; * GRB06
+      JL.ZIPS<1,-1>=FALSE                ; * GRB06
+      JL.ZIPS<2,-1>=''                   ; * GRB06
+      DEL.CARRIER.ID = ''
+      DEL.ZIP = ''
+      DEL.DATE = ''
+      DEL.IO = ''
+
+      AZIPS.REC = ''                     ; * General Work variable for Inbound and Outbound zips
+      PACK.ZIPS = ''                     ; * Pack Zip ranges by state.  Only used for Reports..
+      AZIPS.IN.REC = ''                  ; * Inbound Audit Zip Reocrd from FB.AUDIT.ZIPS
+      ORG.AZIPS.IN.REC = ''              ; * Inbound Audit Zip Reocrd from FB.AUDIT.ZIPS
+      AZIPS.OUT.REC = ''                 ; * Outbound Audit Zip Record from FB.AUDIT.ZIPS
+      ORG.AZIPS.OUT.REC = ''             ; * Outbound Audit Zip Record from FB.AUDIT.ZIPS
+      ALL.ZIPS = ''                      ; * Temp Storage for Consolidated Zips
+      SUB.ZIPS = ''                      ; * Array of Sub Zips for ROUTE.ZIP
+      AUDIT.REC = ''                     ; * Carrier Audit Rec from FB.AUDIT
+      ORG.AUDIT.REC = ''                 ; * Carrier Audit Rec from FB.AUDIT
+      EFF.DT.NOTES = ''                  ; * Notes for Effective dates             ; * NPR02
+      EFF.DT.NOTES.USER.DT = ''          ; * Notes for Effective dates             ; * NPR02
+      PROG.DESC = "BUILD ZIP ARRAY"
+      PACK.NAME = ""
+      PROC.NAME = "ACC.TEST"
+      YN.ANSWER=''
+      OPEN '','ZIPS.CODES' TO F.ZIPS THEN
+         READ STATE.ZIP.REC FROM F.ZIPS,'3.DIGIT' THEN
+
+            NUM.ZIPS = DCOUNT(STATE.ZIP.REC<1>, @VM)
+            FOR X = 1 TO NUM.ZIPS
+               IF STATE.ZIP.REC<2,X> = 0 THEN
+                  DEL STATE.ZIP.REC<1,X>
+                  DEL STATE.ZIP.REC<2,X>
+                  DEL STATE.ZIP.REC<3,X>
+                  X=X-1                  ; * JMK01
+                  NUM.ZIPS=NUM.ZIPS-1    ; * JMK01
+*                 CALL ELINE('WARNING! - ZERO ZIP REMOVED')
+               END
+            NEXT X
+            INVALID.STATE=''
+            INVALID.STATE<1>='AK'
+            INVALID.STATE<2>='GV'
+            INVALID.STATE<3>='HI'
+            INVALID.STATE<4>='CD'
+            INVALID.STATE<5>='MX'
+            INVALID.STATE<6>='EX'
+            INVALID.STATE<7>='IM'
+            NUM.OF.INVALID.STATE=DCOUNT(INVALID.STATE,@AM)
+            FOR I = 1 TO NUM.OF.INVALID.STATE
+               LOCATE INVALID.STATE<I> IN STATE.ZIP.REC<1> SETTING X THEN
+                  DEL STATE.ZIP.REC<1,X>
+                  DEL STATE.ZIP.REC<2,X>
+                  DEL STATE.ZIP.REC<3,X>
+               END
+            NEXT I
+
+            STATE.ZIP.REC<1,-1>=CDN.ZIP.ARRAY<1>
+            STATE.ZIP.REC<2,-1>=CDN.ZIP.ARRAY<2>
+            STATE.ZIP.REC<3,-1>=CDN.ZIP.ARRAY<3>
+            STATE.ZIP.REC<1,-1>=JL.ZIP.ARRAY<1>    ; * JMK08
+            STATE.ZIP.REC<2,-1>=JL.ZIP.ARRAY<2>    ; * JMK08
+            STATE.ZIP.REC<3,-1>=JL.ZIP.ARRAY<3>    ; * JMK08
+*
+* Count number of legit States (zip code ranges) avail.
+*
+            NUM.ZIPS = DCOUNT(STATE.ZIP.REC<1>, @VM)
+         END ELSE
+            CALL OPEN.ABORT("READ ZIPS.CODES",PROG.NAME)
+         END
+      END ELSE
+         CALL OPEN.ABORT("ZIPS.CODES",PROG.NAME)
+      END
+
+      RETURN
+   END

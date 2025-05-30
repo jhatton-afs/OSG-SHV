@@ -1,0 +1,131 @@
+* PROGRAM INET ESTIMATOR SETUP TO INITIALIZE CARRIER TABLE
+*
+* AUTHOR: TAMI SEAGO
+* DATE: SEPTEMBER 12, 2000
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE EXPRESS
+* WRITTEN CONSENT OF SAME.
+*
+****************************************************************
+* Initialize variables
+****************************************************************
+      PROG.NAME=''
+      PROG.DESC='ESTIMATOR SETUP TO INTIALIZE CARRIER TABLE'
+      PACK.NAME='FREIGHT BILLING'
+      
+      CALL GET.USER.NEW(USER,CH.NUM)
+*****      CALL CHANNEL(CH.NUM)
+      UPL.VIN = 'FBBP'
+      UPL.VIN<2> = 'INET.CARRIER.LIST'
+      UPL.VIN<3> = USER
+      UPL.VIN<4> = CH.NUM
+      UPL.VOUT = ''     ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         PRINT "%ERROR:COULD NOT OPEN CARRIER FILE"
+         STOP
+      END
+        
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         PRINT "%ERROR:COULD NOT OPEN CLIENT FILE"
+         STOP
+      END
+    
+      METADATA = ""
+      METADATA<1,1> = "VARCHAR" ;   METADATA<1,2> = "CarrierList"  ;      METADATA<1,3> = 0
+      METADATA<2,1> = "VARCHAR" ;   METADATA<2,2> = "CarrierName"  ;      METADATA<2,3> = 0
+      OUTPUT = ""
+      INPUT CLIENT.ID
+      INPUT REQUESTEDFROM    
+      REQUESTEDFROM = OCONV(REQUESTEDFROM,"MCU")
+      NUM.CLIENTS = DCOUNT(CLIENT.ID,@VM)       
+      BEGIN CASE
+        CASE REQUESTEDFROM = "RATE"
+*** Check for Substitutes in OLA ***
+          OPEN 'FB.AUDIT,':CLIENT.ID TO F.AUDIT ELSE
+            PRINT '%ERROR: Carrier Pricing Has not been setup'
+            STOP
+          END
+          READV SUBST.CLIENT FROM F.AUDIT,'SUBSTITUTE',1 ELSE SUBST.CLIENT=''
+          IF SUBST.CLIENT#'' THEN
+            LOOK.CLIENT=SUBST.CLIENT
+          END ELSE
+            LOOK.CLIENT=CLIENT.ID
+          END
+
+          READV LOGISTICS FROM F.CLIENTS,CLIENT.ID,93 THEN
+            IF LOGISTICS='Y' THEN
+*             Only select Core/Internet carriers if it is a logistics account.
+              STMT = 'SORT FB.AUDIT,':LOOK.CLIENT:' WITH 11 # "DISABLE" AND WITH EQUIP = "" AND WITH 13 = "Y" OR WITH 11 # "DISABLE" AND WITH EQUIP = "" AND WITH 13 = "I" BY CARRIER.NAME CARRIER.NAME 13 COL.HDR.SUPP NO.SPLIT NOPAGE COUNT.SUP'
+            END ELSE
+              STMT = 'SORT FB.AUDIT,':LOOK.CLIENT:' WITH 11 # "DISABLE" AND WITH EQUIP = "" BY CARRIER.NAME CARRIER.NAME 13 COL.HDR.SUPP NO.SPLIT NOPAGE COUNT.SUP'
+            END
+          END ELSE
+            STMT = 'SORT FB.AUDIT,':LOOK.CLIENT:' WITH 11 # "DISABLE" AND WITH EQUIP = "" AND WITH 13 = "Y" OR WITH 11 # "DISABLE" AND WITH EQUIP = "" AND WITH 13 = "I" BY CARRIER.NAME CARRIER.NAME 13 COL.HDR.SUPP NO.SPLIT NOPAGE COUNT.SUP'
+          END
+*OWEN     STMT = 'SORT FB.AUDIT,':LOOK.CLIENT:' WITH 11 # "DISABLE" AND WITH EQUIP = "" AND WITH 13 = "Y" OR WITH 11 # "DISABLE" AND WITH EQUIP = "" AND WITH 13 = "I" BY CARRIER.NAME CARRIER.NAME 13 COL.HDR.SUPP NO.SPLIT NOPAGE COUNT.SUP'
+          EXECUTE STMT PASSLIST CAPTURING OUTPUT
+          NUMCARRIERS = DCOUNT(OUTPUT,@AM)
+          IF NUMCARRIERS = 0 THEN
+            PRINT '%ERROR: Carrier Pricing Has not been setup'
+            STOP
+          END
+          CONVERT @AM TO CHAR(30) IN METADATA        
+          PRINT "%METADATA:":METADATA      
+
+          FOR X = 3 TO NUMCARRIERS + 3
+          ROW = ''
+          IF OUTPUT<X>[1,5] # "" AND OUTPUT<X>[1,5] MATCHES "5N"  THEN 
+            ROW<1> = TRIM(OUTPUT<X>[1,5])
+            ROW<2> = TRIM(OUTPUT<X>[12,30])
+            CONVERT @AM TO CHAR(30) IN ROW
+            PRINT ROW         
+          END
+        NEXT X
+
+        CASE REQUESTEDFROM = "FREIGHT"
+          STMT = 'QSELECT CLIENT.CARRIER.XREF "':CLIENT.ID<1,1> :'" '
+          IF NUM.CLIENTS # 1 THEN 
+            FOR X = 2 TO NUM.CLIENTS
+              CLIENT = CLIENT.ID<1,X>
+              STMT := ' "':CLIENT<1> :'" '
+            NEXT X
+          END       
+
+            EXECUTE STMT PASSLIST CAPTURING CARRIERLIST
+            IF @SELECTED=0 THEN
+              NUMCARRIERS=0
+              GO NO.CARRIERS
+            END
+*           STMT = 'SELECT CARRIERS SAVING UNIQUE @ID'
+            EXECUTE STMT PASSLIST CAPTURING OUTPUT
+            STMT = 'SORT CARRIERS BY 1 L1 COL.HDR.SUPP NO.SPLIT NOPAGE COUNT.SUP'
+            EXECUTE STMT PASSLIST CAPTURING OUTPUT
+            NUMCARRIERS = DCOUNT(OUTPUT,@AM)
+NO.CARRIERS:***
+            IF NUMCARRIERS = 0 THEN
+*             PRINT '%ERROR: NO CARRIER AVAILABLE FOR THIS CLIENT'
+*             STOP
+              OUTPUT=''
+              OUTPUT<3>='99999 No Bills Processed'
+            END
+            CONVERT @AM TO CHAR(30) IN METADATA        
+            PRINT "%METADATA:":METADATA      
+
+            FOR Y = 3 TO NUMCARRIERS + 3
+              ROW = ''
+              IF OUTPUT<Y>[1,5] # "" AND OUTPUT<Y>[6,30] # "" THEN  
+                ROW<1> = TRIM(OUTPUT<Y>[1,5])
+                ROW<2> = TRIM(OUTPUT<Y>[6,30])
+                CONVERT @AM TO CHAR(30) IN ROW
+                PRINT ROW         
+              END
+           NEXT Y
+
+      END CASE
+    
+
+      STOP
+      END

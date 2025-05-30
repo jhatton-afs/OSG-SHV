@@ -1,0 +1,385 @@
+****************************************************
+* Program name : LOAD.FB.REVIEW
+* Author       : JMK
+* Date written : 08-19-2011
+* Library      : FBBP
+* COPYRIGHT (C) 1998 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* Update operator table
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 11:34:49 on 01/16/2020.
+*
+* Start modification history
+* 091416 - TAG01 - Sysaid 27036 Add Timestamp To Eod Processes
+* 011620 - NKH01 - ACCU-733 Updated FB.BILLS.ACCESS 
+* End modification history
+**----------------------------------------------------------------------
+*****************************************************************
+* 081911 - JMK01 - Setup new FedEx Carrier for processing without client approval
+* 011212 - JMK02 - SysAid#71 - Wabtec 1977-Vitran Express 748 FB for approval
+* 071614 - DRF01 - SysAid 10744 - Added LaJuanyka to the email
+* 030915 - SWB01 - SysAid#13523 - Modifications for Wabtec Master Billing Report
+* 072715 - DRF02 - SysAid 18952 - Added two Wabtec email addresses.
+*****************************************************************
+*Notes:
+*
+*Be aware that REVIEW.STATUS.CODE 970 is also used in FB.2.1.NW as an indicator
+*that the bill is being pushed to the web.
+
+*If you change or add any REVIEW.STATUS.CODEs, be aware that it might affect UPD.FB.REVIEW, LOAD.FB.REVIEW
+*and BUILD.DF.REVIEW.SUB, all of which have logic based on codes 970 - 975.
+*
+*****************************************************************
+      PROG.NAME='LOAD.FB.REVIEW'         ; * JMK02
+      PROG.DESC='WEB APPROVAL PUSH'      ; * JMK02
+      PACK.NAME='FREIGHT BILLING'        ; * JMK02
+      CO.NAME='AFS Logistics, LLC'                 ; * JMK02
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CLIENT.SCAC' TO F.CSCAC ELSE
+         CALL OPEN.ABORT('CLIENT.SCAC',PROG.NAME)
+      END
+      OPEN '','BCTRL' TO F.BCTRL ELSE
+         CALL OPEN.ABORT('BCTRL',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      OPEN '','EMAILDATA' TO F.EMAILDATA ELSE
+         CALL OPEN.ABORT('EMAILDATA',PROG.NAME)
+      END
+
+      CALL GET.USER(USER)
+* TAG01 \/
+      VIN1=""
+      VIN1<1> = "LOAD.FB.REVIEW"
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "S"
+      CALL PROGTRACK(VIN1,VOUT1)
+* TAG01 /\
+      READ BCTRL.REC FROM F.BCTRL,USER ELSE BCTRL.REC=''     ; * JMK02
+      IF USER='SV.UVAUTO' THEN           ; * JMK02
+         BCTRL.REC=''                    ; * JMK02
+         BCTRL.REC<13>='UV Automated Process'      ; * JMK02
+         BCTRL.REC<14>=''                ; * JMK02
+         BCTRL.REC<15>='IS'              ; * JMK02
+      END                                ; * JMK02
+      USER.NAME=BCTRL.REC<13>            ; * JMK02
+      IF BCTRL.REC<14>='A' THEN          ; * JMK02
+         USER.TYPE='A'                   ; * JMK02
+      END ELSE                           ; * JMK02
+         USER.TYPE=''                    ; * JMK02
+      END                                ; * JMK02
+      USER.DPT=BCTRL.REC<15>             ; * JMK02
+
+      CLIENT.LIST=''
+      CLIENT.LIST<1>='01977'
+      CLIENT.LIST<2>='01979'
+
+      TB=CHAR(9)
+      DAY=1                              ; * Monday batch date
+      TEST.DATE=DATE()
+      DOW=OCONV(TEST.DATE,'DW')
+      RVW.DATE=TEST.DATE+DAY-DOW
+      IF RVW.DATE>TEST.DATE THEN
+         RVW.DATE-=7
+      END
+      RVW.ARRAY=''
+      SUBJECT=''
+      BLOCK.TXT='PUSH TO SQL'
+
+      GET (ARG.,1) OPTION ELSE
+         EXECUTE "BBSEND MIKE LOAD.FB.REVIEW BAD OPTION ":OPTION
+         ABORT
+      END
+      OPTION=OCONV(OPTION,'MCU')
+
+      APRV.ARRAY=''
+      SUBJECT=''
+      BODY.TEXT=''
+      REVIEW.ARRAY=''
+      REVIEW.ARRAY<1,1>='Client#'
+      REVIEW.ARRAY<1,2>='Carrier#'
+      REVIEW.ARRAY<1,3>='Pro#'
+      REVIEW.ARRAY<1,4>='Ship Date'
+      REVIEW.ARRAY<1,5>='Amount'
+      REVIEW.ARRAY<1,6>='Entry Date'
+      REVIEW.ARRAY<1,7>='First Review Date'
+
+      NATT=DCOUNT(CLIENT.LIST,@AM)
+      FOR ATT=1 TO NATT
+         CLIENT.ID=CLIENT.LIST<ATT>
+         READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE CLIENT.REC=''
+         BLOCK.ID='NO-PROCESS*':CLIENT.ID
+
+         BEGIN CASE
+            CASE OPTION='DAILY'
+               STMT='SSELECT FB.BILLS,':CLIENT.ID
+               STMT:=' WITH 39 EQ "O" AND WITH 242 EQ ""'
+               STMT:=' OR WITH 39 EQ "P" AND WITH 243 EQ "Y"'
+*              STMT:=' OR WITH 39 EQ "R" AND WITH 66 EQ "E"'
+            CASE OPTION='CUSTOM'
+               STMT='GET-LIST FB.RVW.':CLIENT.ID
+            CASE OPTION='WEEKLY'
+               STMT='SSELECT FB.BILLS,':CLIENT.ID
+               STMT:=' WITH 39 EQ "O"'
+               STMT:=' OR WITH 39 EQ "P"'
+*              STMT:=' OR WITH 39 EQ "R" AND WITH 66 EQ "E"'
+            CASE 1
+               STOP
+         END CASE
+
+         EXECUTE STMT RTNLIST BILL.LIST CAPTURING OUTPUT
+         TCNT=@SELECTED
+         IF TCNT < 1 THEN GO NEXT.CLIENT
+         OPEN '','FB.BILLS,':CLIENT.ID TO F.BILLS ELSE
+            CALL OPEN.ABORT('FB.BILLS,':CLIENT.ID,PROG.NAME)
+         END
+         OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS.HIST ELSE
+            CALL OPEN.ABORT('FB.BILLS.HIST,':CLIENT.ID,PROG.NAME)
+         END
+         OPEN '','EDI.BILLS.HIST,':CLIENT.ID TO F.EDIH ELSE
+            CALL OPEN.ABORT('EDI.BILLS.HIST,':CLIENT.ID,PROG.NAME)
+         END
+         OPEN '','DIVISION.CODES,':CLIENT.ID TO F.DIV ELSE
+            CALL OPEN.ABORT('DIVISION.CODES,':CLIENT.ID,PROG.NAME)
+         END
+         OPEN '','VEND.CUST,':CLIENT.ID TO F.VC ELSE
+            CALL OPEN.ABORT('VEND.CUST,':CLIENT.ID,PROG.NAME)
+         END
+         OPEN '','FB.REVIEW,':CLIENT.ID TO F.REVIEW ELSE
+            CALL OPEN.ABORT('FB.REVIEW,':CLIENT.ID,PROG.NAME)
+         END
+         OPEN '','FB.BILLS.ACCESS,':CLIENT.ID TO F.ACCESS ELSE
+            CALL OPEN.ABORT('FB.BILLS.ACCESS,':CLIENT.ID,PROG.NAME)
+         END
+         FWR.FLAG=0                      ; * SWB01
+         OPEN '','FB.WEB.REVIEW,':CLIENT.ID TO F.WEB.REVIEW THEN FWR.FLAG=1      ; * SWB01
+
+         EOF=0
+         CNT=0
+         PER=''
+         LOOP
+            READNEXT BILL.ID FROM BILL.LIST ELSE EOF=1
+         UNTIL EOF DO
+            CNT+=1
+            CALL PROG.BAR(22,CNT,TCNT,PER)
+            CARRIER.ID=FIELD(BILL.ID,'*',1)
+            IF CARRIER.ID='00015' THEN GO NEXT.BILL          ; * BYPASS PARCEL SHIPMENTS FOR FEDEX
+            IF CARRIER.ID='00041' THEN GO NEXT.BILL          ; * BYPASS PARCEL SHIPMENTS FOR UPS
+            IF CARRIER.ID='01075' THEN GO NEXT.BILL          ; * BYPASS PARCEL SHIPMENTS FOR FEDEX
+            IF CLIENT.ID='01979' THEN    ; * JMK01
+               IF CARRIER.ID='12790' THEN GO NEXT.BILL       ; * JMK01          ; * BYPASS PARCEL SHIPMENTS FOR FEDEX
+            END                          ; * JMK01
+            VERSION=FIELD(BILL.ID,'*',3)
+            IF VERSION#'0' THEN GO NEXT.BILL       ; * BYPASS DUPLICATE SHIPMENTS
+            READ BILL.REC FROM F.BILLS,BILL.ID THEN
+               BILL.ORG=BILL.REC
+               IF BILL.REC<39>="" THEN GO NEXT.BILL          ; * BYPASS UNVERIFIED SHIPMENTS
+               IF BILL.REC<39>="2" THEN GO NEXT.BILL         ; * BYPASS STACK 2 SHIPMENTS
+               IF BILL.REC<39>="3" THEN GO NEXT.BILL         ; * BYPASS STACK 3 SHIPMENTS
+               IF BILL.REC<39>="4" THEN GO NEXT.BILL         ; * BYPASS STACK 4 SHIPMENTS
+               IF BILL.REC<39>='O' AND BILL.REC<241>#'' AND BILL.REC<243>='' THEN GO NEXT.BILL       ; * BYPASS SHIPMENTS PREVIOUSLY APPROVED BY CLIENT
+*              IF BILL.REC<39>="R" AND BILL.REC<66>#"E" THEN GO NEXT.BILL        ; * BYPASS REJECTED NEVER PAY SHIPMENTS
+               READ EDI.BILL.REC FROM F.EDIH,BILL.ID ELSE EDI.BILL.REC=''
+               CARRIER.ID=BILL.REC<20>
+               READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE CARRIER.REC=''
+               DIV.ID=BILL.REC<9>
+               READ DIV.REC FROM F.DIV,DIV.ID ELSE DIV.REC=''
+               DIV.NAME=DIV.REC<11>
+               VC.ID=BILL.REC<17>
+               READ VC.REC FROM F.VC,VC.ID ELSE VC.REC=''
+               CSCAC.ID=CLIENT.ID:'*':CARRIER.ID
+               READ CSCAC.REC FROM F.CSCAC,CSCAC.ID ELSE CSCAC.REC=''
+               VIN=''
+               VOUT=''
+               VIN<1>=CLIENT.ID
+               VIN<2>=RVW.DATE
+               VIN<3>=BILL.ID
+               VIN<4>=EDI.BILL.REC<72>
+               VIN<5>=USER
+               CALL UPD.SQL.FB.REVIEW(VIN,VOUT,CLIENT.REC,CARRIER.REC,BILL.REC,DIV.REC,VC.REC,CSCAC.REC,F.REVIEW)
+               IF VOUT<1>='Errors' THEN
+                  BEGIN CASE
+                     CASE OPTION='DAILY'
+                        ABORT
+                     CASE OPTION='CUSTOM'
+                        CALL ELINE('SQL Errors ---ABORTING!')
+                        ABORT
+                     CASE OPTION='WEEKLY'
+                        CALL ELINE('SQL Errors ---ABORTING!')
+                        ABORT
+                     CASE 1
+                        STOP
+                  END CASE
+               END
+               BILL.REC=BILL.ORG
+               BILL.REC<39>="P"
+               IF BILL.REC<242>='' THEN
+                  BILL.REC<242>=RVW.DATE
+               END
+               UPDATE=0
+               IF BILL.REC<243>='Y' THEN
+                  BILL.REC<243>=''
+                  UPDATE=1
+               END
+               WRITE BILL.REC ON F.BILLS,BILL.ID
+               WRITE BILL.REC ON F.BILLS.HIST,BILL.ID
+               REVIEW.ID=BILL.ID:'*':TEST.DATE
+               WRITE BILL.REC ON F.REVIEW,REVIEW.ID
+               IF FWR.FLAG THEN          ; * SWB01
+                  REVIEW.STATUS.CODE='970'         ; * SWB01
+                  FWR.REC.CNT=0          ; * SWB01
+                  FWR.REC.FOUND=1        ; * SWB01
+                  LOOP                   ; * SWB01
+                     FWR.REC.CNT += 1    ; * SWB01
+                     READU FWR.REC FROM F.WEB.REVIEW,BILL.ID:'_':FWR.REC.CNT THEN          ; * SWB01
+                        RELEASE F.WEB.REVIEW,BILL.ID:'_':FWR.REC.CNT   ; * SWB01
+                     END ELSE            ; * SWB01
+                        FWR.REC.FOUND=0  ; * SWB01
+                        FWR.REC=''       ; * SWB01
+                        FWR.REC<1>=TEST.DATE       ; * SWB01
+                        FWR.REC<2>=REVIEW.STATUS.CODE        ; * SWB01
+                        FWR.REC<3>=DIV.ID          ; * SWB01
+                        FWR.REC<4>=BILL.ORG<30>    ; * SWB01
+                        REJECT.INFO=BILL.ORG<62>   ; * SWB01
+                        FWR.REC<5>=REJECT.INFO<1,1,2>        ; * SWB01
+                        FWR.REC<6>=REJECT.INFO<1,1,1>        ; * SWB01
+                        FWR.REC<7>=BILL.ORG<61>    ; * SWB01
+                        FWR.REC<8>=BILL.ORG<1>     ; * SWB01
+                        FWR.REC<9>=BILL.ORG<247>   ; * SWB01
+                        FWR.REC<10>='PTW'
+                        WRITE FWR.REC ON F.WEB.REVIEW,BILL.ID:'_':FWR.REC.CNT    ; * SWB01
+                     END                 ; * SWB01
+                  UNTIL NOT(FWR.REC.FOUND) DO      ; * SWB01
+                  REPEAT                 ; * SWB01
+               END                       ; * SWB01
+
+               AVIN=''                   ; * JMK02
+               AVOUT=''                  ; * JMK02
+               AVIN<1>=CLIENT.ID         ; * JMK02
+               AVIN<2>=BILL.ID           ; * JMK02
+               AVIN<3>=USER              ; * JMK02
+               AVIN<4>=USER.DPT          ; * JMK02
+               AVIN<5>=DATE()            ; * JMK02
+               AVIN<6>=TIME()            ; * JMK02
+               AVIN<7>='1'               ; * JMK02
+               AVIN<8>=PROG.NAME         ; * JMK02
+               AVIN<9>=PROG.DESC         ; * JMK02
+               AVIN<10>=PACK.NAME        ; * JMK02
+               AVIN<11>=CO.NAME          ; * JMK02
+               ACCESS.REASON='PTW'       ; * JMK02
+               W.REASON = ACCESS.REASON   ; * NKH01
+*               IF USER.TYPE='' THEN W.REASON = ACCESS.REASON ELSE W.REASON = ACCESS.REASON:"_":USER.TYPE       ; * JMK02  ; * NKH01
+               AVIN<12> = W.REASON       ; * JMK02
+               CALL UPD.FB.BILLS.ACCESS(AVIN,AVOUT,CLIENT.REC,CARRIER.REC,BILL.ORG,F.ACCESS,F.TABLES)          ; * JMK02
+
+               IF SUBJECT='' THEN
+                  SUBJECT=OCONV(TRIM(OPTION:' LOAD OF FREIGHT BILLS TO WEB REVIEW SERVICE'),'MCT')
+               END
+               LOCATE DIV.ID IN RVW.ARRAY<1> BY 'AR' SETTING DIVPOS ELSE
+                  INS DIV.ID BEFORE RVW.ARRAY<1,DIVPOS>
+                  INS DIV.NAME BEFORE RVW.ARRAY<2,DIVPOS>
+                  INS '' BEFORE RVW.ARRAY<3,DIVPOS>
+                  INS '' BEFORE RVW.ARRAY<4,DIVPOS>
+                  INS '' BEFORE RVW.ARRAY<5,DIVPOS>
+               END
+               ENTRY.DT=BILL.REC<30>
+               IF UPDATE=1 THEN
+                  ENTRY.DT=BILL.REC<86,DCOUNT(BILL.REC<86>,@VM)>
+               END
+               LOCATE ENTRY.DT IN RVW.ARRAY<3,DIVPOS> BY 'AR' SETTING DTPOS ELSE
+                  INS ENTRY.DT BEFORE RVW.ARRAY<3,DIVPOS,DTPOS>
+                  INS 0 BEFORE RVW.ARRAY<4,DIVPOS,DTPOS>
+                  INS 0 BEFORE RVW.ARRAY<5,DIVPOS,DTPOS>
+               END
+               BEGIN CASE
+                  CASE UPDATE=0
+                     RVW.ARRAY<4,DIVPOS,DTPOS>+=1
+                  CASE UPDATE=1
+                     RVW.ARRAY<5,DIVPOS,DTPOS>+=1
+               END CASE
+               RVW.ARRAY<6>+=1
+               BODY.TEXT=''
+               BODY.TEXT<1,-1>=RVW.ARRAY<6>'R#5':' freight bills have been sent to the web review service as follows:'
+               BODY.TEXT<1,-1>=' '
+               NVAL=DCOUNT(RVW.ARRAY<1>,@VM)
+               FOR VAL=1 TO NVAL
+                  BODY.TEXT<1,-1>=RVW.ARRAY<1,VAL>:' - ':RVW.ARRAY<2,VAL>
+                  NSVAL=DCOUNT(RVW.ARRAY<3,VAL>,@SVM)
+                  FOR SVAL=1 TO NSVAL
+                     IF RVW.ARRAY<4,VAL,SVAL>+0#0 THEN
+                        BODY.TEXT<1,-1>=RVW.ARRAY<4,VAL,SVAL>'R#5':' bills entered on ':RVW.ARRAY<3,VAL,SVAL>'D4/':' for batch date ':RVW.DATE'D4/'
+                     END
+                     IF RVW.ARRAY<5,VAL,SVAL>+0#0 THEN
+                        BODY.TEXT<1,-1>=RVW.ARRAY<5,VAL,SVAL>'R#5':' bills updated on ':RVW.ARRAY<3,VAL,SVAL>'D4/':' for batch date ':RVW.DATE'D4/'
+                     END
+                  NEXT SVAL
+                  BODY.TEXT<1,-1>=' '
+               NEXT VAL
+               REVIEW.LINE=''
+               REVIEW.LINE<1,1>=CLIENT.ID
+               REVIEW.LINE<1,2>=BILL.REC<20>
+               REVIEW.LINE<1,3>=FIELD(BILL.ID,'*',2)
+               REVIEW.LINE<1,4>=BILL.REC<1>'D2/'
+               REVIEW.LINE<1,5>=BILL.REC<7>'R26'
+               REVIEW.LINE<1,6>=BILL.REC<30>'D2/'
+               REVIEW.LINE<1,7>=BILL.REC<242>'D2/'
+               REVIEW.ARRAY<-1>=REVIEW.LINE
+            END
+NEXT.BILL:  *
+         REPEAT
+NEXT.CLIENT:*
+         IF OPTION='WEEKLY' THEN
+            READ TEST.REC FROM F.TABLES,BLOCK.ID THEN
+               IF TEST.REC=BLOCK.TXT THEN
+                  DELETE F.TABLES,BLOCK.ID
+               END
+            END
+         END
+      NEXT ATT
+      IF REVIEW.ARRAY#'' THEN
+         REVIEW.ARRAY=CHANGE(REVIEW.ARRAY,@VM,TB)
+         ORVW.DATE=RVW.DATE'D2/'
+         FILE.DATE=ORVW.DATE[7,2]:ORVW.DATE[1,2]:ORVW.DATE[4,2]
+         REVIEW.FILE.ID='WABTEC_REVIEW_':FILE.DATE:'.XLS'
+         WRITE REVIEW.ARRAY ON F.EMAILDATA,REVIEW.FILE.ID
+      END
+      IF RVW.ARRAY<6>+0#0 THEN
+         EMAIL.OUT=''
+
+         EMAIL.OUT<1,-1>='mmckay@afs.net'
+         EMAIL.OUT<1,-1>='krivet@afs.net'
+         EMAIL.OUT<1,-1>='wpettigrew@afs.net'
+         EMAIL.OUT<1,-1>='ljjohnson@afs.net'       ; * DRF02
+         EMAIL.OUT<1,-1>='rdivosevic@wabtec.com'   ; * DRF02
+         EMAIL.OUT<1,-1>='fvonoldenburg@wabtec.com'          ; * DRF01
+
+         EMAIL.OUT<2,-1>='smatthews@afs.net'
+    
+         EMAIL.OUT<3,-1>='rjaganathan@afs.net'
+         EMAIL.OUT<3,-1>='ljuneau@afs.net'
+         EMAIL.OUT<4>='LOAD.FB.REVIEW@afs.net'
+         EMAIL.OUT<5>=SUBJECT
+         EMAIL.OUT<6>=BODY.TEXT
+         EMAIL.OUT<7>=1
+         EMAIL.OUT<11>='E:\ARDENT\PUBLIC\EMAILDATA\':REVIEW.FILE.ID
+         CALL SENDMAIL(EMAIL.OUT,RESULT)
+      END
+* TAG01 \/
+      VIN1=""
+      VIN1<1> = "LOAD.FB.REVIEW"
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "E"
+      CALL PROGTRACK(VIN1,VOUT1)
+* TAG01 /\
+      IF OPTION='DAILY' THEN
+         CHAIN "OFF"
+      END
+   END

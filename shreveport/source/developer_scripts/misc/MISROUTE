@@ -1,0 +1,580 @@
+      SUBROUTINE MISROUTE(VIN,VOUT,F.TABLES,F.CARRIERS,F.CLIENTS,F.BC.FSC,F.NFSC.SUB,CCVOUT)
+****************************************************
+* Program name : MISROUTE
+* Author       : Greg Bino
+* Date written : 07-19-2018
+* Library      : FBBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+* subroutine to identify misroutes
+*
+* Last updated by afs (AFSLOGISTICS\gbino) at 07:31:52 on 07/06/2018.
+*
+* Start modification history
+* 07/06/18 GRB New Program
+* End modification history
+*
+*******************************************************
+$INCLUDE FILE.DEFS INC_FB.AUDIT
+      VOUT =''
+      CLIENT.ID = VIN<1>
+      CARRIER.ID=VIN<2>
+      BILL.DATE=VIN<3>
+      IOT=VIN<4>
+JL.TABLE = 0
+      ORIG.ZIP=VIN<5>
+      DEST.ZIP=VIN<6>
+      DCLIENTS = VIN<7>
+      JL.FLAG=0
+      MISROUTE=0
+      ORG.CAN=0
+      DST.CAN=0
+      BEGIN CASE
+         CASE IOT = "I"
+            IOT.AUDIT = "I"
+            TEXT = 'Inbound'
+         CASE IOT = "O"
+            IOT.AUDIT = "O"
+            TEXT = 'Outbound'
+         CASE IOT = "T"
+            IOT.AUDIT = "I"
+            TEXT = 'Third Party'
+      END CASE
+      COMB.DIR.FLG='D'
+      PROCESS.MODE = 'Quote'
+      AUDIT.CLIENT.ID = CLIENT.ID
+      CLIENT.AUDIT=1
+      OPEN '','FB.AUDIT,':CLIENT.ID TO F.AUDIT THEN
+         READV SUB.CLIENT FROM F.AUDIT,'SUBSTITUTE',1 THEN
+            AUDIT.CLIENT.ID = SUB.CLIENT
+            OPEN '','FB.AUDIT,':AUDIT.CLIENT.ID TO F.AUDIT ELSE CLIENT.AUDIT=0
+         END ELSE
+            AUDIT.CLIENT.ID = CLIENT.ID
+         END
+      END ELSE CLIENT.AUDIT=0
+      IF CLIENT.AUDIT=0 THEN
+         ERROR = "Client ":CLIENT.ID:" is not setup for freight estimates"
+         GO 9000
+      END
+      OPEN '','FB.AUDIT.TABLES,':AUDIT.CLIENT.ID TO F.AUDIT.TABLES ELSE
+         ERROR = "Cannot open file FB.AUDIT.TABLES,":AUDIT.CLIENT.ID
+         GO 9000
+      END
+      OPEN '','FB.AUDIT.ZIPS,':AUDIT.CLIENT.ID TO F.AUDIT.ZIPS ELSE
+         ERROR = "Cannot open FB.AUDIT.ZIPS,":AUDIT.CLIENT.ID:" No On-Line Audit Allowed!"
+         GO 9000
+      END
+
+      ****** SPEC CODE ***********************************
+      IF CLIENT.ID='01282' AND ORG.CAN=1 AND DST.CAN=1 THEN
+         AUDIT.CLIENT.ID = '01866'
+         OPEN '','FB.AUDIT,':AUDIT.CLIENT.ID TO F.AUDIT ELSE CLIENT.AUDIT=0
+         OPEN '','FB.AUDIT.TABLES,':AUDIT.CLIENT.ID TO F.AUDIT.TABLES ELSE
+            ERROR = "Error! Cannot open file FB.AUDIT.TABLES,":AUDIT.CLIENT.ID
+            GO 9000
+         END
+         OPEN '','FB.AUDIT.ZIPS,':AUDIT.CLIENT.ID TO F.AUDIT.ZIPS ELSE
+            EXECUTE 'CREATE-FILE DATA FB.AUDIT.ZIPS,':AUDIT.CLIENT.ID:' 7,1' CAPTURING OUTPUT
+            OPEN '','FB.AUDIT.ZIPS,':AUDIT.CLIENT.ID TO F.AUDIT.ZIPS ELSE
+               ERROR = "Error Cannot open FB.AUDIT.ZIPS,":AUDIT.CLIENT.ID:" No On-Line Audit Allowed!"
+               GO 9000
+            END
+         END
+         MARK.UP.FACTOR=0
+      END
+
+      IF CLIENT.ID='01832' THEN
+         IF ORG.CAN=0 OR DST.CAN=0 THEN
+            AUDIT.CLIENT.ID = '01870'
+            OPEN '','FB.AUDIT,':AUDIT.CLIENT.ID TO F.AUDIT ELSE CLIENT.AUDIT=0
+            OPEN '','FB.AUDIT.TABLES,':AUDIT.CLIENT.ID TO F.AUDIT.TABLES ELSE
+               ERROR = "Error! Cannot open file FB.AUDIT.TABLES,":AUDIT.CLIENT.ID
+               GO 9000
+            END
+            OPEN '','FB.AUDIT.ZIPS,':AUDIT.CLIENT.ID TO F.AUDIT.ZIPS ELSE
+               EXECUTE 'CREATE-FILE DATA FB.AUDIT.ZIPS,':AUDIT.CLIENT.ID:' 7,1' CAPTURING OUTPUT
+               OPEN '','FB.AUDIT.ZIPS,':AUDIT.CLIENT.ID TO F.AUDIT.ZIPS ELSE
+                  ERROR = "Error Cannot open FB.AUDIT.ZIPS,":AUDIT.CLIENT.ID:" No On-Line Audit Allowed!"
+                  GO 9000
+               END
+            END
+            MARK.UP.FACTOR=0
+         END
+      END
+      ***********************************************************
+      CLIENT.STATUS=DCLIENTS<30>
+      IF CLIENT.STATUS='I' THEN
+         READV AUDIT.CLIENT.STATUS FROM F.CLIENTS,AUDIT.CLIENT.ID,30 ELSE AUDIT.CLIENT.STATUS='I'
+         IF AUDIT.CLIENT.STATUS='A' THEN CLIENT.STATUS='A'
+         IF CLIENT.STATUS='I' THEN
+            ERROR='CANNOT ESTIMATE FOR THIS CLIENT. PLEASE CONTACT AFS.'
+            GOTO 9000
+         END
+      END
+      BEGIN CASE
+         CASE IOT='O'
+            ROUTE.ZIP=ORIG.ZIP
+            SHIP.ZIP=DEST.ZIP[1,3]
+         CASE IOT='I'
+            ROUTE.ZIP=DEST.ZIP
+            SHIP.ZIP=ORIG.ZIP[1,3]
+         CASE IOT='T'
+            ROUTE.ZIP=DEST.ZIP[1,3]
+            SHIP.ZIP=ORIG.ZIP[1,3]
+      END CASE
+      READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE
+********         CALL ELINE("ERROR - Carrier ":CARRIER.ID:" not on file.")
+         DEBUG
+         MISROUTE=1
+         VOUT<1> = MISROUTE
+         RETURN
+
+      END
+      LTL.CAR=CARRIER.REC<44>=1
+      CARRIER.NAME = CARRIER.REC<1>
+      CARRIER.STREET = TRIM(CHANGE(CARRIER.REC<2>,@VM,' '))
+      CARRIER.CITY = CARRIER.REC<3>
+      CARRIER.STATE = CARRIER.REC<4>
+      CARRIER.TEXT=TRIM(CARRIER.ID:' ':CARRIER.NAME:' ':CARRIER.STREET:' ':CARRIER.CITY)
+
+      CARRIER.SCAC=CARRIER.REC<12>
+      CARRIER.TYPE='A'
+      IF CARRIER.REC<44>='6' THEN
+         CARRIER.TYPE='B'
+      END
+      CARR.ONLY.FSC=DCLIENTS<189>
+      IF CLIENT.ID='01505' AND (CARR.ONLY.FSC='Y' OR CARR.ONLY.FSC='C') THEN
+         BEGIN CASE
+            CASE CARRIER.ID='00124'
+               CARR.ONLY.FSC='N'
+            CASE CARRIER.ID='01786'
+               CARR.ONLY.FSC='N'
+            CASE CARRIER.ID='05156'
+               CARR.ONLY.FSC='N'
+            CASE CARRIER.ID='08924'
+               CARR.ONLY.FSC='N'
+         END CASE
+      END
+      IF CLIENT.ID='01758' AND CARRIER.ID='00748' THEN
+         CARR.ONLY.FSC='N'
+      END
+      IF CLIENT.ID='01784' AND CARRIER.ID='00014' THEN
+         CARR.ONLY.FSC='N'
+      END
+      IF CLIENT.ID='01810' AND CARRIER.ID='00014' THEN
+         CARR.ONLY.FSC='N'
+      END
+      OLA.CARRIER.ID=CARRIER.ID
+      IF CARRIER.ID='13171' THEN OLA.CARRIER.ID='01625'
+      IF CARRIER.ID='12244' THEN OLA.CARRIER.ID='12826'
+      IF CARRIER.ID='00537' THEN OLA.CARRIER.ID='12826'
+      READ DAUDIT FROM F.AUDIT,OLA.CARRIER.ID ELSE
+****         CALL ELINE("Error! - No On-Line Audit has been setup for this carrier! Cannot ":PROCESS.MODE:" Bills")
+         CARRIER.ID = ''
+         MISROUTE= 1
+         VOUT<1> = MISROUTE
+         RETURN
+      END
+      IF DAUDIT<11>='DISABLE' THEN
+****         CALL ELINE("Error! - This Carrier is set to DISABLE in On-Line Audit! Cannot ":PROCESS.MODE:" Bills")
+         MISROUTE= 1
+         VOUT<1> = MISROUTE
+         RETURN
+      END
+      AUDIT.TYPE=DAUDIT<1>
+      CARRIER.AUDIT=1
+      READV FSC.AUDIT.CLIENT.ID FROM F.NFSC.SUB,AUDIT.CLIENT.ID,1 ELSE FSC.AUDIT.CLIENT.ID=AUDIT.CLIENT.ID
+      BENCH.DFSC.ID='B*':OLA.CARRIER.ID:'*':FSC.AUDIT.CLIENT.ID
+      READ BENCH.DFSC FROM F.BC.FSC,'B*':OLA.CARRIER.ID:'*':FSC.AUDIT.CLIENT.ID ELSE
+         BENCH.DFSC.ID='B*':OLA.CARRIER.ID
+         READ BENCH.DFSC FROM F.BC.FSC,'B*':OLA.CARRIER.ID ELSE BENCH.DFSC=''
+      END
+
+      CONTR.DFSC.ID="C*":OLA.CARRIER.ID:'*':FSC.AUDIT.CLIENT.ID
+      READ CONTR.DFSC FROM F.BC.FSC,"C*":OLA.CARRIER.ID:"*":FSC.AUDIT.CLIENT.ID ELSE CONTR.DFSC=BENCH.DFSC
+      IF BENCH.DFSC<30>#'ENABLE' THEN
+         BENCH.DFSC=''                   ; ** No Effect
+         CONTR.DFSC=''
+      END
+
+      CK.CS=0
+      READ NSMC.LIST FROM F.TABLES,'NSMC.CARRIERS' ELSE NSMC.LIST=''
+      LOCATE CARRIER.ID IN NSMC.LIST SETTING WPOS THEN CK.CS=1
+
+      IF DAUDIT<11>='DISABLE' THEN
+* This will only happen on Logistics Accounts
+         AUDIT='U'
+         MISROUTE=1
+         VOUT<1> = MISROUTE
+         RETURN
+      END
+      SUBST.ZIP=''
+      IF IOT = "T" THEN
+         LOOKUP.ZIP='OTHER'
+         LOCATE LOOKUP.ZIP IN DAUDIT<FBA.ROUTE.ZIP> SETTING GUIDE.POS ELSE
+            CALL ELINE('Cannot Audit! OTHER is NOT setup as a Routing Zip!')
+            AUDIT='U'
+            MISROUTE=1
+            VOUT<1> = MISROUTE
+            RETURN
+         END
+
+      END ELSE
+         LOOKUP.ZIP='ALL'
+         LOCATE LOOKUP.ZIP IN DAUDIT<FBA.ROUTE.ZIP> SETTING GUIDE.POS ELSE
+            LOOKUP.ZIP=ROUTE.ZIP
+            LOCATE LOOKUP.ZIP IN DAUDIT<FBA.ROUTE.ZIP> SETTING GUIDE.POS ELSE
+
+*****    See if 1st three digits are there (Must Be Unique)
+               CK.TIMES=DCOUNT(DAUDIT<FBA.ROUTE.ZIP>,@VM)
+               CK.RZIP=''                ; * Put the Routing Zips Found Here
+               FOR CK = 1 TO CK.TIMES
+                  FIND.RT.ZIP=DAUDIT<FBA.ROUTE.ZIP,CK>
+                  IF FIND.RT.ZIP[1,3]=ROUTE.ZIP[1,3] THEN
+                     GUIDE.POS=CK
+                     SUB.ZIP=DAUDIT<FBA.BASE.ROUTE.ZIP,CK>
+                     IF SUB.ZIP#'' THEN
+                        LOCATE SUB.ZIP IN DAUDIT<FBA.ROUTE.ZIP> SETTING GUIDE.POS ELSE
+****                        CALL ELINE("Error Ship Zip ":SHIP.ZIP:" points to Base zip ":LOOKUP.ZIP:" Which is missing!")
+                           CC+=1
+                           MISROUTE= 1
+                           VOUT<1> = MISROUTE
+                           RETURN
+                        END
+                        FIND.RT.ZIP=SUB.ZIP
+                     END
+                     LOCATE FIND.RT.ZIP IN CK.RZIP SETTING POS ELSE
+                        CK.RZIP<-1>=FIND.RT.ZIP
+                        LOOKUP.ZIP=FIND.RT.ZIP
+                     END
+                  END
+               NEXT CK
+               IF CK.RZIP='' OR CK.RZIP<2>#'' THEN
+****               CALL ELINE('Cannot Audit! ':ROUTE.ZIP:' or ALL is NOT setup as a Routing Zip!')
+                  AUDIT='U'
+                  MISROUTE= 1
+                  VOUT<1> = MISROUTE
+                  RETURN
+               END
+            END
+            IF DAUDIT<FBA.BASE.ROUTE.ZIP,GUIDE.POS> # '' THEN          ; ** Get BASE Routing Zip POS
+               LOOKUP.ZIP=DAUDIT<FBA.BASE.ROUTE.ZIP,GUIDE.POS>
+               LOCATE LOOKUP.ZIP IN DAUDIT<FBA.ROUTE.ZIP> SETTING GUIDE.POS ELSE
+****               CALL ELINE("Error Ship Zip ":SHIP.ZIP:" points to Base zip ":LOOKUP.ZIP:" Which is missing!")
+                  MISROUTE= 1
+                  VOUT<1> = MISROUTE
+                  RETURN
+               END
+            END
+         END
+      END
+      IF DAUDIT<FBA.ROUTE.ZIP.STATUS,GUIDE.POS>='DISABLE' THEN
+         IF PROCESS.MODE = 'Quote' THEN
+****            CALL ELINE("Cannot Quote! Route Zip ":LOOKUP.ZIP:" is set to DISABLE")
+            MISROUTE= 1
+            VOUT<1> = MISROUTE
+            RETURN
+         END ELSE
+****            CALL ELINE("Cannot Audit! Route Zip ":LOOKUP.ZIP:" is set to DISABLE")
+            MISROUTE= 1
+            VOUT<1> = MISROUTE
+            RETURN
+         END
+         AUDIT='U'
+         MISROUTE=1
+         VOUT<1> = MISROUTE
+         RETURN
+      END
+      FIRST.DATE=DAUDIT<FBA.BEG.EFF.DATE,GUIDE.POS,1>
+      LAST.DATE=DAUDIT<FBA.END.EFF.DATE,GUIDE.POS,DCOUNT(DAUDIT<FBA.BEG.EFF.DATE,GUIDE.POS>,@SVM)>
+      IF BILL.DATE < FIRST.DATE THEN     ; * Is bill Before Beginning Date
+         IF PROCESS.MODE = 'Quote' THEN
+****            CALL ELINE('Cannot Quote! Bill date is earlier than 1st effective date of ':FIRST.DATE'D2/')
+            MISROUTE= 1
+            VOUT<1> = MISROUTE
+            RETURN
+         END ELSE
+****            CALL ELINE('Cannot Audit! Bill date is earlier than 1st effective date of ':FIRST.DATE'D2/')
+            MISROUTE= 1
+            VOUT<1> = MISROUTE
+            RETURN
+         END
+         AUDIT='U'
+         MISROUTE=1
+         VOUT<1> = MISROUTE
+         RETURN
+      END
+      IF LAST.DATE#'' AND (BILL.DATE > LAST.DATE) THEN
+         IF PROCESS.MODE = 'Quote' THEN
+****            CALL ELINE('Cannot Quote!  Bill Date is later than Ending Effective Date of ':LAST.DATE'D2/')
+         END ELSE
+****            CALL ELINE('Cannot Audit!  Bill Date is later than Ending Effective Date of ':LAST.DATE'D2/')
+         END
+         AUDIT='U'
+         MISROUTE=1
+         VOUT<1> = MISROUTE
+         RETURN
+      END
+      LOCATE BILL.DATE IN DAUDIT<FBA.BEG.EFF.DATE,GUIDE.POS> BY 'AR' SETTING DT.POS ELSE
+         DT.POS=DT.POS-1
+         IF DT.POS < 1 THEN
+****            CALL ELINE('Serious error Contract Carrier Date POS is less than 1, ')
+            MISROUTE= 1
+            VOUT<1> = MISROUTE
+            RETURN
+         END
+      END
+      EFF.DATE=DAUDIT<FBA.BEG.EFF.DATE,GUIDE.POS,DT.POS>
+      END.DATE=DAUDIT<FBA.END.EFF.DATE,GUIDE.POS,DT.POS>
+      IF END.DATE#'' AND (BILL.DATE > END.DATE) THEN
+         IF PROCESS.MODE = 'Quote' THEN
+****            CALL ELINE('Cannot Quote Bill!  Bill Date is not included in Effective date ranges')
+            MISROUTE= 1
+            VOUT<1> = MISROUTE
+            RETURN
+         END ELSE
+****            CALL ELINE('Cannot Audit Bill!  Bill Date is not included in Effective date ranges')
+            MISROUTE= 1
+            VOUT<1> = MISROUTE
+            RETURN
+         END
+         AUDIT='U'
+         MISROUTE=1
+         VOUT<1> = MISROUTE
+         RETURN
+      END
+      IF DAUDIT<FBA.EFF.DATE.STATUS,GUIDE.POS,DT.POS> = 'DISABLE' THEN
+         IF PROCESS.MODE = 'Quote' THEN
+****            CALL ELINE('Cannot Quote! Effective Date ':EFF.DATE'D2/':' is set to DISABLE')
+            MISROUTE= 1
+            VOUT<1> = MISROUTE
+            RETURN
+         END ELSE
+****            CALL ELINE('Cannot Audit! Effective Date ':EFF.DATE'D2/':' is set to DISABLE')
+            MISROUTE= 1
+            VOUT<1> = MISROUTE
+            RETURN
+         END
+         AUDIT='U'
+         MISROUTE=1
+      END
+      AUDIT.ZIPS.ID=OLA.CARRIER.ID:"*":LOOKUP.ZIP:"*":EFF.DATE:"*LTLALL*":IOT.AUDIT
+      READ DAUDIT.ZIPS FROM F.AUDIT.ZIPS,AUDIT.ZIPS.ID ELSE
+         IF 1 AND IOT = 'T' THEN
+            AUDIT.ZIPS.ID=CARRIER.ID:"*":LOOKUP.ZIP:"*":EFF.DATE:"*LTLALL*":"I"
+            READ DAUDIT.ZIPS FROM F.AUDIT.ZIPS,AUDIT.ZIPS.ID ELSE
+               ERROR=("Cannot Rate! Zip Table Not On File ":AUDIT.ZIPS.ID)
+               AUDIT='U'
+               GO 9000
+            END
+         END ELSE
+            IF PROCESS.MODE = 'Quote' THEN
+****               CALL ELINE("Cannot Quote! ":TEXT:" Shipping points have not been setup.")
+               MISROUTE= 1
+               VOUT<1> = MISROUTE
+               RETURN
+            END ELSE
+****               CALL ELINE("Cannot Audit! ":TEXT:" Shipping points have not been setup.")
+               MISROUTE= 1
+               VOUT<1> = MISROUTE
+               RETURN
+            END
+            AUDIT='U'
+            MISROUTE=1
+            VOUT<1> = MISROUTE
+            RETURN
+         END
+      END
+      IF DAUDIT.ZIPS<1>='DISABLE' THEN
+****         CALL ELINE('Error! Shipping Points have been set to Disable!')
+         AUDIT='U'
+         MISROUTE=1
+         VOUT<1> = MISROUTE
+         RETURN
+      END
+      IF DAUDIT.ZIPS<2,1>='' THEN
+****         CALL ELINE('Error! No Shipping Points have been setup!')
+         AUDIT='U'
+         MISROUTE=1
+         VOUT<1> = MISROUTE
+         RETURN
+      END
+      IF SHIP.ZIP < DAUDIT.ZIPS<2,1> THEN
+         IF PROCESS.MODE = 'Quote' THEN
+****            CALL ELINE('Cannot Quote! Shipping point of ':SHIP.ZIP:' has a Flag of N and No table number')
+            MISROUTE= 1
+            VOUT<1> = MISROUTE
+            RETURN
+         END ELSE
+****            CALL ELINE('Cannot Audit! Shipping point of ':SHIP.ZIP:' has a Flag of N and No table number')
+            MISROUTE= 1
+            VOUT<1> = MISROUTE
+            RETURN
+         END
+         AUDIT='U'
+         MISROUTE=1
+         VOUT<1> = MISROUTE
+         RETURN
+      END
+      TEMP.STRING=DAUDIT.ZIPS<2>
+      LOCATE SHIP.ZIP IN TEMP.STRING<1> BY 'AR' SETTING SHIP.POS ELSE
+         SHIP.POS=SHIP.POS-1
+         IF SHIP.POS < 1 THEN
+****            CALL ELINE('Serious error, SHIP.POS is less than 1, ')
+            MISROUTE= 1
+            VOUT<1> = MISROUTE
+            RETURN
+         END
+         IF SHIP.ZIP > DAUDIT.ZIPS<3,SHIP.POS> THEN
+            IF PROCESS.MODE = 'Quote' THEN
+****               CALL ELINE('Cannot Quote! Shipping point of ':SHIP.ZIP:' has a Flag of N and No table number')
+               MISROUTE= 1
+               VOUT<1> = MISROUTE
+               RETURN
+            END ELSE
+****               CALL ELINE('Cannot Audit! Shipping point of ':SHIP.ZIP:' has a Flag of N and No table number')
+               MISROUTE= 1
+               VOUT<1> = MISROUTE
+               RETURN
+            END
+            AUDIT='U'
+            MISROUTE=1
+            VOUT<1> = MISROUTE
+            RETURN
+         END
+      END
+      GOOD.SHIP.POINT=DAUDIT.ZIPS<4,SHIP.POS>
+      TABLE=DAUDIT.ZIPS<5,SHIP.POS>
+      IF CLIENT.ID='01575' AND OLA.CARRIER.ID='00198' AND ORIG.ZIP='75223' THEN GOOD.SHIP.POINT='C'
+      IF GOOD.SHIP.POINT='C' THEN
+         BEGIN CASE
+            CASE COMB.DIR.FLG='D'
+               GOOD.SHIP.POINT='Y'
+            CASE 1
+               GOOD.SHIP.POINT='N'
+         END CASE
+      END
+
+      JL.FLAG=0
+      TRANSIT.TIME=''
+      ORIG.DIR.FLG=''
+      DEST.DIR.FLG=''
+      COMB.DIR.FLG=''
+      IF CARRIER.SCAC#'' THEN
+         * From TransitMethod
+         TRANSIT.TIME = CCVOUT<29>
+         IF TRANSIT.TIME = 0 THEN TRANSIT.TIME = 1
+         ORIG.DIR.FLG = CCVOUT<31>[1,1]
+         IF ORIG.DIR.FLG = 'C' OR ORIG.DIR.FLG = 'P' THEN ORIG.DIR.FLG = 'I'
+         DEST.DIR.FLG = CCVOUT<30>[1,1]
+         IF DEST.DIR.FLG = 'C' OR DEST.DIR.FLG = 'P' THEN DEST.DIR.FLG = 'I'
+         COMB.DIR.FLG = CCVOUT<32>[1,1]
+         IF COMB.DIR.FLG = 'C' OR COMB.DIR.FLG = 'P' THEN COMB.DIR.FLG = 'I'
+
+         IF CARRIER.SCAC='CNWY' THEN
+            ORIG.DIR.FLG='D'
+            DEST.DIR.FLG='D'
+            COMB.DIR.FLG='D'
+         END
+
+         ID.JL.TAB = "JL*":CLIENT.ID:"*":CARRIER.SCAC
+         READ JL.REC FROM F.TABLES, ID.JL.TAB ELSE JL.REC = ""
+         LOCATE DEST.ZIP IN JL.REC SETTING DEST.POS THEN DEST.DIR.FLG = "D"
+         LOCATE ORIG.ZIP IN JL.REC SETTING ORIG.POS THEN ORIG.DIR.FLG = "D"
+         IF ORIG.DIR.FLG='D' AND DEST.DIR.FLG='D' THEN
+            COMB.DIR.FLG='D'
+         END
+         IF COMB.DIR.FLG#'D' THEN
+            JL.FLAG=1
+         END
+      END
+      IF JL.FLAG THEN
+         JL.AUDIT.TABLE.ID=OLA.CARRIER.ID:'*':JL.TABLE
+         READ JL.DAUDIT.TABLES FROM F.AUDIT.TABLES,JL.AUDIT.TABLE.ID ELSE
+            JL.FLAG=0
+         END
+      END
+      IF JL.FLAG THEN
+         LOCATE 'ZZZ' IN TEMP.STRING<1> SETTING JL.POS THEN
+            IF DAUDIT.ZIPS<4,JL.POS>='Y' THEN
+               JL.TABLE=DAUDIT.ZIPS<5,JL.POS>
+            END ELSE
+               IF IOT='I' THEN
+                  IF PROCESS.MODE = 'Quote' THEN
+****                     CALL ELINE('Cannot Quote! No Inbound Joint Line Pricing for this Carrier')
+                     MISROUTE= 1
+                     VOUT<1> = MISROUTE
+                     RETURN
+                  END ELSE
+****                     CALL ELINE('Cannot Audit! No Inbound Joint Line Pricing for this Carrier')
+                     MISROUTE= 1
+                     VOUT<1> = MISROUTE
+                     RETURN
+                  END
+                  AUDIT='U'
+                  MISROUTE=1
+                  RETURN
+               END
+               JL.FLAG=0
+            END
+         END ELSE
+            IF IOT='I' THEN
+               IF PROCESS.MODE = 'Quote' THEN
+****                  CALL ELINE('Cannot Quote! No Inbound Joint Line Pricing for this Carrier')
+                  MISROUTE= 1
+                  VOUT<1> = MISROUTE
+                  RETURN
+               END ELSE
+****                  CALL ELINE('Cannot Audit! No Inbound Joint Line Pricing for this Carrier')
+                  MISROUTE= 1
+                  VOUT<1> = MISROUTE
+                  RETURN
+               END
+               AUDIT='U'
+               MISROUTE=1
+               VOUT<1> = MISROUTE
+               RETURN
+            END
+            JL.FLAG=0
+         END
+      END
+      IF GOOD.SHIP.POINT#'Y' THEN
+         IF TABLE#'' THEN
+            IF PROCESS.MODE = 'Quote' THEN
+**********               CALL ELINE("Misroute but Able to Quote!  Shipping point flag is: N  Table: ":TABLE)
+               MISROUTE= 1
+               VOUT<1> = MISROUTE
+               RETURN
+            END ELSE
+**********               CALL ELINE("Misroute but Able to Audit!  Shipping point flag is: N  Table: ":TABLE)
+               MISROUTE= 1
+               VOUT<1> = MISROUTE
+               RETURN
+            END
+            MISROUTE=1
+            VOUT<1> = MISROUTE
+            RETURN
+         END ELSE
+            IF PROCESS.MODE = 'Quote' THEN
+****               CALL ELINE("Cannot Quote! This bill is a misroute (Shp.Pnt=N No Table to ":PROCESS.MODE:" Bill)")
+               MISROUTE= 1
+               VOUT<1> = MISROUTE
+               RETURN
+            END ELSE
+****               CALL ELINE("Cannot Audit! This bill is a misroute (Shp.Pnt=N No Table to ":PROCESS.MODE:" Bill)")
+               MISROUTE= 1
+               VOUT<1> = MISROUTE
+               RETURN
+            END
+            AUDIT='U'
+            MISROUTE=1
+            VOUT<1> = MISROUTE
+            RETURN
+         END
+      END
+
+**********************************
+9000:
+*************************************
+
+      VOUT<1> = MISROUTE
+****      RETURN

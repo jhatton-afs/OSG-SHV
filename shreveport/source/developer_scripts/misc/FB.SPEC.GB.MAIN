@@ -1,0 +1,503 @@
+*******************************************************************************
+*
+*	Generate File Statistics
+*
+*	Module	%M%	Version	%I% 	Date	%H%
+*
+*	(c) Copyright 1998 Ardent Software Inc. - All Rights Reserved
+*	This is unpublished proprietary source code of Ardent Software Inc.
+*	The copyright notice above does not evidence any actual or intended
+*	publication of such source code.
+*
+*******************************************************************************
+*
+*	Maintenance log - insert most recent change descriptions at top
+*
+*	Date.... GTAR# WHO Description.........................................
+*	09/26/00 E2726 LKS read replace by OPENSEQ to determine size of record
+*	06/20/00 18803 CSM fix comparison after getting lock
+*	05/03/00 18803 CSM upgrade locking to work with ISOMODE 2
+*	02/07/00 22838 DJD Changed STAT.FILE to a dynamic file for scalability.
+*	10/14/98 23801 SAP Change copyrights.
+*	01/20/97 19925 PEJ Handle ANALYZE.FILE output when NLS on
+*	09/23/96 19269 DJD Fixed build problem.
+*	09/19/96 19269 DJD Fixed quoting on the select for all.
+*	06/07/96 18438 JC  Port to NT
+*	03/13/96 17797 AGM Replace 'SH -c' with OS.EXEC
+*	11/25/92 10317 WLC Change STAT-FILE to STAT.FILE
+*	10/01/92 10319 PVW Fix openpath for index files
+*	10/01/92 10317 PVW Bring filestat terminology into line with ULTIMATE
+*	09/24/92 10277 PVW Fix type 1 minimum bytes per record when no records
+*	09/11/92 10196 PVW Check voc and use file defined by data path
+*	09/04/92 8125  PVW Created program from code by GMH
+*
+*******************************************************************************
+
+$OPTIONS VAR.SELECT
+$OPTIONS INFORMATION
+$INCLUDE UNIVERSE.INCLUDE MACHINE.NAME
+$INCLUDE UNIVERSE.INCLUDE FILENAMES.H
+$INCLUDE UNIVERSE.INCLUDE MTF.INCL.H
+$INCLUDE UNIVERSE.INCLUDE RECORDLOCKED.H
+      PRECISION 4
+
+*******************************************************************************
+
+      equate stat.file.name to 1
+      equate stat.file.path to 2
+      equate stat.file.type to 3
+      equate stat.file.mod to 4
+      equate stat.file.sep to 5
+      equate stat.file.size to 6
+      equate stat.file.inode to 7
+      equate stat.file.device to 8
+      equate stat.num.rec to 9
+      equate stat.num.data.byte to 10
+      equate stat.avg.rec.grp to 11
+      equate stat.avg.byte.grp to 12
+      equate stat.min.rec.grp to 13
+      equate stat.max.rec.grp to 14
+      equate stat.avg.byte.rec to 15
+      equate stat.min.byte.rec to 16
+      equate stat.max.byte.rec to 17
+      equate stat.dyn.data.size to 18
+      equate stat.dyn.id.size to 19
+      equate stat.dyn.unused.size to 20
+      equate stat.25 to 21
+      equate stat.50 to 22
+      equate stat.75 to 23
+      equate stat.100 to 24
+      equate stat.125 to 25
+      equate stat.150 to 26
+      equate stat.175 to 27
+      equate stat.200 to 28
+
+*******************************************************************************
+* Define Upcase VARIABLES
+      START.TIME = TIME()
+      DISPLAY OCONV(START.TIME,"MTH")
+      ACTIVE.LIST = ""
+      COMMAND.LINE = ""
+      SOURCE.FILE = ""
+      TOOLS.PATH = ""
+      PROCESS.TABLE = ""
+      EXECUTE OS.EXEC:" '":PWD.CMD:"'",OUT>PATH
+      PATH = PATH<1>
+      PROMPT ""
+*****      FILESTAT.ID = "STAT.FILE"
+      FILESTAT.ID = "GBSTAT.MAIN"
+      OPEN "GBSPEC.DATA2" TO FILE.NAME ELSE STOP 201,"GBSPEC.DATA"
+*
+* Define Downcase VARIABLES
+*
+      disable.auto.paging = @(0,0)
+      prompt ""
+      screen = ""
+      ACCOUNT.CNT = 0
+      ACCOUNT.PRE = DATE():"*":TIME():"*"
+
+*******************************************************************************
+MainProgram:
+*******************************************************************************
+      gosub InitialCommandParse:
+      open "VOC" to VOC.FILE then
+         Filelist = 0
+         FirstPass = TRUE
+         gosub GetFilelist
+         if Filelist then
+            StatOpen = FALSE
+            gosub OpenStatFile
+            if StatOpen then
+               gosub ProcessFilelist
+            end
+         end else
+            crt "Unable to retrieve any records."
+         end
+      end else
+         TPRINT UVREADMSG(001322,"VOC")
+      end
+      END.TIME = TIME()
+      DISPLAY OCONV(END.TIME,"MTH")
+      DURATION = END.TIME - START.TIME
+      DISPLAY DURATION/60
+      stop
+
+*******************************************************************************
+InitialCommandParse:
+*******************************************************************************
+      COMMAND.LINE = TRIM(@sentence)
+      convert " " to @fm in COMMAND.LINE
+
+      if COMMAND.LINE<1> = "RUN" or COMMAND.LINE<1> = "RAID" then
+         del COMMAND.LINE<1>             ; * get rid of 'RUN' or 'RAID'
+         del COMMAND.LINE<1>             ; * get rid of 'FILE'
+      end
+      del COMMAND.LINE<1>                ; * get rid of 'PROGRAM'
+      locate("LOCAL",COMMAND.LINE ; place)then
+      del COMMAND.LINE<place>
+      LOCAL.flag = TRUE
+   end else
+      LOCAL.flag = FALSE
+   end
+   return
+
+*******************************************************************************
+GetFilelist:
+*******************************************************************************
+
+   begin case
+      case COMMAND.LINE<1> = "*" or COMMAND.LINE<1> = "ALL"
+         echo off
+         cmd = \SSELECT VOC WITH TYPE = "F" AND F2 NOT.MATCHING "'I_'..." AND F2 NOT.MATCHING "'../'..." AND F2 NOT.MATCHING "'..\
+         cmd := "\"
+         cmd := \'..." AND F2 NOT.MATCHING "'/'..." AND F2 NOT.MATCHING "'\
+         cmd := "\"
+         cmd := \'..." AND F2 NOT.MATCHING "1A:'\
+         cmd := "\"
+         cmd := \'..." AND F2 # "." AND F2 # ""\
+         execute cmd,out>screen
+*****         Filelist = @selected
+*****         echo on
+*****EXECUTE "GET-LIST GB3.FILE.LIST"
+EXECUTE "SAVE-LIST PROD.FILE.LIST.MAIN"
+STOP
+         Filelist = @selected
+         echo on
+      case SYSTEM(11)
+         Filelist = @selected
+      case COMMAND.LINE<1> = "" and FirstPass
+         FirstPass = FALSE
+         file.id = ""
+         COMMAND.LINE = ""
+         loop
+            crt "Filename: ":
+            input file.id
+         until file.id = "" do
+            COMMAND.LINE<-1> = file.id
+         repeat
+         gosub GetFilelist
+      case 1
+         Filelist = dcount(COMMAND.LINE,@fm)
+         select COMMAND.LINE to 0
+   end case
+   return
+
+*******************************************************************************
+OpenStatFile:
+*******************************************************************************
+   if LOCAL.flag then
+      VOC.ID = FILESTAT.ID
+      FILESTAT.DIR = "."
+   end else
+      VOC.ID = "UNIVERSE.":FILESTAT.ID
+      FILESTAT.DIR = UV.ROOT
+   end
+   readu VOC.REC from VOC.FILE,VOC.ID then
+      begin case
+         case VOC.REC<2> = ""
+            FILESTAT.PATH = FILESTAT.DIR:"/":FILESTAT.ID
+            if LOCAL.flag then
+               VOC.REC<2> = FILESTAT.ID
+            end else
+               VOC.REC<2> = FILESTAT.DIR:"/":FILESTAT.ID
+            end
+            write VOC.REC on VOC.FILE,VOC.ID
+         case VOC.REC<2>[1,1] = "/" OR VOC.REC<2>[1,1] = "\"
+            FILESTAT.PATH = VOC.REC<2>
+            release VOC.FILE,VOC.ID
+         case 1
+            if LOCAL.flag then
+               FILESTAT.PATH = FILESTAT.DIR:"/":VOC.REC<2>
+            end else
+               FILESTAT.PATH = VOC.REC<2>
+            end
+            release VOC.FILE,VOC.ID
+      end case
+   end else
+      if LOCAL.flag then
+         execute OS.EXEC:" '":UV.BIN:UV.FSEP:"create.file DATA ":FILESTAT.ID:" 30'" capturing output
+         release VOC.FILE,VOC.ID
+         readu VOC.REC from VOC.FILE,VOC.ID then
+            VOC.REC<3> = UV.ROOT:"/D_":FILESTAT.ID
+            write VOC.REC on VOC.FILE,VOC.ID
+         end else
+            release VOC.FILE,VOC.ID
+         end
+      end else
+         VOC.REC = "F"
+         VOC.REC<2> = UV.ROOT:"/":FILESTAT.ID
+         VOC.REC<3> = UV.ROOT:"/D_":FILESTAT.ID
+         write VOC.REC on VOC.FILE,VOC.ID
+      end
+      FILESTAT.PATH = FILESTAT.DIR:"/":FILESTAT.ID
+   end
+   openpath FILESTAT.PATH to FILESTAT.FILE then
+      StatOpen = TRUE
+   end else
+      TPRINT UVREADMSG(001322,FILESTAT.PATH)
+   end
+   return
+
+*******************************************************************************
+ProcessFilelist:
+*******************************************************************************
+   FILE.CNT = 0
+   FOUND = 0
+   eol = FALSE
+   loop
+      readnext file.id from 0 else eol = TRUE
+      READV TXT FROM FILE.NAME,file.id,1 THEN
+         FOUND = FOUND + 1
+         CONTINUE
+      END
+      FILE.CNT = FILE.CNT + 1
+      IF NOT(REM(FILE.CNT,100)) THEN
+*****         DISPLAY @(10,10):FILE.CNT:SPACE(5):FOUND
+      END
+   until eol = TRUE do
+*****CONTINUE
+      read VOC.REC from VOC.FILE,file.id then
+         gosub ProcessDictSection
+         gosub ProcessDataSection
+      end
+   repeat
+   return
+*******************************************************************************
+ProcessDictSection:
+*******************************************************************************
+
+   if VOC.REC<3>#'' and (VOC.REC<3> # VOC.REC<2>) then
+      DICT = "DICT"
+      open DICT,file.id to dfile then
+         gosub GetStats
+         gosub WriteStats
+      end else
+         gosub OpenError
+         gosub WriteStats
+      end
+   end
+   return
+
+ProcessDataSection:
+
+   DICT = ""
+   newlist = ''
+   * Check to see if we have a multilevel file
+   if VOC.REC<4> # 'M' then
+      if VOC.REC<2> # '' then
+         newlist<-1> = file.id
+      end
+   end else
+      if VOC.REC<2> # '' then
+         newlist<-1> = file.id
+      end
+      madx = dcount(VOC.REC<7>,@VM)
+      for p = 1 to madx
+         newlist<-1> = file.id:",":VOC.REC<7,p>
+      next p
+   end
+   * Now look at all data files
+   if newlist # '' then
+      orig.file.id = file.id
+      p = 0
+      loop
+         p += 1
+         file.id = newlist<p>
+      until file.id = "" do
+         index.list = ''
+         open file.id to dfile then
+            index.list = indices(dfile)
+            gosub GetStats
+            gosub WriteStats
+            if index.list#"" then
+               open file.id to dfile then
+                  save.id = file.id
+                  maxd = dcount(index.list,@fm)
+                  orig.dfile = dfile
+                  for index.ptr = 1 to maxd
+                     index.data = indices(orig.dfile,index.list<index.ptr>)
+                     pathname = index.data<1,5>
+                     openpath pathname to dfile then
+                        index.seq = fmt("000":index.ptr-1,"R%3")
+                        file.id = "I_":save.id:"/INDEX.":index.seq
+                        gosub GetStats
+                        gosub WriteStats
+                     end else
+                        gosub OpenError
+                        gosub WriteStats
+                     end
+                  next index.ptr
+                  file.id = save.id
+                  dfile = orig.dfile
+                  close dfile
+               end
+            end
+         end else
+            gosub OpenError
+            gosub WriteStats
+         end
+      repeat
+      file.id = orig.file.id
+   end
+   return
+
+*******************************************************************************
+GetStats:
+*******************************************************************************
+   status data.info from dfile else data.info = ""
+   file.type = data.info<21>
+   FILESTAT.REC = ""
+   if DICT = "DICT" then
+      FILESTAT.REC<stat.file.name> = "D_"
+   end
+   FILESTAT.REC<stat.file.name> := file.id
+   if index(convert('\','/',VOC.REC<2>),'/',1) then
+      FILESTAT.REC<stat.file.path> = VOC.REC<2>
+   end else
+      FILESTAT.REC<stat.file.path> = PATH:'/':VOC.REC<2>
+   end
+
+   FILESTAT.REC<stat.file.type> = data.info<21>
+   FILESTAT.REC<stat.file.mod> = data.info<22>
+   FILESTAT.REC<stat.file.sep> = data.info<23>
+   FILESTAT.REC<stat.file.size> = data.info<6>
+   FILESTAT.REC<stat.file.inode> = data.info<10>
+   FILESTAT.REC<stat.file.device> = data.info<11>
+   *
+   * This code ensures that any file with the same inode:device only gets
+   * looked at once.
+   *
+   locate(FILESTAT.REC<stat.file.inode>:FILESTAT.REC<stat.file.device>,PROCESS.TABLE ,1 ; xx ; 'ar' ) then
+      FILESTAT.REC<stat.file.name> = FILESTAT.REC<stat.file.name>:" =  = > ":PROCESS.TABLE<2,xx>
+      close dfile
+   end else
+      ins FILESTAT.REC<stat.file.inode>:FILESTAT.REC<stat.file.device> before PROCESS.TABLE<1,xx>
+      ins FILESTAT.REC<stat.file.name> before PROCESS.TABLE<2,xx>
+      begin case
+         case file.type = 1 or file.type = 19 or file.type = 25
+            FILESTAT.REC<stat.file.size> = ""      ; * Don't default to directory size
+            gosub ExamineDirectory
+            close dfile
+         case file.type = 30
+            close dfile
+            execute "ANALYZE.FILE ":DICT:" ":file.id:" STATISTICS NO.PAGE",OUT>SCREEN
+            SCREEN = trim(SCREEN," ","R")
+
+            * if the report includes a 'NLS Character Set Mapping'
+            * line then throw it away
+
+            * (saves having to change all of the hard coded offsets
+            * in ExamineDynamic below)
+
+            if SCREEN<6>[1,3] = "NLS" then
+               del SCREEN<6>
+            end
+            gosub ExamineDynamic
+         case 1
+            close dfile
+            execute "FILE.STAT ":DICT:" ":file.id,OUT>SCREEN
+            gosub ExamineHashed
+      end case
+   end
+   return
+
+*******************************************************************************
+ExamineHashed:
+*******************************************************************************
+
+   FILESTAT.REC<stat.num.rec> = trim(field(SCREEN<5>,"=",2))
+   FILESTAT.REC<stat.num.data.byte> = trim(field(SCREEN<7>,'=',2))
+   FILESTAT.REC<stat.avg.rec.grp> = trim(field(SCREEN<9>,'=',2))
+   FILESTAT.REC<stat.avg.byte.grp> = trim(field(SCREEN<10>,'=',2))
+   FILESTAT.REC<stat.min.rec.grp> = trim(field(SCREEN<11>,'=',2))
+   FILESTAT.REC<stat.max.rec.grp> = trim(field(SCREEN<12>,'=',2))
+   FILESTAT.REC<stat.avg.byte.rec> = trim(field(SCREEN<14>,'=',2))
+   FILESTAT.REC<stat.min.byte.rec> = trim(field(SCREEN<15>,'=',2))
+   FILESTAT.REC<stat.max.byte.rec> = trim(field(SCREEN<16>,'=',2))
+
+   LINE = SCREEN<23>
+   LINE = trim(LINE," ","R")
+   for I = 1 to 8
+      FILESTAT.REC<stat.dyn.unused.size+I> = field(LINE," ",I)
+   next I
+   return
+
+*******************************************************************************
+ExamineDynamic:
+*******************************************************************************
+   FILESTAT.REC<stat.file.mod> = trim(field(SCREEN<7>," ",6))
+   FILESTAT.REC<stat.file.sep> = trim(field(SCREEN<12>," ",4)/512)
+   FILESTAT.REC<stat.file.size> = trim(field(SCREEN<14>," ",4))
+   FILESTAT.REC<stat.num.rec> = trim(field(SCREEN<9>," ",5))
+   FILESTAT.REC<stat.num.data.byte> = trim(field(SCREEN<15>," ",7))+trim(field(SCREEN<16>," ",7))
+   FILESTAT.REC<stat.avg.rec.grp> = trim(field(SCREEN<23>," ",3))
+   FILESTAT.REC<stat.avg.byte.grp> = trim(field(SCREEN<25>," ",4))+trim(field(SCREEN<26>," ",5))
+   FILESTAT.REC<stat.min.rec.grp> = trim(field(SCREEN<23>," ",4))
+   FILESTAT.REC<stat.max.rec.grp> = trim(field(SCREEN<23>," ",5))
+   FILESTAT.REC<stat.avg.byte.rec> = trim(field(SCREEN<35>," ",4))
+   FILESTAT.REC<stat.min.byte.rec> = trim(field(SCREEN<35>," ",5))
+   FILESTAT.REC<stat.max.byte.rec> = trim(field(SCREEN<35>," ",6))
+   FILESTAT.REC<stat.dyn.data.size> = trim(field(SCREEN<15>," ",7))
+   FILESTAT.REC<stat.dyn.id.size> = trim(field(SCREEN<16>," ",7))
+   FILESTAT.REC<stat.dyn.unused.size> = trim(field(SCREEN<17>," ",4))
+   return
+*******************************************************************************
+ExamineDirectory:
+*******************************************************************************
+
+   eoj = FALSE
+   rec.cnt = 0
+   data.bytes = 0
+   min.bytes = 999999999
+   max.bytes = 0
+   rec.tot = 0
+   select dfile to 8
+   loop
+      readnext item.id from 8 else eoj = TRUE
+   until eoj = TRUE do
+      OPENSEQ file.id, item.id TO record then
+         rec.cnt += 1
+         STATUS rec.tot FROM record ELSE rec.tot = ''
+         rec.tot=rec.tot<6> + len(item.id)
+         CLOSESEQ record
+         data.bytes += rec.tot
+         if rec.tot < min.bytes then min.bytes = rec.tot
+         if rec.tot > max.bytes then max.bytes = rec.tot
+      end
+   repeat
+   * end of additions
+   if rec.cnt = 0 then min.bytes = 0
+   FILESTAT.REC<stat.num.rec> = rec.cnt
+   FILESTAT.REC<stat.num.data.byte> = data.bytes
+   if rec.cnt<1 then rec.cnt = 1
+   FILESTAT.REC<stat.avg.byte.rec> = (data.bytes/rec.cnt)
+   FILESTAT.REC<stat.min.byte.rec> = min.bytes
+   FILESTAT.REC<stat.max.byte.rec> = max.bytes
+   return
+
+*******************************************************************************
+WriteStats:
+*******************************************************************************
+   ACCOUNT.CNT += 1
+   KEY = ACCOUNT.PRE:FMT("0000":ACCOUNT.CNT,"R#4")
+   recordlocku FILESTAT.FILE,KEY
+   if recordlocked(FILESTAT.FILE,KEY) >= LOCK$MY.READU then
+      write FILESTAT.REC on FILESTAT.FILE,KEY
+   end
+   return
+
+*******************************************************************************
+OpenError:
+*******************************************************************************
+   FILESTAT.REC = ""
+   if DICT = "DICT" then
+      FILESTAT.REC<stat.file.name> = "D_"
+   end
+   FILESTAT.REC<stat.file.name> := file.id:" *** Open Error ***"
+   if index(convert('\','/',VOC.REC<2>),'/',1) then
+      FILESTAT.REC<stat.file.path> = VOC.REC<2>
+   end else
+      FILESTAT.REC<stat.file.path> = PATH:'/':VOC.REC<2>     ; * unix path
+   end
+   return
+end

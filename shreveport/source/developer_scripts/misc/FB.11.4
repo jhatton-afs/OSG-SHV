@@ -1,0 +1,895 @@
+* Program to enter tags to block potential TL from FP
+*
+* Freight Payments
+*
+* AUTHOR: J. Michael Kerbow
+* DATE: 02/20/2004
+* 030404 - JMK01 - CHECK LOAD NUMBER FOR DUPLICATES
+* 030804 - JMK02 - CORRECT LOAD NUMBER VALIDATION FOR CURRENT LINE
+* 031404 - JMK03 - ADD CITY AND STATE STANDARD SUBROUTINE
+* 052604 - JMK04 - VERIFY RECORD LOCKS ARE CLEARED
+* 060905 - JMK05 - DELETE RECORD IF ALL LINES HAVE BEEN DELETED
+* 032609 - JMK06 - C090422 - Grant ability to run SS reports
+* 101309 - JMK07 - Shane Oneal SS Access
+* 020810 - JMK08 - C100119 - Grant access to truckload blocking screens for Peter Marquardt
+* 051210 - JMK09 - T100445 - Zip Code coming up as wrong city - off by 300 miles
+* 031014 - JMK10 - SysAid#8859 - FBBP FB.11.4 Variable Q not assigned at line 153.
+* 121414 - DRF01 - SysAid 14180 - Gave Brian Reese access
+* 040715 - DRF02 - SysAid 16532 - Gave Alison Walters access
+* 063016 - GRB01 - SysAid 25575 - add operator table
+*
+      PROMPT ''
+      PROG.NAME='FB.11.4'
+*
+* Open files.
+*
+      OPEN '','FB.TAG.BLOCK' TO F.TAG.BLOCK ELSE
+         CALL OPEN.ABORT("FB.TAG.BLOCK",PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN '','SCAC.XREF' TO F.SCAC.XREF ELSE
+         CALL OPEN.ABORT("SCAC.XREF",PROG.NAME)
+      END
+       OPEN '','OPERATOR' TO F.OP ELSE CALL OPEN.ABORT("OPERATOR",PROG.NAME)      ; * GRB01
+        
+*
+* CHECK FOR PROPER USER
+* Begin GRB01
+      OK=0
+      CALL GET.USER(USER)
+      	READV OP.FLG FROM F.OP,USER,13 ELSE
+         OP.FLG = "N"
+      END
+      IF OP.FLG = "Y" THEN
+      **** IF USER='BRIAN' THEN OK=1
+      **** IF USER='BRIANP' THEN OK=1
+      **** IF USER='KAREN' THEN OK=1
+      **** IF USER='DAVID' THEN OK=1
+      **** IF USER='GBINO' THEN OK=1
+      **** IF USER='AMY' THEN OK=1
+      **** IF USER='ARODRIGUEZ' THEN OK=1     ; * Added, per Scott Matthews 10/25/06 - DRF
+      **** IF USER='AWALTERS' THEN OK=1     ; * DRF02
+      **** IF USER='BREESE' THEN OK=1     ; * DRF01
+      **** IF USER='GINA' THEN OK=1
+      **** IF USER='LJAY' THEN OK=1           ; * Added, per Scott Matthews 11/03/06 - DRF
+      **** IF USER='PMARQUARDT' THEN OK=1     ; * JMK08
+      **** IF USER='SCRALL' THEN OK=1         ; * Added, per Scott Matthews 01/21/08 - Ticket 080212 - DRF
+      **** IF USER='SCROSS' THEN OK=1
+      **** IF USER='SMATTHEWS' THEN OK=1      ; * Added, per Scott Matthews 12/15/05 - Matt
+      **** IF USER='SONEAL' THEN OK=1         ; * JMK06 ; * JMK07
+      **** IF USER='THOOD' THEN OK=1          ; * Added, per Scott Matthews 9/25/06 - Matt
+      **** IF USER='ABYRD' THEN OK=1          ; * Added, per Scott Matthews 9/25/06 - Matt
+      **** IF USER='LSMALLEY' THEN OK=1       ; * Ticket 110391 DRF 04/28/11
+*
+      **IF OK=1 ELSE
+    END ELSE
+         CALL ELINE('Unauthorized user. ACCESS DENIED. Call Owen or David for help.')
+         GOTO 9999
+      END
+* End GRB 01
+* Initialize variables.
+*
+20:   PROG.DESC='TL TRAFFIC LANE ENTRY'
+      PACK.NAME='Freight Payment'
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.11.4' ; UPL.VOUT = ''        ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      FORMULA=''
+      PAGE.LEN=15
+      MODE=''
+      FIND.LOCKED.NAME=''
+      AMT=0
+      PU.DT=''
+      DEL.DT=''
+      CARRIER=''
+      CARRIER.REC=''
+      CLIENT=''
+      CLIENT.REC=''
+      ORIG.ZIP=''
+      ORIG.CITY=''
+      ORIG.STATE=''
+      DEST.ZIP=''
+      DEST.CITY=''
+      DEST.STATE=''
+      TOP.ORIG.ZIP=''
+      TOP.ORIG.CITY=''
+      TOP.ORIG.STATE=''
+      TOP.DEST.ZIP=''
+      TOP.DEST.CITY=''
+      TOP.DEST.STATE=''
+      ABR.ORIG.CITY=''                   ; * JMK09
+      ABR.ORIG.STATE=''                  ; * JMK09
+      ABR.DEST.CITY=''                   ; * JMK09
+      ABR.DEST.STATE=''                  ; * JMK09
+      WEIGHT=''
+      MILES=''
+      LOAD.NO=''
+      INV.NO=''
+      DEPT=''
+      GOSUB 7000                         ; * DISPLAY SCREEN
+      GOSUB 7100
+      INSERT='OFF'
+25:   HELP = "Enter the Origination Zip Code. [S]=Search. [X]=Back. [EX]=Exit."
+      CC=0
+      VIN=CC                             ; * Starting Zip Character Count
+      VIN<2>=12
+      VOUT=''
+      TOP.ORIG.ZIP=''
+      ZIP.LEN='C'
+      BACK.FLAG=0
+      TOP.ORIG.CITY=''
+      TOP.ORIG.STATE=''
+      ABR.ORIG.CITY=''                   ; * JMK09
+      ABR.ORIG.STATE=''                  ; * JMK09
+      CALL FB.2.1.CSZ.NEW(VIN,VOUT,4,TOP.ORIG.ZIP,HELP,ZIP.LEN,BACK.FLAG,TOP.ORIG.CITY,TOP.ORIG.STATE)
+      IF HELP='S' THEN
+         GOSUB 7000
+         GOSUB 7100
+      END
+      IF BACK.FLAG THEN STOP
+      CC+=VOUT<1>
+      CVIN=''                            ; * JMK03
+      CVOUT=''                           ; * JMK03
+      CVIN<1>=TOP.ORIG.CITY              ; * JMK03
+      CVIN<2>=TOP.ORIG.STATE             ; * JMK03
+      CALL SET.CITY(CVIN,CVOUT)          ; * JMK03
+*     TOP.ORIG.CITY=CVOUT<1>             ; * JMK03 ; * JMK09
+*     TOP.ORIG.STATE=CVOUT<2>            ; * JMK03 ; * JMK09
+      ABR.ORIG.CITY=CVOUT<1>             ; * JMK03 ; * JMK09
+      ABR.ORIG.STATE=CVOUT<2>            ; * JMK03 ; * JMK09
+      CRT @(12,04):@(-4):TOP.ORIG.CITY
+      CRT @(54,04):TOP.ORIG.STATE
+*
+*     CLIENT=Q                           ; * JMK10
+
+50:   HELP = "Enter the Destination Zip Code. [S]=Search. [X]=Back. [EX]=Exit."
+      CC=0
+      VIN=CC                             ; * Starting Zip Character Count
+      VIN<2>=12
+      VOUT=''
+      TOP.DEST.ZIP=''
+      ZIP.LEN='C'
+      BACK.FLAG=0
+      TOP.DEST.CITY=''
+      TOP.DEST.STATE=''
+      ABR.DEST.CITY=''                   ; * JMK09
+      ABR.DEST.STATE=''                  ; * JMK09
+      CALL FB.2.1.CSZ.NEW(VIN,VOUT,5,TOP.DEST.ZIP,HELP,ZIP.LEN,BACK.FLAG,TOP.DEST.CITY,TOP.DEST.STATE)
+      CC+=VOUT<1>
+      IF HELP='S' THEN
+         GOSUB 7000
+         GOSUB 7100
+      END
+      IF BACK.FLAG THEN
+         GO 25
+      END
+      CVIN=''                            ; * JMK03
+      CVOUT=''                           ; * JMK03
+      CVIN<1>=TOP.DEST.CITY              ; * JMK03
+      CVIN<2>=TOP.DEST.STATE             ; * JMK03
+      CALL SET.CITY(CVIN,CVOUT)          ; * JMK03
+*     TOP.DEST.CITY=CVOUT<1>             ; * JMK03 ; * JMK09
+*     TOP.DEST.STATE=CVOUT<2>            ; * JMK03 ; * JMK09
+      ABR.DEST.CITY=CVOUT<1>             ; * JMK03 ; * JMK09
+      ABR.DEST.STATE=CVOUT<2>            ; * JMK03 ; * JMK09
+      CRT @(12,05):@(-4):TOP.DEST.CITY
+      CRT @(54,05):TOP.DEST.STATE
+*
+* GET RECORD
+*
+*     TAG.ID=TOP.ORIG.CITY:'*':TOP.ORIG.STATE:'*':TOP.DEST.CITY:'*':TOP.DEST.STATE ; * JMK09
+      TAG.ID=ABR.ORIG.CITY:'*':ABR.ORIG.STATE:'*':ABR.DEST.CITY:'*':ABR.DEST.STATE         ; * JMK09
+      TAG.ID=CHANGE(TAG.ID,' ','_')
+      READU TAG.REC FROM F.TAG.BLOCK,TAG.ID LOCKED
+         RELEASE F.TAG.BLOCK,TAG.ID      ; * JMK04
+         FIND.LOCKED.NAME = 'FB.TAG.BLOCK,':TAG.ID
+         GOSUB FIND.LOCKED
+         CALL ELINE(FL.USER:' has ':FIND.LOCKED.NAME:' locked. Press enter to re-enter.')
+         TOP.ORIG.ZIP=''
+         TOP.ORIG.CITY=''
+         TOP.ORIG.STATE=''
+         TOP.DEST.ZIP=''
+         TOP.DEST.CITY=''
+         TOP.DEST.STATE=''
+         ABR.ORIG.CITY=''                ; * JMK09
+         ABR.ORIG.STATE=''               ; * JMK09
+         ABR.DEST.CITY=''                ; * JMK09
+         ABR.DEST.STATE=''               ; * JMK09
+         GOSUB 7000
+         GOSUB 7100
+         GOTO 20
+      END ELSE
+         TAG.REC=''
+         DATA 'A'
+      END
+      OLD.TAG.REC=TAG.REC
+
+*
+* First page of codes.
+*
+      IF TAG.REC#'' THEN
+         PAGE=1
+         GOSUB 9000
+      END
+*
+* Enter selection code.
+*
+100:  HELP="Enter line number [A]dd [B]ack [T]op ''=Page [E]nd [EX]it [D]el."
+      INSERT='OFF'
+      CALL GEN.IN(0,22,"Enter line number please. ###",'',Q,0,3,'','',0,-3,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='' OR QI='+'
+            IF TAG.REC<1,PAGE*PAGE.LEN>='' THEN
+               CALL ELINE('Error! You are on the last page!')
+               GO 100
+            END
+            PAGE=PAGE+1
+            GOSUB 9000
+         CASE QI='A'
+            MODE='ADD'
+            ADDING=1
+            OLD.PAGE=0
+            LOOP
+            WHILE ADDING
+               NUM.ITEM=DCOUNT(TAG.REC<1>,@VM)
+               SEL=NUM.ITEM+1
+               IF MOD(SEL,PAGE.LEN) > 0 AND MOD(SEL,PAGE.LEN) < PAGE.LEN/2 THEN
+                  PAGE=OCONV(SEL/PAGE.LEN,'MR0')+1
+               END ELSE
+                  PAGE=OCONV(SEL/PAGE.LEN,'MR0')
+               END
+               IF OLD.PAGE#PAGE AND NUM.ITEM>0 THEN
+                  GOSUB 9000
+                  OLD.PAGE=PAGE
+               END
+               GOSUB 8000
+            REPEAT
+            MODE=''
+         CASE QI='B' OR QI='-'
+            PAGE=PAGE-1
+            IF PAGE=0 THEN PAGE=1
+            GOSUB 9000
+         CASE QI='T'
+            PAGE=1
+            GOSUB 9000
+         CASE QI='EX'
+            IF OLD.TAG.REC#TAG.REC THEN
+               GOSUB ASK.FOR.CONFIRMATION
+               IF NOT(CONFIRMATION) THEN GOTO 100
+            END
+            GOTO 9999
+         CASE NUM(QI)
+            SEL=QI
+            IF SEL LT START ! SEL GT STOP THEN
+               CALL ELINE('Invalid selection.')
+               GOTO 100
+            END
+            IF SEL = 1 ELSE
+               IF TAG.REC<1,SEL> = '' THEN
+                  CALL ELINE('Invalid Entry - use "A" to add')
+                  GOTO 100
+               END
+            END
+            GOSUB 8000
+         CASE QI='E'
+            X=DCOUNT(TAG.REC<1>,CHAR(253))
+            FOR I=X TO 1 STEP -1
+               IF TAG.REC<1,I>='' THEN
+                  FOR ATT=1 TO 24
+                     DEL TAG.REC<ATT,I>
+                  NEXT ATT
+               END
+            NEXT I
+            X=DCOUNT(TAG.REC<1>,CHAR(253))         ; * JMK05
+            IF X=0 THEN                  ; * JMK05
+               DELETE F.TAG.BLOCK,TAG.ID           ; * JMK05
+            END ELSE                     ; * JMK05
+               WRITE TAG.REC ON F.TAG.BLOCK,TAG.ID
+            END                          ; * JMK05
+            GOTO 20
+         CASE QI='D'
+            HELP="Are you sure? [N]o [Y]es"
+            CRT @(0,22):@(-4):
+            CALL GEN.IN(0,22,"Delete the complete record? (Y/N)",'',Q,0,1,'','',0,-2,22,0,QI,HELP,0,23)
+            QI=OCONV(QI,'MCU')
+            IF QI='' THEN QI='N'
+            BEGIN CASE
+               CASE QI='Y'
+                  DELETE F.TAG.BLOCK,TAG.ID
+                  GOTO 20
+               CASE 1
+                  GOTO 100
+            END CASE
+      END CASE
+      GOTO 100
+*
+*-----------------------------------------------------------------------
+* INTERNAL SUBROUTINES
+*-----------------------------------------------------------------------
+*
+7000: * INITIAL SCREEN
+*
+      CRT @(12,03):"City":
+      CRT @(54,03):"State/Province":
+      CRT @(00,04):"Origin"'R#11 ':
+      CRT @(00,05):"Destination"'R#11 ':
+      RETURN
+*
+7100: * INITIAL DATA
+*
+      CRT @(12,04):@(-4):TOP.ORIG.CITY
+      CRT @(54,04):TOP.ORIG.STATE
+      CRT @(12,05):@(-4):TOP.DEST.CITY
+      CRT @(54,05):TOP.DEST.STATE
+      RETURN
+*
+* EDIT REC
+*
+8000:
+      IF INSERT='ON' THEN
+         GOSUB GET.INSERT.POINT
+         IF INSERT='OFF' THEN
+            RETURN
+         END
+      END
+      ROW=6+REM(SEL,PAGE.LEN)
+      IF ROW=6 THEN ROW=21
+      AMT=TAG.REC<1,SEL>
+      PU.DT=TAG.REC<2,SEL>
+      DEL.DT=TAG.REC<3,SEL>
+      CARRIER=TAG.REC<4,SEL>
+      READ CARRIER.REC FROM F.CARRIERS,CARRIER ELSE CARRIER.REC=''
+      CLIENT=TAG.REC<5,SEL>
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT ELSE CLIENT.REC=''
+      ORIG.ZIP=TAG.REC<6,SEL>
+      DEST.ZIP=TAG.REC<7,SEL>
+      WEIGHT=TAG.REC<8,SEL>
+      MILES=TAG.REC<9,SEL>
+      LOAD.NO=TAG.REC<10,SEL>
+      INV.NO=TAG.REC<11,SEL>
+      DEPT=TAG.REC<12,SEL>
+*
+      GOSUB EDIT.RECORD.DISPLAY
+*
+
+8010: IF MODE='ADD' THEN
+         HELP="Enter the estimated charges for this shipment. [D]elete. [EX]it  E[X]it Add"
+      END ELSE
+         HELP="Enter the estimated charges for this shipment. [D]elete. [EX]it"
+      END
+      IF AMT='' THEN MASK=STR('-',12) ELSE MASK=AMT'L26#12'
+      CALL GEN.IN(19,7,MASK,'AMT2',Q,0,20,'','',2,19,7,0,QI,HELP,0,23)
+      IF QI='' THEN QI=AMT
+      IF MODE='ADD' THEN
+         IF QI='' AND SEL#1 THEN
+            CALL ELINE("Must enter estimated charges")
+            GO 8010
+            RETURN
+         END
+      END
+      BEGIN CASE
+         CASE QI='X' OR QI='x'
+            IF INSERT='ON' THEN
+               INSERT='OFF'
+               TAG.REC=T.OLD.TAG.REC
+            END
+            IF MODE='ADD' THEN
+               ADDING=0
+               MODE=''
+               FOR ATT=1 TO 24
+                  DEL TAG.REC<ATT,SEL>
+               NEXT ATT
+               GOSUB 9000
+               RETURN
+            END
+         CASE OCONV(QI,'MCU')='D'
+            HELP="Are you sure? [N]o [Y]es"
+            CRT @(0,22):@(-4):
+            CALL GEN.IN(0,22,"Delete this line? (Y/N)",'',Q,0,1,'','',0,-2,22,0,QI,HELP,0,23)
+            QI=OCONV(QI,'MCU')
+            IF QI='' THEN QI='N'
+            BEGIN CASE
+               CASE QI='Y'
+                  FOR ATT=1 TO 24
+                     DEL TAG.REC<ATT,SEL>
+                  NEXT ATT
+                  GOSUB 9000
+               CASE 1
+            END CASE
+            GOTO 100
+         CASE OCONV(QI,'MCU')='EX'
+            IF OLD.TAG.REC#TAG.REC THEN
+               GOSUB ASK.FOR.CONFIRMATION
+               IF NOT(CONFIRMATION) THEN GOTO 8010
+            END
+            GOTO 9999
+         CASE QI=''
+            CALL ELINE('Invalid entry. Data required in this field.')
+            GOTO 8010
+      END CASE
+      AMT=Q'R0'
+      CRT @(19,7):AMT'L26#12'
+
+*
+8020: HELP="Enter the pickup date for this shipment. [X]-Back [EX]-Exit"
+      IF PU.DT='' THEN MASK='MM/DD/YY' ELSE MASK=PU.DT'D2/'
+      CALL GEN.IN(19,8,MASK,'DATE',Q,0,8,'L','',2,19,8,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=PU.DT
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(19,8):PU.DT'D2/'
+            GOTO 8010
+         CASE QI='EX'
+            IF OLD.TAG.REC#TAG.REC THEN
+               GOSUB ASK.FOR.CONFIRMATION
+               IF NOT(CONFIRMATION) THEN GOTO 8020
+            END
+            GOTO 9999
+         CASE 1
+      END CASE
+      PU.DT=Q
+      CRT @(19,8):PU.DT'D2/'
+*
+8030: HELP="Enter the delivery date for this shipment. [X]-Back [EX]-Exit"
+      IF PU.DT='' THEN MASK='MM/DD/YY' ELSE MASK=DEL.DT'D2/'
+      CALL GEN.IN(19,9,MASK,'DATE',Q,0,8,'L','',2,19,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=DEL.DT
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(19,9):DEL.DT'D2/'
+            GOTO 8020
+         CASE QI='EX'
+            IF OLD.TAG.REC#TAG.REC THEN
+               GOSUB ASK.FOR.CONFIRMATION
+               IF NOT(CONFIRMATION) THEN GOTO 8030
+            END
+            GOTO 9999
+         CASE 1
+      END CASE
+      DEL.DT=Q
+      CRT @(19,9):DEL.DT'D2/'
+*
+8040: HELP="Enter the carrier number, SCAC or name. [X]=Back [EX]=Exit"
+      IF CARRIER # '' THEN MASK = (CARRIER:' ':CARRIER.REC<1>)'L#60' ELSE MASK = '#####'
+      CALL GEN.IN(19,10,MASK,'',Q,0,20,'','',2,19,10,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=CARRIER
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(19,10):(CARRIER:' ':CARRIER.REC<1>)'L#60'
+            GOTO 8030
+         CASE QI='EX'
+            IF OLD.TAG.REC#TAG.REC THEN
+               GOSUB ASK.FOR.CONFIRMATION
+               IF NOT(CONFIRMATION) THEN GOTO 8040
+            END
+            GOTO 9999
+         CASE NOT(QI MATCHES "0N")
+            IF QI MATCHES "4A" THEN
+               READ TEST FROM F.SCAC.XREF,QI THEN
+                  SND.DATA=TEST<1> ; GOSUB SEND.DATA
+                  GOTO 8040
+               END
+            END
+            VIN=0                        ; * Starting Chars In
+            VOUT=''
+            CALL SOUNDEX.DISPLAY.NEW(VIN,VOUT,QI,'CARRIERS','SDX.CARRIER,NAME','1,2,3,4',ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            GOSUB 7000
+            GOSUB 7100
+            GOSUB EDIT.RECORD.DISPLAY
+            BEGIN CASE
+               CASE ITEM.LIST = ''
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 8040              ; * ENTER CARRIER
+               CASE ITEM.LIST # ''
+                  IF NUM(ITEM.LIST<1,1>) THEN
+                     SND.DATA=ITEM.LIST<1,1>
+                     GOSUB SEND.DATA
+                     GOTO 8040           ; * ENTER CARRIER
+                  END
+            END CASE
+         CASE NUM(QI)
+            QI=QI'R%5'
+         CASE 1
+      END CASE
+      CARRIER=QI
+*---- Get carrier data
+      READ CARRIER.REC FROM F.CARRIERS,CARRIER ELSE CARRIER.REC=''
+      CRT @(19,10):(CARRIER:' ':CARRIER.REC<1>)'L#60'
+
+*
+8050: HELP="Enter the client number or name.  [X]-Back [EX]-Exit"
+      IF CLIENT # '' THEN MASK = (CLIENT:' ':CLIENT.REC<2>)'L#60' ELSE MASK = '#####'
+      CALL GEN.IN(19,11,MASK,'',Q,0,20,'','',2,19,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=CLIENT
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(19,11):(CLIENT:' ':CLIENT.REC<2>)'L#60'
+            GOTO 8040
+         CASE QI='EX'
+            IF OLD.TAG.REC#TAG.REC THEN
+               GOSUB ASK.FOR.CONFIRMATION
+               IF NOT(CONFIRMATION) THEN GOTO 8050
+            END
+            GOTO 9999
+         CASE NOT(QI MATCHES "0N")
+            VIN=0                        ; * Starting Chars In
+            VOUT=''
+            CALL SOUNDEX.DISPLAY.NEW(VIN,VOUT,QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            GOSUB 7000
+            GOSUB 7100
+            GOSUB EDIT.RECORD.DISPLAY
+            BEGIN CASE
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 8050              ; * START OVER
+               CASE 1
+                  IF NUM(ITEM.LIST<1,1>) THEN
+                     SND.DATA=ITEM.LIST<1,1>
+                     GOSUB SEND.DATA
+                     GOTO 8050           ; * START OVER
+                  END
+            END CASE
+         CASE NUM(QI)
+            QI = QI'R%5'
+         CASE 1
+      END CASE
+      CLIENT=QI
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT ELSE CLIENT.REC=''
+      CRT @(19,11):(CLIENT:' ':CLIENT.REC<2>)'L#60'
+*
+8060: HELP="Enter the origin zip code.  [X]-Back [EX]-Exit"
+      VIN=0
+      VIN<2>=19
+      VOUT=''
+      IF ORIG.ZIP='' THEN
+         ORIG.ZIP=TOP.ORIG.ZIP
+         ORIG.CITY=TOP.ORIG.CITY
+         ORIG.STATE=TOP.ORIG.STATE
+      END
+      CALL FB.2.1.CSZ.NEW(VIN,VOUT,12,ORIG.ZIP,HELP,ZIP.LEN,BACK.FLAG,ORIG.CITY,ORIG.STATE)
+      BEGIN CASE
+         CASE BACK.FLAG=1
+            CRT @(19,12):@(-4):ORIG.ZIP:' ':ORIG.CITY:' ':ORIG.STATE
+            GOTO 8050
+         CASE QI='EX'
+            IF OLD.TAG.REC#TAG.REC THEN
+               GOSUB ASK.FOR.CONFIRMATION
+               IF NOT(CONFIRMATION) THEN GOTO 8060
+            END
+            GOTO 9999
+         CASE 1
+      END CASE
+      CRT @(19,12):@(-4):ORIG.ZIP:' ':ORIG.CITY:' ':ORIG.STATE
+*
+8070: HELP="Enter the destination zip code.  [X]-Back [EX]-Exit"
+      VIN=0
+      VIN<2>=19
+      VOUT=''
+      IF DEST.ZIP='' THEN
+         DEST.ZIP=TOP.DEST.ZIP
+         DEST.CITY=TOP.DEST.CITY
+         DEST.STATE=TOP.DEST.STATE
+      END
+      CALL FB.2.1.CSZ.NEW(VIN,VOUT,13,DEST.ZIP,HELP,ZIP.LEN,BACK.FLAG,DEST.CITY,DEST.STATE)
+      BEGIN CASE
+         CASE BACK.FLAG=1
+            CRT @(19,13):@(-4):DEST.ZIP:' ':DEST.CITY:' ':DEST.STATE
+            GOTO 8060
+         CASE QI='EX'
+            IF OLD.TAG.REC#TAG.REC THEN
+               GOSUB ASK.FOR.CONFIRMATION
+               IF NOT(CONFIRMATION) THEN GOTO 8070
+            END
+            GOTO 9999
+         CASE 1
+      END CASE
+      CRT @(19,13):@(-4):DEST.ZIP:' ':DEST.CITY:' ':DEST.STATE
+*
+8080: HELP="Enter the weight.  [X]-Back [EX]-Exit"
+      IF WEIGHT='' THEN MASK=STR('-',6) ELSE MASK=WEIGHT'L#6'
+      CALL GEN.IN(19,14,MASK,'',Q,0,6,'','',2,19,14,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=WEIGHT
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(19,14):WEIGHT'L#6'
+            GOTO 8060
+         CASE QI='EX'
+            IF OLD.TAG.REC#TAG.REC THEN
+               GOSUB ASK.FOR.CONFIRMATION
+               IF NOT(CONFIRMATION) THEN GOTO 8070
+            END
+            GOTO 9999
+      END CASE
+      WEIGHT=QI
+      CRT @(19,14):WEIGHT'L#6'
+*
+8090: HELP="Enter the mileage.  [X]-Back [EX]-Exit"
+      IF MILES='' THEN MASK=STR('-',6) ELSE MASK=MILES'L#6'
+      CALL GEN.IN(19,15,MASK,'',Q,0,6,'','',2,19,15,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=MILES
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(19,15):MILES'L#6'
+            GOTO 8080
+         CASE QI='EX'
+            IF OLD.TAG.REC#TAG.REC THEN
+               GOSUB ASK.FOR.CONFIRMATION
+               IF NOT(CONFIRMATION) THEN GOTO 8090
+            END
+            GOTO 9999
+         CASE 1
+      END CASE
+      MILES=QI
+      CRT @(19,15):MILES'L#6'
+*
+8100: HELP="Enter the load number.  [X]-Back [EX]-Exit"
+      IF LOAD.NO='' THEN MASK=STR('#',20) ELSE MASK=LOAD.NO'L#20'
+      CALL GEN.IN(19,16,MASK,'',Q,0,20,'','',2,19,16,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=LOAD.NO
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(19,16):LOAD.NO'L#20'
+            GOTO 8090
+         CASE QI='EX'
+            IF OLD.TAG.REC#TAG.REC THEN
+               GOSUB ASK.FOR.CONFIRMATION
+               IF NOT(CONFIRMATION) THEN GOTO 8100
+            END
+            GOTO 9999
+         CASE QI=''
+            CALL ELINE('Load Number Required.')
+            GOTO 8100
+         CASE 1
+      END CASE
+      LOCATE(QI,TAG.REC,10;LPOS) THEN    ; * JMK01
+         IF LPOS#SEL THEN                ; * JMK02
+            CALL ELINE('This load number has already been entered.')
+            GO 8100                      ; * JMK01
+         END                             ; * JMK02
+      END                                ; * JMK01
+      LOAD.NO=QI
+      CRT @(19,16):LOAD.NO'L#20'
+*
+8110: HELP="Enter the invoice number.  [X]-Back [EX]-Exit"
+      IF INV.NO='' THEN MASK=STR('#',20) ELSE MASK=INV.NO'L#20'
+      CALL GEN.IN(19,17,MASK,'',Q,0,20,'','',2,19,17,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=INV.NO
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(19,17):INV.NO'L#20'
+            GOTO 8100
+         CASE QI='EX'
+            IF OLD.TAG.REC#TAG.REC THEN
+               GOSUB ASK.FOR.CONFIRMATION
+               IF NOT(CONFIRMATION) THEN GOTO 8110
+            END
+            GOTO 9999
+         CASE 1
+      END CASE
+      INV.NO=QI
+      CRT @(19,17):INV.NO'L#20'
+
+8120: HELP="Enter the user/department to review.  [X]-Back [EX]-Exit"
+      IF DEPT='' THEN DEPT=USER
+      IF DEPT='' THEN MASK=STR('#',20) ELSE MASK=DEPT'L#20'
+      CALL GEN.IN(19,18,MASK,'',Q,0,20,'','',2,19,18,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=DEPT
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(19,18):DEPT'L#20'
+            GOTO 8110
+         CASE QI='EX'
+            IF OLD.TAG.REC#TAG.REC THEN
+               GOSUB ASK.FOR.CONFIRMATION
+               IF NOT(CONFIRMATION) THEN GOTO 8120
+            END
+            GOTO 9999
+         CASE 1
+      END CASE
+      DEPT=QI
+      CRT @(19,18):DEPT'L#20'
+
+8200: HELP="Is the above information correct? [X]-Back [EX]-Exit"
+      MASK='Information correct? (Y/N)'
+      CALL GEN.IN(0,23,MASK,'',Q,0,2,'','',2,-4,23,0,QI,HELP,0,22)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='' OR QI='Y'
+         CASE QI='X'
+            GOTO 8120
+         CASE QI='EX'
+            IF OLD.TAG.REC#TAG.REC THEN
+               GOSUB ASK.FOR.CONFIRMATION
+               IF NOT(CONFIRMATION) THEN GOTO 8200
+            END
+            GOTO 9999
+         CASE NUM(QI)
+            CALL ELINE("Invalid Entry")
+            GO 8200
+         CASE QI='N'
+            CRT @(0,22):@(-3):
+            GO 8120
+      END CASE
+
+*
+*
+*
+UPDATE.LINE:***
+      TAG.REC<1,SEL>=AMT
+      TAG.REC<2,SEL>=PU.DT
+      TAG.REC<3,SEL>=DEL.DT
+      TAG.REC<4,SEL>=CARRIER
+      TAG.REC<5,SEL>=CLIENT
+      TAG.REC<6,SEL>=ORIG.ZIP
+      TAG.REC<7,SEL>=DEST.ZIP
+      TAG.REC<8,SEL>=WEIGHT
+      TAG.REC<9,SEL>=MILES
+      TAG.REC<10,SEL>=LOAD.NO
+      TAG.REC<11,SEL>=INV.NO
+      TAG.REC<12,SEL>=DEPT
+      IF TAG.REC<13,SEL>='' THEN
+         TAG.REC<13,SEL>=USER
+         TAG.REC<14,SEL>=TIME()
+         TAG.REC<15,SEL>=DATE()
+      END
+      GOSUB 9000
+      RETURN
+*
+* DISPLAY ARRAY
+*
+9000: CRT @(00,6):@(-3):
+      CRT @(00,6):"Ln"'R#3 ':
+      CRT @(04,6):"Amount"'L#12 ':
+      CRT @(17,6):"PU Date"'L#8 ':
+      CRT @(26,6):"Del Date"'L#8 ':
+      CRT @(35,6):"Carrier"'L#14 ':
+      CRT @(50,6):"Client"'L#14 ':
+      CRT @(64,6):"Weight"'L#8 ':
+      CRT @(73,6):"Load"'L#5 ':
+
+      START=(PAGE*PAGE.LEN)-14
+      STOP=START+14
+      FOR I=START TO STOP STEP 1
+         ROW=6+REM(I,PAGE.LEN)
+         IF ROW=6 THEN ROW=21
+         DSP.AMT=TAG.REC<1,I>
+         DSP.PU.DT=TAG.REC<2,I>
+         DSP.DEL.DT=TAG.REC<3,I>
+         DSP.CARRIER=TAG.REC<4,I>
+         READV DSP.CARRIER FROM F.CARRIERS,DSP.CARRIER,1 ELSE NULL
+         DSP.CLIENT=TAG.REC<5,I>
+         READV DSP.CLIENT FROM F.CLIENTS,DSP.CLIENT,2 ELSE NULL
+         DSP.WEIGHT=TAG.REC<8,I>
+         DSP.LOAD=TAG.REC<10,I>
+         CRT @(00,ROW):I'R#3 ':
+         IF DSP.AMT+0#0 THEN
+            CRT @(04,ROW):DSP.AMT'L26#12 ':
+         END
+         CRT @(17,ROW):DSP.PU.DT'D2/':
+         CRT @(26,ROW):DSP.DEL.DT'D2/':
+         CRT @(35,ROW):DSP.CARRIER'L#14 ':
+         CRT @(50,ROW):DSP.CLIENT'L#14 ':
+         CRT @(64,ROW):DSP.WEIGHT'R#8 ':
+         CRT @(73,ROW):DSP.LOAD'L#6':
+      NEXT I
+      RETURN
+*
+* FIND LOCKED SUBROUTINE
+*
+FIND.LOCKED:
+
+      STMT = 'LIST.READU EVERY'
+      EXECUTE STMT CAPTURING OUTPUT
+      FL.LEN = DCOUNT(OUTPUT,@AM)
+      FL.USER = 'Someone'
+      FOUND = 0
+
+      FOR X = 1 TO FL.LEN UNTIL FOUND
+         T.USER = OCONV(TRIM(OUTPUT<X>[44,9]),'MCU')
+         T.FILE = TRIM(OUTPUT<X>[53,17])
+         IF T.FILE = FIND.LOCKED.NAME THEN
+            FL.USER = T.USER
+            FOUND = 1
+         END
+      NEXT
+
+
+      RETURN
+*
+ASK.FOR.CONFIRMATION:***
+      HELP='Enter <Y>es to exit without saving or <N>o to return to program'
+      CALL GEN.IN(0,22,'Are You Sure You Want To Exit: N','',Q,0,1,'','',2,-1,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='N' OR QI=''
+            CONFIRMATION=0
+         CASE QI='Y'
+            CONFIRMATION=1
+         CASE 1
+            CALL ELINE('Invalid Entry')
+            GOTO ASK.FOR.CONFIRMATION
+      END CASE
+      CRT @(0,22):@(-3):
+      RETURN
+*
+9999: * EXIT PROGRAM
+      STOP
+
+*
+GET.INSERT.POINT:
+*
+      T.OLD.TAG.REC=TAG.REC
+      NUM.ITEMS=DCOUNT(TAG.REC<2>,@VM)
+      HELP='Enter Line to insert before'
+      MASK='Line number ##'
+      CALL GEN.IN(0,23,MASK,'',Q,1,3,'','',0,LEN(MASK)-2,23,0,QI,HELP,0,22)
+      BEGIN CASE
+         CASE NOT(NUM(QI))
+            IF QI='X' THEN
+               INSERT='OFF'
+               GO 9000
+            END
+            IF QI='EX' THEN
+               STOP
+            END
+            CALL ELINE("Invalid Entry!")
+            GO GET.INSERT.POINT
+         CASE 1
+            IF QI>NUM.ITEMS THEN
+               CALL ELINE("Must be inserted before last line")
+               GO GET.INSERT.POINT
+            END
+            IF QI<1 THEN
+               CALL ELINE("Can not be zero or a negative number")
+               GO GET.INSERT.POINT
+            END
+      END CASE
+      INSERT.POINT=Q
+      SEL=INSERT.POINT
+      FOR X=NUM.ITEMS TO INSERT.POINT STEP -1
+         FOR ATT=1 TO 24
+            TAG.REC<ATT,X+1>=TAG.REC<ATT,X>
+         NEXT ATT
+      NEXT X
+      FOR ATT=1 TO 24
+         TAG.REC<ATT,INSERT.POINT>=''
+      NEXT ATT
+      RETURN
+
+*---- Execute DATA stmt and reduce CC
+SEND.DATA:****
+      CC-=(LEN(SND.DATA)+1)
+      DATA SND.DATA
+      RETURN
+EDIT.RECORD.DISPLAY:***
+      CRT @(0,06):@(-3):
+      CRT @(0,06):STR('-',80):
+      CRT @(0,07):' 1 Est. Charges  : ':AMT'L26#12':
+      CRT @(0,08):' 2 Pick Up Date  : ':PU.DT'D2/':
+      CRT @(0,09):' 3 Delivery Date : ':DEL.DT'D2/':
+      CRT @(0,10):' 4 Carrier Name  : ':(CARRIER:' ':CARRIER.REC<1>)'L#60':
+      CRT @(0,11):' 5 Client Name   : ':(CLIENT:' ':CLIENT.REC<2>)'L#60':
+      CRT @(0,12):' 6 Origin Zip    : ':ORIG.ZIP:' ':ORIG.CITY:' ':ORIG.STATE
+      CRT @(0,13):' 7 Dest. Zip     : ':DEST.ZIP:' ':DEST.CITY:' ':DEST.STATE
+      CRT @(0,14):' 8 Est. Weight   : ':WEIGHT:
+      CRT @(0,15):' 9 Est. Miles    : ':MILES:
+      CRT @(0,16):'10 Load Number   : ':LOAD.NO:
+      CRT @(0,17):'11 Inv. Number   : ':INV.NO:
+      CRT @(0,18):'12 Dept/User     : ':DEPT:
+      RETURN

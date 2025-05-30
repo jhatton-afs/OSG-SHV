@@ -1,0 +1,324 @@
+* PROGRAM FB.6.3
+* PROGRAM TO PROCESS EXPENSE DISTRIBUTION
+*
+* AUTHOR: BRIAN M. QUEEN
+* DATE: MARCH 25, 1993
+*
+* PACKAGE: FREIGHT BILLING
+*
+**********************************************************************
+* 122006 - JMK01 - ADD TROUBLESHOOTING SWITCH TO EMAIL REPORT
+* 010711 - JMK02 - C110014 - Weekly client emails ; all special reports should be in Public folders 
+*
+*
+      $INCLUDE PROG.ADMIN INC_OPTIONS
+      $INCLUDE FILE.DEFS INC_DIVISION.CODES
+*
+* Initialize variables
+*
+      CMD.LINE=@SENTENCE
+      NWORDS=DCOUNT(CMD.LINE,' ')
+      IF NWORDS>1 THEN
+         CLIENT.ID=FIELD(CMD.LINE,' ',2)
+         BEG.DATE=FIELD(CMD.LINE,' ',3)
+         IF NOT(NUM(BEG.DATE)) THEN BEG.DATE=BEG.DATE'DI'
+         END.DATE=FIELD(CMD.LINE,' ',4)
+         IF NOT(NUM(END.DATE)) THEN END.DATE=END.DATE'DI'
+         EXP.DIR=FIELD(CMD.LINE,' ',5)
+         IF EXP.DIR='EMAIL' THEN
+            EMAIL=1
+         END ELSE
+            EMAIL=0
+         END
+         ONCE=FIELD(CMD.LINE,' ',6)+0
+         AUTO=1
+      END ELSE
+         ONCE=0
+         AUTO=0
+      END
+      CALL GET.USER(USER)
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='FB.6.3'
+      PROG.DESC='Expense Distribution'
+      PACK.NAME='FREIGHT BILLING'
+      EQU TB TO CHAR(9)
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.6.3' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+*
+* Open files
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '', 'ZIPS.CODES' TO ZIPS ELSE
+         CALL OPEN.ABORT('ZIPS',PROG.NAME)
+      END
+      OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE
+         OPEN '','VOC' TO F.VOC ELSE
+            CALL ELINE('Unable to open VOC file - Call IS Department.')
+            GOTO THE.END
+         END
+         READ BILLDATA.REC FROM F.VOC,'BILLDATA' ELSE
+            CALL ELINE('Unable to open VOC BILLDATA - Call IS Department.')
+            GOTO THE.END
+         END
+         BILLDATA.REC<2>:='\':USER
+         WRITE BILLDATA.REC ON F.VOC,'BILLDATA.':USER ELSE
+            CALL ELINE('Your user name ':USER:' is not in the BILLDATA folder - Call IS Department.')
+            GOTO THE.END
+         END
+         OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE
+            CALL ELINE('Unable to open BILLDATA.':USER:'.')
+            GOTO THE.END
+         END
+      END
+      OPEN '','EMAILDATA' TO F.EMAILDATA ELSE
+         CALL OPEN.ABORT('EMAILDATA',PROG.NAME)
+      END
+*
+* Display screen heading
+*
+      IF AUTO=0 THEN
+30:      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      END
+*
+* Get client number to process
+*
+      IF AUTO=0 THEN
+50:      HELP="Enter the client number you want to process. 'X'=Exit."
+         CALL GEN.IN(0,3,'Enter Client Number #####','',Q,0,20,'','',2,-5,3,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='EX' ! QI='X'
+               STOP
+            CASE QI=''
+               STOP
+            CASE NOT(QI MATCHES "0N")
+               CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+               CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+               BEGIN CASE
+                  CASE ITEM.LIST=''
+                     GOTO 50
+                  CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                     GOTO 50
+                  CASE ITEM.LIST NE ''
+                     IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                     GOTO 50
+               END CASE
+            CASE NUM(QI)
+               Q=QI'R%5'
+            CASE 1
+               GOTO 100
+         END CASE
+         CLIENT.ID=Q
+         CLIENT.ID=CLIENT.ID'R%5'
+         CRT @(20,3):CLIENT.ID:@(-4)
+      END
+*
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         CALL ELINE("ERROR - Client ":CLIENT.ID:" not on file.")
+         GOTO 50
+      END
+      CLIENT.NAME=CLIENT.REC<2>
+      IF AUTO=0 THEN
+         CRT @(27,3):CLIENT.NAME
+      END
+*
+* Get current period beginning date
+*
+      IF AUTO=0 THEN
+100:     HELP='Enter the current period beginning date.'
+         CALL GEN.IN(0,5,'Current period beginning date.  ':DATE()'D2/','DATE',BEG.DATE,1,8,'','',1,-8,5,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='X'
+               GOTO 50
+            CASE QI='EX'
+               STOP
+         END CASE
+         CRT @(32,5):BEG.DATE'D2/'
+      END
+*
+* Get current period ending date
+*
+      IF AUTO=0 THEN
+200:     END.DATE=DATE()
+         HELP='Enter the current period ending date.'
+         CALL GEN.IN(0,7,'Current period ending date.     ':END.DATE'D2/','DATE',Q,0,8,'','',1,-8,7,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI=''
+               Q=END.DATE
+            CASE QI='X'
+               GOTO 100
+            CASE QI='EX'
+               STOP
+         END CASE
+         END.DATE=Q
+         IF END.DATE LT BEG.DATE THEN
+            CALL ELINE('Invalid ending date.')
+            GOTO 200
+         END
+         CRT @(32,7):END.DATE'D2/'
+      END
+*
+* Ask if this is to be emailed or not.
+*
+      IF AUTO=0 THEN
+300:     RPT.EMAIL='N'
+         HELP='Y=Yes, <cr>=No.'
+         CALL GEN.IN(0,9,'Email this report.              ':RPT.EMAIL,'',Q,0,1,'','',1,-1,9,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='Y'
+               EMAIL=1
+            CASE QI=''
+               Q='N'
+               EMAIL=0
+            CASE QI='X'
+               GOTO 100
+            CASE QI='EX'
+               STOP
+         END CASE
+         RPT.EMAIL=Q
+         CRT @(32,9):RPT.EMAIL
+      END
+*
+* Open data file
+*
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.HIST ELSE
+         CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,PROG.NAME)
+      END
+*
+* Build report heading
+*
+      CALL FULL.DATE(BEG.DATE,ALPHA.BEG.DATE)
+      CALL FULL.DATE(END.DATE,ALPHA.END.DATE)
+      ODATE=ALPHA.BEG.DATE:' to ':ALPHA.END.DATE
+      CALL PAGE.HEAD('FB.6.3',CLIENT.NAME,'','Dietrich Expense Distribution',ODATE,132,HED)
+*     HED:= "'L'Carrier Name                       Pro Number             Pro Date    Expense Code         Approved $      Unapproved $'L'"
+      OBDATE=BEG.DATE'D4/'
+      OEDATE=END.DATE'D4/'
+      EXP.REC=''
+      EXP.REC<1>='Expense Distribution for ':CLIENT.ID:' - ':CLIENT.NAME:' from ':ODATE
+      EXP.REC<-1>=' '
+      HDG.LINE=''
+      HDG.LINE<1,1>='Expense Code'
+      HDG.LINE<1,2>='Expense Amount'
+      HDG.LINE<1,3>='Expense Weight'
+      EXP.REC<-1>=HDG.LINE
+*
+* Select data
+*
+      IF AUTO=0 THEN
+         TEXT='Selecting data - please wait.'
+         CALL CENTER(TEXT,80)
+         CRT @(0,10):TEXT
+      END
+      PREC='SSELECT FB.BILLS.HIST,':CLIENT.ID:' BY CARRIER.DESC'
+      PREC=PREC:' WITH 37 GE "':BEG.DATE'D2/':'"'
+      PREC=PREC:' AND WITH 37 LE "':END.DATE'D2/':'"'
+      PREC := ' AND WITH VERSION = "0"'
+      PREC := ' AND WITH 39 # "R"'
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+      NUM.ITMS = @SELECTED
+      IF SYSTEM(11) ELSE
+         IF AUTO=0 THEN
+            CALL ELINE('No transactions on file with given criteria.')
+            STOP
+         END
+      END
+*
+* Process report
+*
+      COUNTER=0
+      DONE = 0
+*
+* Get transaction data
+*
+      EXP.ARRAY=''
+      LOOP
+         READNEXT ID ELSE DONE = 1
+      UNTIL DONE = 1 DO
+         IF AUTO=0 THEN
+            COUNTER=COUNTER+1
+            CALL PROG.BAR(22,COUNTER,NUM.ITMS,PER)
+         END
+         READ REC FROM F.HIST,ID THEN
+            PRO=FIELD(ID,'*',2)
+            DATE=REC<1>
+            WEIGHT=REC<6>
+            IF DATE NE '' THEN DATE=DATE'D2/' ELSE DATE=SPACE(8)
+            NVAL=DCOUNT(REC<31>,@VM)
+            FOR VAL=1 TO NVAL
+               EXP.CODE=REC<31,VAL>
+               CHARGES=REC<33,VAL>
+               LOCATE EXP.CODE IN EXP.ARRAY<1> BY 'AL' SETTING EPOS ELSE
+                  INS EXP.CODE BEFORE EXP.ARRAY<1,EPOS>
+                  INS '' BEFORE EXP.ARRAY<2,EPOS>
+                  INS '' BEFORE EXP.ARRAY<3,EPOS>
+               END
+               EXP.ARRAY<2,EPOS>+=CHARGES
+               IF VAL=1 THEN
+                  EXP.ARRAY<3,EPOS>+=WEIGHT
+               END
+            NEXT VAL
+         END
+      REPEAT
+      NVAL=DCOUNT(EXP.ARRAY<1>,@VM)
+      FOR VAL=1 TO NVAL
+         EXP.LINE=''
+         EXP.LINE<1,1>=EXP.ARRAY<1,VAL>
+         EXP.LINE<1,2>=EXP.ARRAY<2,VAL>'R26'
+         EXP.LINE<1,3>=EXP.ARRAY<3,VAL>
+         EXP.REC<-1>=EXP.LINE
+      NEXT VAL
+      EXP.ID=CLIENT.ID:'_':OBDATE[7,4]:OBDATE[1,2]:OBDATE[4,2]:'_':OEDATE[7,4]:OEDATE[1,2]:OEDATE[4,2]:'_EXP.XLS'
+      EXP.REC=CHANGE(EXP.REC,@VM,TB)
+      IF EMAIL THEN
+         WRITE EXP.REC ON F.EMAILDATA,EXP.ID
+         EMAIL.OUT=''
+         EMAIL.OUT<1>=TRIM(CLIENT.REC<125>)        ; * To Address
+         EMAIL.OUT<2>=TRIM(CLIENT.REC<126>)
+         EMAIL.OUT<3>=TRIM(CLIENT.REC<127>)
+         EMAIL.OUT<3,-1>='WeeklyClientEmails@afs.net'        ; * JMK02
+         IF USER='NO-MKERBOW' THEN
+            EMAIL.OUT<1>='mkerbow@afs.net'
+            EMAIL.OUT<2>=''
+            EMAIL.OUT<3>=''
+         END
+         IF CLIENT.REC<179>#'' AND ONCE=0 THEN     ; * JMK01
+            EMAIL.OUT<1>=TRIM(CLIENT.REC<179>)     ; * JMK01
+            IF EMAIL.OUT<1>='' THEN GO THE.END     ; * JMK01
+            EMAIL.OUT<2>=''              ; * JMK01
+            EMAIL.OUT<3>=''              ; * JMK01
+         END                             ; * JMK01
+         EMAIL.OUT<4>='Reports@afs.net'
+         EMAIL.OUT<5,1>='Dietrich Expense Distribution Report'
+         BODY.TEXT='The attached file is the Dietrich Expense Distribution Report File.'
+         EMAIL.OUT<6>=BODY.TEXT
+         EMAIL.OUT<11> = 'E:\ARDENT\PUBLIC\EMAILDATA\'
+         EMAIL.OUT<11>:=EXP.ID
+         EVIN = EMAIL.OUT                ; * JMK09
+         IF EMAIL.OUT<1>#'' THEN CALL SENDMAIL(EVIN,EVOUT)         ; * JMK09
+      END ELSE
+         WRITE EXP.REC ON F.BILLDATA,EXP.ID
+         MESSAGE='Your report is on your "U:" drive as ':EXP.ID
+         IF AUTO=0 THEN
+            CALL ELINE(MESSAGE)
+         END
+      END
+THE.END: *
+      STOP
+*----------------------------------------------------------------------
+*
+* INTERNAL SUBROUTINES
+*
+*----------------------------------------------------------------------
+*
+**********************************************************************
+*
+      END

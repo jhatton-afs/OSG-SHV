@@ -1,0 +1,1438 @@
+***********************************************************************
+* PROGRAM TO PROCESS THE PERCENTAGES OF REVENUE EACH CLIENT-CARRIER COMB
+***********************************************************************
+*
+* 011304 - JMK01 - CREATE REJECT BILL OPTION
+* 011404 - JMK02 - ADD SPREADSHEET OUTPUT OPTION
+* 042705 - JMK03 - ADJUST LINE LIMITS FOR OUTPUT
+* 052705 - JMK04 - ADD EDI AND NON-EDI FIELDS FOR ANALYSIS
+* 060705 - JMK05 - REMOVE THIRD PARTY BILLS FROM REPORT
+* 102105 - JMK06 - DO NOT PROCESS OR REPORT IF CLIENT RECORD DOES NOT EXIST
+* 102605 - JMK07 - ADD FB.PROC.DATE.XREF FOR PERFORMANCE
+* 041906 - JCW01 - FIX FB.PROC.DATE.XREF STATEMENTS
+* 042006 - JCW02 - OMIT INACTIVE CLIENTS
+* 050806 - JCW03 - CHANGES TO '@SELECTED', 'CLEARSELECT', AND 'STMT<X>'
+* 073106 - PKB   - ADDED EDI OPTION W/ EXTRA COLUMNS TO ENABLE VLOOKUP
+* 080506 - PKB   - READS EDI STATUS FILE IN BILLDATA, CREATES "NOT FOUND" FILE
+* 031208 - JMK08 - T080799 - Remove duplicates in FB History Reporting
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Initialize variables
+*
+      COPIES=1
+      CARRIERS=0
+      EQU TAB TO CHAR(9)                 ; * JMK02
+*
+      PROMPT''
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)
+      STATUS=''
+      INPUT MODE
+*DF      IF MODE='NON-EDI' ELSE MODE='ALL'
+*     IF MODE#'NON-EDI' AND MODE#'EDI' THEN MODE='ALL' ; * JMK01
+      LINE.LIMIT=400                     ; * JMK03
+      BEGIN CASE                         ; * JMK01
+         CASE MODE='EDI'                 ; * JMK01
+            LINE.LIMIT=''                ; * JMK03
+         CASE MODE='NON-EDI'             ; * JMK01
+         CASE MODE='REJECT'              ; * JMK01
+         CASE MODE='ALL'                 ; * JMK01
+         CASE 1                          ; * JMK01
+            MODE='ALL'
+      END CASE                           ; * JMK01
+      PROG.NAME='EDI.STATUS.UPDATE'      ; * FORMERLY NAMED 'FB.3.20.3'
+      PROG.DESC='Client-Carrier Bills And Audit Status Analysis'
+      PROG.DESC:=' ':MODE:' Bills'
+      PACK.NAME='Freight Billing'
+      NO.DIV.FLAG=0
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'EDI.STATUS.UPDATE' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      ERRMSG=''
+      YES.NO=''
+      CALL FB.FORM(F.NUM)
+      TEMP.NAME=''
+      ORIG.CLIENT.ID=''
+      SUB4=0
+      SUB14=0                            ; * JMK04
+      SUB24=0                            ; * JMK04
+*
+* Open files
+*
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+         END
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      OPEN 'DICT','FBWORK':CH.NUM TO F.DICT.WORK ELSE
+         CALL OPEN.ABORT('DICT FBWORK':CH.NUM,PROG.NAME)
+      END
+      OPEN 'FB.BILLS.CRX' TO F.CRX ELSE
+         CALL OPEN.ABORT('FB.BILLS.CRX',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','VOC' TO F.VOC ELSE        ; * JMK02
+         CALL OPEN.ABORT('VOC',PROG.NAME)          ; * JMK02
+      END                                ; * JMK02
+      READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE           ; * JMK02
+         CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')         ; * JMK02
+         STOP                            ; * JMK02
+      END                                ; * JMK02
+      BILLDATA.REC<2>:='\':USER.NAME     ; * JMK02
+      WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER.NAME ELSE           ; * JMK02
+         CALL ELINE("YOUR USER NAME '":USER.NAME:"' IS NOT IN THE BILLDATA FOLDER - PLEASE SEE OWEN/DAVID")    ; * JMK02
+         STOP                            ; * JMK02
+      END                                ; * JMK02
+      OPEN '','BILLDATA.':USER.NAME TO BILLDATA ELSE         ; * JMK02
+         CALL ELINE('UNABLE TO OPEN "BILLDATA."':USER.NAME:"'")        ; * JMK02
+         STOP                            ; * JMK02
+      END                                ; * JMK02
+      OPEN '','AR.SLSMAN.1000.1' TO F.SLS ELSE     ; * JMK04
+         CALL ELINE('UNABLE TO OPEN "AR.SLSMAN.100.1"')      ; * JMK04
+      END                                ; * JMK04
+*
+* Create work file dictionary items
+*
+      TEMP=''
+      TEMP<1>='S'
+      TEMP<2>=3
+      TEMP<3>='Carr $'
+      TEMP<7>='MR2'
+      TEMP<8>=''
+      TEMP<9>='R'
+      TEMP<10>=10
+      WRITE TEMP ON F.DICT.WORK,'CAR.DOL'
+      TEMP<3>=''
+      TEMP<2>=1 ; WRITE TEMP ON F.DICT.WORK,1
+      TEMP<2>=2 ; WRITE TEMP ON F.DICT.WORK,2
+      TEMP<2>=5 ; WRITE TEMP ON F.DICT.WORK,5
+      TEMP<2>=7 ; WRITE TEMP ON F.DICT.WORK,7
+*
+      TEMP<2>=4
+      TEMP<3>='Bills'
+      TEMP<7>=''
+      TEMP<9>='R'
+      TEMP<10>=6
+      WRITE TEMP ON F.DICT.WORK,'BILLS'
+      TEMP=''
+      TEMP<1>='S'
+      TEMP<2>=0
+      TEMP<3>='Client Name'
+      TEMP<8>='G0*1':@VM:'TCLIENTS;X;;2'
+      TEMP<9>='L'
+      TEMP<10>='30'
+      WRITE TEMP ON F.DICT.WORK,'CLIENT'
+      TEMP=''
+      TEMP<1>='S'
+      TEMP<2>=0
+      TEMP<3>='Client#'
+      TEMP<8>='G0*1'
+      TEMP<9>='R'
+      TEMP<10>='5'
+      WRITE TEMP ON F.DICT.WORK,'CLIENT#'
+      TEMP=''
+      TEMP<1>='S'
+      TEMP<2>=0
+      TEMP<3>='Carrier Name'
+      TEMP<8>='G1*1':@VM:'TCARRIERS;X;;1'
+      TEMP<9>='L'
+      TEMP<10>='30'
+      WRITE TEMP ON F.DICT.WORK,'CARRIER'
+      TEMP=''
+      TEMP<1>='S'
+      TEMP<2>=0
+      TEMP<3>='Carrier#'
+      TEMP<8>='G1*1'
+      TEMP<9>='R'
+      TEMP<10>='5'
+      WRITE TEMP ON F.DICT.WORK,'CARRIER#'
+*
+*  WORK FILE CONSISTS OF ITEMS WITH THE FOLLOWING DETAIL
+*  Variable Attribute Description.....................................
+*               ID    CLIENT*CARRIER
+*                1    Overcharge amount (Discount Var + Overchg Var)
+*                2    Logistics Markup - Consulting Variance
+*                3    Amout Paid    - Adjusted bill amout
+*                4    Bill Count    - Number of bills for client
+*                5    BalDueAmt     - Balance Due Amount (PAID)
+*                6    BalDueCnt     - Number of Balance dues
+*                7    AddDueAmt     - Additional Due Amount (PAID)
+*                8    AddDueCnt     - Number of Additional dues
+*                9    Most Recent Bill Date
+*               10    Unused                                                ; * JMK04
+*               11    NonEDI Overcharge amount (Discount Var + Overchg Var) ; * JMK04
+*               12    NonEDI Logistics Markup - Consulting Variance         ; * JMK04
+*               13    NonEDI Amout Paid    - Adjusted bill amout            ; * JMK04
+*               14    NonEDI Bill Count    - Number of bills for client     ; * JMK04
+*               15    NonEDI BalDueAmt     - Balance Due Amount (PAID)      ; * JMK04
+*               16    NonEDI BalDueCnt     - Number of Balance dues         ; * JMK04
+*               17    NonEDI AddDueAmt     - Additional Due Amount (PAID)   ; * JMK04
+*               18    NonEDI AddDueCnt     - Number of Additional dues      ; * JMK04
+*               19    NonEDI Most Recent Bill Date                          ; * JMK04
+*               20    Unused                                                ; * JMK04
+*               21    EDI Overcharge amount (Discount Var + Overchg Var)    ; * JMK04
+*               22    EDI Logistics Markup - Consulting Variance            ; * JMK04
+*               23    EDI Amout Paid    - Adjusted bill amout               ; * JMK04
+*               24    EDI Bill Count    - Number of bills for client        ; * JMK04
+*               25    EDI BalDueAmt     - Balance Due Amount (PAID)         ; * JMK04
+*               26    EDI BalDueCnt     - Number of Balance dues            ; * JMK04
+*               27    EDI AddDueAmt     - Additional Due Amount (PAID)      ; * JMK04
+*               28    EDI AddDueCnt     - Number of Additional dues         ; * JMK04
+*               29    EDI Most Recent Bill Date                             ; * JMK04
+*
+*
+* Display screen heading
+*
+30:   CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+* Get client number to process or all
+*
+50:*HELP='Enter the client number to report. [ENTER]=All Clients.'
+*     CALL GEN.IN(0,3,'Enter client number.  #####','',Q,0,8,'','',1,-5,3,0,QI,HELP,0,23)
+*     QI=OCONV(QI,'MCU')
+*     ALL.ONE=''
+*     BEGIN CASE
+*       CASE Q='X'!Q='EX'
+*         GOTO EXIT.PROGRAM
+*       CASE Q=''
+*         ALL.ONE='ALL'
+*       CASE NOT(QI MATCHES "0N")
+*         CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+*         CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*         BEGIN CASE
+*            CASE ITEM.LIST = ''
+*               GOTO 50                            ;* START OVER
+*            CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+*               GOTO 50                            ;* START OVER
+*            CASE 1
+*               IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+*               GOTO 50                            ;* START OVER
+*         END CASE
+*       CASE NUM(QI)
+*       CASE 1
+*         CALL ELINE('Something is wrong.')
+*         GOTO 50
+*     END CASE
+*     QI=QI'R%5'
+*     ALL.ONE='ALL'
+*     IF ALL.ONE#'ALL' THEN
+*       READ CLIENT.REC FROM F.CLIENTS,QI ELSE
+*         CALL ELINE('Client ':QI:' is not on file.')
+*         GOTO 50
+*       END
+*       TEMP.NAME=CLIENT.REC<2>
+*     END ELSE
+*       QI='ALL'
+*       TEMP.NAME='All clients.'
+*     END
+*     CRT@(22,3):QI:' - ':TEMP.NAME
+*     IF QI#'ALL' THEN CLIENT.ID=QI ELSE CLIENT.ID=''
+*     ORIG.CLIENT.ID=QI'R%5'
+*
+* SELECT PRINTER
+*
+      GOTO SKIP.PRINTER
+      BEGIN CASE
+         CASE F.NUM='15'
+            MASK=4
+            PRT.DESC='IBM 4039-16L+ - Freight Payment'
+*CH     CASE F.NUM='20'
+*CH       MASK=5
+*CH       PRT.DESC='IBM 4039-10R - Accounting'
+         CASE F.NUM='25'
+            MASK=6
+            PRT.DESC='IBM Optra 4049-12L - Logistics'
+         CASE 1
+            MASK=''
+            PRT.DESC=''
+      END CASE
+75:   HELP="Printers: 4=Freight Payment. 6=Logistics. 'X'=Back 'EX'=Exit"
+      CALL GEN.IN(0,5,'Enter printer number: ':MASK:' ':PRT.DESC,'',Q,0,2,'','',2,22,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI=''
+            IF MASK='' THEN
+               CALL ELINE('You must select a printer.')
+               GOTO 75
+            END ELSE
+               Q='F':F.NUM
+            END
+            IF F.NUM='15' THEN QI=4
+            IF F.NUM='20' THEN QI=5
+            IF F.NUM='25' THEN QI=6
+         CASE QI='X'
+            GOTO EXIT.PROGRAM
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI=4
+            Q='F15'
+            PRT.DESC='IBM 4039-16L+ - Freight Payment'
+*CH     CASE QI=5
+*CH       Q='F20'
+*CH       PRT.DESC='IBM 4039-10R - Accounting'
+         CASE QI=6
+            Q='F25'
+            PRT.DESC='IBM 4049-12L - Logistics'
+         CASE 1
+            CALL ELINE('Error. You must enter a valid printer.')
+            GOTO 75
+      END CASE
+      MASK=QI
+      LAS.PRT=Q
+      CRT@(22,5):QI
+      CRT@(24,5):PRT.DESC:@(-3)
+SKIP.PRINTER:
+
+*
+* Get current period beginning and ending dates
+*
+100:  HELP='Enter the data processed beginning date.'
+      CALL GEN.IN(0,7,'Data processed beginning date.  ':DATE()'D2/','DATE',BEG.DATE,0,8,'','',1,-8,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN GOTO 75
+      IF QI='EX' THEN GOTO EXIT.PROGRAM
+      IF QI='' THEN BEG.DATE=DATE()
+      CRT @(32,7):BEG.DATE'D2/'
+*
+* Get current period ending date
+*
+200:  HELP='Enter the data processed ending date.'
+      CALL GEN.IN(0,9,'Data processed ending date.     ':DATE()'D2/','DATE',END.DATE,0,8,'','',1,-8,9,0,QI,HELP,0,23)
+      IF QI='X' THEN GOTO 100
+      IF QI='EX' THEN GOTO EXIT.PROGRAM
+      IF QI='' THEN END.DATE=DATE()
+      IF END.DATE LT BEG.DATE THEN
+         CALL ELINE('Invalid ending date.')
+         GOTO 200
+      END
+      CRT @(32,9):END.DATE'D2/'
+*
+300:  HELP='Show the last set of columns? [Y]=Yes. [N]=No. [X]=Back. [EX]=Exit.'
+
+      YES.NO='NO'                        ; * Per Brian on 05-28-03
+      IF QI='X' THEN GO 200
+*     GO 350                             ; * JMK02
+      GO 400                             ; * JMK02
+
+      CALL GEN.IN(0,11,'Show last columns?  [Y]','',Q,0,2,'','',1,-2,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            GOTO 200
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI=''!QI='Y'!QI='YE'!QI='1'
+            QI='YES'
+         CASE QI='N'!QI='NO'!QI='0'!QI='-'
+            QI='NO'
+         CASE 1
+            CALL ELINE('Invalid entry!')
+            GOTO 300
+      END CASE
+      YES.NO=QI
+      CRT@(21,11):YES.NO:']'
+*
+400:  HELP='Output? [P]=Printer. [S]=Spreadsheet. [E]=EDI. [X]=Back. [EX]=Exit.'
+
+      OUT.TO='S'
+      CALL GEN.IN(0,11,'Output to printer or spreadsheet or EDI? [S]','',Q,0,2,'','',1,-2,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            GOTO 300
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI=''!QI='S'
+            Q='S'
+         CASE QI='P'
+            Q='P'
+         CASE QI='E'
+            Q='E'
+         CASE 1
+            CALL ELINE('Invalid entry!')
+            GOTO 300
+      END CASE
+      OUT.TO=Q
+      CRT@(42,11):OUT.TO:']'
+*
+*  Verify date entry range
+*
+500:  HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+*           GO 300                       ; * JMK02
+            GO 400                       ; * JMK02
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO 500
+      END CASE
+*
+* Start processing
+*
+600:  TEXT="Processing Date Range - Please Wait ... May Take Several Hours."
+      CALL CENTER(TEXT,80)
+      CRT @(0,15):@(-3):TEXT
+*
+* Clear work file
+*
+
+* GOTO JIM
+**
+**
+
+      CLEARFILE F.WORK
+*
+* Select data for current client
+*
+
+***************************************************************
+      OUTPUT.REC=''                      ; * JMK02
+*
+* SELECT CLIENT FILE
+*
+      TEXT='Selecting Clients.'
+      CALL CENTER(TEXT,80)
+      CRT @(0,12):TEXT
+      
+      STMT="SELECT VOC 'FB.BILLS.HIST' *A7"
+******                    STMT="SELECT CLIENTS '00354'"
+      EXECUTE STMT RTNLIST CLIENT.LIST CAPTURING OUTPUT
+      ITEMS = @SELECTED
+      IF @SELECTED < 1 THEN ; * JCW03
+         CALL ELINE('ERROR - No clients on file.')
+         GOTO EXIT.PROGRAM
+      END
+      COUNTER.1=0
+      PER=0
+      LOOP
+         READNEXT CLIENT.ID FROM CLIENT.LIST ELSE CLIENT.ID='DONE'
+      UNTIL CLIENT.ID='DONE' DO
+         COUNTER.1=COUNTER.1+1
+         IF CLIENT.ID='FB.BILLS.HIST' OR CLIENT.ID[1,2]='99' THEN GO SKIP.CLIENT
+         READ DCLIENT FROM F.CLIENTS,CLIENT.ID THEN
+            IF DCLIENT<30> # 'A' THEN GO SKIP.CLIENT  ; * JCW02
+          END ELSE
+            DCLIENT=''
+            DCLIENT<2>='*** Not On File ***'
+            GO SKIP.CLIENT               ; * JMK06
+         END
+         CLIENT.NAME=DCLIENT<2>
+         CALL PROG.BAR(20,COUNTER.1,ITEMS,PER.1)
+         LAST.PROCESSED.DATE=DCLIENT<82>
+         IF LAST.PROCESSED.DATE#'' THEN
+            IF LAST.PROCESSED.DATE < BEG.DATE THEN GO SKIP.CLIENT
+*           No need to select if the last processed date is before the 1st selected date
+         END
+         CRT @(0,17):CLIENT.ID:" ":CLIENT.NAME:" - Now selecting freight bills":@(-4):
+         STMT='SSELECT FB.PROC.DATE.XREF,':CLIENT.ID:' WITH DATE >= "':OCONV(BEG.DATE,'D2/'):'" AND WITH DATE <= "':OCONV(END.DATE,'D2/'):'"'          ; * JMK07
+         EXECUTE STMT RTNLIST CAPTURING RESULTS  ; * JMK07
+         IF @SELECTED > 0 THEN  ; * JCW01
+            STMT = 'QSELECT FB.PROC.DATE.XREF,':CLIENT.ID  ; * JCW01
+            EXECUTE STMT PASSLIST RTNLIST CAPTURING RESULTS  ; * JCW01
+         END ELSE  ; * JCW01
+            GOTO SKIP.CLIENT  ; * JCW01
+         END  ; * JCW01
+         OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS THEN
+            STMT='SELECT FB.BILLS.HIST,':CLIENT.ID
+            STMT:=' WITH VERSION = "0"'
+            BEGIN CASE                   ; * JMK01
+               CASE MODE='EDI'           ; * JMK01
+                  STMT:=' AND WITH 37 GE "':OCONV(BEG.DATE,'D2/'):'"'  ; * JMK01
+                  STMT:=' AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'  ; * JMK01
+                  STMT:=' AND WITH 88'   ; * JMK01
+               CASE MODE='NON-EDI'       ; * JMK01
+                  STMT:=' AND WITH 37 GE "':OCONV(BEG.DATE,'D2/'):'"'  ; * JMK01
+                  STMT:=' AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'  ; * JMK01
+                  STMT:=' AND WITH NO 88'          ; * JMK01
+               CASE MODE='REJECT'        ; * JMK01
+                  STMT:=' AND WITH 30 GE "':OCONV(BEG.DATE,'D2/'):'"'  ; * JMK01
+                  STMT:=' AND WITH 30 LE "':OCONV(END.DATE,'D2/'):'"'  ; * JMK01
+                  STMT:=' AND WITH 66 # ""'        ; * JMK01
+               CASE MODE='ALL'
+                  STMT:=' AND WITH 37 GE "':OCONV(BEG.DATE,'D2/'):'"'
+                  STMT:=' AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'
+            END CASE                     ; * JMK01
+            STMT:=' AND WITH 2 # "T"'    ; * JMK05
+*           STMT:=' SAVING UNIQUE @ID'   ; * JMK08
+            EXECUTE STMT PASSLIST RTNLIST BILLS.LIST CAPTURING OUTPUT
+            NUM.BILLS = @SELECTED
+            CRT @(0,17):CLIENT.ID:" ":CLIENT.NAME:" - Now processing ":NUM.BILLS:" Freight Bills":@(-4):
+            COUNTER.2=0
+            LOOP
+               DONE=0
+               READNEXT PRO.ID FROM BILLS.LIST ELSE DONE=1
+****
+               PRO=FIELD(PRO.ID,'*',2)
+               START=LEN(PRO)-1
+               IF PRO[START,2]='BD' OR PRO[START,2]='AD' THEN
+                  GO SKIP.BILL
+               END
+****
+            UNTIL DONE=1 DO
+               COUNTER.2=COUNTER.2+1
+*           CRT @(0,17):CLIENT.ID:' ':PRO.ID:@(-4):
+               IF NUM.BILLS>0 THEN CALL PROG.BAR(22,COUNTER.2,NUM.BILLS,PER.2)
+               READ DBILL FROM F.BILLS,PRO.ID THEN
+                  IF DBILL<2>='T' THEN GO SKIP.BILL          ; * JMK05
+*
+                  WORK.ID=CLIENT.ID:"*":FIELD(PRO.ID,'*',1)  ; * Carrier #
+                  READ WORK.REC FROM F.WORK,WORK.ID ELSE WORK.REC=''
+*
+                  TOT.WORK.ID='TOTAL'
+                  READ TOT.WORK.REC FROM F.WORK,TOT.WORK.ID ELSE
+                     TOT.WORK.REC=''
+                  END
+                  EDI=DBILL<88>#''       ; * JMK04
+*
+* Update carrier total record in work file
+*
+                  PRO=FIELD(PRO.ID,'*',2)
+                  START=LEN(PRO)-1
+                  BEGIN CASE
+                        *
+                        * Balance Due
+                        *
+                     CASE PRO[START,2]='BD'
+                        ATT=5 ; VALUE=DBILL<8> ; GOSUB 8000  ; * Amount pd/due
+                        ATT=6 ; VALUE=1 ; GOSUB 8000         ; * Inc bill count
+                        IF EDI THEN      ; * JMK04
+                           ATT=25 ; VALUE=DBILL<8> ; GOSUB 8000        ; * Amount pd/due ; * JMK04
+                           ATT=26 ; VALUE=1 ; GOSUB 8000     ; * Inc bill count ; * JMK04
+                        END ELSE         ; * JMK04
+                           ATT=15 ; VALUE=DBILL<8> ; GOSUB 8000        ; * Amount pd/due ; * JMK04
+                           ATT=16 ; VALUE=1 ; GOSUB 8000     ; * Inc bill count ; * JMK04
+                        END              ; * JMK04
+                        *
+                        * Amount Due (paid)
+                        *
+                     CASE PRO[START,2]='AD'
+                        ATT=7 ; VALUE=DBILL<8> ; GOSUB 8000  ; * Amount pd/due
+                        ATT=8 ; VALUE=1 ; GOSUB 8000         ; * Inc bill count
+                        IF EDI THEN      ; * JMK04
+                           ATT=27 ; VALUE=DBILL<8> ; GOSUB 8000        ; * Amount pd/due ; * JMK04
+                           ATT=28 ; VALUE=1 ; GOSUB 8000     ; * Inc bill count ; * JMK04
+                        END ELSE         ; * JMK04
+                           ATT=17 ; VALUE=DBILL<8> ; GOSUB 8000        ; * Amount pd/due ; * JMK04
+                           ATT=18 ; VALUE=1 ; GOSUB 8000     ; * Inc bill count ; * JMK04
+                        END              ; * JMK04
+                        *
+                        * Amount Billed & Paid
+                        *
+                     CASE 1
+                        ATT=1 ; VALUE=DBILL<10>+DBILL<11> ; GOSUB 8000           ; * Discount+Overcharge
+                        ATT=2 ; VALUE=DBILL<12> ; GOSUB 8000           ; * Logistics
+                        ATT=3 ; VALUE=DBILL<8> ; GOSUB 8000  ; * Amount paid
+                        ATT=4 ; VALUE=1 ; GOSUB 8000         ; * Inc Bill Count
+                        IF EDI THEN      ; * JMK04
+                           ATT=21 ; VALUE=DBILL<10>+DBILL<11> ; GOSUB 8000       ; * Discount+Overcharge ; * JMK04
+                           ATT=22 ; VALUE=DBILL<12> ; GOSUB 8000       ; * Logistics ; * JMK04
+                           ATT=23 ; VALUE=DBILL<8> ; GOSUB 8000        ; * Amount paid ; * JMK04
+                           ATT=24 ; VALUE=1 ; GOSUB 8000     ; * Inc Bill Count ; * JMK04
+                        END ELSE         ; * JMK04
+                           ATT=11 ; VALUE=DBILL<10>+DBILL<11> ; GOSUB 8000       ; * Discount+Overcharge ; * JMK04
+                           ATT=12 ; VALUE=DBILL<12> ; GOSUB 8000       ; * Logistics ; * JMK04
+                           ATT=13 ; VALUE=DBILL<8> ; GOSUB 8000        ; * Amount paid ; * JMK04
+                           ATT=14 ; VALUE=1 ; GOSUB 8000     ; * Inc Bill Count ; * JMK04
+                        END              ; * JMK04
+                  END CASE
+
+*
+* Update totals
+*
+                  IF DBILL<37>#'' THEN BILL.DATE=DBILL<37> ELSE BILL.DATE=DBILL<1>
+                  IF WORK.REC<9> < BILL.DATE THEN WORK.REC<9>=BILL.DATE
+                  IF EDI THEN            ; * JMK04
+                     IF WORK.REC<29> < BILL.DATE THEN WORK.REC<29>=BILL.DATE     ; * JMK04
+                  END ELSE               ; * JMK04
+                     IF WORK.REC<19> < BILL.DATE THEN WORK.REC<19>=BILL.DATE     ; * JMK04
+                  END                    ; * JMK04
+                  WRITE WORK.REC ON F.WORK,WORK.ID
+                  WRITE TOT.WORK.REC ON F.WORK,TOT.WORK.ID
+               END
+SKIP.BILL:***
+            REPEAT
+         END
+SKIP.CLIENT:***
+      REPEAT
+
+
+JIM:
+      TIMES=0
+
+*
+* Print report
+*
+* Set-up printer
+*
+      WIDTH=150
+      CTR=INT(WIDTH/2)
+**************************************************************
+      ESC=CHAR(27)
+      IF OUT.TO='P' THEN                 ; * JMK02
+*WIDTH=175
+*CTR=77
+*CALL FB.LASER.SET('S',WIDTH,64,8)
+         LASER.STR=''
+         LASER.STR:= ESC:'E'
+         LASER.STR:= ESC:'&l0O'          ; * Portrait
+         LASER.STR:= ESC:'&l8D'
+         LASER.STR:= ESC:'&l88F'         ; ** 88 Lines on a Page
+         LASER.STR:= ESC:'(8U'
+         LASER.STR:= ESC:'(s0p'
+         LASER.STR:= '19h'
+         LASER.STR:= '0s'
+         LASER.STR:= '0b'
+         LASER.STR:= '4102T'
+**************************************************************
+*KD      EXECUTE 'SP-ASSIGN ':LAS.PRT:',':COPIES
+         EXECUTE "TERM ,,,,,,150,80"
+         PRINTER ON
+*OH       LASER = ''
+*OH       LASER<1 >= 0                           ;* Portrait
+*OH       LASER<2 >= 6                           ;* Lines per inch
+*OH       LASER<3 >= 61                          ;* Page length
+*OH       LASER<4 >= 16.7                        ;* Characters per inch
+*OH       LASER<5 >= 0
+*OH       LASER<6 >= 0
+*OH       LASER<7 >= 1
+*OH       LASER<8 >= 0
+*OH       MARGIN = 0
+*OH       PRINT ESC:"E"
+*OH       PRINT ESC:"&l":LASER<1>:"O":           ;* Set portrait
+*OH       PRINT ESC:"&l":LASER<2>:"D":           ;* Lines per inch
+*OH       PRINT ESC:"&l":LASER<3>:"F":           ;* Page length
+*OH       PRINT ESC:"(s":LASER<4>:"h":           ;* Set pitch
+*OH       PRINT LASER<5>:"p":                    ;* Proportional printing
+*OH       PRINT LASER<6>:"s":                    ;* Italics off
+*OH       PRINT "0T":                            ;* Line Printer Font
+*OH       PRINT ESC:"&l":LASER<7>:"H"            ;* Bin selection
+*OH       PRINT ESC:"&a":MARGIN:"L"
+*OH       PRINT ESC:'"g':LASER<8>:'F'                      ;* Paper output
+         PRINT LASER.STR                 ; * Configure Laser Printer
+      END                                ; * JMK02
+*
+** Get next division code
+*
+*
+PRINT.REPORT:***
+      TIMES+=1
+      IF TIMES>1 AND (OUT.TO='S' OR OUT.TO='E') THEN     ; * JMK02
+         GOTO EXIT.PROGRAM               ; * JMK02
+      END 
+
+      IF TIMES>3 THEN
+         EXECUTE "TERM ,,,,,,150,60"
+         GOTO EXIT.PROGRAM
+      END
+*
+      L.TAB=CTR-(LEN(PROG.DESC)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):PROG.DESC
+      R.TAB=WIDTH-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE())
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD1=PROG.NAME:SPACE(L.TAB):PROG.DESC:SPACE(R.TAB):TIMEDATE():"'L'"
+      END ELSE                           ; * JMK02
+         HEAD1=PROG.NAME:SPACE(L.TAB):PROG.DESC:SPACE(R.TAB):TIMEDATE()          ; * JMK02
+      END                                ; * JMK02
+*
+      IF MODE='REJECT' THEN
+         TITLE='Bills entered from ':BEG.DATE'D2/':' to ':END.DATE'D2/'
+      END ELSE
+         TITLE='Bills processed from ':BEG.DATE'D2/':' to ':END.DATE'D2/'
+      END
+      L.TAB=CTR-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+*     R.TAB=(WIDTH-LEN(TEMP))-9
+*     HEAD2=TEMP:SPACE(R.TAB):"PAGE 'PL'"
+      R.TAB=(WIDTH-LEN(TEMP))-20
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )':"PAGE 'PL'"
+      END ELSE                           ; * JMK02
+         HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )'          ; * JMK02
+      END                                ; * JMK02
+*
+      CLIENT.TEMP="For All Clients"
+      HOLD=LEN(CLIENT.TEMP)
+      TAB.OVER=CTR-(HOLD/2)
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD3=SPACE(TAB.OVER):CLIENT.TEMP:"'L'"
+      END ELSE                           ; * JMK02
+         HEAD3=SPACE(TAB.OVER):CLIENT.TEMP         ; * JMK02
+      END                                ; * JMK02
+*
+      BEGIN CASE
+         CASE TIMES=1
+*10/04 kd per bb
+*          HEAD4="By Desending Bill Count by Desending Carrier Dollars Paid"
+            HEAD4="By Number of Bills"
+         CASE TIMES=2
+*10/04 kd per bb
+*          HEAD4="By Client Name By Desending Bill Count"
+            HEAD4="By Client by Carrier # of Bills"
+         CASE TIMES=3
+*10/04 kd per bb
+*          HEAD4="By Carrier Name By Desending Bill Count"
+            HEAD4="By Carrier By Client # of Bills"
+         CASE 1
+            CALL ELINE("Invalid Times Count in Program!")
+            ABORT
+      END CASE
+      HOLD=LEN(HEAD4)
+      TAB.OVER=CTR-(HOLD/2)
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD4=SPACE(TAB.OVER):HEAD4:"'L'"
+         HEAD5=STR('-',WIDTH):"'L'"
+      END ELSE                           ; * JMK02
+         HEAD4=SPACE(TAB.OVER):HEAD4     ; * JMK02
+         HEAD5=""                        ; * JMK02
+      END                                ; * JMK02
+*
+*
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD6='  '
+         HEAD7='  '
+      END                                ; * JMK02
+*
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD6:='Client#-Client Name / Carrier#-Carrier Name''L#44'
+         HEAD7:='Cl/Ca Audit Status *Yes -Disabled or None''L#44'
+      END ELSE                           ; * JMK02
+         HEAD6=''   
+      END                     ; * JMK02
+      IF OUT.TO='E' THEN
+         HEAD6<1,-1>='Cl*Ca'             ; * PKB
+         HEAD6<1,-1>='Cl Audit Sts'      ; * JMK02
+         HEAD6<1,-1>='Ca Audit Sts'      ; * JMK02
+         HEAD6<1,-1>='Cl#'               ; * JMK02
+         HEAD6<1,-1>='Cl Name'           ; * JMK02
+         HEAD6<1,-1>='Svc Salesman'      ; * JMK04
+         HEAD6<1,-1>='Ca#'               ; * JMK02
+         HEAD6<1,-1>='Ca Name'           ; * JMK02
+      END ELSE
+         HEAD6<1,-1>='Cl Audit Sts'      ; * JMK02
+         HEAD6<1,-1>='Ca Audit Sts'      ; * JMK02
+         HEAD6<1,-1>='Cl#'               ; * JMK02
+         HEAD6<1,-1>='Cl Name'           ; * JMK02
+         HEAD6<1,-1>='Svc Salesman'      ; * JMK04
+         HEAD6<1,-1>='Ca#'               ; * JMK02
+         HEAD6<1,-1>='Ca Name'           ; * JMK02
+      END                                ; * JMK02
+*
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD6:=SPACE(1):'    Num ''L#9'
+         HEAD7:=SPACE(1):'   Bills ''L#9'
+      END ELSE                           ; * JMK02
+         HEAD6<1,-1>='Num Bills'         ; * JMK02
+      END                                ; * JMK02
+*
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD6:=SPACE(1):' % Of''L#6'
+         HEAD7:=SPACE(1):' Bills''L#6'
+      END ELSE                           ; * JMK02
+         HEAD6<1,-1>='% Of Bills'        ; * JMK02
+      END                                ; * JMK02
+*
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD6:=SPACE(1):'Cumml''L#6'
+         HEAD7:=SPACE(1):'  %''L#6'
+      END ELSE                           ; * JMK02
+         HEAD6<1,-1>='Cumml %'           ; * JMK02
+      END                                ; * JMK02
+*
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD6:=SPACE(2):'  Amount''R#10'
+         HEAD7:=SPACE(2):'   Paid ''R#10'
+      END ELSE                           ; * JMK02
+         HEAD6<1,-1>='Amt Paid'          ; * JMK02
+      END                                ; * JMK02
+*
+      IF MODE='ALL' THEN                 ; * JMK04
+         IF OUT.TO='P' THEN              ; * JMK04
+         END ELSE                        ; * JMK04
+            HEAD6<1,-1>='NonEDI Num Bills'         ; * JMK04
+            HEAD6<1,-1>='NonEDI % Of Bills'        ; * JMK04
+            HEAD6<1,-1>='NonEDI Cumml %'           ; * JMK04
+            HEAD6<1,-1>='NonEDI Amt Paid'          ; * JMK04
+            HEAD6<1,-1>='NonEDI Last Bill Date'    ; * JMK04
+            HEAD6<1,-1>='EDI Num Bills'  ; * JMK04
+            HEAD6<1,-1>='EDI % Of Bills'           ; * JMK04
+            HEAD6<1,-1>='EDI Cumml %'    ; * JMK04
+            HEAD6<1,-1>='EDI Amt Paid'   ; * JMK04
+            HEAD6<1,-1>='EDI Last Bill Date'       ; * JMK04
+         END                             ; * JMK04
+      END                                ; * JMK04
+*
+      IF YES.NO='NO' THEN
+         GOTO FINISH.HEADING
+      END
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD6:=SPACE(2):'  OvrChg''R#9'
+         HEAD7:=SPACE(2):'  Amount''R#9'
+      END ELSE                           ; * JMK02
+         HEAD6<1,-1>='OvrChg Amt'        ; * JMK02
+      END                                ; * JMK02
+*
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD6:=SPACE(2):'  %''L#6'
+         HEAD7:=SPACE(2):'OvrChg''L#6'
+      END ELSE                           ; * JMK02
+         HEAD6<1,-1>='% OvrChg'          ; * JMK02
+      END                                ; * JMK02
+*
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD6:=SPACE(2):'  Logist''R#9'
+         HEAD7:=SPACE(2):'  Amount''R#9'
+      END ELSE                           ; * JMK02
+         HEAD6<1,-1>='Logist Amt'        ; * JMK02
+      END                                ; * JMK02
+*
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD6:=SPACE(2):'  %''L#6'
+         HEAD7:=SPACE(2):'Logist''L#6'
+      END ELSE                           ; * JMK02
+         HEAD6<1,-1>='% Logist'          ; * JMK02
+      END                                ; * JMK02
+*
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD6:=SPACE(2):'  BD  ''R#7'
+         HEAD7:=SPACE(2):'Amount''R#7'
+      END ELSE                           ; * JMK02
+         HEAD6<1,-1>='BD Amt'            ; * JMK02
+      END                                ; * JMK02
+*
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD6:=SPACE(1):' BD''L#5'
+         HEAD7:=SPACE(1):'Bills''L#5'
+      END ELSE                           ; * JMK02
+         HEAD6<1,-1>='BD Bills'          ; * JMK02
+      END                                ; * JMK02
+*
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD6:=SPACE(2):'  AD  ''R#7'
+         HEAD7:=SPACE(2):'Amount''R#7'
+      END ELSE                           ; * JMK02
+         HEAD6<1,-1>='AD Amt'            ; * JMK02
+      END                                ; * JMK02
+*
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD6:=SPACE(1):' AD  ''L#5'
+         HEAD7:=SPACE(1):'Bills''L#5'
+      END ELSE                           ; * JMK02
+         HEAD6<1,-1>='AD Bills'          ; * JMK02
+      END                                ; * JMK02
+*
+FINISH.HEADING:*
+*
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD6:="'L'"
+         HEAD7:="'L'"
+      END ELSE                           ; * JMK02
+         CONVERT @VM TO TAB IN HEAD6     ; * JMK02
+      END                                ; * JMK02
+*
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEAD8=STR('-',WIDTH):"'L'"
+      END ELSE                           ; * JMK02
+         HEAD7=""                        ; * JMK02
+         HEAD8=""                        ; * DRF 01/21/04
+      END                                ; * JMK02
+*
+      HED=HEAD1:HEAD2:HEAD4:HEAD5:HEAD6:HEAD7:HEAD8
+      IF OUT.TO='P' THEN                 ; * JMK02
+         HEADING HED
+      END ELSE                           ; * JMK02
+         OUTPUT.REC<1>=HEAD1             ; * JMK02
+         OUTPUT.REC<2>=HEAD2             ; * JMK02
+         OUTPUT.REC<3>=HEAD3             ; * JMK02
+         OUTPUT.REC<4>=HEAD4             ; * JMK02
+         OUTPUT.REC<5>=HEAD5             ; * JMK02
+         OUTPUT.REC<6>=HEAD6             ; * JMK02
+         OUTPUT.REC<7>=HEAD7             ; * JMK02
+      END                                ; * JMK02
+*     PAGE 0
+*
+** Select data
+*
+      COUNTER=0
+      SUB4=0
+      PREC='SSELECT FBWORK':CH.NUM
+      BEGIN CASE
+         CASE OUT.TO='E'
+            PREC:=' BY CLIENT# BY CARRIER#'
+         CASE TIMES=1
+            PREC:=' BY-DSND BILLS'
+            PREC:=' BY-DSND CAR.DOL'
+            PREC:=' BY-DSND 1'
+            PREC:=' BY-DSND 2'
+            PREC:=' BY-DSND 5'
+            PREC:=' BY-DSND 7'
+         CASE TIMES=2
+            PREC:=' BY CLIENT BY CLIENT#'
+            PREC:=' BY-DSND BILLS'
+            PREC:=' BY-DSND CAR.DOL'
+         CASE TIMES=3
+            PREC:=' BY CARRIER BY CARRIER#'
+            PREC:=' BY-DSND BILLS'
+            PREC:=' BY-DSND CAR.DOL'
+         CASE 1
+            CALL ELINE("Invalid Times Count in Program!")
+            ABORT
+      END CASE
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+      READ TOTAL.REC FROM F.WORK,'TOTAL' ELSE
+         TOTAL.REC=''
+      END
+*
+      DONE = 0
+      OLD.CARRIER.ID=''
+      OLD.CLIENT.ID=''
+      LOOP
+         READNEXT ID ELSE DONE = 1
+      UNTIL DONE = 1 DO
+         CLIENT.ID=FIELD(ID,'*',1)
+         CARRIER.ID=FIELD(ID,'*',2)
+         IF OLD.CARRIER.ID='' THEN
+            OLD.CARRIER.ID=CARRIER.ID
+            OLD.CLIENT.ID=CLIENT.ID'R#5'
+         END
+         OPEN 'FB.AUDIT,':CLIENT.ID TO F.AUDIT THEN
+            READ TEMP FROM F.AUDIT,'DISABLE' THEN
+               CL.AUDIT='-'
+            END ELSE
+               CL.AUDIT='*'
+            END
+            READ DTEMP FROM F.AUDIT,CARRIER.ID THEN
+               IF DTEMP<11>='DISABLE' THEN
+                  CA.AUDIT='-'
+               END ELSE
+                  CA.AUDIT='*'
+               END
+            END ELSE
+               CA.AUDIT=' '
+            END
+         END ELSE
+            CL.AUDIT=' '
+            CA.AUDIT=' '
+         END
+         IF CLIENT.ID='TOTAL' ELSE
+            READV CARRIER.NAME FROM F.CARRIERS, CARRIER.ID,1 ELSE
+               CARRIER.NAME='** Not on file **'
+            END
+            READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE CLIENT.REC=''          ; * JMK04
+            CLIENT.NAME=CLIENT.REC<2>    ; * JMK04
+            IF CLIENT.NAME='' THEN       ; * JMK04
+               CLIENT.NAME='** Not on file **'     ; * JMK04
+            END                          ; * JMK04
+            SLS.ID=CLIENT.REC<115>       ; * JMK04
+            READ SLS.REC FROM F.SLS,SLS.ID ELSE SLS.REC=''   ; * JMK04
+            SLS.NAME=SLS.REC<1>          ; * JMK04
+            IF SLS.NAME='' THEN          ; * JMK04
+               SLS.NAME='** Not on file **'        ; * JMK04
+            END                          ; * JMK04
+            READ REC FROM F.WORK,ID THEN
+               COUNTER=COUNTER+1
+               IF LINE.LIMIT#'' THEN     ; * JMK03
+                  IF (OUT.TO='P' AND COUNTER > LINE.LIMIT) THEN DONE=1        ; * JMK03
+               END                       ; * JMK03
+*OH 06-19-03 IF COUNTER > 400 THEN DONE=1 ; *OH  3 PAGES...
+*            IF COUNTER > 400 THEN DONE=1 ; *OH  3 PAGES... ; * JMK03
+* Reinstated the 400 line limit so that only the top 400 lines are
+* printed - DRF 01/19/04
+*
+* Increased from 207 to 400 to see more information. DRF 1/9/03
+*
+               CLI.LEN=6+LEN(CLIENT.NAME)
+               CAR.LEN=6+LEN(CARRIER.NAME)
+               IF OUT.TO='P' THEN        ; * JMK02
+                  IF CLI.LEN+CAR.LEN+1 LE 45 THEN
+                     TEXT=CLIENT.ID:'-':CLIENT.NAME
+                     TEXT:='/':CARRIER.ID:'-':CARRIER.NAME
+                  END ELSE
+                     BEGIN CASE
+                        CASE CLI.LEN < 22
+                           TEXT=CLIENT.ID:'-':CLIENT.NAME
+                           TEXT:='/':(CARRIER.ID:'-':CARRIER.NAME)[1,44-CLI.LEN]
+                        CASE CAR.LEN < 22
+                           TEXT=(CLIENT.ID:'-':CLIENT.NAME)[1,44-CAR.LEN]
+                           TEXT:='/':CARRIER.ID:'-':CARRIER.NAME
+                        CASE 1
+                           TEXT=(CLIENT.ID:'-':CLIENT.NAME)[1,22]
+                           TEXT:='/':(CARRIER.ID:'-':CARRIER.NAME)[1,22]
+                     END CASE
+                  END
+               END ELSE                  ; * JMK02
+                  TEXT='=':QUOTE(CLIENT.ID)        ; * JMK02
+                  TEXT<1,-1>=CLIENT.NAME           ; * JMK02
+                  TEXT<1,-1>=SLS.NAME    ; * JMK04
+                  TEXT<1,-1>='=':QUOTE(CARRIER.ID)           ; * JMK02
+                  TEXT<1,-1>=CARRIER.NAME          ; * JMK02
+               END                       ; * JMK02
+               IF TIMES=2 THEN
+                  IF CLIENT.ID NE OLD.CLIENT.ID THEN
+                     OLD.CLIENT.ID=CLIENT.ID'R#5'
+                     PRINT
+                  END
+               END
+               IF TIMES=3 THEN
+                  IF CARRIER.ID NE OLD.CARRIER.ID THEN
+                     OLD.CARRIER.ID=CARRIER.ID
+                     PRINT
+                  END
+               END
+               GOSUB BUILD.DET.LINE
+               IF OUT.TO='P' THEN        ; * JMK02
+                  PRINT LINE
+               END ELSE                  ; * JMK02
+                  CONVERT @VM TO TAB IN LINE       ; * JMK02
+                  OUTPUT.REC<-1>=LINE    ; * JMK02
+               END                       ; * JMK02
+            END
+         END
+      REPEAT
+      IF (TIMES=1 AND OUT.TO='P') THEN
+* Delete all remaining Records so the next 2 selects only deal with the
+* records that were printed
+         DELETE F.WORK,ID
+         DONE = 0
+         LOOP
+            READNEXT ID ELSE DONE=1
+         UNTIL DONE = 1 DO
+            DELETE F.WORK,ID
+         REPEAT
+      END
+*
+** Print total line
+*
+      IF SYSTEM(4) < 2 THEN PAGE
+      IF OUT.TO='P' THEN                 ; * JMK02
+         PRINT STR('=',WIDTH)
+      END                                ; * JMK02
+      REC=TOTAL.REC
+      TEXT='TOTAL'
+      CL.AUDIT=' '
+      CA.AUDIT=' '
+      COUNTER=''
+      SUB4=0
+      SUB14=0                            ; * JMK04
+      SUB24=0                            ; * JMK04
+      IF OUT.TO='P' THEN                 ; * JMK02
+         GOSUB BUILD.DET.LINE
+         PRINT LINE
+      END ELSE     
+ 
+*DF         RECORD.NAME='BILLS_REJECT'      ; * JMK02
+*
+* Changed to be the mode instead of just reject - DRF 01/21/04
+*
+         RECORD.NAME='BILLS_':MODE       ; * JMK02
+         RECORD.NAME:= '-'               ; * JMK02
+         D=BEG.DATE'D4/'                 ; * JMK02
+         RECORD.NAME:=D[7,4]:D[1,2]:D[4,2]         ; * JMK02
+         RECORD.NAME:= '-'               ; * JMK02
+         D=END.DATE'D4/'                 ; * JMK02
+         RECORD.NAME:=D[7,4]:D[1,2]:D[4,2]         ; * JMK02
+         RECORD.NAME:='.XLS'             ; * JMK02
+         WRITE OUTPUT.REC ON BILLDATA,RECORD.NAME  ; * JMK02
+         CRT @(0,16):"CLIENT File Export completed.":@(-3):  ; * JMK02
+         CRT @(0,18):"The Exported file name is '":RECORD.NAME:"'":@(-4):        ; * JMK02
+
+         CALL ELINE('Done.')             ; * JMK02
+      END 
+                          
+****** build not-found spreadsheet 
+
+      IF  OUT.TO='E' THEN 
+        READ EDI.STATUS FROM BILLDATA,'UPDATE_EDI_STATUS.TXT' ELSE CALL ELINE('CANNOT READ FILE.')
+
+        EDI.STATUS=CHANGE(EDI.STATUS,CHAR(9),@VM)
+*       CONVERT TAB IN EDI.STATUS TO @VM  
+
+        NUM.LINES=DCOUNT(EDI.STATUS,@VM)  
+        FOR CHECK.LIST = 2 TO NUM.LINES 
+*           EXISTING.REC=EDI.STATUS<NUM.LINES,2>:'*':EDI.STATUS<NUM.LINES,4>  
+            EXISTING.REC=EDI.STATUS<CHECK.LIST,2>:'*':EDI.STATUS<CHECK.LIST,4>                 
+*           READ EXISTING.REC FROM F.WORK ELSE CALL ELINE('CANNOT READ WORK FILE') 
+            DELETE F.WORK,EXISTING.REC 
+            NEXT CHECK.LIST
+*
+        SHEET.DESC='Client-Carrier Bills Not Found in EDI_STATUS file'
+        L.TAB=CTR-(LEN(SHEET.DESC)/2)
+        L.TAB=L.TAB-LEN(PROG.NAME)
+        TEMP=PROG.NAME:SPACE(L.TAB):SHEET.DESC
+        R.TAB=WIDTH-LEN(TEMP)
+        R.TAB=R.TAB-LEN(TIMEDATE())
+        HEAD1=PROG.NAME:SPACE(L.TAB):SHEET.DESC:SPACE(R.TAB):TIMEDATE()          ; * JMK02
+*
+        TITLE='Bills processed from ':BEG.DATE'D2/':' to ':END.DATE'D2/'
+        L.TAB=CTR-(LEN(TITLE)/2) 
+        L.TAB=L.TAB-LEN(CO.NAME)
+        TEMP=CO.NAME:SPACE(L.TAB):TITLE
+        R.TAB=(WIDTH-LEN(TEMP))-20
+        HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )'          ; * JMK02
+*
+        CLIENT.TEMP="For All Clients"
+        HOLD=LEN(CLIENT.TEMP)
+        TAB.OVER=CTR-(HOLD/2)
+        HEAD3=SPACE(TAB.OVER):CLIENT.TEMP         ; * JMK02
+        HEAD4="By Number of Bills"
+        HOLD=LEN(HEAD4) 
+        TAB.OVER=CTR-(HOLD/2)
+        HEAD4=SPACE(TAB.OVER):HEAD4     ; * JMK02
+        HEAD5=""                        ; * JMK02
+*
+        HEAD6=''   
+        HEAD6<1,-1>='Cl*Ca'              ; * PKB
+        HEAD6<1,-1>='Cl Audit Sts'      ; * JMK02
+        HEAD6<1,-1>='Ca Audit Sts'      ; * JMK02
+        HEAD6<1,-1>='Cl#'               ; * JMK02
+        HEAD6<1,-1>='Cl Name'           ; * JMK02
+        HEAD6<1,-1>='Svc Salesman'      ; * JMK04 
+        HEAD6<1,-1>='Ca#'               ; * JMK02
+        HEAD6<1,-1>='Ca Name'           ; * JMK02
+        HEAD6<1,-1>='Num Bills'         ; * JMK02
+        HEAD6<1,-1>='% Of Bills'        ; * JMK02
+        HEAD6<1,-1>='Cumml %'           ; * JMK02
+        HEAD6<1,-1>='Amt Paid'          ; * JMK02
+*
+        IF MODE='ALL' THEN                 ; * JMK04
+          HEAD6<1,-1>='NonEDI Num Bills'         ; * JMK04
+          HEAD6<1,-1>='NonEDI % Of Bills'        ; * JMK04
+          HEAD6<1,-1>='NonEDI Cumml %'           ; * JMK04
+          HEAD6<1,-1>='NonEDI Amt Paid'          ; * JMK04
+          HEAD6<1,-1>='NonEDI Last Bill Date'    ; * JMK04
+          HEAD6<1,-1>='EDI Num Bills'  ; * JMK04
+          HEAD6<1,-1>='EDI % Of Bills'           ; * JMK04
+          HEAD6<1,-1>='EDI Cumml %'    ; * JMK04
+          HEAD6<1,-1>='EDI Amt Paid'   ; * JMK04
+          HEAD6<1,-1>='EDI Last Bill Date'       ; * JMK04
+        END                                ; * JMK04
+*
+        CONVERT @VM TO TAB IN HEAD6     ; * JMK02
+*
+        HED=HEAD1:HEAD2:HEAD4:HEAD5:HEAD6:HEAD7:HEAD8
+        OUTPUT.REC<1>=HEAD1             ; * JMK02
+        OUTPUT.REC<2>=HEAD2             ; * JMK02
+        OUTPUT.REC<3>=HEAD3             ; * JMK02
+        OUTPUT.REC<4>=HEAD4             ; * JMK02
+        OUTPUT.REC<5>=HEAD5             ; * JMK02
+        OUTPUT.REC<6>=HEAD6             ; * JMK02
+*
+** Select data
+*
+        COUNTER=0
+        SUB4=0
+        PREC='SSELECT FBWORK':CH.NUM:' BY CLIENT# BY CARRIER#'
+        EXECUTE PREC PASSLIST CAPTURING OUTPUT
+        READ TOTAL.REC FROM F.WORK,'TOTAL' ELSE
+           TOTAL.REC=''
+        END
+*
+        DONE = 0
+        OLD.CARRIER.ID=''
+        OLD.CLIENT.ID=''
+        LOOP
+           READNEXT ID ELSE DONE = 1
+        UNTIL DONE = 1 DO
+
+           CLIENT.ID=FIELD(ID,'*',1)
+           CARRIER.ID=FIELD(ID,'*',2)
+           IF OLD.CARRIER.ID='' THEN
+              OLD.CARRIER.ID=CARRIER.ID
+              OLD.CLIENT.ID=CLIENT.ID'R#5'
+           END
+           OPEN 'FB.AUDIT,':CLIENT.ID TO F.AUDIT THEN
+              READ TEMP FROM F.AUDIT,'DISABLE' THEN
+                 CL.AUDIT='-'
+              END ELSE
+                 CL.AUDIT='*'
+              END
+              READ DTEMP FROM F.AUDIT,CARRIER.ID THEN
+                 IF DTEMP<11>='DISABLE' THEN
+                    CA.AUDIT='-'
+                 END ELSE
+                    CA.AUDIT='*'
+                 END
+              END ELSE
+                 CA.AUDIT=' '
+              END
+           END ELSE
+              CL.AUDIT=' '
+              CA.AUDIT=' '
+           END
+           IF CLIENT.ID='TOTAL' ELSE
+              READV CARRIER.NAME FROM F.CARRIERS, CARRIER.ID,1 ELSE
+                 CARRIER.NAME='** Not on file **'
+              END
+              READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE CLIENT.REC=''          ; * JMK04
+              CLIENT.NAME=CLIENT.REC<2>    ; * JMK04
+              IF CLIENT.NAME='' THEN       ; * JMK04
+                 CLIENT.NAME='** Not on file **'     ; * JMK04
+              END                          ; * JMK04
+              SLS.ID=CLIENT.REC<115>       ; * JMK04
+              READ SLS.REC FROM F.SLS,SLS.ID ELSE SLS.REC=''   ; * JMK04
+              SLS.NAME=SLS.REC<1>          ; * JMK04
+              IF SLS.NAME='' THEN          ; * JMK04
+                 SLS.NAME='** Not on file **'        ; * JMK04
+              END                          ; * JMK04
+              READ REC FROM F.WORK,ID THEN
+                 COUNTER=COUNTER+1
+                 IF LINE.LIMIT#'' THEN     ; * JMK03
+                    IF (OUT.TO='P' AND COUNTER > LINE.LIMIT) THEN DONE=1        ; * JMK03
+                 END                       ; * JMK03
+                 CLI.LEN=6+LEN(CLIENT.NAME)
+                 CAR.LEN=6+LEN(CARRIER.NAME)
+*               IF OUT.TO='P' THEN        ; * JMK02
+*                  IF CLI.LEN+CAR.LEN+1 LE 45 THEN
+*                     TEXT=CLIENT.ID:'-':CLIENT.NAME
+*                     TEXT:='/':CARRIER.ID:'-':CARRIER.NAME
+*                  END ELSE
+*                     BEGIN CASE
+*                        CASE CLI.LEN < 22
+*                           TEXT=CLIENT.ID:'-':CLIENT.NAME
+*                           TEXT:='/':(CARRIER.ID:'-':CARRIER.NAME)[1,44-CLI.LEN]
+*                        CASE CAR.LEN < 22
+*                           TEXT=(CLIENT.ID:'-':CLIENT.NAME)[1,44-CAR.LEN]
+*                           TEXT:='/':CARRIER.ID:'-':CARRIER.NAME
+*                        CASE 1
+*                           TEXT=(CLIENT.ID:'-':CLIENT.NAME)[1,22]
+*                           TEXT:='/':(CARRIER.ID:'-':CARRIER.NAME)[1,22]
+*                     END CASE
+*                  END
+*               END ELSE                  ; * JMK02
+                    TEXT='=':QUOTE(CLIENT.ID)        ; * JMK02
+                    TEXT<1,-1>=CLIENT.NAME           ; * JMK02
+                    TEXT<1,-1>=SLS.NAME    ; * JMK04
+                    TEXT<1,-1>='=':QUOTE(CARRIER.ID)           ; * JMK02
+                    TEXT<1,-1>=CARRIER.NAME          ; * JMK02
+                 END                       ; * JMK02
+                 GOSUB BUILD.DET.LINE
+                 CONVERT @VM TO TAB IN LINE       ; * JMK02
+                 OUTPUT.REC<-1>=LINE    ; * JMK02              
+              END
+*           END
+        REPEAT
+
+** Print total line
+        IF SYSTEM(4) < 2 THEN PAGE  
+        REC=TOTAL.REC
+        TEXT='TOTAL'
+        CL.AUDIT=' '
+        CA.AUDIT=' '
+        COUNTER=''
+        SUB4=0
+        SUB14=0                            ; * JMK04
+        SUB24=0                            ; * JMK04
+        RECORD.NAME='BILLS_NOT_IN_STATUS_FILE_':MODE       ; * JMK02
+        RECORD.NAME:= '-'               ; * JMK02
+        D=BEG.DATE'D4/'                 ; * JMK02
+        RECORD.NAME:=D[7,4]:D[1,2]:D[4,2]         ; * JMK02
+        RECORD.NAME:= '-'               ; * JMK02
+        D=END.DATE'D4/'                 ; * JMK02
+        RECORD.NAME:=D[7,4]:D[1,2]:D[4,2]         ; * JMK02
+        RECORD.NAME:='.XLS'             ; * JMK02
+        WRITE OUTPUT.REC ON BILLDATA,RECORD.NAME  ; * JMK02
+        CRT @(0,16):"CLIENT File Export completed.":@(-3):  ; * JMK02
+        CRT @(0,18):"The Exported file name is '":RECORD.NAME:"'":@(-4):        ; * JMK02
+        CALL ELINE('Done.')             ; * JMK02   
+      END
+    GO PRINT.REPORT
+
+*
+** END OF APPLICATION'
+*
+      EXECUTE "TERM ,,,,,,,60"
+      GOTO EXIT.PROGRAM
+
+
+8000:* Update Arrays
+      WORK.REC<ATT> +=VALUE
+      TOT.WORK.REC<ATT> +=VALUE
+      RETURN
+
+BUILD.DET.LINE:***
+      LINE=''
+      CLIENT.CARRIER=CLIENT.ID:'*':CARRIER.ID
+      *
+      * CL.AUDIT (CLIENT.AUDIT)  CA.AUDIT (CARRIER.AUDIT)
+      *
+      IF OUT.TO='P' THEN                 ; * JMK02
+         LINE:=CL.AUDIT'L#1'
+         LINE:=CA.AUDIT'L#1'
+      END
+      IF OUT.TO='E' THEN
+         LINE<1,-1>=CLIENT.CARRIER       ; * PKB
+         LINE<1,-1>=CL.AUDIT'L#1'        ; * JMK02
+         LINE<1,-1>=CA.AUDIT'L#1'        ; * JMK02
+      END ELSE
+         LINE<1,-1>=CL.AUDIT'L#1'        ; * JMK02
+         LINE<1,-1>=CA.AUDIT'L#1'        ; * JMK02
+      END                                ; * JMK02
+      *
+      * TEXT
+      *
+      IF OUT.TO='P' THEN                 ; * JMK02
+         LINE:=TEXT'L#45'
+      END ELSE                           ; * JMK02
+         LINE<1,-1>=TEXT                 ; * JMK02
+      END                                ; * JMK02
+      *
+      * BILL COUNT
+      *
+      IF OUT.TO='P' THEN                 ; * JMK02
+         LINE:=REC<4>'R04,#9':' '
+      END ELSE                           ; * JMK02
+         LINE<1,-1>=REC<4>'R04,'         ; * JMK02
+      END                                ; * JMK02
+      *
+      * PRECENTAGE OF GROSS BILLS
+      *
+      IF TOTAL.REC<4>+0=0 THEN VAR=0 ELSE
+         VAR=(REC<4>*100/TOTAL.REC<4>)
+      END
+      IF OUT.TO='P' THEN                 ; * JMK02
+         LINE:=VAR'R24,#6':' '
+      END ELSE                           ; * JMK02
+         LINE<1,-1>=VAR'R24,'            ; * JMK02
+      END                                ; * JMK02
+      *
+      * Accuml %
+      *
+      SUB4+=REC<4>
+      IF TOTAL.REC<4>+0=0 THEN VAR=0 ELSE
+         VAR=SUB4*100/TOTAL.REC<4>
+      END
+      IF OUT.TO='P' THEN                 ; * JMK02
+         LINE:=VAR'R24,#6':'  '
+      END ELSE                           ; * JMK02
+         LINE<1,-1>=VAR'R24,'            ; * JMK02
+      END                                ; * JMK02
+      *
+      * AMOUNT BILLED
+      *
+      IF OUT.TO='P' THEN                 ; * JMK02
+         LINE:=REC<3>'R06,#10':'  '
+      END ELSE                           ; * JMK02
+         LINE<1,-1>=REC<3>'R06,'         ; * JMK02
+      END                                ; * JMK02
+      *
+      IF MODE='ALL' THEN                 ; * JMK04
+         IF OUT.TO='P' THEN              ; * JMK04
+         END ELSE                        ; * JMK04
+            LINE<1,-1>=REC<14>'R04,'     ; * JMK04
+            IF TOTAL.REC<14>+0=0 THEN VAR=0 ELSE   ; * JMK04
+               VAR=(REC<14>*100/TOTAL.REC<14>)     ; * JMK04
+            END                          ; * JMK04
+            LINE<1,-1>=VAR'R24,'         ; * JMK04
+            SUB14+=REC<14>               ; * JMK04
+            IF TOTAL.REC<14>+0=0 THEN VAR=0 ELSE   ; * JMK04
+               VAR=SUB14*100/TOTAL.REC<14>         ; * JMK04
+            END                          ; * JMK04
+            LINE<1,-1>=VAR'R24,'         ; * JMK04
+            LINE<1,-1>=REC<13>'R06,'     ; * JMK04
+            LINE<1,-1>=OCONV(REC<19>,'D2/')'R#8'   ; * JMK04
+            LINE<1,-1>=REC<24>'R04,'     ; * JMK04
+            IF TOTAL.REC<24>+0=0 THEN VAR=0 ELSE   ; * JMK04
+               VAR=(REC<24>*100/TOTAL.REC<24>)     ; * JMK04
+            END                          ; * JMK04
+            LINE<1,-1>=VAR'R24,'         ; * JMK04
+            SUB24+=REC<24>               ; * JMK04
+            IF TOTAL.REC<24>+0=0 THEN VAR=0 ELSE   ; * JMK04
+               VAR=SUB24*100/TOTAL.REC<24>         ; * JMK04
+            END                          ; * JMK04
+            LINE<1,-1>=VAR'R24,'         ; * JMK04
+            LINE<1,-1>=REC<23>'R06,'     ; * JMK04
+            LINE<1,-1>=OCONV(REC<29>,'D2/')'R#8'   ; * JMK04
+         END                             ; * JMK04
+      END                                ; * JMK04
+      IF YES.NO='NO' THEN
+         RETURN
+      END
+      *
+      *
+      * AMOUNT OVER CHARGED
+      *
+      IF OUT.TO='P' THEN                 ; * JMK02
+         LINE:=-REC<1>'R06,#9':'  '
+      END ELSE                           ; * JMK02
+         LINE<1,-1>=-REC<1>'R06,'        ; * JMK02
+      END                                ; * JMK02
+      *
+      * PERCENTAGE OF OVERCHARGE
+      *
+      IF REC<3>+0=0 THEN VAR=0 ELSE
+         VAR=(-REC<1>)*100/REC<3>
+      END
+      IF OUT.TO='P' THEN                 ; * JMK02
+         LINE:=VAR'R24,#6':'  '
+      END ELSE                           ; * JMK02
+         LINE<1,-1>=VAR'R24,'            ; * JMK02
+      END                                ; * JMK02
+      *
+      * LOGISTICS MARKUP AMOUNT
+      *
+      IF OUT.TO='P' THEN                 ; * JMK02
+         LINE:=-REC<2>'R06,#9':'  '
+      END ELSE                           ; * JMK02
+         LINE<1,-1>=-REC<2>'R06,'        ; * JMK02
+      END                                ; * JMK02
+      *
+      * PERCENTAGE OF LOGISTICS
+      *
+      IF REC<3>+0=0 THEN VAR=0 ELSE
+         VAR=(-REC<2>)*100/REC<3>
+      END
+      IF OUT.TO='P' THEN                 ; * JMK02
+         LINE:=VAR'R24,#6':'  '
+      END ELSE                           ; * JMK02
+         LINE<1,-1>=VAR'R24,'            ; * JMK02
+      END                                ; * JMK02
+      *
+      * BALANCE DUE AMOUNT
+      *
+      IF OUT.TO='P' THEN                 ; * JMK02
+         LINE:=REC<5>'R06,#7':'  '
+      END ELSE                           ; * JMK02
+         LINE<1,-1>=REC<5>'R06,'         ; * JMK02
+      END                                ; * JMK02
+      *
+      * BALANCE DUE COUNT
+      *
+      IF OUT.TO='P' THEN                 ; * JMK02
+         LINE:=REC<6>'R04,#4':'  '
+      END ELSE                           ; * JMK02
+         LINE<1,-1>=REC<6>'R04,'         ; * JMK02
+      END                                ; * JMK02
+      *
+      * ADDITIONAL DUE
+      *
+      IF OUT.TO='P' THEN                 ; * JMK02
+         LINE:=REC<7>'R06,#7':'  '
+      END ELSE                           ; * JMK02
+         LINE<1,-1>=REC<7>'R06,'         ; * JMK02
+      END                                ; * JMK02
+      *
+      * ADDITIONAL DUE COUNT
+      *
+      IF OUT.TO='P' THEN                 ; * JMK02
+         LINE:=REC<8>'R04,#4'
+      END ELSE                           ; * JMK02
+         LINE<1,-1>=REC<8>'R04,'         ; * JMK02
+      END                                ; * JMK02
+      RETURN
+*
+EXIT.PROGRAM:*
+*
+      STOP

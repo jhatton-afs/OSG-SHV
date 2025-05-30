@@ -1,0 +1,388 @@
+*************************************************************************
+* Program : GET.CLIENT.EMAILS
+* Author  : MIKE KERBOW
+* Date    : MAY 2006
+*
+* Copyright (c) 2006 by AFS Logistics, LLC. - All Rights Reserved
+*************************************************************************
+* 020708 - JMK01 - T080433 - Modification to Owen's Special Menu ; option 9 Client email addresses
+* 021908 - JMK02 - C080529 - Options for GET.CLIENT.EMAILS program
+* 121009 - NPR01 - T091482 - Added check for "Div. Email Print" flag  on clients file. Don't include Div emails.
+*******************************************
+      CALL CHANNEL(CH.NUM)
+      CALL GET.USER(USER)
+      PROG.NAME='GET.CLIENT.EMAILS'
+      PROG.DESC='Select Client Email Addresses'
+      PACK.NAME='Freight Payment'
+      MASK.CHAR='-'
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'GET.CLIENT.EMAILS' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+
+* Write screen header
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+
+*
+* OPEN FILES
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+         END
+      END
+      OPEN '','VOC' TO F.VOC ELSE
+         CALL ELINE('Unable to open VOC file - Call IS Department.')
+         STOP
+      END
+      READ BILLDATA.REC FROM F.VOC,'BILLDATA' ELSE
+         CALL ELINE('Unable to open "VOC BILLDATA" - Call IS Department.')
+         STOP
+      END
+      BILLDATA.REC<2>:='\':USER
+      WRITE BILLDATA.REC ON F.VOC,'BILLDATA.':USER ELSE
+         CALL ELINE('Your user name "':USER:'" is not in the BILLDATA folder - call IS Department.')
+         STOP
+      END
+      OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE
+         CALL ELINE('Unable to open "BILLDATA"':USER:' - call IS Department.')
+         STOP
+      END
+      OPEN '','AR.SLSMAN.1000.1' TO F.SLSMAN ELSE
+         CALL OPEN.ABORT('AR.SLSMAN.1000.1',PROG.NAME)
+      END
+*
+* Restrict program usage
+      VALID.USER=1
+      BEGIN CASE
+         CASE USER='OWEN'
+         CASE USER='MYRA'
+         CASE USER='DAVID'
+         CASE USER='MKERBOW'
+         CASE USER='NPRATT'
+         CASE 1
+            VALID.USER=0
+      END CASE
+
+      IF NOT(VALID.USER) THEN
+         TEMP='**  This is a restricted access application  **'
+         CALL CENTER(TEMP,80)
+         CRT @(0,12):TEMP
+         GOTO THE.END
+      END
+100: ***
+      LN='Client Status "A"ctive or "B"oth? '
+      MASK='B-'
+      HELP='[A]=Active [B]=Both [EX]=Exit'
+      CALL GEN.IN(0,5,LN:MASK,'',Q,0,2,'','',2,-2,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='A' OR QI='B'
+            STATUS=QI
+         CASE QI=''
+            STATUS='B'
+         CASE 1
+            GOTO 100
+      END CASE
+
+200: ***
+      LN='AFS Addresses "O"nly, "N"one or "B"oth? '
+      MASK='N-'
+      HELP='[O]=Only [N]=None [B]=Both [EX]=Exit'
+      CALL GEN.IN(0,6,LN:MASK,'',Q,0,2,'','',2,-2,6,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='O' OR QI='N' OR QI='B'
+            AFS.ADDR=QI
+         CASE QI=''
+            AFS.ADDR='N'
+         CASE 1
+            GOTO 200
+      END CASE
+
+300: ***
+      LN='Duplicate Addresses "N"o or "Y"es? '
+      MASK='N-'
+      HELP='[Y]=Yes [N]=No [EX]=Exit'
+      CALL GEN.IN(0,7,LN:MASK,'',Q,0,2,'','',2,-2,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='Y' OR QI='N'
+            DUP.ADDR=QI
+         CASE QI=''
+            DUP.ADDR='N'
+         CASE 1
+            GOTO 300
+      END CASE
+
+500: ***
+      LN='Are you ready to search for email addresses? '
+      MASK='N-'
+      HELP='[Y]=Yes [N]=No [EX]=Exit'
+      CALL GEN.IN(0,8,LN:MASK,'',Q,0,2,'','',2,-2,8,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX' OR QI='N' OR QI=''
+            GOTO THE.END
+         CASE QI='Y'
+            NULL
+         CASE 1
+            GOTO 500
+      END CASE
+
+      CLEARFILE F.WORK
+      EMAIL.LIST=''
+      EMAIL.TEST=''
+      EMAIL.HDR=''
+      EMAIL.HDR<1,1>='Email Address'
+      EMAIL.HDR<1,2>='Client Name'
+      EMAIL.HDR<1,3>='Client Address'
+      EMAIL.HDR<1,4>='Client City'
+      EMAIL.HDR<1,5>='Client State'
+      EMAIL.HDR<1,6>='Client Zip'
+      EMAIL.HDR<1,7>='Client Phone'
+      EMAIL.HDR<1,8>='Initial Salesrep'
+      EMAIL.HDR<1,9>='Servicing Salesrep'
+      EMAIL.HDR<1,10>='Client Reporting'
+      EMAIL.HDR<1,11>='Client Misroute'
+      EMAIL.HDR<1,12>='Client Collection'
+      EMAIL.HDR<1,13>='Div Reporting'
+      EMAIL.HDR<1,14>='Div Misroute'
+      EMAIL.HDR<1,15>='Reg Reporting'
+      EMAIL.HDR<1,16>='Reg Misroute'
+
+*
+*
+* SELECT CLIENT FILE
+*
+      TEXT='Selecting Clients.'
+      CALL CENTER(TEXT,80)
+      CRT @(0,10):TEXT
+*
+      STMT='SSELECT CLIENTS'
+      IF STATUS='A' THEN ; * JMK01
+         STMT:=' WITH STATUS = "A"' ; * JMK01
+      END ; * JMK01
+      IF USER='MKERBOW' THEN
+         STMT='SELECT CLIENTS "01706"'
+      END
+      EXECUTE STMT RTNLIST CLIENT.LIST CAPTURING CLIENT.RESULTS
+******************************************************************
+* Select of First List
+******************************************************************
+      CLIENT.ITEMS = @SELECTED
+      IF CLIENT.ITEMS < 1 THEN
+         CALL ELINE('ERROR - No clients on file.')
+         STOP
+      END
+      CLIENT.PER=0
+      CLIENT.EOF=0
+      CLIENT.CNT=0
+      LOOP
+         READNEXT CLIENT.ID FROM CLIENT.LIST ELSE CLIENT.EOF=1
+      UNTIL CLIENT.EOF DO
+         IF CLIENT.ID[1,2] = "99" THEN GOTO SKIP.CLIENT ;* NPR01
+         CLIENT.CNT+=1
+         READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE GO SKIP.CLIENT
+         CLIENT.NAME=CLIENT.REC<2>
+         CRT @(0,10):CLIENT.ID:" ":CLIENT.NAME:" - Now processing client email addresses":@(-4):
+         CLIENT.ADDR=TRIM(CLIENT.REC<3,1>:' ':CLIENT.REC<3,2>)
+         CLIENT.CITY=CLIENT.REC<4>
+         CLIENT.STATE=CLIENT.REC<5>
+         CLIENT.ZIP=CLIENT.REC<6>
+         CLIENT.PHONE=CLIENT.REC<31>'R(###) ###-####'
+         INIT.SLS=CLIENT.REC<114>
+         DIV.EMAIL.PRINT=CLIENT.REC<145>
+         READ INIT.SLS.REC FROM F.SLSMAN,INIT.SLS THEN
+            INIT.SLS.NAME=INIT.SLS.REC<1>
+         END ELSE
+            INIT.SLS.NAME=INIT.SLS
+         END
+         SVC.SLS=CLIENT.REC<115>
+         READ SVC.SLS.REC FROM F.SLSMAN,SVC.SLS THEN
+            SVC.SLS.NAME=SVC.SLS.REC<1>
+         END ELSE
+            SCV.SLS.NAME=SVC.SLS
+         END
+*
+* Process Reporting Email Addresses
+*
+         FOR ATT=125 TO 127
+            NVAL=DCOUNT(CLIENT.REC<ATT>,@VM)
+            FOR VAL=1 TO NVAL
+               EMAIL.ADD=CLIENT.REC<ATT,VAL>
+               EMAIL.SRC=1
+               GOSUB ADD.EMAIL.ADD
+            NEXT VAL
+         NEXT ATT
+*
+* Process Misroute Email Addresses
+*
+         FOR ATT=153 TO 155
+            NVAL=DCOUNT(CLIENT.REC<ATT>,@VM)
+            FOR VAL=1 TO NVAL
+               EMAIL.ADD=CLIENT.REC<ATT,VAL>
+               EMAIL.SRC=2
+               GOSUB ADD.EMAIL.ADD
+            NEXT VAL
+         NEXT ATT
+*
+*
+*
+         FOR ATT=222 TO 224
+            NVAL=DCOUNT(CLIENT.REC<ATT>,@VM)
+            FOR VAL=1 TO NVAL
+               EMAIL.ADD=CLIENT.REC<ATT,VAL>
+               EMAIL.SRC=3
+               GOSUB ADD.EMAIL.ADD
+            NEXT VAL
+         NEXT ATT
+         CALL PROG.BAR(12,CLIENT.CNT,CLIENT.ITEMS,CLIENT.PER)
+**         IF DIV.EMAIL.PRINT = "N" THEN GOTO SKIP.DIVS     ;* NPR01
+         OPEN '','DIVISION.CODES,':CLIENT.ID TO F.DIV THEN
+            STMT='SELECT DIVISION.CODES,':CLIENT.ID
+            EXECUTE STMT RTNLIST DIV.LIST CAPTURING OUTPUT
+            DIV.ITEMS = @SELECTED
+            CRT @(0,14):CLIENT.ID:" ":CLIENT.NAME:" - Now processing ":DIV.ITEMS:" Divisions":@(-4):
+            DIV.CNT=0
+            DIV.EOF=0
+            DIV.PER=0
+            LOOP
+               READNEXT DIV.ID FROM DIV.LIST ELSE DIV.EOF=1
+            UNTIL DIV.EOF DO
+               DIV.CNT+=1
+               CRT @(0,23):DIV.CNT'L%6':DIV.ID:
+               IF DIV.ITEMS>0 THEN CALL PROG.BAR(16,DIV.CNT,DIV.ITEMS,DIV.PER)
+               READ DIV.REC FROM F.DIV,DIV.ID THEN
+*
+* Process Reporting Email Addresses
+*
+                  IF DIV.EMAIL.PRINT NE "N" THEN           ; * NPR01
+                     FOR ATT=8 TO 10
+                        NVAL=DCOUNT(DIV.REC<ATT>,@VM)
+                        FOR VAL=1 TO NVAL
+                           EMAIL.ADD=DIV.REC<ATT,VAL>
+                           EMAIL.SRC=4
+                           GOSUB ADD.EMAIL.ADD
+                        NEXT VAL
+                     NEXT ATT
+                  END                                     ; * NPR01
+*
+* Process Misroute Email Addresses
+*
+                  FOR ATT=27 TO 29
+                     NVAL=DCOUNT(DIV.REC<ATT>,@VM)
+                     FOR VAL=1 TO NVAL
+                        EMAIL.ADD=DIV.REC<ATT,VAL>
+                        EMAIL.SRC=5
+                        GOSUB ADD.EMAIL.ADD
+                     NEXT VAL
+                  NEXT ATT
+               END
+            REPEAT
+         END
+         SKIP.DIVS :   ; * NPR01
+         OPEN '','REGION.CODES,':CLIENT.ID TO F.REG THEN
+            STMT='SELECT REGION.CODES,':CLIENT.ID
+            EXECUTE STMT RTNLIST REG.LIST CAPTURING OUTPUT
+            REG.ITEMS = @SELECTED
+            CRT @(0,14):CLIENT.ID:" ":CLIENT.NAME:" - Now processing ":REG.ITEMS:" Regions":@(-4):
+            REG.CNT=0
+            REG.EOF=0
+            REG.PER=0
+            LOOP
+               READNEXT REG.ID FROM REG.LIST ELSE REG.EOF=1
+            UNTIL REG.EOF DO
+               REG.CNT+=1
+               CRT @(0,23):REG.CNT'L%6':REG.ID:
+               IF REG.ITEMS>0 THEN CALL PROG.BAR(16,REG.CNT,REG.ITEMS,REG.PER)
+               READ REG.REC FROM F.REG,REG.ID THEN
+*
+* Process Reporting Email Addresses
+*
+                  FOR ATT=8 TO 10
+                     NVAL=DCOUNT(REG.REC<ATT>,@VM)
+                     FOR VAL=1 TO NVAL
+                        EMAIL.ADD=REG.REC<ATT,VAL>
+                        EMAIL.SRC=6
+                        GOSUB ADD.EMAIL.ADD
+                     NEXT VAL
+                  NEXT ATT
+*
+* Process Misroute Email Addresses
+*
+                  FOR ATT=27 TO 29
+                     NVAL=DCOUNT(REG.REC<ATT>,@VM)
+                     FOR VAL=1 TO NVAL
+                        EMAIL.ADD=REG.REC<ATT,VAL>
+                        EMAIL.SRC=7
+                        GOSUB ADD.EMAIL.ADD
+                     NEXT VAL
+                  NEXT ATT
+               END
+            REPEAT
+         END
+SKIP.CLIENT: ***
+      REPEAT
+*
+*     IF USER='MKERBOW' THEN DEBUG
+      EXP.REC=EMAIL.HDR ; * JMK01
+      EXP.REC<-1>=EMAIL.LIST ; * JMK01
+      EXP.REC=CHANGE(EXP.REC,@VM,TAB) ; * JMK01
+      BILLDATA.ID='CLIENT-EMAILS' ; * JMK02
+      IF STATUS='A' THEN BILLDATA.ID='ACTIVE-':BILLDATA.ID ; * JMK02
+      IF AFS.ADDR='O' THEN BILLDATA.ID:='-AFS' ; * JMK02
+      IF DUP.ADDR='Y' THEN BILLDATA.ID:='-DEDUP' ; * JMK02
+      BILLDATA.ID:='.XLS' ; * JMK02
+      WRITE EXP.REC ON F.BILLDATA,BILLDATA.ID ; * JMK02
+      CALL ELINE('This has been written to your "U:" drive as ':BILLDATA.ID) ; * JMK02
+THE.END: *
+      STOP
+ADD.EMAIL.ADD: ***
+      IF INDEX(EMAIL.ADD,'@',1) THEN
+         EMAIL.ADD.TEST=OCONV(EMAIL.ADD,'MCU')
+         DOMAIN=FIELD(EMAIL.ADD.TEST,'@',2)
+         AFS.DOMAIN=0 ; * JMK02
+         IF DOMAIN='AFSLOGISTICS.COM' OR DOMAIN='AFS.NET' THEN ; * JMK02
+            AFS.DOMAIN=1 ; * JMK02
+         END ; * JMK02
+         IF AFS.ADDR='O' AND AFS.DOMAIN=0 THEN RETURN ; * JMK02
+         IF AFS.ADDR='N' AND AFS.DOMAIN THEN RETURN ; * JMK02
+         IF DUP.ADDR='Y' THEN EMAIL.ADD.TEST:='*':CLIENT.ID ; * JMK02
+         LOCATE EMAIL.ADD.TEST IN EMAIL.TEST SETTING POS THEN ; * JMK01
+            EMAIL.LIST<POS,9+EMAIL.SRC>='X' ; * JMK01
+         END ELSE ; * JMK01
+            EMAIL.ADD.LINE='' ; * JMK01
+            EMAIL.ADD.LINE<1,1>=EMAIL.ADD ; * JMK01
+            EMAIL.ADD.LINE<1,2>=CLIENT.NAME ; * JMK01
+            EMAIL.ADD.LINE<1,3>=CLIENT.ADDR ; * JMK01
+            EMAIL.ADD.LINE<1,4>=CLIENT.CITY ; * JMK01
+            EMAIL.ADD.LINE<1,5>=CLIENT.STATE ; * JMK01
+            EMAIL.ADD.LINE<1,6>=CLIENT.ZIP ; * JMK01
+            EMAIL.ADD.LINE<1,7>=CLIENT.PHONE ; * JMK01
+            EMAIL.ADD.LINE<1,8>=INIT.SLS.NAME ; * JMK01
+            EMAIL.ADD.LINE<1,9>=SVC.SLS.NAME ; * JMK01
+            EMAIL.ADD.LINE<1,9+EMAIL.SRC>='X' ; * JMK01
+
+*            IF USER = "NPRATT" THEN
+*               EMAIL.ADD.LINE<1,23> = DIV.EMAIL.PRINT   ;* NPR01 for testing purposes only.
+*               EMAIL.ADD.LINE<1,24>='X' ; * JMK01
+*            END
+
+            EMAIL.TEST<-1>=EMAIL.ADD.TEST ; * JMK01
+            EMAIL.LIST<-1>=EMAIL.ADD.LINE ; * JMK01
+         END ; * JMK01
+      END
+      RETURN
+      END

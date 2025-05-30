@@ -1,0 +1,1542 @@
+***********************************************************************
+* PROGRAM: UPS
+* PROGRAM TO BUILD A UPS FILES
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS.
+*
+* FREIGHT BILLING/EDI PACKAGE
+*
+*  AUTHOR       : Tami Seago
+*  DATE CREATED : 08/01/99
+*  DESCRIPTION  : This program builds a delimited file for all the UPS Bills
+*                 paid during the specified dates so data can be worked with
+*                 and tracked on the internet.
+*
+***********************************************************************
+*  MODIFIED     : 11/15/99 Tami Seago
+***********************************************************************
+*
+* FORMATTING MODS:
+*
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+*
+* Initialize variables and open files
+*
+     GOSUB INITIALIZE.VARIABLES
+
+*
+* Select and open all Files to be tracked
+*
+
+*CRT @(0,23):" Press Break:" ; INPUT NUL
+
+     STMT = 'SSELECT UPS.IN'
+     STMT:=' BY DATE'
+     PROCESS.ARRAY = ''
+
+     EXECUTE STMT CAPTURING OUTPUT
+
+     NUM.ITEMS = @SELECTED
+     IF NUM.ITEMS GT 0 ELSE
+       CRT @(30,13):'No UPS Data to Process'
+       PROCESS.ARRAY=''
+       MAIL.TEXT = 'No UPS Data to Process'
+       GOSUB PRINT.INFO         
+       RETURN
+     END
+     LOOP
+       DONE=0
+       READNEXT UPS.RECORD.NAME ELSE DONE = 1
+     UNTIL DONE=1 DO
+         T.UPS.RECORD.NAME = OCONV(UPS.RECORD.NAME,'MCU')
+         IF NOT (T.UPS.RECORD.NAME MATCH "'UPS'5N'-'6N'.XLS'") AND NOT (T.UPS.RECORD.NAME MATCH "'UPS'5N'_'5N'-'6N'.XLS'") THEN          
+           INFO.ERROR = UPS.RECORD.NAME:' FILE NAME WAS INCORRECT.'
+           INFO.ERROR<1,-1> = 'THE FILE SHOULD BE IN ONE OF THE FOLLOWING FORMATS'
+           INFO.ERROR<1,-1> = 'UPSccccc-yyddmm.XLS OR UPSccccc_ddddd-yymmdd.XLS'
+           INFO.ERROR<1,-1> = 'ccccc = 5 digit Client Number'
+           INFO.ERROR<1,-1> = 'ddddd = 5 digit Division Number'
+           INFO.ERROR<1,-1> = 'yy = 2 digit year'
+           INFO.ERROR<1,-1> = 'mm = 2 digit month'
+           INFO.ERROR<1,-1> = 'dd = 2 digit day'
+           INFO.ERROR<1,-1> = ' '
+           INFO.ERROR<1,-1> = 'PLEASE CORRECT THE NAME OF THE ATTACHED FILE AND RESAVE'
+           MVIN=''
+           MVIN<1>='UPS@afs.net'
+           MVIN<2>='oweninfo@afs.net':@VM:'RGaudet@afs.net':@VM:'CMendenhall@afs.net'
+           MVIN<4>='AFS'
+           MVIN<5>='UPS FILE SAVED WITH INCORRECT FILE NAME'
+           MVIN<6>=INFO.ERROR
+           MVIN<11>='E:\ARDENT\PUBLIC\BILLDATA\UPS\'
+           MVIN<11>:=UPS.RECORD.NAME
+           CALL SENDMAIL(MVIN,MVOUT)
+           DELETE UPS.IN,UPS.RECORD.NAME
+           GO SKIP.UPS.FILE
+         END
+
+       DIVISION=''
+       CLIENT = UPS.RECORD.NAME[4,5]
+       IF CLIENT = '00968'  OR CLIENT = '00970'  OR CLIENT = '98999' THEN   GO SKIP.UPS.FILE
+
+
+       DIV.POS = INDEX(UPS.RECORD.NAME, "_",1)
+       IF DIV.POS>0 THEN
+         DIVISION=UPS.RECORD.NAME[10,5]
+ 	    END.DATE=UPS.RECORD.NAME[16,6]
+       END ELSE
+         END.DATE = UPS.RECORD.NAME[10,6]
+       END
+       IF DIVISION#'' THEN
+         CRT @(0,6):UPS.RECORD.NAME: ' ': CLIENT:' ':DIVISION:' ':END.DATE:@(-4)
+       END ELSE
+         CRT @(0,6):UPS.RECORD.NAME: ' ': CLIENT:' ':END.DATE:@(-4)
+       END
+       ENDING.DATE = END.DATE[3,2]:'/':END.DATE[5,2]:'/':END.DATE[1,2]
+       ENDING.DATE = ICONV(ENDING.DATE,'D')
+
+       READ CLIENT.REC FROM F.CLIENTS,CLIENT ELSE
+         CALL ELINE('ERROR - Client ':CLIENT:' not on file.')
+         GO SKIP.UPS.FILE
+       END
+       OPEN '','DIVISION.CODES,':CLIENT TO F.DIV ELSE NULL
+
+       CLIENT.NAME=CLIENT.REC<2>
+       CLIENT.ADDR=CLIENT.REC<3>
+       CLIENT.CITY=CLIENT.REC<4>
+       CLIENT.ST=CLIENT.REC<5>
+       CLIENT.ZIP=CLIENT.REC<6>[1,5]
+
+       CRT @(0,4):'Processing Client      : ':CLIENT'R%5':
+       CRT ' ':CLIENT.NAME:@(-4):       
+         
+       READ UPS.REC FROM F.VOC,"UPS" ELSE
+         CALL ELINE('UNABLE TO OPEN "VOC UPS"')
+         STOP
+       END
+       IF DIVISION#'' THEN
+         UPS.REC<2>:='\':CLIENT:'\':DIVISION:'\':END.DATE
+       END ELSE 
+         UPS.REC<2>:='\':CLIENT:'\':END.DATE
+       END
+       WRITE UPS.REC ON F.VOC,"UPS.":USER ELSE  
+         CALL ELINE("UPS.'":USER:"' IS NOT IN THE UPS FOLDER - PLEASE SEE OWEN/TAMI/DAVID")
+         STOP
+       END
+       OPEN '','UPS.':USER TO UPS ELSE
+         IF DIVISION#'' THEN
+  	     STMT = 'dos /c md e:\ardent\public\ups\':CLIENT'R%5':'\':DIVISION:'\':END.DATE
+         END ELSE
+           STMT = 'dos /c md e:\ardent\public\ups\':CLIENT'R%5':'\':END.DATE
+         END
+         EXECUTE STMT CAPTURING RESULTS
+         OPEN '','UPS.':USER TO UPS ELSE
+           CALL ELINE('UNABLE TO OPEN "UPS."':USER)
+           STOP
+         END
+       END
+
+       READ UPS.REC FROM UPS.IN,UPS.RECORD.NAME ELSE
+         CALL ELINE("ERROR...":UPS.RECORD.NAME:" IS MISSING FROM BILLDATA\UPS")
+         GO SKIP.UPS.FILE
+       END
+       HEADING.ERROR = 0
+       HEAD.ERROR = ''
+       UPS.REC = CHANGE(UPS.REC,', ',' ')
+       UPS.REC = CHANGE(UPS.REC,'"','')
+       UPS.REC = CHANGE(UPS.REC,',',@VM)
+       UPS.REC = CHANGE(UPS.REC,TAB,@VM)
+       SHIPPER.NAME = CLIENT.NAME
+       SHIPPER.ADDR = CLIENT.ADDR
+       SHIPPER.CITY = CLIENT.CITY
+       SHIPPER.ST = CLIENT.ST
+       SHIP.ZIP = CLIENT.ZIP
+       IF DIVISION#'' THEN
+         READ DIV.REC FROM F.DIV,DIVISION THEN
+           SHIPPER.ADDR = ''
+           SHIPPER.CITY = ''
+           SHIPPER.ST = ''
+           SHIP.ZIP = DIV.REC<1>
+         END
+       END
+       INFO.ERROR = ''
+       NUM.INFO.ERRORS = 0
+       WRITE UPS.REC ON UPS,UPS.RECORD.NAME
+       HEADING.LINE = OCONV(UPS.REC<1>,'MCU')
+       FILE.OK = 1       
+       BEGIN CASE
+         CASE CLIENT = '00938' AND DIVISION = '00003'
+           FILE.TYPE = 'WORLDSHIP'
+*        CASE CLIENT = '00899'
+*          FILE.TYPE = 'MULTISHIP'
+         CASE INDEX(HEADING.LINE<1>,"SHIPMENTINFORMATIONPICKUPDATE",1)>0
+           FILE.TYPE = 'WORLDSHIP'
+         CASE INDEX(HEADING.LINE<1>,"PICKUP_DATE",1)>0
+           FILE.TYPE = 'UPS'
+         CASE 1
+           FILE.TYPE = 'CLIENTBASED'
+       END CASE
+
+       BEGIN CASE
+         CASE FILE.TYPE = 'WORLDSHIP'
+           HEADING.LINE = OCONV(UPS.REC<1>,'MCU')     
+           GOSUB SET.COLUMN.NUM.WORLDSHIP
+           IF HEADING.ERROR THEN
+             GOSUB PRINT.ERROR
+             GO SKIP.UPS.FILE
+           END ELSE
+             GOSUB BUILD.FROM.WORLDSHIP.NEW
+           END
+
+         CASE FILE.TYPE = 'UPS'           
+           GOSUB SET.COLUMN.NUM.UPS
+           IF HEADING.ERROR THEN 
+             GOSUB PRINT.ERROR
+             GO SKIP.UPS.FILE
+           END ELSE
+             GOSUB BUILD.FROM.UPS.NEW
+           END
+
+         CASE FILE.TYPE = 'MULTISHIP'
+           GOSUB SET.COLUMN.NUM.MULTISHIP
+           IF HEADING.ERROR THEN 
+             GOSUB PRINT.ERROR
+             GO SKIP.UPS.FILE
+           END ELSE
+             GOSUB BUILD.FROM.MULTISHIP
+           END
+
+           
+
+         CASE FILE.TYPE = 'CLIENTBASED'
+           BEGIN CASE 
+             CASE CLIENT = '00139'                         ;* Sports South
+               GOSUB BUILD.SPORT.SOUTH.INFO
+             CASE CLIENT = '00899'                         ;* Briggs Weaver
+*If USER='OWEN' THEN CALL ELINE('Building for Briggs')
+               GOSUB BUILD.FROM.BRIGGS
+             CASE CLIENT = '00337'                         ;* Mckesson APS
+               GOSUB BUILD.FROM.CLIPPERSHIP
+             CASE CLIENT = '00866'                         ;* Great Plains
+               WRITE UPS.REC ON UPS,"UPS.XLS"
+             CASE CLIENT = '00918'                         ;* Rexel - Southern/Southland           
+               UPS.REC = CHANGE(UPS.REC,TAB,@VM)
+               GOSUB BUILD.FROM.UPS.REXEL
+
+
+             CASE 1
+               INFO.ERROR = 'FILE FORMAT FOR CLIENT ':CLIENT:' - ':CLIENT.NAME:' FILENAME :' :UPS.RECORD.NAME
+               MVIN=''
+               MVIN<1>='UPS@afs.net'
+*              MVIN<2>='oweninfo@afs.net':@VM:'DCurtis@afs.net':@VM:'RGaudet@afs.net'
+*              MVIN<2>='oweninfo@afs.net':@VM:'RGaudet@afs.net'
+               MVIN<2>='oweninfo@afs.net':@VM:'RGaudet@afs.net':'CMendenhall@afs.net'
+               MVIN<4>='AFS'
+               MVIN<5>='UPS FILE FORMAT NOT SETUP, NEED TO CHECK'
+               MVIN<6>=INFO.ERROR
+               MVIN<11>='E:\ARDENT\PUBLIC\BILLDATA\UPS\'
+               MVIN<11>:=UPS.RECORD.NAME
+               CALL SENDMAIL(MVIN,MVOUT)
+               DELETE UPS.IN,UPS.RECORD.NAME
+               PRINTER ON
+               PRINT INFO.ERROR
+               PRINTER OFF
+               GO SKIP.UPS.FILE
+             END CASE 
+       END CASE
+
+       IF FILE.OK THEN        
+         READ ORIG.UPS.REC FROM UPS,"UPS.XLS" ELSE ORIG.UPS.REC = ''     
+         IF ORIG.UPS.REC='' THEN
+           CALL ELINE("ERROR... ORIG.UPS.REC IS NULL")
+           GO SKIP.UPS.FILE
+         END
+           IF DATE() LT ENDING.DATE+5 THEN GO SKIP.UPS.FILE
+         GOSUB PROCESS.UPS
+         GOSUB CLEAN.FILE
+
+         NEW.UPS.REC=CHANGE(NEW.UPS.REC,@VM,TAB)
+         WRITE NEW.UPS.REC ON UPS,'NEWUPS.XLS'
+         REVISED.REC = CHANGE(REVISED.REC,@VM,TAB)
+         IF DIVISION#'' THEN
+           REVISED.UPS.RECORD.NAME = UPS.RECORD.NAME[1,21]:' Revised.xls'  
+         END ELSE
+           REVISED.UPS.RECORD.NAME = UPS.RECORD.NAME[1,15]:' Revised.xls'  
+         END
+         WRITE REVISED.REC ON UPS,REVISED.UPS.RECORD.NAME
+         MAIL.UPS.RECORD.NAME = REVISED.UPS.RECORD.NAME
+         GOSUB PRINT.INFO
+         IF INFO.ERROR # '' THEN
+           MVIN=''
+           MVIN<1>='UPS@afs.net'
+*          MVIN<2>='owen@afs.net'
+           MVIN<4>='AFS'
+           MVIN<5>='UPS ERRORS BUT FILE WAS PROCESSED'
+           MVIN<6>=INFO.ERROR
+           MVIN<11>='E:\ARDENT\PUBLIC\BILLDATA\UPS\'
+           MVIN<11>:=UPS.RECORD.NAME
+           CALL SENDMAIL(MVIN,MVOUT)
+         END
+         DELETE UPS.IN,UPS.RECORD.NAME
+       END ELSE        
+         UPS.REC = CHANGE(UPS.REC,@VM,TAB)
+         WRITE UPS.REC ON UPS.IN,UPS.RECORD.NAME
+         MVIN=''
+         MVIN<1>='UPS@afs.net'
+*        MVIN<2>='Owen@afs.net':@VM:'DCurtis@afs.net':@VM:'RGaudet@afs.net'
+*        MVIN<2>='Owen@afs.net':@VM:'RGaudet@afs.net'
+           MVIN<2>='Owen@afs.net':@VM:'RGaudet@afs.net':'CMendenhall@afs.net'
+         MVIN<4>='AFS'
+         MVIN<5>='UPS ERROR'
+         MVIN<6>=INFO.ERROR
+         MVIN<11>='E:\ARDENT\PUBLIC\BILLDATA\UPS\'
+         MVIN<11>:=UPS.RECORD.NAME
+         CALL SENDMAIL(MVIN,MVOUT)
+         DELETE UPS.IN,UPS.RECORD.NAME
+       END
+
+SKIP.UPS.FILE:***
+     REPEAT
+     GO EXIT.PROGRAM
+
+
+
+
+PROCESS.UPS:***
+
+*
+*UPS.REC IS THE UPS.XLS FILE WITH NULL ZIPS REMOVED AND THE FIRST LINE REMOVED
+*
+
+     ORIG.UPS.REC=CHANGE(ORIG.UPS.REC,TAB,@VM)
+     NEW.UPS.REC = ''
+     NEW.UPS.REC<1> = ORIG.UPS.REC<1>
+     NEW.UPS.REC<1,20> = 'Service Failure'
+     NEW.UPS.REC<1,21> = 'TIT Arrival Time'
+     NEW.UPS.REC<1,22> = 'DD Arrival Time'
+     NEW.UPS.REC<1,23> = 'Errors'     
+     RECORD.COUNT = DCOUNT(ORIG.UPS.REC,@AM)
+     CRT @(0,8):'THE ORIG RECORD COUNT IS :':RECORD.COUNT:@(-4)
+     IF RECORD.COUNT = 1 AND INFO.ERROR # '' THEN
+       TEXT = 'PROBLEM WITH FILE : ':UPS.RECORD.NAME
+       INS TEXT BEFORE INFO.ERROR<1,1>
+       INFO.ERROR = CHANGE(INFO.ERROR,@VM,TAB)
+       RETURN
+     END
+     FOR REC.NUM = 2 TO RECORD.COUNT
+       LINE = ORIG.UPS.REC<REC.NUM> 
+       IF LINE<1,1> = '' THEN GO SKIP.RECORD
+       TIT.DATE = ''
+       NEW.UPS.REC<REC.NUM> = LINE
+       SHIP.DATE = LINE<1,1>
+       TRACKING.NUM = LINE<1,2>
+       ORIG.ZIP = LINE<1,6>'R%5'
+       DEST.ZIP = LINE<1,7>[1,5]'R%5'
+       SHIPPED.MODE = LINE<1,8>
+       GOSUB GET.MODE.DESC
+       IF SHIPPED.MODE.DESC = 'ERROR' THEN
+         GO SKIP.LOOKUP
+       END
+
+       IF ORIG.ZIP =  "" OR ORIG.ZIP = "00000" OR DEST.ZIP = "" OR DEST.ZIP = "00000" THEN
+         GO SKIP.RECORD
+       END         
+       ZIP.ID = ORIG.ZIP:'*':DEST.ZIP
+       UPS.TIT.REC<-1,1> = REC.NUM:',':SHIP.DATE:',':ORIG.ZIP:',':DEST.ZIP
+
+SKIP.LOOKUP:***
+
+       UPS.TRACK.REC<-1,1> = REC.NUM:',':TRACKING.NUM       
+
+SKIP.RECORD:***
+
+     NEXT REC.NUM
+
+     IF UPS.TIT.REC = '' THEN
+       UPS.TIT.REC = "0,01/01/01,00000,00000"
+     END
+     WRITE UPS.TIT.REC ON UPS,'UPS.TIT'
+       
+     IF UPS.TRACK.REC = '' THEN
+       UPS.TRACK.REC = "0,0000000000000000"
+     END
+     WRITE UPS.TRACK.REC ON UPS,'UPS.TRACK'
+     NEW.UPS.REC=CHANGE(NEW.UPS.REC,@VM,TAB)
+IF USER='OWEN' THEN CALL ELINE('GOING TO WRITE UPS.IDX')
+     WRITE NEW.UPS.REC ON UPS,"UPS.XLS"
+     IF DIVISION#'' THEN	
+       INDEX.REC = CLIENT:"/":DIVISION:",":END.DATE
+     END ELSE
+       INDEX.REC = CLIENT:",":END.DATE
+     END
+
+     WRITE INDEX.REC ON MAIN.UPS,"UPS.IDX"
+     CHECK.COUNTER = 0
+     NUM.INTRANSIT = 0
+
+CHECK.FILE:***
+     
+       READ INDEX.REC FROM MAIN.UPS,"UPS.IDX" ELSE
+         CALL ELINE("ERROR... UPS.IDX REC IS NULL")
+         GO CHECK.FILE
+       END
+   
+       IF INDEX.REC # '"DONE"' THEN
+         CRT @(0,22):'GOING TO SLEEP'
+         SLEEP 10
+         GO CHECK.FILE
+       END
+    
+       READ UPS.REC FROM UPS,'UPS.XLS' ELSE UPS.REC=''
+       IF UPS.REC='' THEN
+         CALL ELINE("ERROR... UPS.REC IS NULL")
+         GO CHECK.FILE
+       END
+       UPS.REC=CHANGE(UPS.REC,TAB,@VM)
+       END.COUNT = DCOUNT(UPS.REC,@AM)
+       CRT @(0,10):'THE RECORD COUNT IS :':END.COUNT:@(-4)
+        
+       UPS.TIT.REC = ''
+       UPS.TRACK.REC = ''       
+       CHRG = 0
+       TOTAL.CHRGS = 0
+       NUM.SHIPMENTS = 0
+       NUM.FAILURES = 0
+       FAILURE.CHRGS = 0
+
+         
+       FOR RECORD.COUNT=2 TO END.COUNT
+         TIME = ''
+         LINE = UPS.REC<RECORD.COUNT>
+         SHIP.DATE=ICONV(LINE<1,1>,'D')
+         SHIPPED.MODE = LINE<1,8>
+         GOSUB GET.MODE.DESC       
+         TIT.DATE = ICONV(LINE<1,9>,'D')
+         TIT.TIME = LINE<1,21>
+         IF TIT.DATE GT 0 THEN
+           TIME<1> = SHIPPED.MODE.DESC
+           TIME<2> = TIT.DATE               
+           TIME<3>=TIT.TIME           
+           GO GET.TRACK.INFO
+         END       
+         NEW.LINE = LINE
+         CHRG = LINE<1,3>
+         NUM.SHIPMENTS += 1
+         TOTAL.CHRGS += CHRG
+
+
+     *
+     *Search through the web page data line by line and look for the
+     *first occurence of >UPS and get all data pertaining to shipment times
+     *
+     *TIME is reloaded on each tracking number it is the placeholder for all
+     *data used to calculate whether or not it's a service failure
+     *
+     *Attributes are as follows
+     *
+     *TIME<1>      =      UPS mode from TIT record
+     *TIME<2>      =      UPS date packaged should arrive at corrsponding
+     *                    service level in attribute 1
+     *TIME<3>      =      Destination time (UPS) package should arrive
+     *                    corresponding to given service level in
+     *                    attribute 1
+     *TIME<4>      =      Actual mode (from tracking detail from ups)
+     *                    that our package was shipped under
+     *TIME<5>      =      Actual time of day that the package arrived
+     *TIME<6>      =      Actual arrival date from tracking info
+     *TIME<7>      =      Time in transit days
+     *
+     *ITEMS WRITTEN BACK INTO THE UPS RECORD FILE
+     *
+     *<8>          =      Date package should have arrived
+     *<9>          =      Date package actually arrived
+     *<19>         =      'X' for service failure
+     *<20>         =      Time should have arrived (9999) for end of day
+     *<21>         =      Time package actually arrived
+     
+     COUNTER=1
+
+     *
+     *TIT.REC is the transit time web page generated from the UPS web site
+     *giving us all modes (yeah sometimes) and details for tracking the shipment
+     *
+GET.TIT.INFO:***
+     UPS.TIT.ID = RECORD.COUNT'R%4':'ups.html'
+     READ TIT.REC FROM UPS,UPS.TIT.ID ELSE TIT.REC=''
+     GOOD.REC = INDEX(TIT.REC,'SERVICE TYPE',1)
+     IF TIT.REC='' OR GOOD.REC = 0 THEN
+       NEW.LINE<1,23,-1>='NULL TIME IN TRANSIT RECORD - TRACKING SKIPPED'
+       SHIP.DATE = LINE<1,1>
+       ORIG.ZIP = LINE<1,6>'R%5'
+       DEST.ZIP = LINE<1,7>[1,5]'R%5'
+       IF ORIG.ZIP # "00000" AND DEST.ZIP # "00000" THEN
+         UPS.TIT.REC<-1,1> = RECORD.COUNT:',':SHIP.DATE:',':ORIG.ZIP:',':DEST.ZIP
+       END
+       GO SKIP.TIT.REC
+     END
+     TIME=''
+     LOOP
+     UNTIL COUNTER=COUNT(TIT.REC,@AM) DO
+       COUNTER=COUNTER+1
+       POS=INDEX(TIT.REC<COUNTER>, ">UPS",1)
+       IF POS>0 THEN
+     
+         POS2=INDEX(TIT.REC<COUNTER>,"</F",1)
+         MODE=TIT.REC<COUNTER>[POS+1,POS2-POS-1]
+     
+         POS=INDEX(TIT.REC<COUNTER>,'<FONT SIZE="-1">',2)
+         POS2=INDEX(TIT.REC<COUNTER>,"</F",2)
+         DEST.TIME=TIT.REC<COUNTER>[POS+16,POS2-POS-22]
+
+         IF DEST.TIME = 'By End of Day' OR DEST.TIME = '' THEN
+           DEST.TIME = ICONV('5:00PM','MT')
+         END ELSE
+           IF RIGHT(DEST.TIME,4) = 'A.M.' THEN
+             DEST.TIME = ICONV(TRIM(DEST.TIME[1,5]):"AM",'MT')
+           END ELSE
+             DEST.TIME = ICONV(TRIM(DEST.TIME[1,5]):"PM",'MT')
+           END
+         END
+    
+         POS=INDEX(TIT.REC<COUNTER>,'<FONT SIZE="-1">',3)
+         POS2=INDEX(TIT.REC<COUNTER>,"</F",3)
+         ARRIVAL.DATE=TIT.REC<COUNTER>[POS+16,POS2-POS-16]
+         ARRIVAL.DATE=FIELD(ARRIVAL.DATE,',',2)
+         ARRIVAL.DATE = ICONV(ARRIVAL.DATE,'D')
+
+         POS=INDEX(TIT.REC<COUNTER>,'<FONT SIZE="-1">',4)
+         POS2=INDEX(TIT.REC<COUNTER>,"</F",4)
+         ARRIVAL.DAYS=TIT.REC<COUNTER>[POS+16,POS2-POS-16]         
+     
+         TIME<1,-1>=MODE
+         TIME<2,-1>=ARRIVAL.DATE   
+         TIME<3,-1>=DEST.TIME
+         TIME<6,-1>=ARRIVAL.DAYS
+       END
+     
+     REPEAT
+     IF TIME<1,2>='' THEN
+       NEW.LINE<1,23,-1>='ERROR - TIT RECORD FOUND BUT NULL DATA'
+       GO SKIP.REC
+     END ELSE
+       IF LINE<1,9> = '' THEN 
+         ORIG.ZIP = LINE<1,6>'R%5'
+         DEST.ZIP = LINE<1,7>[1,5]'R%5'
+         ZIP.ID = ORIG.ZIP:'*':DEST.ZIP
+         T.TIT.REC = ''
+         T.TIT.REC<1> = TIME<1>
+         T.TIT.REC<2> = TIME<6>
+         T.TIT.REC<3> = TIME<3>
+*         WRITE T.TIT.REC ON F.TIT,ZIP.ID
+       END
+     END
+
+SKIP.TIT.REC:***    
+     *
+     *TRANSIT.REC is the actual tracking info received from UPS web site
+     *
+GET.TRACK.INFO:***
+     UPS.TRACK.ID = RECORD.COUNT'R%4':'trck.html'
+     READ TRANSIT.REC FROM UPS,UPS.TRACK.ID ELSE TRANSIT.REC=''
+     IF TRANSIT.REC='' THEN
+       NEW.LINE<1,23,-1>='ERROR - NULL TRACKING RECORD - SKIPPING BILL'
+       TRACKING.NUM = LINE<1,2>
+       UPS.TRACK.REC<-1,1> = RECORD.COUNT:',':TRACKING.NUM       
+       GO SKIP.REC
+     END
+     TRANSIT.REC = CHANGE(TRANSIT.REC,@AM,",")    
+     PROCESSED = 1
+     COUNTER.2=1
+     DD.DATE=''
+     ACTUAL.MODE=''
+     BEGIN CASE
+	 CASE INDEX(TRANSIT.REC,"Resched. Delivery:",1)>0
+         NEW.LINE<1,23,-1>="ITEM RESCHEDULED FOR DELIVERY PLEASE CHECK!!!"
+         NUM.INTRANSIT += 1
+	   GO SKIP.REC
+       CASE INDEX(TRANSIT.REC,"Manifest Pickup",1)>0
+         NEW.LINE<1,23,-1>="ITEM STILL HASN'T LEFT THE DOCKS YET!!!!"
+         NUM.INTRANSIT += 1
+   	   GO SKIP.REC
+       CASE INDEX(TRANSIT.REC,"TRACKING NUMBER NOT FOUND",1)>0
+         NEW.LINE<1,23,-1>="Tracking Number was not found in UPS Database-Need to check?!?!?"
+	   GO SKIP.REC
+       CASE INDEX(TRANSIT.REC,"In Transit",1)>0
+         NEW.LINE<1,23,-1>='ITEM STILL IN TRANSIT - POSSIBLY SERVICE FAILURE'	 
+         NUM.INTRANSIT += 1
+         GO SKIP.REC
+       CASE INDEX(TRANSIT.REC,"Delivered on:",1)>0
+         GOSUB PROCESS.DELIVERED
+         IF NOT(PROCESSED) THEN GO SKIP.REC
+     END CASE    
+     NEW.LINE<1,9>=TIT.DATE'D2/'
+     NEW.LINE<1,10>=ARRIVAL.DATE'D2/'
+     NEW.LINE<1,21>=OCONV(UPS.ARRIVAL.TIME,'MT')
+     NEW.LINE<1,22>=OCONV(ARRIVAL.TIME,'MT')
+SKIP.REC:          
+     CALL PROG.BAR(20,RECORD.COUNT,END.COUNT-1,1)
+     CRT @(0,19):RECORD.COUNT:@(-4)
+     NEW.UPS.REC<RECORD.COUNT> = NEW.LINE
+
+     *
+   NEXT RECORD.COUNT
+     *
+   IF UPS.TIT.REC = '' AND UPS.TRACK.REC = '' OR CHECK.COUNTER GE 1 ELSE
+     CHECK.COUNTER = CHECK.COUNTER + 1   
+     IF UPS.TIT.REC = '' THEN
+       UPS.TIT.REC = "0,01/01/01,00000,00000"
+     END
+     WRITE UPS.TIT.REC ON UPS,'UPS.TIT'   
+     IF UPS.TRACK.REC = '' THEN
+       UPS.TRACK.REC = "0,0000000000000000"
+     END
+     WRITE UPS.TRACK.REC ON UPS,'UPS.TRACK'
+     IF DIVISION#'' THEN	
+       INDEX.REC = CLIENT:"/":DIVISION:",":END.DATE
+     END ELSE
+       INDEX.REC = CLIENT:",":END.DATE
+     END
+     WRITE INDEX.REC ON MAIN.UPS,"UPS.IDX"
+     GO CHECK.FILE    
+   END 
+
+RETURN
+
+PROCESS.DELIVERED:***
+     PROCESS = 1
+     POS.TEMP = INDEX(TRANSIT.REC,"Delivered on:",1)
+     TRANSIT.REC  = TRANSIT.REC[POS.TEMP,LEN(TRANSIT.REC)-POS.TEMP]
+     BEGIN CASE
+       CASE INDEX(TRANSIT.REC,">Jan",1)>0
+         POS = INDEX(TRANSIT.REC,">Jan",1)
+       CASE INDEX(TRANSIT.REC,">Feb",1)>0
+         POS = INDEX(TRANSIT.REC,">Feb",1)
+       CASE INDEX(TRANSIT.REC,">Mar",1)>0
+         POS = INDEX(TRANSIT.REC,">Mar",1)
+       CASE INDEX(TRANSIT.REC,">Apr",1)>0
+         POS = INDEX(TRANSIT.REC,">Apr",1)
+       CASE INDEX(TRANSIT.REC,">May",1)>0
+         POS = INDEX(TRANSIT.REC,">May",1)
+       CASE INDEX(TRANSIT.REC,">Jun",1)>0
+         POS = INDEX(TRANSIT.REC,">Jun",1)
+       CASE INDEX(TRANSIT.REC,">Jul",1)>0
+         POS = INDEX(TRANSIT.REC,">Jul",1)
+       CASE INDEX(TRANSIT.REC,">Aug",1)>0
+         POS = INDEX(TRANSIT.REC,">Aug",1)
+       CASE INDEX(TRANSIT.REC,">Sep",1)>0
+         POS = INDEX(TRANSIT.REC,">Sep",1)
+       CASE INDEX(TRANSIT.REC,">Oct",1)>0
+         POS = INDEX(TRANSIT.REC,">Oct",1)
+       CASE INDEX(TRANSIT.REC,">Nov",1)>0
+         POS = INDEX(TRANSIT.REC,">Nov",1)
+       CASE INDEX(TRANSIT.REC,">Dec",1)>0
+         POS = INDEX(TRANSIT.REC,">Dec",1)
+       CASE 1
+         POS = 0       
+     END CASE  
+     IF POS>0 THEN
+       POS2=INDEX(TRANSIT.REC,":",2)
+       DD.DATE=TRIM(TRANSIT.REC[POS+1,POS2-POS+7])
+     END ELSE
+	 PROCESSED = 0
+      NEW.LINE<1,23>="DELIVERY DATE NOT FOUND!!!!"
+	 RETURN
+     END
+     IF INDEX(TRANSIT.REC,'Service Type:',1)>0 THEN
+       POS.MODE=INDEX(TRANSIT.REC,'Service Type:',1)
+       BEGIN CASE
+         CASE INDEX(TRANSIT.REC,"GROUND",1)
+          ACTUAL.MODE = "GROUND"
+         CASE INDEX(TRANSIT.REC,"STANDARD",1)
+          ACTUAL.MODE = "GROUND"
+         CASE INDEX(TRANSIT.REC,"2ND DAY AIR",1)
+	     ACTUAL.MODE = "2ND DAY AIR"
+         CASE INDEX(TRANSIT.REC,"3 DAY SELECT",1)
+	     ACTUAL.MODE = "3 DAY SELECT"
+         CASE INDEX(TRANSIT.REC,"2ND DAY AIR A.M.",1)
+           ACTUAL.MODE = "2ND DAY AIR A.M."
+         CASE INDEX(TRANSIT.REC,"NEXT DAY AIR",1)
+	     ACTUAL.MODE = "NEXT DAY AIR"
+         CASE INDEX(TRANSIT.REC,"EXPRESS SAVER",1)
+	     ACTUAL.MODE = "EXPRESS SAVER"
+         CASE INDEX(TRANSIT.REC,"NEXT DAY AIR SAVER",1)
+	     ACTUAL.MODE = "NEXT DAY AIR SAVER"
+         CASE 1
+           ACTUAL.MODE = "Error"
+       END CASE        
+         TIME<4,-1> = ACTUAL.MODE
+       END       
+       ARRIVAL.DATE=ICONV(LEFT(DD.DATE,12),'D')
+       IF DD.DATE='' THEN
+         NEW.LINE<1,23>='ERROR - TRACKING REC FOUND BUT NULL DATA'
+         TIME<6,-1>='ERROR' 
+         PROCESSED = 0
+	   RETURN
+       END ELSE
+           TIME<6,-1>=ARRIVAL.DATE
+       END
+       T.ARRIVAL.TIME=RIGHT(DD.DATE,10)
+       IF RIGHT(T.ARRIVAL.TIME,4) = 'A.M.' THEN
+         ARRIVAL.TIME = ICONV(TRIM(T.ARRIVAL.TIME[1,5]):"AM",'MT')
+       END ELSE
+         ARRIVAL.TIME = ICONV(TRIM(T.ARRIVAL.TIME[1,5]):"PM",'MT')
+       END
+       TIME<5,-1>=ARRIVAL.TIME
+       TIT=''; UPS.ARRIVAL.TIME=''; ACTUAL.MODE=''
+       NUM.ITEM=DCOUNT(TIME<1>,@VM)
+       GOSUB GET.MODE.DESC
+       IF SHIPPED.MODE.DESC = 'ERROR' THEN
+         NEW.LINE<1,23>='NEW MODE - OR MODE NOT MATCHED CORRECTLY'
+         PROCESSED = 0
+         RETURN
+       END
+ 
+     LOCATE SHIPPED.MODE.DESC IN TIME<1> SETTING MODE.POS THEN
+        TIT.DATE=TIME<2,MODE.POS>
+        UPS.ARRIVAL.TIME=TIME<3,MODE.POS>
+        ACTUAL.MODE=TIME<4,1> 
+     END ELSE
+       NEW.LINE<1,23>='ERROR - MODE NOT FOUND IN UPS TIT DATA'
+         PROCESSED = 0
+         RETURN
+     END
+     BEGIN CASE
+      
+       CASE SHIPPED.MODE='GND'
+         IF ACTUAL.MODE NE 'GROUND' AND ACTUAL.MODE NE 'GROUND ADDITIONAL HANDLING CHARGE' AND ACTUAL.MODE NE 'GROUND UPS DECLARED VALUE INSURANCE' AND ACTUAL.MODE NE 'GROUND UPS DECLARED VALUE INSURANCE ADDITIONAL HANDLING CHARGE' AND ACTUAL.MODE NE 'GROUND HUNDREDWEIGHT' AND ACTUAL.MODE NE 'GROUND COD FOR VALUES OF GOODS (PCS)' AND ACTUAL.MODE NE 'GROUND UPS DECLARED VALUE INSURANCE COD FOR VALUES OF GOODS (PCS)' AND ACTUAL.MODE[1,10] NE 'GROUND UPS' AND ACTUAL.MODE[1,10] NE 'UPS GROUND' THEN
+           NEW.LINE<1,23>='MODES DO NOT MATCH':' - ':ACTUAL.MODE
+         PROCESSED = 0
+         RETURN
+         END
+       CASE SHIPPED.MODE='2DA'
+         IF ACTUAL.MODE NE '2ND DAY AIR' AND ACTUAL.MODE NE '2ND DAY AIR UPS' AND ACTUAL.MODE NE '2ND DAY AIR UPS DECLARED VALUE INSURANCE' AND ACTUAL.MODE[1,15] NE '2ND DAY AIR UPS' THEN
+           NEW.LINE<1,23>='MODES DO NOT MATCH':' - ':ACTUAL.MODE    
+         PROCESSED = 0
+         RETURN
+         END
+       CASE SHIPPED.MODE='NDA'
+         IF ACTUAL.MODE NE 'NEXT DAY AIR' AND ACTUAL.MODE NE 'NEXT DAY AIR ADDITIONAL HANDLING CHARGE' AND ACTUAL.MODE NE 'NEXT DAY AIR SATURDAY DELIVERY' AND ACTUAL.MODE NE 'NEXT DAY AIR UPS DECLARED VALUE INSURANCE' THEN
+           NEW.LINE<1,23>='MODES DO NOT MATCH':' - ':ACTUAL.MODE
+         PROCESSED = 0
+         RETURN
+         END
+       CASE SHIPPED.MODE='SEL'
+         IF ACTUAL.MODE NE '3 DAY SELECT' AND ACTUAL.MODE NE 'THREE DAY SELECT' AND ACTUAL.MODE[1,20] NE 'THREE DAY SELECT UPS' THEN
+           NEW.LINE<1,23>='MODES DO NOT MATCH':' - ':ACTUAL.MODE
+         PROCESSED = 0
+         RETURN
+         END
+       CASE 1
+         NEW.LINE<1,23>='ERROR - MODE NOT ACCOUNTED FOR IN COMPARISON'
+         PROCESSED = 0
+         RETURN
+     END CASE
+*CALL ELINE(ARRIVAL.TIME:' ':UPS.ARRIVAL.TIME:' ':ARRIVAL.DATE:' ':TIT.DATE)     
+     IF ARRIVAL.DATE='ERROR' ELSE
+       IF ARRIVAL.TIME>UPS.ARRIVAL.TIME THEN
+         IF ARRIVAL.DATE>TIT.DATE AND TRIM(TIT.DATE) # '' THEN
+           CHRGS = LINE<1,3>
+           NUM.FAILURES += 1
+           FAILURE.CHRGS += CHRGS
+           NEW.LINE<1,20>='X'
+           CRT @(0,18):"SERVICE FAILURE AT RECORD ":RECORD.COUNT:@(-3):
+         END
+       END ELSE
+         IF ARRIVAL.DATE>TIT.DATE AND TRIM(TIT.DATE) # '' THEN
+           CHRGS = LINE<1,3>
+           NUM.FAILURES += 1
+           FAILURE.CHRGS += CHRGS
+           NEW.LINE<1,20>='X'
+           CRT @(0,18):"SERVICE FAILURE AT RECORD ":RECORD.COUNT:@(-3): 
+         END 
+       END
+     END
+RETURN
+
+
+
+
+SET.COLUMN.NUM.WORLDSHIP:***
+   IF CLIENT = '00938' AND DIVISION = '00003' THEN
+     DATE.POS = 0
+   END ELSE
+     LOCATE "SHIPMENTINFORMATIONPICKUPDATE" IN HEADING.LINE<1> SETTING DATE.POS ELSE 
+       HEADING.ERROR = 1
+       HEAD.ERROR<-1> = 'Contains no date field'
+     END
+   END
+   LOCATE "SHIPMENTINFORMATIONTOTALSHIPPERCHARGE" IN HEADING.LINE<1> SETTING NET.POS ELSE
+     LOCATE "SHIPMENTINFORMATIONTOTALSHIPMENTCHARGE" IN HEADING.LINE<1> SETTING NET.POS ELSE 
+       HEADING.ERROR = 1
+       HEAD.ERROR<-1> = 'Contains no net field'
+     END
+   END
+   LOCATE "SHIPTOPOSTALZIPCODE" IN HEADING.LINE<1> SETTING RECEIVER.ZIP.POS ELSE
+     HEADING.ERROR = 1
+     HEAD.ERROR<-1> = 'Contains no receiver zip field'
+   END
+   LOCATE "SHIPFROMPOSTALZIPCODE" IN HEADING.LINE<1> SETTING SHIP.ZIP.POS ELSE 
+     SHIP.ZIP.POS=0
+   END
+   LOCATE "PACKAGETRACKINGNUMBER" IN HEADING.LINE<1> SETTING TRACKING.POS ELSE
+     HEADING.ERROR = 1
+     HEAD.ERROR<-1> = 'Contains no tracking number'
+   END
+   LOCATE "SHIPTORESIDENTIALINDICATOR" IN HEADING.LINE<1> SETTING RESIDENTIAL.POS ELSE RESIDENTIAL.POS = 0
+   SHIPTO.POS = 0
+RETURN
+
+SET.COLUMN.NUM.UPS:***
+
+   LOCATE "PICKUP_DATE" IN HEADING.LINE<1> SETTING DATE.POS ELSE
+     HEADING.ERROR = 1
+     HEAD.ERROR<-1> = 'Contains no date field'
+   END
+   LOCATE "NET_SHIPPER_CHG" IN HEADING.LINE<1> SETTING NET.POS ELSE
+     LOCATE "NET_SHIPMENT_CHARGE" IN HEADING.LINE<1> SETTING NET.POS ELSE
+         LOCATE "NET_SHIPPING_CHG" IN HEADING.LINE<1> SETTING NET.POS ELSE
+           HEADING.ERROR = 1
+           HEAD.ERROR<-1> = 'Contains no net field'
+       END
+     END
+   END
+   LOCATE "POSTAL_CODE" IN HEADING.LINE<1> SETTING RECEIVER.ZIP.POS ELSE 
+     HEADING.ERROR = 1
+     HEAD.ERROR<-1> = 'Contains no receiver zip'
+   END
+   LOCATE "SHIP_ZIP" IN HEADING.LINE<1> SETTING SHIP.ZIP.POS ELSE 
+     SHIP.ZIP.POS=0
+   END
+   LOCATE "TRACKING_NO" IN HEADING.LINE<1> SETTING TRACKING.POS ELSE 
+     LOCATE "TRACKING_NUMBER" IN HEADING.LINE<1> SETTING TRACKING.POS ELSE 
+       HEADING.ERROR = 1
+       HEAD.ERROR<-1> = 'Contains no tracking number'
+     END
+   END
+   LOCATE "SHIPTO_NAME" IN HEADING.LINE<1> SETTING SHIPTO.POS ELSE SHIPTO.POS = 0
+   LOCATE "RESIDENTIAL" IN HEADING.LINE<1> SETTING RESIDENTIAL.POS ELSE RESIDENTIAL.POS = 0
+RETURN
+
+SET.COLUMN.NUM.MULTISHIP:***
+   LOCATE "DATE" IN HEADING.LINE<1> SETTING DATE.POS ELSE
+     HEADING.ERROR = 1
+     HEAD.ERROR<-1> = 'Contains no date field'
+   END
+   LOCATE "SHP_CHG" IN HEADING.LINE<1> SETTING NET.POS ELSE
+       HEADING.ERROR = 1
+       HEAD.ERROR<-1> = 'Contains no net field'
+   END
+   LOCATE "ZIP" IN HEADING.LINE<1> SETTING RECEIVER.ZIP.POS ELSE 
+     HEADING.ERROR = 1
+     HEAD.ERROR<-1> = 'Contains no receiver zip'
+   END
+   LOCATE "TRACK_NO" IN HEADING.LINE<1> SETTING TRACKING.POS ELSE 
+     HEADING.ERROR = 1
+     HEAD.ERROR<-1> = 'Contains no tracking number'
+   END
+   LOCATE "SHIPTO4" IN HEADING.LINE<1> SETTING SHIPTO.POS ELSE SHIPTO.POS = 0
+   LOCATE "RES_FLAG" IN HEADING.LINE<1> SETTING RESIDENTIAL.POS ELSE RESIDENTIAL.POS = 0
+   LOCATE "STATUS" IN HEADING.LINE<1> SETTING STATUS.POS ELSE STATUS.POS = 0
+   LOCATE "CARRIER" IN HEADING.LINE<1> SETTING CARRIER.POS ELSE CARRIER.POS = 0
+
+
+RETURN
+
+
+
+PRINT.INFO:***
+     PRINTER ON
+     TEXT=''
+     TEXT1='UPS TRACKED FILES'
+     TEXT2='-----------------------------------------------------------------'
+     TEXT3='CLIENT NAME             RECORD NAME               ENDING DATE    '
+     TEXT2 :='--------------------------------------------------------'
+     TEXT3 :='$ FAILURE      TOTAL $     # FAILURES     TOTAL #       '
+
+     MAIL.TEXT<1> = ''
+     MAIL.TEXT<1,-1> = TEXT1
+     MAIL.TEXT<1,-1> = TEXT2
+     MAIL.TEXT<1,-1> = TEXT3
+     CALL CENTER(TEXT1,120)
+     CALL CENTER(TEXT2,120)
+     TITLE.3=''
+     TITLE.3<1>=TEXT1
+     TITLE.3<2>=TEXT2
+     TITLE.3<3>=TEXT3
+     CALL PAGE.HEAD(PROG.NAME,COMPANY.NAME,'',TITLE.3,'',120,HED)
+     PAGE 1
+     HEADING HED
+     IF CLIENT.NAME  = '' THEN
+       PRINT
+       PRINT 'NO CLIENTS PROCESSED ON ':DATE()'D2/'
+       MAIL.TEXT<1,-1> = 'NO CLIENTS PROCESSED ON ':DATE()'D2/'
+       PRINT
+     END ELSE
+       PRINT
+       F.CHRGS = ICONV(FAILURE.CHRGS,'MR2')
+       T.CHRGS = ICONV(TOTAL.CHRGS,'MR2')
+
+       PRINT.LINE = CLIENT.NAME'L#20':' ':UPS.RECORD.NAME'L#30':ENDING.DATE'D2/'
+       PRINT.LINE :='     ':F.CHRGS'R26,#10':'     ':T.CHRGS'R26,#10':'   ':NUM.FAILURES'R#8':'   ':NUM.SHIPMENTS'R#8'      
+       PRINT PRINT.LINE
+       PRINT
+       MAIL.TEXT<1,-1> = PRINT.LINE
+       MAIL.TEXT<1,-1> = ''
+       ERROR.COUNT = DCOUNT(ERRORS<1>,@VM)
+       IF ERROR.COUNT GT 0 THEN
+         LINE =  'ERRORS''L#50':'# OF ERRORS'
+         PRINT LINE
+         MAIL.TEXT<1,-1> = LINE
+         FOR X = 1 TO ERROR.COUNT
+           LINE = ERRORS<1,X>'L#50':' ':ERRORS<2,X>
+           PRINT LINE
+           MAIL.TEXT<1,-1> = LINE
+         NEXT X
+       END
+       MAIL.TEXT<1,-1> = ''
+       IF DIVISION # '' THEN 
+         MAIL.TEXT<1,-1> = '"\\AFS\UPS\':CLIENT:'\':DIVISION:'\':END.DATE:'\':MAIL.UPS.RECORD.NAME:'"'
+       END ELSE
+         MAIL.TEXT<1,-1> = '"\\AFS\UPS\':CLIENT:'\':END.DATE:'\':MAIL.UPS.RECORD.NAME:'"'
+       END
+
+     END
+     MVIN=''
+     MVIN<1>='UPS@afs.net'
+     MVIN<2>=''
+     MVIN<4>='AFS'
+     MVIN<5>='UPS Processed' 
+     MVIN<6>=MAIL.TEXT
+     CALL SENDMAIL(MVIN,MVOUT)     
+     PRINTER CLOSE
+RETURN
+     
+
+CLEAN.FILE:***
+     END.COUNT = DCOUNT(NEW.UPS.REC,@AM)
+     ERRORS=''
+     IF DIVISION#'' THEN
+       CLIENT.INFO=CLIENT:'\':DIVISION
+     END ELSE 
+       CLIENT.INFO =CLIENT
+
+     END
+
+     REVISED.REC = 'Ship Date'
+     REVISED.REC<1,2> = 'Tracking #'
+     REVISED.REC<1,3> = 'Gross'
+     REVISED.REC<1,4> = 'Credit'
+     REVISED.REC<1,5> = 'Explanation'
+     REVISED.REC<1,6> = 'Expected Credit Date'
+     REVISED.REC<1,7> = 'Ship Zip'
+     REVISED.REC<1,8> = 'Recp Zip'
+     REVISED.REC<1,9> = 'Mode'
+     REVISED.REC<1,10> = 'TIT'
+     REVISED.REC<1,11> = 'DD'
+     REVISED.REC<1,12> = 'Service Failure'       
+     REVISED.REC<1,13> = 'Errors'
+     ADAY = DATE()
+     FOR X = 2 TO END.COUNT
+       LINE = NEW.UPS.REC<X>
+       SERVICE.FAILURE = LINE<1,20>
+       IF SERVICE.FAILURE = 'X' THEN
+         INSERT.LINE = 1
+       END ELSE
+         INSERT.LINE = 0
+       END
+       REVISED.LINE = LINE<1,1>
+       REVISED.LINE<1,2> = LINE<1,2>
+       REVISED.LINE<1,3> = LINE<1,3>
+       REVISED.LINE<1,4> = ''
+       REVISED.LINE<1,5> = ''
+       REVISED.LINE<1,6> = ''
+       REVISED.LINE<1,7> = LINE<1,6>
+       REVISED.LINE<1,8> = LINE<1,7>
+       REVISED.LINE<1,9> = LINE<1,8>
+       REVISED.LINE<1,10> = LINE<1,9>
+       REVISED.LINE<1,11> = LINE<1,10>
+       REVISED.LINE<1,12> = LINE<1,20>
+       REVISED.LINE<1,13> = LINE<1,23>
+       REVISED.LINE<1,14> = X
+       REVISED.LINE<1,15> = ENDING.DATE'D2/'
+       ALL.REC.LINE = REVISED.LINE
+       INS CLIENT.INFO BEFORE ALL.REC.LINE<1,1>
+       ALL.REC<-1> = ALL.REC.LINE
+       IF INSERT.LINE THEN 
+         INS REVISED.LINE BEFORE REVISED.REC<2>
+       END ELSE
+         REVISED.REC<-1> = REVISED.LINE
+       END
+       IF LINE<1,23> # '' THEN
+         ERROR = LINE<1,23>         
+         LOCATE ERROR IN ERRORS<1> SETTING POS ELSE POS = 0
+         IF POS GT 0 THEN
+           ERRORS<2,POS> += 1
+         END ELSE
+           ERRORS<1,-1> = ERROR
+           ERRORS<2,-1> = 1
+         END
+      END
+   NEXT X
+   TEMP.ALL.REC = CHANGE(ALL.REC,@VM,TAB)
+   WRITE TEMP.ALL.REC ON MAIN.UPS,"ALLUPS.TXT"
+   
+RETURN
+
+PRINT.ERROR:***
+*           CALL ELINE('CAN NOT PROCESS THIS CLIENT, PROBLEM WITH HEADING LINE, CHECK FILE')
+           PRINTER ON
+           PRINT 'CLIENT ':CLIENT:' - ':CLIENT.NAME:' HEADING ERROR WITH FILE' :UPS.RECORD.NAME:' FILE... SKIPPED'
+           PRINTER OFF
+           TEXT = 'PROBLEM WITH FILE : ':UPS.RECORD.NAME
+           INFO.ERROR<1,-1> =  TEXT
+           INFO.ERROR<1,-1> =  HEAD.ERROR
+           INFO.ERROR<1,-1> = 'PROBLEM WITH HEADING LINE OR FILE, PLEASE REVIEW.'
+           INFO.ERROR<1,-1> = 'This is the heading line: ':HEADING.LINE
+           INFO.ERROR = CHANGE(INFO.ERROR,@VM,TAB)
+           MVIN=''
+           MVIN<1>='UPS@afs.net'
+*          MVIN<2>='Owen@afs.net':@VM:'DCurtis@afs.net':@VM:'RGaudet@afs.net'
+*          MVIN<2>='Owen@afs.net':@VM:'RGaudet@afs.net'
+           MVIN<2>='Owen@afs.net':@VM:'RGaudet@afs.net':'CMendenhall@afs.net'
+           MVIN<4>='AFS'
+           MVIN<5>='UPS ERROR'
+           MVIN<6>=INFO.ERROR
+           MVIN<11>='E:\ARDENT\PUBLIC\BILLDATA\UPS\'
+           MVIN<11>:=UPS.RECORD.NAME
+           CALL SENDMAIL(MVIN,MVOUT)
+           DELETE UPS.IN,UPS.RECORD.NAME   
+RETURN  
+
+*
+* File from UPS Online Program
+*
+BUILD.FROM.WORLDSHIP.NEW:***
+     NUM.INFO.ERRORS = 0
+     RECORD.COUNT = DCOUNT(UPS.REC,@AM)
+     NEW.UPS.REC = ''
+     GOSUB SET.HEADINGS
+     FOR RECORD.NUM = 2 TO RECORD.COUNT
+       LINE = UPS.REC<RECORD.NUM>
+       TRACKING.NUM = LINE<1,TRACKING.POS>
+       IF RESIDENTIAL.POS # 0 THEN
+         RESIDENTIAL = LINE<1,RESIDENTIAL.POS>
+ *PER CHAD HEBERT 09-18-01         IF RESIDENTIAL = "Y" OR RESIDENTIAL = 1 THEN GO SKIP.UPS.REC.WORLDSHIP.NEW
+       END
+       CRT @(0,12): LINE<1>:@(-4)
+       IF TRIM(TRACKING.NUM) = '' THEN GO SKIP.UPS.REC.WORLDSHIP.NEW       
+       IF DATE.POS = 0 AND CLIENT = '00938' AND DIVISION = '00003' THEN
+         SHIP.DATE = OCONV(ENDING.DATE,'D2/')
+       END ELSE         
+  *OH
+         A.DATE = TRIM(LINE<1,DATE.POS>)
+         BEGIN CASE
+           CASE LEN(A.DATE)=14 ; * Pollock for Example
+             SHIP.DATE = A.DATE[5,2]:'/':A.DATE[7,2]:'/':A.DATE[1,4]
+           CASE A.DATE MATCHES "8N" 
+             SHIP.DATE = A.DATE[5,2]:'/':A.DATE[7,2]:'/':A.DATE[1,4]
+           CASE 1
+             SHIP.DATE = A.DATE
+         END CASE
+       END
+       WEIGHT = ""
+       GROSS = LINE<1,NET.POS>
+       NET = GROSS
+       GOSUB GET.INFO
+       MODE = UPS.MODE
+       IF MODE = 'INT' THEN GO SKIP.UPS.REC.WORLDSHIP.NEW
+       ACCT.NUM = TRACKING.NUM[3,6]
+       IF SHIP.ZIP.POS#0 THEN
+         SHIP.ZIP = LINE<1,SHIP.ZIP.POS>[1,5]
+       END ELSE
+         SHIP.ZIP = SHIP.ZIP
+       END
+       IF SHIPTO.POS # 0 THEN 
+         RECIPIENT.NAME = LINE<1,SHIPTO.POS>
+       END ELSE
+         RECIPIENT.NAME = ""
+       END       
+       RECIPIENT.ADDR = ""
+       RECIPIENT.CITY = ""
+       RECIPIENT.ST = ""
+       RECIPIENT.ZIP = LINE<1,RECEIVER.ZIP.POS>
+       IF LEN(RECIPIENT.ZIP) GT 5 THEN
+         RECIPIENT.ZIP = RECIPIENT.ZIP'R%9'
+       END 
+       RECIPIENT.ZIP = RECIPIENT.ZIP[1,5]'R%5'       
+       GOSUB SET.RECORD.INFO
+       IF RESIDENTIAL.POS # 0 THEN
+         RESIDENTIAL = LINE<1,RESIDENTIAL.POS>
+ *PER CHAD HEBERT 09-18-01         IF RESIDENTIAL = 'Y' THEN GO SKIP.UPS.REC.NEW
+       END
+SKIP.UPS.REC.WORLDSHIP.NEW:***
+     NEXT RECORD.NUM
+     NEW.UPS.REC = CHANGE(NEW.UPS.REC,@VM,TAB)
+     IF NUM.INFO.ERRORS GE RECORD.COUNT-1 THEN
+       FILE.OK = 0
+     END ELSE
+       WRITE NEW.UPS.REC ON UPS,"UPS.XLS"
+     END
+RETURN
+
+*
+* File from UPS Online Program
+*
+BUILD.FROM.UPS.NEW:***
+     NUM.INFO.ERRORS = 0
+     RECORD.COUNT = DCOUNT(UPS.REC,@AM)
+     NEW.UPS.REC = ''
+     GOSUB SET.HEADINGS
+
+     FOR RECORD.NUM = 2 TO RECORD.COUNT
+       LINE = UPS.REC<RECORD.NUM>
+       IF CLIENT='00974' OR CLIENT='00966' THEN
+         IF DCOUNT(LINE<1>,@VM)=7 AND LINE<1,RECEIVER.ZIP.POS+1> MATCHES '5N' THEN DEL LINE<1,4>
+         *** OWEN Deletes the 2nd field of ship to name
+       END
+       TRACKING.NUM = LINE<1,TRACKING.POS>
+       IF SHIP.ZIP.POS#0 THEN
+         SHIP.ZIP = LINE<1,SHIP.ZIP.POS>
+       END
+       CRT @(0,12): LINE<1>:@(-4)
+       IF TRIM(TRACKING.NUM) = '' THEN GO SKIP.UPS.REC.NEW
+       A.DATE = LINE<1,DATE.POS>
+       SHIP.DATE = LINE<1,DATE.POS>
+       WEIGHT = ""
+       GROSS = LINE<1,NET.POS>
+       NET = GROSS
+       GOSUB GET.INFO
+       MODE = UPS.MODE
+       IF MODE = 'INT' THEN GO SKIP.UPS.REC.NEW
+       ACCT.NUM = TRACKING.NUM[3,6]
+       RECIPIENT.NAME = LINE<1,SHIPTO.POS>
+       RECIPIENT.ADDR = ""
+       RECIPIENT.CITY = ""
+       RECIPIENT.ST = ""
+       RECIPIENT.ZIP = LINE<1,RECEIVER.ZIP.POS>
+       IF LEN(RECIPIENT.ZIP) GT 5 THEN
+         RECIPIENT.ZIP = RECIPIENT.ZIP'R%9'
+       END
+       RECIPIENT.ZIP = RECIPIENT.ZIP[1,5]'R%5'
+       IF RESIDENTIAL.POS # 0 THEN
+         RESIDENTIAL = LINE<1,RESIDENTIAL.POS>
+         IF CLIENT = '00974' THEN RESIDENTIAL = ''
+         * Temp remove Residential Code from Squires
+ *PER CHAD HEBERT 09-18-01         IF RESIDENTIAL = 'Y' THEN GO SKIP.UPS.REC.NEW
+       END
+       
+       GOSUB SET.RECORD.INFO       
+       
+SKIP.UPS.REC.NEW:***
+     NEXT RECORD.NUM
+     NEW.UPS.REC = CHANGE(NEW.UPS.REC,@VM,TAB)
+     IF NUM.INFO.ERRORS GE RECORD.COUNT-1 THEN
+       FILE.OK = 0
+     END ELSE
+       WRITE NEW.UPS.REC ON UPS,"UPS.XLS"
+     END
+
+RETURN
+
+*
+* File from MULTISHIP Online Program
+*
+BUILD.FROM.MULTISHIP:***
+     NUM.INFO.ERRORS = 0
+     RECORD.COUNT = DCOUNT(UPS.REC,@AM)
+     NEW.UPS.REC = ''
+     GOSUB SET.HEADINGS
+     FOR RECORD.NUM = 2 TO RECORD.COUNT
+       LINE = UPS.REC<RECORD.NUM>
+       STATUS = UPS.REC<1,STATUS.POS>
+       IF STATUS = 'VOID' THEN GO SKIP.MULTISHIP.REC
+       CARRIER.NAME = LINE<1,CARRIER.POS>
+       IF CARRIER.NAME[1,3] # 'UPS' THEN GO SKIP.MULTISHIP.REC
+       TRACKING.NUM = LINE<1,TRACKING.POS>
+       IF TRIM(TRACKING.NUM) = '' THEN GO SKIP.MULTISHIP.REC
+       A.DATE = LINE<1,DATE.POS>
+       SHIP.DATE = A.DATE
+       WEIGHT = ""
+       GROSS = LINE<1,NET.POS>
+       NET = GROSS
+       GOSUB GET.INFO
+       MODE = UPS.MODE
+       IF MODE = 'INT' THEN GO SKIP.MULTISHIP.REC
+       ACCT.NUM = TRACKING.NUM[3,6]
+       RECIPIENT.NAME = LINE<1,SHIPTO.POS>
+       RECIPIENT.ADDR = ""
+       RECIPIENT.CITY = ""
+       RECIPIENT.ST = ""
+       RECIPIENT.ZIP = LINE<1,RECEIVER.ZIP.POS>[1,5]
+       GOSUB SET.RECORD.INFO
+SKIP.MULTISHIP.REC:***
+     NEXT RECORD.NUM
+     NEW.UPS.REC = CHANGE(NEW.UPS.REC,@VM,TAB)
+     IF NUM.INFO.ERRORS GE RECORD.COUNT-1 THEN
+       FILE.OK = 0
+     END ELSE
+       WRITE NEW.UPS.REC ON UPS,"UPS.XLS"
+     END
+RETURN
+*
+* File from Briggs Weaver Custom Program
+*
+BUILD.FROM.BRIGGS:***
+     RECORD.COUNT = DCOUNT(UPS.REC,@AM)
+     UPS.REC=CHANGE(UPS.REC,'","',@VM)
+     UPS.REC=CHANGE(UPS.REC,@AM:'"',@AM)
+     IF UPS.REC<1>[1,1]='"' THEN UPS.REC<1>=UPS.REC<1>[2,9999]
+     NEW.UPS.REC = ''
+     GOSUB SET.HEADINGS
+     FOR RECORD.NUM = 1 TO RECORD.COUNT
+       LINE = UPS.REC<RECORD.NUM>
+       TRACKING.NUM = LINE<1,6>
+       IF TRIM(TRACKING.NUM) = '' THEN GO SKIP.BRIGGS.REC
+       IF NOT(TRACKING.NUM MATCHES "'1Z'16X") THEN GO SKIP.BRIGGS.REC
+       ACCT.NUM = TRACKING.NUM[3,6]
+       GOSUB GET.INFO
+       MODE = UPS.MODE
+       IF MODE = 'INT' THEN GO SKIP.BRIGGS.REC
+       A.DATE = LINE<1,9>[1,8]      
+       SHIP.DATE = A.DATE[5,2]:'/':A.DATE[7,2]:'/':A.DATE[3,2]
+       WEIGHT = LINE<1,5>
+       GROSS = LINE<1,7>
+       NET = GROSS
+       RECIPIENT.NAME = ''
+       RECIPIENT.ADDR = ''
+       RECIPIENT.CITY = ''
+       RECIPIENT.ST = ''
+       RECIPIENT.ZIP = LINE<1,13>[1,5]       
+       GOSUB SET.RECORD.INFO
+       IF INFO.ERROR # '' THEN RETURN
+SKIP.BRIGGS.REC:***
+     NEXT RECORD.NUM
+     NEW.UPS.REC = CHANGE(NEW.UPS.REC,@VM,TAB)
+     WRITE NEW.UPS.REC ON UPS,"UPS.XLS"
+RETURN
+*
+* File from CLIPPERSHIP Online Program
+*
+BUILD.FROM.CLIPPERSHIP:***
+     RECORD.COUNT = DCOUNT(UPS.REC,@AM)
+     NEW.UPS.REC = ''
+     GOSUB SET.HEADINGS
+     FOR RECORD.NUM = 2 TO RECORD.COUNT
+       LINE = UPS.REC<RECORD.NUM>
+       CARRIER.NAME = LINE[45,1]
+       IF CARRIER.NAME # 'U' THEN GO SKIP.CLIPPERSHIP.REC
+       TRACKING.NUM = LINE[1,18]
+       IF TRIM(TRACKING.NUM) = '' THEN GO SKIP.CLIPPERSHIP.REC
+       A.DATE = LINE[650,8]      
+       SHIP.DATE = A.DATE[5,2]:'/':A.DATE[7,2]:'/':A.DATE[3,2]
+       WEIGHT = LINE[65,8]
+       GROSS = LINE[73,10]
+       NET = GROSS
+       GOSUB GET.INFO
+       MODE = UPS.MODE
+       IF MODE = 'INT' THEN GO SKIP.CLIPPERSHIP.REC
+       ACCT.NUM = TRACKING.NUM[3,6]
+       RECIPIENT.NAME = LINE[981,30]
+       RECIPIENT.ADDR = LINE[1041,30]
+       RECIPIENT.CITY = LINE[1071,10]
+       RECIPIENT.ST = LINE[1080,2]
+       RECIPIENT.ZIP = LINE[1101,5]'R%5'       
+       GOSUB SET.RECORD.INFO
+       IF INFO.ERROR # '' THEN RETURN
+SKIP.CLIPPERSHIP.REC:***
+     NEXT RECORD.NUM
+     NEW.UPS.REC = CHANGE(NEW.UPS.REC,@VM,TAB)
+     WRITE NEW.UPS.REC ON UPS,"UPS.XLS"
+RETURN
+
+*
+* File from UPS Online Program
+*
+BUILD.FROM.UPS.REXEL:***
+     RECORD.COUNT = DCOUNT(UPS.REC,@AM)
+     NEW.UPS.REC = ''
+     GOSUB SET.HEADINGS
+     FOR RECORD.NUM = 2 TO RECORD.COUNT
+       LINE = UPS.REC<RECORD.NUM>
+       TRACKING.NUM = LINE<1,3>
+       CRT @(0,12): LINE<1>:@(-4)
+       IF TRIM(TRACKING.NUM) = '' THEN GO SKIP.UPS.REC.REXEL
+       A.DATE = LINE<1,1>
+       SHIP.DATE = LINE<1,1>       
+       WEIGHT = ""
+       GROSS = LINE<1,2>
+       NET = GROSS
+       GOSUB GET.INFO
+       MODE = UPS.MODE
+       IF MODE = 'INT' THEN GO SKIP.UPS.REC.REXEL
+       ACCT.NUM = TRACKING.NUM[3,6]
+       RECIPIENT.NAME = LINE<1,4>
+       RECIPIENT.ADDR = ""
+       RECIPIENT.CITY = ""
+       RECIPIENT.ST = ""
+       RECIPIENT.ZIP = LINE<1,5>
+       IF LEN(RECIPIENT.ZIP) GT 5 THEN
+         RECIPIENT.ZIP = RECIPIENT.ZIP'R%9'
+       END 
+       RECIPIENT.ZIP = RECIPIENT.ZIP[1,5]'R%5'
+     
+       GOSUB SET.RECORD.INFO
+       IF INFO.ERROR # '' THEN RETURN       
+SKIP.UPS.REC.REXEL:***
+     NEXT RECORD.NUM
+     NEW.UPS.REC = CHANGE(NEW.UPS.REC,@VM,TAB)
+     WRITE NEW.UPS.REC ON UPS,"UPS.XLS"
+RETURN
+
+*
+* File from SHIP.PROGRAM Online Program
+*
+BUILD.SPORT.SOUTH.INFO:***
+     RECORD.COUNT = DCOUNT(UPS.REC,@AM)
+     NEW.UPS.REC = ''
+     GOSUB SET.HEADINGS
+     FOR RECORD.NUM = 2 TO RECORD.COUNT
+       LINE = UPS.REC<RECORD.NUM>
+       TRACKING.NUM = LINE[309,18]
+       IF TRIM(TRACKING.NUM) = '' THEN GO SKIP.SPORT.SOUTH.REC
+       A.DATE = LINE[36,10]
+       SHIP.DATE = LINE[36,10]
+       WEIGHT = LINE[349,10]
+       GROSS = LINE[393,10]
+       NET = GROSS
+       GOSUB GET.INFO
+       MODE = UPS.MODE
+       IF MODE = 'INT' THEN GO SKIP.SPORT.SOUTH.REC
+       ACCT.NUM = TRACKING.NUM[3,6]
+       RECIPIENT.NAME = LINE[150,30]
+       RECIPIENT.ADDR = LINE[185,60]
+       RECIPIENT.CITY = LINE[220,30]
+       RECIPIENT.ST = LINE[250,2]
+       RECIPIENT.ZIP = LINE[255,5]'R%5'       
+       GOSUB SET.RECORD.INFO
+       IF INFO.ERROR # '' THEN RETURN       
+SKIP.SPORT.SOUTH.REC:***
+     NEXT RECORD.NUM
+     NEW.UPS.REC = CHANGE(NEW.UPS.REC,@VM,TAB)
+     WRITE NEW.UPS.REC ON UPS,"UPS.XLS"
+RETURN
+
+*
+* Get UPS's Mode and account # from tracking number
+*
+GET.INFO:***
+     T.UPS.MODE = TRACKING.NUM[9,2]
+     BEGIN CASE
+       CASE T.UPS.MODE = '01' OR T.UPS.MODE = '15'
+         UPS.MODE = 'NDA'
+       CASE T.UPS.MODE = '13'
+         UPS.MODE = 'SAV'
+       CASE T.UPS.MODE = '07'
+         UPS.MODE = ' AM'
+       CASE T.UPS.MODE = '02'
+         UPS.MODE = '2DA'
+       CASE T.UPS.MODE = '12'
+         UPS.MODE = 'SEL'
+       CASE T.UPS.MODE = '03' OR T.UPS.MODE = '51' OR T.UPS.MODE = '42'
+         UPS.MODE = 'GND'
+       CASE T.UPS.MODE = '66' OR T.UPS.MODE = '68' 
+         UPS.MODE = 'INT'
+       CASE 1
+         UPS.MODE = 'ERR'
+     END CASE
+RETURN
+
+*
+* CRITICAL ERROR HANDLER - GENERIC ROUTINE (TERMINATES PROGRAM)
+*
+CALL.NET.ADMIN:***
+      CALL ELINE("CALL NETWORK ADMINISTRATOR!")
+      CALL ELINE("CALL NETWORK ADMINISTRATOR!!!!!")
+RETURN
+
+GET.MODE.DESC:***
+
+     BEGIN CASE
+       CASE SHIPPED.MODE=' AM'
+         SHIPPED.MODE.DESC = 'UPS 2nd Day Air A.M.' 
+       CASE SHIPPED.MODE='SEL' 
+         SHIPPED.MODE.DESC = 'UPS 3 Day Select'
+       CASE SHIPPED.MODE='3DSEL' 
+         SHIPPED.MODE.DESC = 'UPS 3 Day Select'
+       CASE SHIPPED.MODE='2DA'
+         SHIPPED.MODE.DESC ='UPS 2nd Day Air' 
+       CASE SHIPPED.MODE='NDA'
+         SHIPPED.MODE.DESC ='UPS Next Day Air' 
+       CASE SHIPPED.MODE='SAV'
+         SHIPPED.MODE.DESC ='UPS Express Saver' 
+       CASE SHIPPED.MODE='GND'
+           SHIPPED.MODE.DESC ='UPS Ground'
+       CASE SHIPPED.MODE='EXSAV'
+           SHIPPED.MODE.DESC ='UPS Next Day Air Saver'
+       CASE 1
+          SHIPPED.MODE.DESC = 'ERROR'
+     END CASE
+RETURN
+*
+* Initialize Variables
+*
+INITIALIZE.VARIABLES:***
+
+     CALL GET.USER(USER)
+     USER=OCONV(USER,'MCU')
+     IF INDEX('OWEN-DAVID-WCARTOLANO-ROB-JENNIFER',USER,1) ELSE
+       CALL FB.PRINT.CENT(1,80,10,'YOU DO NOT HAVE ACCESS TO THIS APPLICATIONS!!!')
+       CALL FB.PRINT.CENT(1,80,12,'RESTRICTED ACCESS APPLICATION')
+       CALL ELINE("ACCESS DENIED!")
+       STOP
+     END
+
+     COMPANY.NAME='AFS Logistics, LLC'
+     MAIL.TEXT = ''; DIVISION='';  A.DATE=''
+     RECORD.COUNT = 0; SHIP.DATE = ''; TRACKING.NUM = ''; ORIG.ZIP = '';
+     DEST.ZIP = ''; MODE = ''; ZIP.ID = ''; TIT.REC =''; UPS.TIT.REC = ''
+     UPS.TRACK.REC = ''; DONE=0; TIME=''; ACTUAL.MODE=''; DEST.TIME='';
+     TIT=''; TIME=''; ACTUAL.MODE=''; DEST.TIME=''; TIT=''
+     ENDING.DATE='';  NEW.UPS.REC='';  CLIENT = ''
+
+     PROG.NAME='UPS.TRACK'
+     PROG.DESC="Build File and Track UPS Shipments"
+     PACK.NAME="Freight Billing"
+
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'UPS.TRACK.NEW' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+     TAB=CHAR(9)
+
+     OPEN '','VOC' TO F.VOC ELSE
+       GOSUB CALL.NET.ADMIN
+       CALL ELINE('UNABLE TO OPEN VOC FILE')
+       STOP
+     END
+     OPEN '','CLIENTS' TO F.CLIENTS ELSE
+       CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+     END
+     OPEN '','UPS.IN' TO UPS.IN ELSE
+       GOSUB CALL.NET.ADMIN
+       CALL ELINE('UNABLE TO OPEN "UPS.IN"')
+       STOP
+     END
+     OPEN '','FB.COMPANY' TO F.COMPANY ELSE
+        CALL OPEN.ABORT("FB.COMPANY",PROG.NAME)
+     END
+     OPEN '','UPS.TIT' TO F.TIT ELSE
+       GOSUB CALL.NET.ADMIN
+       CALL ELINE('UNABLE TO OPEN "UPS.TIT"')
+       STOP
+     END
+     CRT @(0,0):@(-3)
+     OPEN '','UPS' TO MAIN.UPS ELSE 
+       CALL ELINE('UNABLE TO OPEN "UPS"')
+       STOP
+     END  
+     READ ALL.REC FROM MAIN.UPS,"ALLUPS.TXT" ELSE
+       ALL.REC = ''
+       ALL.REC = 'Client ID'
+       ALL.REC<1,2> = 'Ship Date'
+       ALL.REC<1,3> = 'Tracking #'
+       ALL.REC<1,4> = 'Gross'
+       ALL.REC<1,5> = 'Credit'
+       ALL.REC<1,6> = 'Explanation'
+       ALL.REC<1,7> = 'Expected Credit Date'
+       ALL.REC<1,8> = 'Ship Zip'
+       ALL.REC<1,9> = 'Recp Zip'
+       ALL.REC<1,10> = 'Mode'
+       ALL.REC<1,11> = 'TIT'
+       ALL.REC<1,12> = 'DD'
+       ALL.REC<1,13> = 'Service Failure'       
+       ALL.REC<1,14> = 'Errors'
+     END
+RETURN
+
+SET.RECORD.INFO:***
+       TEMP.REC = ''
+       TEMP.ERROR = 0
+*      IF SHIP.DATE MATCHES "2N/2N/2N" OR SHIP.DATE MATCHES "1N/2N/2N" OR SHIP.DATE MATCHES "1N/1N/2N" OR SHIP.DATE MATCHES "2N/1N/2N" OR SHIP.DATE MATCHES "2N/2N/4N" OR SHIP.DATE MATCHES "1N/2N/4N" OR SHIP.DATE MATCHES "2N/1N/4N" OR SHIP.DATE MATCHES "1N/1N/4N" THEN
+       ISHIP.DATE=ICONV(SHIP.DATE,'D')
+       IF ISHIP.DATE#'' THEN
+         TEMP.REC<1,1> = OCONV(SHIP.DATE,'D2/')
+       END ELSE
+         INFO.ERROR<1,-1> = 'DATE IN FILE : ': UPS.RECORD.NAME :' IS IN AN INCORRECT FORMAT ' :A.DATE :' PLEASE CHECK'
+         NUM.INFO.ERRORS += 1
+         GO SKIP.SET.INFO
+       END
+       IF TRACKING.NUM MATCHES "1N1A6X10N" THEN
+         TEMP.REC<1,2> = TRACKING.NUM       
+       END ELSE
+         INFO.ERROR<1,-1> = 'TRACKING.NUM IN FILE : ': UPS.RECORD.NAME :' IS IN AN INCORRECT FORMAT ' :TRACKING.NUM :' PLEASE CHECK'
+         NUM.INFO.ERRORS += 1
+         GO SKIP.SET.INFO
+       END
+       BEGIN CASE
+         CASE SHIP.ZIP MATCHES "4N"
+           SHIP.ZIP="0":SHIP.ZIP
+         CASE SHIP.ZIP MATCHES "5N"
+           TEMP.REC<1,6> = SHIP.ZIP
+         CASE SHIP.ZIP MATCHES "8N"
+           SHIP.ZIP="0":SHIP.ZIP
+         CASE SHIP.ZIP MATCHES "9N"
+           TEMP.REC<1,6> = SHIP.ZIP[1,5]
+         CASE 1
+           INFO.ERROR<1,-1> = "SHIP ZIP IN FILE : ": UPS.RECORD.NAME :" IS IN AN INCORRECT FORMAT '" :SHIP.ZIP :"' PLEASE CHECK TRACKING NUMBER ":TRACKING.NUM
+           NUM.INFO.ERRORS += 1
+           GO SKIP.SET.INFO
+       END CASE
+       IF RECIPIENT.ZIP MATCHES "4N" THEN RECIPIENT.ZIP="0":RECIPIENT.ZIP
+       IF RECIPIENT.ZIP MATCHES "5N" THEN 
+         TEMP.REC<1,7> = RECIPIENT.ZIP'R%5'
+       END ELSE
+         INFO.ERROR<1,-1> = 'RECIPIENT ZIP IN FILE : ': UPS.RECORD.NAME :' IS IN AN INCORRECT FORMAT ' :RECIPIENT.ZIP :' PLEASE CHECK TRACKING NUMBER ':TRACKING.NUM
+         NUM.INFO.ERRORS += 1
+         GO SKIP.SET.INFO
+       END
+       TEMP.REC<1,1> = SHIP.DATE
+       TEMP.REC<1,2> = TRACKING.NUM
+       TEMP.REC<1,3> = GROSS
+       TEMP.REC<1,4> = NET
+       TEMP.REC<1,5> = WEIGHT
+       TEMP.REC<1,6> = SHIP.ZIP'R%5'
+       TEMP.REC<1,7> = RECIPIENT.ZIP'R%5'
+       TEMP.REC<1,8> = MODE
+       TEMP.REC<1,9> = ''
+       TEMP.REC<1,10> = ''
+       TEMP.REC<1,11> = ACCT.NUM
+       TEMP.REC<1,12> = SHIPPER.NAME
+       TEMP.REC<1,13> = SHIPPER.ADDR
+       TEMP.REC<1,14> = SHIPPER.CITY
+       TEMP.REC<1,15> = SHIPPER.ST
+       TEMP.REC<1,16> = RECIPIENT.NAME
+       TEMP.REC<1,17> = RECIPIENT.ADDR
+       TEMP.REC<1,18> = RECIPIENT.CITY
+       TEMP.REC<1,19> = RECIPIENT.ST
+       NEW.UPS.REC<-1> = TEMP.REC
+  SKIP.SET.INFO:***
+RETURN
+
+SET.HEADINGS:
+       NEW.UPS.REC<1> = 'Ship Date'
+       NEW.UPS.REC<1,2> = 'Tracking #'
+       NEW.UPS.REC<1,3> = 'Gross'
+       NEW.UPS.REC<1,4> = 'Net'
+       NEW.UPS.REC<1,5> = 'Weight'
+       NEW.UPS.REC<1,6> = 'Ship Zip'
+       NEW.UPS.REC<1,7> = 'Recp Zip'
+       NEW.UPS.REC<1,8> = 'Mode'
+       NEW.UPS.REC<1,9> = 'TIT'
+       NEW.UPS.REC<1,10> = 'DD'
+       NEW.UPS.REC<1,11> = 'Acct#'
+       NEW.UPS.REC<1,12> = 'Shipper Name'
+       NEW.UPS.REC<1,13> = 'Shipper Address'
+       NEW.UPS.REC<1,14> = 'Shipper City'
+       NEW.UPS.REC<1,15> = 'Shipper ST'
+       NEW.UPS.REC<1,16> = 'Recipient Name'
+       NEW.UPS.REC<1,17> = 'Recipient Address'
+       NEW.UPS.REC<1,18> = 'Recipient City'
+       NEW.UPS.REC<1,19> = 'Recipient ST'
+RETURN
+
+EXIT.PROGRAM:***
+     STOP

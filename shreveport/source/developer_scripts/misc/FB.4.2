@@ -1,0 +1,163 @@
+*******************************************************
+* Program name : FB.4.2
+* Author       : unknown
+* Date written : unknown
+* Library      : EDIBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* PROGRAM TO CONVERT DATA FROM OLD FORMAT TO NEW FORMAT
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 09:22:51 on 03/21/2019.
+*
+* Start modification history
+* 03/21/19 : NKH01 : ACCU-316 Modified CREATE-FILE file sizes
+* End modification history
+*
+*******************************************************
+$OPTIONS HEADER.EJECT
+ERRMSG=''
+*
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+*
+* Initialize variables.
+*
+      CALL CHANNEL(CH.NUM)
+*
+* Open files.
+*
+      OPEN '','RFRTH' TO F.RFRTH ELSE ABORT
+      OPEN '','RFRTD' TO F.RFRTD ELSE ABORT
+      OPEN '','CHECKS' TO F.CHECKS ELSE ABORT
+      OPEN '','DESTINATIONS' TO F.DEST ELSE ABORT
+      OPEN '','ZIPS.CITY' TO F.CITY ELSE ABORT
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE ABORT
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE ABORT
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',"FB.4.2","Convert Data From Old System to Ultra New System","Freight Billing",CO.NAME,TIME.DATE,1)
+      READ ZIP.REC FROM F.ZIPS,'3.DIGIT' ELSE ZIP.REC=''
+*
+* Enter client id.
+*
+      HELP="Enter number of client to process. ''=Exit."
+      CALL GEN.IN(0,3,'Enter Client Number     #####','',CLIENT.ID,0,5,'R','0',1,-5,3,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='EX' ! QI='X' ! QI='' THEN STOP
+*
+*  SELECT DATA
+*
+      TEXT='Selecting data - Please wait.'
+      CALL CENTER(TEXT,80)
+      CRT @(0,10):TEXT:
+      EXECUTE 'SELECT RFRTH WITH CLIENT.NO = "':CLIENT.ID:'"' PASSLIST CAPTURING OUTPUT
+      TOT.ITEMS = @SELECTED
+      EXECUTE 'SAVE-LIST ':CH.NUM
+*
+* CREATE DATA FILES
+*
+      MOD=INT(TOT.ITEMS/5)
+      CALL PRIME.SUB(MOD,'L')
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS ELSE
+*        EXECUTE 'CREATE-FILE DATA FB.BILLS,':CLIENT.ID:' 101'    ; * NKH01
+        EXECUTE 'CREATE-FILE DATA FB.BILLS,':CLIENT.ID:' ':MOD    ; * NKH01
+        EXECUTE 'CREATE-FILE DATA FB.BILLS.HIST,':CLIENT.ID:' ':MOD
+        OPEN 'FB.BILLS.HIST,':CLIENT.ID TO F.BILLS ELSE
+          CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,"FB.4.2")
+        END
+      END
+      CLEARFILE F.BILLS
+      EXECUTE 'GET-LIST ':CH.NUM PASSLIST CAPTURING OUTPUT
+*
+      COUNTER=0
+100   READNEXT OLD.ID ELSE STOP
+      READ OLD.REC FROM F.RFRTH,OLD.ID ELSE GOTO 100
+      COUNTER=COUNTER+1
+      CRT @(0,19):COUNTER'R%5':' ':OLD.ID:@(-4):
+      CALL PROG.BAR(22,COUNTER,TOT.ITEMS,PER)
+*
+* BUILD NEW PRO ITEM
+*
+      CARRIER.NUM=FIELD(OLD.ID,'*',2)'R%5'
+      PRO.NUM=FIELD(OLD.ID,'*',1)
+      VERSION=FIELD(OLD.ID,'*',3)
+      NEW.ID=CARRIER.NUM'R%5':'*':PRO.NUM:'*':VERSION
+      NEW.REC=''
+      X=DCOUNT(OLD.REC<3>,CHAR(253))
+      FOR I=1 TO X
+        DET.ID=OLD.REC<3,I>
+        READ DET.REC FROM F.RFRTD,DET.ID ELSE DET.REC=''
+        NEW.REC<6>=NEW.REC<6>+DET.REC<2>
+        NEW.REC<7>=NEW.REC<7>+DET.REC<4>
+        NEW.REC<8>=NEW.REC<8>+DET.REC<5>
+      NEXT I
+      NEW.REC<1>=OLD.REC<4>
+      NEW.REC<2>=OLD.REC<13>
+*
+* Section added 7/8/92 to consider discounts
+*
+      NEW.REC<8>=NEW.REC<8>-OLD.REC<7>
+      NEW.REC<9>=NEW.REC<9>-OLD.REC<8>
+*
+      IF LEN(OLD.REC<12>)=5 THEN
+        READV CITY FROM F.DEST,OLD.REC<12>'R%5',2 ELSE CITY=''
+        CITY=FIELD(CITY,',',1)
+        READV STATE FROM F.DEST,OLD.REC<12>'R%5',4 ELSE STATE=''
+        CALL FB.4.2.ZIP(F.CITY,F.ZIPS,CITY,STATE,ZIP)
+        IF NEW.REC<2>='O' THEN
+          NEW.REC<4>=ZIP
+          NEW.REC<26>=STATE
+          NEW.REC<28>=CITY
+        END ELSE
+          NEW.REC<3>=ZIP
+          NEW.REC<25>=STATE
+          NEW.REC<27>=CITY
+        END
+      END
+      IF LEN(OLD.REC<12>) LE 3 THEN
+        CITY=''
+        STATE=''
+        X=DCOUNT(ZIP.REC<1>,CHAR(253))
+        FOR I=1 TO X
+          IF OLD.REC<12>'R%3' GE ZIP.REC<2,I> & OLD.REC<12>'R%3' LE ZIP.REC<3,I> THEN STATE=ZIP.REC<1,I>
+        NEXT I
+        IF NEW.REC<2>='O' THEN
+          NEW.REC<4>=OLD.REC<12>
+          NEW.REC<26>=STATE
+        END ELSE
+          NEW.REC<3>=OLD.REC<12>
+          NEW.REC<25>=STATE
+        END
+      END
+*
+      NEW.REC<5>=OLD.REC<5>
+      NEW.REC<10>=OLD.REC<31>
+      NEW.REC<11>=OLD.REC<30>
+      NEW.REC<12>=OLD.REC<32>
+      CHECK.ID=OLD.REC<14>
+      READV CHECK.AMT FROM F.CHECKS,CHECK.ID,4 ELSE CHECK.AMT=0
+      NEW.REC<13>=CHECK.AMT
+      NEW.REC<14>=OLD.REC<14>
+      NEW.REC<15>=OLD.REC<15>
+      NEW.REC<20>=CARRIER.NUM
+      NEW.REC<30>=OLD.REC<6>
+      NEW.REC<31>=NEW.REC<5>
+      NEW.REC<33>=NEW.REC<8>
+      PRO.LEN=LEN(PRO.NUM)-1
+      IF PRO.NUM[PRO.LEN,2]='BD' THEN
+        NEW.REC<34>=OLD.REC<23>
+        NEW.REC<35>=OLD.REC<22>
+        NEW.REC<36>=OLD.REC<41>
+      END
+      WRITE NEW.REC ON F.BILLS,NEW.ID
+*
+* BUILD CROSS REFERENCE FILE
+*
+      CRX.REC=''
+      CRX.REC<1>=CLIENT.ID
+      CRX.REC<7>=NEW.REC<7>
+      CRX.REC<8>=NEW.REC<8>
+      CRX.REC<13>=NEW.REC<13>
+      CRX.REC<14>=NEW.REC<14>
+      CRX.REC<15>=NEW.REC<15>
+      CRX.REC<30>=NEW.REC<30>
+      WRITE CRX.REC ON F.CRX,NEW.ID
+      GOTO 100

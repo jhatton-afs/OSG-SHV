@@ -1,0 +1,238 @@
+      SUBROUTINE SMARTY.SUB(VIN,VOUT)
+*******************************************************************
+* Program name : SMARTY
+* Author       : GREG BINO
+* Date written : 05-20-2023
+* Library      : FBBP
+* COPYRIGHT (c) : AFS, LLC 2021, All Rights Reserved.
+*
+* GET RES/COMMERCIAL INDICATOR FROM SMARTY.COM
+*
+* Last updated by afs (AFSLOGISTICS\gbino) at 08:19:55 on 02/25/2021.
+
+* Start modification history
+* 071123 - NKH00 - ACCU-2288 Converted to subroutine
+* End modification history
+*
+*******************************************************************************
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE UNIVERSE.INCLUDE UDO.H
+      CALL GET.USER.NEW(USER,CH.NUM)
+
+      OPEN '','CONTROL' TO CONTROL.FILE ELSE
+         CALL OPEN.ABORT('CONTROL',PROG.NAME)
+      END
+
+      * Initialize Variables
+      RES.COMM.INDICATOR = ""
+      
+      * Logging
+      logfile="restsmarty"
+*      STAT = protocolLogging(logfile, "OFF", 27)
+      
+      * Input Varialbes from VIN
+      CLIENT = VIN<1>
+      CLIENT.ID = OCONV(CLIENT,'MD0')
+      
+      * Address numbers
+      ADDRESS = FIELD(VIN<2>,' ',1,1)
+      
+      * Street
+      IN.STREET = FIELD(VIN<2>,' ',2,99)
+      CONVERT ' ' TO @VM IN IN.STREET
+      STREET = ''
+      FIRST.TIME = 1
+      SP.COUNT = DCOUNT(IN.STREET,@VM)
+      FOR SP = 1 TO SP.COUNT
+         IF FIRST.TIME THEN 
+            STREET = IN.STREET<1,SP>
+            FIRST.TIME = ''
+         END ELSE
+            STREET := "%20":IN.STREET<1,SP>
+         END
+      NEXT SP
+      IF STREET = '' THEN STREET = IN.STREET
+      
+      * City
+      IN.CITY = VIN<3>
+      CONVERT ' ' TO @VM IN IN.CITY
+      CITY = ''
+      FIRST.TIME = 1
+      SP.COUNT = DCOUNT(IN.CITY,@VM)
+      FOR SP = 1 TO SP.COUNT
+         IF FIRST.TIME THEN 
+            CITY = IN.CITY<1,SP>
+            FIRST.TIME = ''
+         END ELSE
+            CITY := "%20":IN.CITY<1,SP>
+         END
+      NEXT SP
+      IF CITY = '' THEN CITY = IN.CITY
+      
+      * State
+      STATE = VIN<4>
+      
+      * Zip
+      ZIP = VIN<5>
+
+*      ADDRESS = 13636
+*      STREET = "NE%20SHAVER"
+*      CITY = "PORTLAND"
+*      STATE = "OR"
+*      ZIP = 97230
+*      ADDRESS = 2428
+*      STREET = "NE%202ND%20TERRACE"
+*      CITY = "BLUE%20SPRINGS"
+*      STATE = "MO"
+
+************************************************************************
+* Main Routine
+************************************************************************      
+           
+      URL = "https://us-street.api.smartystreets.com/street-address?auth-id=28d98044-d233-41cf-d641-1956ec762522&auth-token=XqeleBDZQ268En7GenHi&street=13636+ne%20shaver+portland+or"
+      URL = "https://us-street.api.smartystreets.com/street-address?auth-id=28d98044-d233-41cf-d641-1956ec762522&auth-token=XqeleBDZQ268En7GenHi&street=":ADDRESS:"+":STREET:"+":CITY:"+":STATE
+      METHOD = "GET"
+      *
+     
+      STAT = SETHTTPDEFAULT("VERSION", "1.1")
+      STAT = CREATESECURITYCONTEXT(CTX, "TLSv1.2")
+      STAT = CREATESECUREREQUEST(URL, METHOD, RESTGET,CTX)
+      STAT = SETREQUESTHEADER(RESTGET, "Content-Type", "application/json;charset=utf-8")
+      STAT = SUBMITREQUEST(RESTGET, 30000, "", HEADER, RESTDATA, HTTPSTATUS)
+
+      GB =FIELD(RESTDATA,":",26)
+
+      GOSUB PARSE.RESULTS
+
+      RES.COM = UPCASE(RES.COMM.INDICATOR)
+      BEGIN CASE
+         CASE RES.COM[1,1] = "R" 
+            VOUT<1> = "Y"
+         CASE RES.COM[1,1] = "C" 
+            VOUT<1> = "N"
+         CASE 1
+            VOUT<1> = "E"            
+      END CASE
+
+      RETURN
+
+************************************************************************
+PARSE.RESULTS:
+************************************************************************
+      UDOTYPE = ''
+      RESTLEN = LEN(RESTDATA)
+      UDOHANDLE = ""
+      RESP = ''
+      RESP.CNT = 1
+      STATUS =UDORead(RESTDATA, UDOFORMAT_JSON, UDOHANDLE )
+      ST = UDOArrayGetSize(UDOHANDLE, ITEM_SIZE) ; IF ST NE UDO_SUCCESS THEN
+         ITEM_SIZE = 1
+      END
+   
+      FOR I = 1 TO ITEM_SIZE
+         TEMP.ARRAY = ''
+         ST = UDOArrayGetItem(UDOHANDLE, I, result_udo, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         ST = UDOGetProperty(result_udo, "input_index", IINDEX, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         ST = UDOGetProperty(result_udo, "candidate_index", cindex, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         ST = UDOGetProperty(result_udo, "delivery_line_1", ADDRESS, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         ST = UDOGetProperty(result_udo, "last_line", CSZ, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         ST = UDOGetProperty(result_udo, "delivery_point_barcode", ZIP, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+            ST = UDOGetProperty(result_udo, "components", COMPONENTS, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         LOOP
+            GETSTAT = UDOGetNextProperty(COMPONENTS, W.UDO, W.VALUE, W.TYPE)
+         WHILE GETSTAT = UDO_SUCCESS DO
+            BEGIN CASE
+               CASE W.UDO = 'primary_number'
+                  PRIMARY.NUMBER = W.VALUE
+               CASE W.UDO = 'street_predirection'
+                  STREET.PREDIRECTION = W.VALUE
+               CASE W.UDO = 'street_name'
+                  STREET.NAME = W.VALUE
+               CASE W.UDO = 'street_suffix'
+                  STREET.SUFFIX = W.TYPE
+               CASE W.UDO = 'city_name'
+                  CITY.NAME = W.VALUE
+               CASE W.UDO = 'city_name'
+                  CITY.NAME = W.VALUE
+               CASE W.UDO = 'state_abbreviation'
+                  STATE.ABBR = W.VALUE
+               CASE W.UDO = 'zipcode'
+                  ZIPCODE = W.VALUE
+               CASE W.UDO = 'plus4_code'
+                  PLUS4 = W.VALUE
+               CASE W.UDO = 'delivery_point'
+                  DEV.POINT = W.VALUE
+               CASE W.UDO = 'delivery_point_check_digit'
+                  DELIVERY.PT.CHECK.DIGIT = W.VALUE
+            END CASE
+         REPEAT
+         ST = UDOGetProperty(result_udo, "metadata", METADATA, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         LOOP
+            GETSTAT = UDOGetNextProperty(METADATA, W.UDO, W.VALUE, W.TYPE)
+         WHILE GETSTAT = UDO_SUCCESS DO
+            BEGIN CASE
+               CASE W.UDO = 'record_type' 
+                  REC.TYPE = W.VALUE 
+               CASE W.UDO = 'zip_type'
+                  ZIP.TYPE = W.VALUE
+               CASE W.UDO = 'county_fips'
+                  CFIPS = W.VALUE    
+               CASE W.UDO = 'county_name'
+                  COUNTY = W.TYPE    
+               CASE W.UDO = 'carrier_route'
+                  CARRIER.ROUTE = W.VALUE
+               CASE W.UDO = 'congressional_district' 
+                 CONG.DISTRICT = W.VALUE
+               CASE W.UDO = 'rdi'
+                 RES.COMM.INDICATOR = W.VALUE
+               CASE W.UDO = 'elot_sequence' 
+                 LOT.SEQ = W.VALUE   
+               CASE W.UDO = 'latitude' 
+                 LATITUDE = W.VALUE
+               CASE W.UDO = 'longitude'
+                  LONGITUDE = W.VALUE
+               CASE W.UDO = 'precision' 
+                 PRECISION = W.VALUE    
+                  CASE W.UDO = 'time_zone' 
+                 TIME.ZONE = W.VALUE
+               CASE W.UDO = 'utc_offset'
+                 UTC = W.VALUE
+               CASE W.UDO = 'dst' 
+                 DAYLIGHTSAVINGS = W.VALUE         
+             END CASE
+         REPEAT
+         ST = UDOGetProperty(result_udo, "analysis", ANALYSIS, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         LOOP
+            GETSTAT = UDOGetNextProperty(COMPONENTS, W.UDO, W.VALUE, W.TYPE)
+         WHILE GETSTAT = UDO_SUCCESS DO
+            BEGIN CASE
+              CASE W.UDO = 'dpv_match_code' 
+                  DPV.CODE = W.VALUE 
+               CASE W.UDO = 'dpv_footnotes'
+                  DPV.FOOTNOTES = W.VALUE
+               CASE W.UDO = 'dpv_cmra'
+                  DPV.CMRA = W.VALUE    
+               CASE W.UDO = 'dpv_vacant'
+                  DPV.VACANT = W.TYPE    
+               CASE W.UDO = 'dpv_no_stat'
+                  DPV.NO.STAT = W.VALUE
+               CASE W.UDO = 'active' 
+                 DPV.ACTIVE = W.VALUE
+               CASE W.UDO = 'footnotes'
+                  FOOTNOTES = W.VALUE
+            END CASE
+         REPEAT
+      NEXT I
+
+      RETURN
+      
+****************************************************
+ERR.HANDLER:
+*****************************************************
+      ERRCODE = "" ; ERRMSG = ""
+      S = UDOGetLastError(ERRCODE, ERRMSG)
+      ERROR = "UDO ERROR: (":ERRCODE:") ":ERRMSG
+      VOUT<8> =ERROR
+      RETURN
+
+   END

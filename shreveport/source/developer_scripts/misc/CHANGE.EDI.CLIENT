@@ -1,0 +1,659 @@
+*******************************************************************************
+* Change the client number of an EDI bill.
+*  Copyright (C) 2001 by AFS Logistics, LLC.
+*  Author: David Friend
+*******************************************************************************
+* EDIT HISTORY
+* 102811 - RLM01 - PROJECT 62 - Make update logic an external subroutine and restrict for TO Client to only Client Family members.
+* 052814 - JMK01 - SysAid#9788 - SENDMAIL.NEW needs to be removed from active programs
+* 032119 : NKH01 : ACCU-316 Modified CREATE-FILE file sizes
+*******************************************************************************
+*
+*     Company and Program variables
+*
+      CO.NAME='AFS Logistics, LLC'
+      PROG.NAME='Change EDI Client'
+      PROG.DESC='Change EDI Client'
+      PACK.NAME='Freight Payment'
+      CALL GET.USER(USER.NAME)
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'CHANGE.EDI.CLIENT' ; UPL.VOUT = ''                    ;* NPR_UPL 04/22/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/22/2010
+      USER.NAME=OCONV(USER.NAME,'MCU')
+      MASK.CHAR='-'
+      CALL CHANNEL(CH.NUM)     ; * RLM01
+      CLIENT.FAMILY.TYPE='EDI' ; * RLM01
+      SUPER.USER='N'           ; * RLM01
+*
+*     IF USER.NAME='MDODSON' OR USER.NAME= 'DAVID' OR USER.NAME='BMARKEY' OR USER.NAME='MYRA' OR USER.NAME='MARY' OR USER.NAME = 'SMDEBROECK' THEN        ; * RLM01
+      IF USER.NAME='MDODSON' OR USER.NAME= 'DAVID' OR USER.NAME='MYRA' OR USER.NAME='MARY' OR USER.NAME = 'SMDEBROECK' THEN        ; * RLM01
+          SUPER.USER='Y'     ; * RLM01  ; * for this program only
+      END                    ; * RLM01
+
+*
+*     Open files to start
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','CLIENT.FAMILY' TO F.CLIENT.FAMILY ELSE      ; * RLM01
+         CALL OPEN.ABORT('CLIENT.FAMILY',PROG.NAME)        ; * RLM01
+      END                                                  ; * RLM01
+
+*
+*     List of input variables.  Defaults are assigned.
+*     
+90:****
+      FROM.CLIENT.ID=''
+      FROM.CLIENT.REC=''
+      FROM.CLIENT.NAME=''
+      FROM.CLIENT.ADDR=''
+      FROM.CLIENT.CITY=''
+      FROM.CLIENT.STATE=''
+      FROM.CLIENT.ZIP=''
+
+      TO.CLIENT.ID=''
+      TO.CLIENT.REC=''
+      TO.CLIENT.NAME=''
+      TO.CLIENT.ADDR=''
+      TO.CLIENT.CITY=''
+      TO.CLIENT.STATE=''
+      TO.CLIENT.ZIP=''
+
+       CARRIER.ID=''
+       CARRIER.REC=''  
+       CARRIER.NAME=''
+       CARRIER.ADDR=''
+       CARRIER.CITY=''
+       CARRIER.STATE=''
+       CARRIER.ZIP=''
+
+       PRO.NUMBER=''
+
+
+      GOSUB GET.SCREEN.DISPLAY
+
+*
+*     Display heading and prompts
+*
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+      CRT SCREEN.DISPLAY
+
+*
+*     Get Client ID
+*
+100:***
+      CRT @(23,4):@(-4):@(17,5):@(-4):@(17,6):@(-4):
+      MASK=FROM.CLIENT.ID:STR(MASK.CHAR,5-LEN(FROM.CLIENT.ID))
+      HELP='Enter from Client ID Number or Name for Search. [X]=Exit [EX]=Exit'
+      CALL GEN.IN(23,4,MASK,'',Q,0,20,'','',2,23,4,0,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      BEGIN CASE
+         CASE QI='EX' OR QI='X'
+            GOTO 9999
+         CASE NOT(QI MATCHES '0N') AND QI#''
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            CRT SCREEN.DISPLAY
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  CALL ELINE('No matches found.')
+                  GOTO 100
+               CASE DCOUNT(ITEM.LIST,@AM) GT 1
+                  GOTO 100
+               CASE 1
+                  DATA ITEM.LIST
+                  GOTO 100
+            END CASE
+         CASE QI=''
+            IF  FROM.CLIENT.ID='' THEN
+               GOTO 100
+            END ELSE
+               QI= FROM.CLIENT.ID
+            END
+         CASE NOT(NUM(QI))
+            CALL ELINE('Invalid Client ID.')
+            GOTO 100
+      END CASE
+      FROM.CLIENT.ID=QI'R%5'   
+
+*
+*     Read client record
+*
+      READ  CLIENT.REC FROM F.CLIENTS,FROM.CLIENT.ID ELSE
+         CALL ELINE('Client ':FROM.CLIENT.ID:' was not found.')
+         FROM.CLIENT.ID=''
+         GOTO 100
+      END
+*
+      CLIENT.FAMILY.ID=FROM.CLIENT.ID:'*':CLIENT.FAMILY.TYPE  ; * RLM01
+      READ CLIENT.FAMILY.REC FROM F.CLIENT.FAMILY,CLIENT.FAMILY.ID ELSE   ; * RLM01
+         CLIENT.FAMILY.REC=''   ; * RLM01
+         IF SUPER.USER='N' THEN ; * RLM01
+            CRT @(0,21):@(-4):'To be used in this process, Client ':FROM.CLIENT.ID:' must first be tied to related clients ':  ; * RLM01
+            CALL ELINE('in Client Family Maintenance.')  ; * RLM01
+            CRT@(0,21):@(-4):
+            FROM.CLIENT.ID=''  ; * RLM01
+            GOTO 100  ; * RLM01
+         END          ; * RLM01
+      END   ; * RLM01
+
+*
+*     Make assignments from client rec and display data
+*
+      FROM.CLIENT.NAME= CLIENT.REC<2>
+      FROM.CLIENT.ADDR= CLIENT.REC<3>
+      FROM.CLIENT.CITY= CLIENT.REC<4>
+      FROM.CLIENT.STATE= CLIENT.REC<5>
+      FROM.CLIENT.ZIP= CLIENT.REC<6>
+      GOSUB DATA.DISPLAY
+*
+*     Get Client ID
+*
+150:***
+*     IF USER.NAME#'MDODSON' AND USER.NAME# 'DAVID' AND USER.NAME#'NPRATT' AND USER.NAME#'MYRA' AND USER.NAME#'MARY' AND USER.NAME # 'SMDEBROECK' THEN  ; * RLM01
+*       BEGIN CASE                                         ; * RLM01
+*         CASE FROM.CLIENT.ID='01349'                      ; * RLM01
+*           TO.CLIENT.ID='01350'                           ; * RLM01
+*         CASE FROM.CLIENT.ID='01350'                      ; * RLM01
+*           TO.CLIENT.ID='01349'                           ; * RLM01
+*         CASE FROM.CLIENT.ID='01645'                      ; * RLM01
+*           TO.CLIENT.ID='01350'                           ; * RLM01
+*         CASE FROM.CLIENT.ID='01148'                      ; * RLM01
+*         CASE FROM.CLIENT.ID='01371'                      ; * RLM01
+*DF            TO.CLIENT.ID='01398'
+*         CASE FROM.CLIENT.ID='01398'                      ; * RLM01
+*         CASE FROM.CLIENT.ID='01539'                      ; * RLM01
+*         CASE FROM.CLIENT.ID='01704'                      ; * RLM01
+*         CASE FROM.CLIENT.ID='01365'                      ; * RLM01
+*           TO.CLIENT.ID='01530'                           ; * RLM01
+*         CASE 1                                           ; * RLM01
+*DF            CALL ELINE('Must be either client 01349 or 01350')
+*           CALL ELINE('Please see David to change client'); * RLM01
+*           GO 100                                         ; * RLM01
+*        END CASE                                          ; * RLM01
+*DF         IF FROM.CLIENT.ID='01371' THEN
+*DF            GO 125
+*DF         END
+*     END                                                  ; * RLM01
+      CRT @(23,8):@(-4):@(23,9):@(-4):@(23,10):@(-4):
+      MASK=TO.CLIENT.ID:STR(MASK.CHAR,5-LEN(TO.CLIENT.ID))
+      HELP='Enter to Client ID Number or Name for Search. [X]=Exit [EX]=Exit'
+      CALL GEN.IN(23,8,MASK,'',Q,0,20,'','',2,23,8,0,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO 9999
+         CASE QI='X'
+            GOTO 100
+ *       CASE NOT(QI MATCHES '0N') AND QI#''                     ; * RLM01
+         CASE NOT(QI MATCHES '0N') AND QI#'' AND SUPER.USER='Y'  ; * RLM01
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            CRT SCREEN.DISPLAY
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  CALL ELINE('No matches found.')
+                  GOTO 150
+               CASE DCOUNT(ITEM.LIST,@AM) GT 1
+                  GOTO 150
+               CASE 1
+                  DATA ITEM.LIST
+                  GOTO 150
+            END CASE
+         CASE NOT(QI MATCHES '0N') AND QI#'' AND SUPER.USER='N'  ; * RLM01
+            MSG="TO Client must be a member of FROM Client's "   ; * RLM01
+            MSG=MSG:'EDI Family. To see Family members,'         ; * RLM01
+            CALL ELINE(MSG)                                      ; * RLM01
+            GOSUB POP.UP.LIST.OF.CLIENT.FAMILY.MEMBERS           ; * RLM01
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)  ; * RLM01
+            CRT @(0,2):STR('=',79)                         ; * RLM01
+            CRT SCREEN.DISPLAY                             ; * RLM01
+            GOSUB DATA.DISPLAY                             ; * RLM01
+            IF SELECTION='NO DATA' THEN GOTO 150           ; * RLM01
+            IF SELECTION='E' THEN GOTO 150                 ; * RLM01
+            DATA TO.CLIENT.ID                              ; * RLM01
+            GOTO 150                                       ; * RLM01
+         CASE NUM(QI) AND SUPER.USER='N'                   ; * RLM01
+            QI=QI'R%5'                                     ; * RLM01
+            LOCATE QI IN CLIENT.FAMILY.REC<1> SETTING VPOS ELSE ; * RLM01
+                DATA 'NOT IN CLIENT FAMILY'                ; * RLM01
+                GOTO 150                                   ; * RLM01
+             END                                           ; * RLM01
+         CASE QI=''
+            IF TO.CLIENT.ID='' THEN
+               GOTO 100
+            END ELSE
+               QI=TO.CLIENT.ID
+            END
+         CASE NOT(NUM(QI))
+            CALL ELINE('Invalid Client ID.')
+            GOTO 100
+      END CASE
+      TO.CLIENT.ID=QI'R%5'   
+      IF TO.CLIENT.ID=FROM.CLIENT.ID THEN
+        CALL ELINE('From client:':FROM.CLIENT.ID:' cannot be the same as the To client: ':TO.CLIENT.ID)
+        GOTO 100
+      END
+*     IF USER.NAME#'MDODSON' AND USER.NAME# 'DF-DAVID' AND USER.NAME#'NPRATT' AND USER.NAME#'MYRA' AND USER.NAME#'MARY' AND USER.NAME # 'SMDEBROECK' THEN  ; * RLM01
+*        IF FROM.CLIENT.ID='01349' THEN   ; * RLM01
+*           IF TO.CLIENT.ID#'01350' AND TO.CLIENT.ID#'01645' THEN   ; * RLM01
+*               CALL ELINE('To client: ':TO.CLIENT.ID:' cannot be for from client: ':FROM.CLIENT.ID:' use 01350 or 01645')   ; * RLM01
+*               GOTO 150   ; * RLM01
+*           END   ; * RLM01
+*        END   ; * RLM01
+*        IF FROM.CLIENT.ID='01350' THEN   ; * RLM01
+*           IF TO.CLIENT.ID#'01349' AND TO.CLIENT.ID#'01645' THEN   ; * RLM01
+*               CALL ELINE('To client: ':TO.CLIENT.ID:' cannot be for from client: ':FROM.CLIENT.ID:' use 01349 or 01645')   ; * RLM01
+*               GOTO 150   ; * RLM01
+*           END   ; * RLM01
+*        END   ; * RLM01
+*        IF FROM.CLIENT.ID='01645' THEN   ; * RLM01
+*           IF TO.CLIENT.ID#'01349' AND TO.CLIENT.ID#'01350' THEN   ; * RLM01
+*               CALL ELINE('To client: ':TO.CLIENT.ID:' cannot be for from client: ':FROM.CLIENT.ID:' use 01349 or 01350')   ; * RLM01
+*               GOTO 150   ; * RLM01
+*           END   ; * RLM01
+*        END   ; * RLM01
+*        IF FROM.CLIENT.ID='01365' THEN   ; * RLM01
+*           IF TO.CLIENT.ID#'01530' THEN   ; * RLM01
+*               CALL ELINE('To client: ':TO.CLIENT.ID:' cannot be for from client: ':FROM.CLIENT.ID:' use 01530')   ; * RLM01
+*               GOTO 150   ; * RLM01
+*           END   ; * RLM01
+*        END   ; * RLM01
+*        IF FROM.CLIENT.ID='01148' THEN   ; * RLM01
+*           IF TO.CLIENT.ID#'01371' AND TO.CLIENT.ID#'01398' AND TO.CLIENT.ID#'01539' AND TO.CLIENT.ID#'01704' THEN   ; * RLM01
+*               CALL ELINE('To client: ':TO.CLIENT.ID:' cannot be for from client: ':FROM.CLIENT.ID:' use 01371, 01398, 01539 or 01704')   ; * RLM01
+*               GOTO 150   ; * RLM01
+*           END   ; * RLM01
+*        END   ; * RLM01
+*        IF FROM.CLIENT.ID='01371' THEN   ; * RLM01
+*           IF TO.CLIENT.ID#'01148' AND TO.CLIENT.ID#'01398' AND TO.CLIENT.ID#'01539' AND TO.CLIENT.ID#'01704' THEN   ; * RLM01
+*               CALL ELINE('To client: ':TO.CLIENT.ID:' cannot be for from client: ':FROM.CLIENT.ID:' use 01148, 01398, 01539 or 01704')   ; * RLM01
+*               GOTO 150   ; * RLM01
+*           END   ; * RLM01
+*        END   ; * RLM01
+*        IF FROM.CLIENT.ID='01398' THEN   ; * RLM01
+*           IF TO.CLIENT.ID#'01148' AND TO.CLIENT.ID#'01371' AND TO.CLIENT.ID#'01539' AND TO.CLIENT.ID#'01704' THEN   ; * RLM01
+*               CALL ELINE('To client: ':TO.CLIENT.ID:' cannot be for from client: ':FROM.CLIENT.ID:' use 01148, 01371, 01539 or 01704')   ; * RLM01
+*               GOTO 150   ; * RLM01
+*           END   ; * RLM01
+*        END   ; * RLM01
+*        IF FROM.CLIENT.ID='01539' THEN   ; * RLM01
+*           IF TO.CLIENT.ID#'01148' AND TO.CLIENT.ID#'01371' AND TO.CLIENT.ID#'01398' AND TO.CLIENT.ID#'01704' THEN   ; * RLM01
+*               CALL ELINE('To client: ':TO.CLIENT.ID:' cannot be for from client: ':FROM.CLIENT.ID:' use 01148, 01371, 01398 or 01704')   ; * RLM01
+*               GOTO 150   ; * RLM01
+*           END   ; * RLM01
+*        END   ; * RLM01
+*        IF FROM.CLIENT.ID='01704' THEN   ; * RLM01
+*           IF TO.CLIENT.ID#'01148' AND TO.CLIENT.ID#'01371' AND TO.CLIENT.ID#'01398' AND TO.CLIENT.ID#'01539' THEN   ; * RLM01
+*               CALL ELINE('To client: ':TO.CLIENT.ID:' cannot be for from client: ':FROM.CLIENT.ID:' use 01148, 01371, 01398 or 01539')   ; * RLM01
+*               GOTO 150   ; * RLM01
+*           END   ; * RLM01
+*        END   ; * RLM01
+*     END   ; * RLM01
+
+*
+*     Read client record
+*
+125:***
+      READ  CLIENT.REC FROM F.CLIENTS,TO.CLIENT.ID ELSE
+         CALL ELINE('Client ': TO.CLIENT.ID:' was not found.')
+          CLIENT.ID=''
+         GOTO 100
+      END
+
+*
+*     Make assignments from client rec and display data
+*
+      TO.CLIENT.NAME= CLIENT.REC<2>
+      TO.CLIENT.ADDR= CLIENT.REC<3>
+      TO.CLIENT.CITY= CLIENT.REC<4>
+      TO.CLIENT.STATE= CLIENT.REC<5>
+      TO.CLIENT.ZIP= CLIENT.REC<6>
+      GOSUB DATA.DISPLAY
+*
+*     Open BILLS files based on CLIENT.ID
+*
+      OPEN '','EDI.BILLS' TO F.EDI.BILLS ELSE
+         CALL ELINE('Cannot open EDI.BILLS. Check Client Number.')
+         GOTO 100
+      END
+
+      OPEN '','EDI.BILLS.HIST,':FROM.CLIENT.ID TO F.FROM.EDI.BILLS.HIST ELSE
+         CALL ELINE('Cannot open EDI.BILLS.HIST,':FROM.CLIENT.ID:'. Check Client Number.')
+         GOTO 100
+      END
+      OPEN '','EDI.BILLS.HIST,':TO.CLIENT.ID TO F.TO.EDI.BILLS.HIST ELSE
+         CALL ELINE('Cannot open EDI.BILLS.HIST,':TO.CLIENT.ID:'. Check Client Number.')
+         GOTO 150
+      END
+
+*
+*     Get Carrier ID
+*
+200:***
+      CRT @(17,12):@(-4):@(17,13):@(-4):@(17,14):@(-4):
+      MASK= CARRIER.ID:STR(MASK.CHAR,5-LEN( CARRIER.ID))
+      HELP='Enter Carrier ID Number or Name for Search.[LS] to list [X]=Back [EX]=Exit'
+      CALL GEN.IN(17,12,MASK,'',Q,0,20,'','',2,17,12,0,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO 9999
+         CASE QI='X'
+            GOTO 150
+         CASE QI='LS'
+           STMT='QSELECT EDI.XREF "':FROM.CLIENT.ID:'"'
+           EXECUTE STMT RTNLIST CAPTURING RESULTS
+           IF SYSTEM(11) ELSE
+              CALL ELINE('No EDI data to process')
+              GOTO 200
+           END
+           STMT='SELECT EDI.BILLS WITH CLIENT# = "':FROM.CLIENT.ID:'" '
+           STMT=STMT:' AND WITH 118 = "" AND WITH 121 # "" '
+           STMT=STMT:' AND WITH CARRIER# # "00015" AND WITH CARRIER# # "00365" AND WITH CARRIER# # "00041" AND WITH CARRIER# # "01075" AND WITH CARRIER# # "00143" AND WITH CARRIER# # "00044" '
+           EXECUTE STMT PASSLIST RTNLIST CAPTURING RESULTS
+           IF SYSTEM(11) ELSE
+              CALL ELINE('No EDI data to process')
+              GOTO 200
+           END
+           STMT='SORT EDI.BILLS WITH CLIENT# = "':FROM.CLIENT.ID:'" '
+           STMT=STMT:' BY CARRIER# BY 77 '
+           STMT=STMT:' CARRIER# PRO# 9 118 (I'
+           EXECUTE STMT PASSLIST
+           CALL ELINE('Press enter to continue')
+           CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+           CRT @(0,2):STR('=',79)
+           CRT SCREEN.DISPLAY
+           GOSUB DATA.DISPLAY
+           GOTO 200
+         CASE NOT(QI MATCHES '0N') AND QI#''
+            CALL SOUNDEX.DISPLAY(QI,'CARRIERS','SDX.CARRIER,NAME','1,3,4',ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            CRT SCREEN.DISPLAY
+            GOSUB DATA.DISPLAY
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  CALL ELINE('No matches found.')
+                  GOTO 200
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 200
+               CASE ITEM.LIST#''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO 200
+            END CASE
+         CASE QI=''
+            IF  CARRIER.ID='' THEN
+               GOTO 200
+            END ELSE
+               QI= CARRIER.ID
+            END
+         CASE NOT(NUM(QI))
+            CALL ELINE('Invalid Carrier ID.')
+            GOTO 200
+      END CASE
+       CARRIER.ID=QI'R%5'
+*
+*     Read carrier record
+*
+      READ  CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE
+         CALL ELINE('"':CARRIER.ID:'" was not found.')
+         CARRIER.ID=''
+         GOTO 200
+      END
+
+*
+*     Make assignments from carrier rec and display data
+*
+      CARRIER.NAME= CARRIER.REC<1>
+      CARRIER.ADDR= CARRIER.REC<2>
+      CARRIER.CITY= CARRIER.REC<3>
+      CARRIER.STATE= CARRIER.REC<4>
+      CARRIER.ZIP= CARRIER.REC<5>
+      GOSUB DATA.DISPLAY
+
+*
+*     Get PRO.NUMBER
+*
+300:***
+      MASK= PRO.NUMBER:STR(MASK.CHAR,20-LEN( PRO.NUMBER)):@(-4)
+      HELP='Enter the Bill Pro Number. [X]=Back [EX]=Exit'
+      CALL GEN.IN(17,16,MASK,'',Q,0,20,'','',2,17,16,0,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO 9999
+         CASE QI='X'
+            GOTO 200
+         CASE QI=''
+            IF  PRO.NUMBER='' THEN
+               GOTO 300
+            END ELSE
+               QI= PRO.NUMBER
+            END
+      END CASE
+      PRO.NUMBER=OCONV(QI,'MCU')
+      PRO.NUMBER.ERROR=0
+      GOSUB PRO.NUMBER.KEYBOARD.SHORTCUTS
+      IF PRO.NUMBER.ERROR THEN
+         CALL ELINE('Error. Pro Number cannot contain a "+" character.')
+         PRO.NUMBER=''
+         GOTO 300
+      END
+      GOSUB DATA.DISPLAY
+      PRO.ID= CARRIER.ID:'*': PRO.NUMBER:'*':'0'
+
+*
+*     Read FB.BILLS.HIST file
+*
+      READU  PRO.REC FROM F.FROM.EDI.BILLS.HIST, PRO.ID ELSE
+         CALL ELINE('"Bill ': PRO.ID:'" was not found.')
+         PRO.NUMBER=''
+         GOTO 300
+      END
+
+
+
+*
+*     Confirm file update
+*
+400:***
+      MASK='Update Files   : N':MASK.CHAR:@(-4)
+      HELP='[Y]=Yes [N]=No [X]=Back [EX]=Exit'
+      CALL GEN.IN(0,21,MASK,'',Q,0,2,'','',2,17,21,2,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI='N'
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO 9999
+         CASE QI='X'
+            GOTO 300
+         CASE QI='N' OR QI='0'
+            GOSUB DATA.DISPLAY
+            GOTO 300
+         CASE QI='Y' OR QI='1'
+*           READ DUMMY FROM F.TO.EDI.BILLS.HIST,PRO.ID THEN  ; * RLM01
+*              CALL ELINE('Bill already exist in the to history. Update refused')  ; * RLM01
+*              GOTO 300  ; * RLM01
+*           END  ; * RLM01
+*           FROM.EDI.BILL.ID=FROM.CLIENT.ID:'*': PRO.ID  ; * RLM01
+*           READ DEDI.BILLS FROM F.EDI.BILLS,FROM.EDI.BILL.ID ELSE  ; * RLM01
+*              CALL ELINE('Pro is no longer in EDI.BILLS')  ; * RLM01
+*              GO 300  ; * RLM01
+*           END  ; * RLM01
+*           DEDI.BILLS<115>=''  ; * RLM01
+*           DEDI.BILLS<116>=''  ; * RLM01
+*           DEDI.BILLS<117>=''  ; * RLM01
+*           DEDI.BILLS<118>=''  ; * RLM01
+*           DEDI.BILLS<119>=''  ; * RLM01
+*           DEDI.BILLS<120>=''  ; * RLM01
+*           DEDI.BILLS<121>=''  ; * RLM01
+*           TO.EDI.BILLS.ID=TO.CLIENT.ID:'*': PRO.ID   ; * RLM01
+*           WRITE DEDI.BILLS TO F.EDI.BILLS,TO.EDI.BILLS.ID ELSE  ; * RLM01
+*              CALL ELINE('Error writing to EDI.BILLS file. Call IS Department')  ; * RLM01
+*              GO 400  ; * RLM01
+*           END  ; * RLM01
+*           DELETE F.EDI.BILLS,FROM.EDI.BILL.ID  ; * RLM01
+*           READ DEDI.BILLS.HIST FROM F.FROM.EDI.BILLS.HIST,PRO.ID ELSE  ; * RLM01
+*              CALL ELINE('Pro is no longer in EDI.BILLS.HIST')  ; * RLM01
+*              GO 300  ; * RLM01
+*           END  ; * RLM01
+*           WRITE DEDI.BILLS.HIST TO F.TO.EDI.BILLS.HIST,PRO.ID ELSE  ; * RLM01
+*              CALL ELINE('Error writing to FB.BILLS.HIST file. Call IS Department.')  ; * RLM01
+*              GOTO 400  ; * RLM01
+*           END  ; * RLM01
+*           DELETE F.FROM.EDI.BILLS.HIST,PRO.ID      ; * RLM01
+*           CALL ELINE('Files have been updated.')   ; * RLM01
+            OPEN '','EDI.BILLS.HIST,':TO.CLIENT.ID TO F.TO.EDI.BILLS.HIST ELSE   ; * RLM01
+               GOSUB SEND.MAIL   ; * RLM01
+               STMT = 'CREATE-FILE DATA EDI.BILLS.HIST,':TO.CLIENT.ID:' 1009,2'   ; * RLM01     NKH01
+               EXECUTE STMT CAPTURING MSG   ; * RLM01
+               OPEN '','EDI.BILLS.HIST,':TO.CLIENT.ID TO F.TO.EDI.BILLS.HIST ELSE   ; * RLM01
+                  CALL ELINE('Cannot open EDI.BILLS.HIST,':TO.CLIENT.ID:'. Check Client Number.')   ; * RLM01
+                  GOTO 150   ; * RLM01
+               END   ; * RLM01
+            END                                      ; * RLM01
+            CVIN=''                                  ; * RLM01
+            CVIN<1>=FROM.CLIENT.ID                   ; * RLM01
+            CVIN<2>=TO.CLIENT.ID                     ; * RLM01
+            CVIN<3>=PRO.ID                           ; * RLM01
+            CVOUT=''                                 ; * RLM01
+            CALL CHANGE.EDI.CLIENT.SUB(CVIN,CVOUT)   ; * RLM01
+            PRO.NUMBER=''
+            GOSUB DATA.DISPLAY
+            GOTO 300
+         CASE 1
+            GOTO 400
+      END CASE
+
+      GOTO 9999; * End program
+*
+*
+*
+********************************************************************************
+*
+*     Internal Subroutines
+*
+GET.SCREEN.DISPLAY:
+* Build display screen
+
+      SCREEN.DISPLAY =@(0, 4):'FROM Client Number  :'
+      SCREEN.DISPLAY:=@(0, 8):'TO Client Number  :'
+      SCREEN.DISPLAY:=@(0, 12):'Carrier Number :'
+      SCREEN.DISPLAY:=@(0,16):'Pro Number     :'
+      SCREEN.DISPLAY:=@(-3)
+      RETURN
+
+
+DATA.DISPLAY:
+*     Display data
+
+      CRT @(23,4):FROM.CLIENT.ID:SPACE(3):FROM.CLIENT.NAME:@(-4)
+      CRT @(25,5):FROM.CLIENT.ADDR:@(-4)
+      CRT @(25,6):FROM.CLIENT.CITY:' ':FROM.CLIENT.STATE:' ':FROM.CLIENT.ZIP:@(-4)
+      CRT @(23,8):TO.CLIENT.ID:SPACE(3): TO.CLIENT.NAME:@(-4)
+      CRT @(25,9):TO.CLIENT.ADDR:@(-4)
+      CRT @(25,10):TO.CLIENT.CITY:' ':TO.CLIENT.STATE:' ':TO.CLIENT.ZIP:@(-4)
+      CRT @(17,12): CARRIER.ID:SPACE(3): CARRIER.NAME:@(-4)
+      CRT @(25,13): CARRIER.ADDR:@(-4)
+      CRT @(25,14): CARRIER.CITY:' ': CARRIER.STATE:' ': CARRIER.ZIP:@(-4)
+      CRT @(17,16): PRO.NUMBER:@(-4)
+      RETURN
+
+
+PRO.NUMBER.KEYBOARD.SHORTCUTS:
+*     Use keyboard shortcuts for entering Pro Number
+
+      PLUS.POS=INDEX( PRO.NUMBER,'+',1)
+      IF PLUS.POS THEN
+          PRO.NUMBER=CHANGE( PRO.NUMBER,'+','-')
+      END
+      IF  PRO.NUMBER[LEN( PRO.NUMBER),1]='-' AND ( CARRIER.ID='00093' OR  CARRIER.ID='00017') THEN
+          PRO.NUMBER= PRO.NUMBER[1,LEN( PRO.NUMBER)-1]:'X'
+      END
+      IF INDEX( PRO.NUMBER,'+',1) THEN
+         PRO.NUMBER.ERROR=1
+      END
+      RETURN
+
+
+POP.UP.LIST.OF.CLIENT.FAMILY.MEMBERS:                            ; * RLM01
+*     Display family members for selection as To Client          ; * RLM01
+      TO.CLIENT.ID=''                                            ; * RLM01
+      FAM.MEMBR.LIST=''                                          ; * RLM01
+      CLIENT.FAMILY.ID=FROM.CLIENT.ID:'*':CLIENT.FAMILY.TYPE     ; * RLM01
+      STMT="QSELECT CLIENT.FAMILY"                               ; * RLM01
+      STMT = STMT:" '":CLIENT.FAMILY.ID:"' (1) ":@FM             ; * RLM01
+      STMT = STMT:"SSELECT CLIENTS BY NAME"                      ; * RLM01
+      EXECUTE STMT CAPTURING OUTPUT                              ; * RLM01
+      NUM.FAM.MEMBRS=@SELECTED                                   ; * RLM01
+      IF NUM.FAM.MEMBRS < 1 THEN                                 ; * RLM01
+         CALL ELINE('No Client Family members on file.')         ; * RLM01
+         SELECTION='NO DATA'                                     ; * RLM01
+         RETURN                                                  ; * RLM01
+      END                                                        ; * RLM01
+      DONE=0                                                     ; * RLM01
+      LOOP                                                       ; * RLM01
+         READNEXT FAM.MEMBR.ID ELSE DONE=1                       ; * RLM01
+      UNTIL DONE=1                                               ; * RLM01
+         IF FAM.MEMBR.ID NE FROM.CLIENT.ID THEN                  ; * RLM01
+            READ FAM.MEMBR.REC FROM F.CLIENTS,FAM.MEMBR.ID THEN  ; * RLM01
+               DLINE=SPACE(16):FAM.MEMBR.ID'R%5'                 ; * RLM01
+               DLINE=DLINE:SPACE(10):FAM.MEMBR.REC<2>'L#50'      ; * RLM01
+               FAM.MEMBR.LIST<-1>=DLINE                          ; * RLM01
+               DLINE=''                                          ; * RLM01
+            END                                                  ; * RLM01
+         END                                                     ; * RLM01
+      REPEAT                                                     ; * RLM01
+      LIST.ATT.CNT = DCOUNT(FAM.MEMBR.LIST,@AM)                  ; * RLM01
+      FOR X=1 TO LIST.ATT.CNT                                    ; * RLM01
+         FAM.MEMBR.LIST<X>:=SPACE(79-LEN(FAM.MEMBR.LIST<X>))     ; * RLM01
+      NEXT X                                                     ; * RLM01
+      HEADING=' Member Client Number          Family Member Name'; * RLM01
+      HEADING:=SPACE(79-LEN(HEADING))                            ; * RLM01
+      SELECTION=''                                               ; * RLM01
+      CRT @(0,23):'Select TO Client for this EDI bill.':@(-4):   ; * RLM01
+      CALL POP.UP.LIST(FAM.MEMBR.LIST,HEADING,7,16,SELECTION)    ; * RLM01
+      IF SELECTION#'E' THEN ; * User made selection from list    ; * RLM01
+         TO.CLIENT.ID=TRIM(FAM.MEMBR.LIST<SELECTION>[16,6])      ; * RLM01
+      END                                                        ; * RLM01
+      RETURN ; * from POP.UP.LIST internal subr                  ; * RLM01
+*                                                                ; * RLM01
+SEND.MAIL:                                                       ; * RLM01
+      *** SEND EMAIL REGARDING NEW EDI CLIENT                    ; * RLM01
+      EMAIL.OUT=''                                               ; * RLM01
+      READV CLIENT.NAME FROM F.CLIENTS, TO.CLIENT.ID, 2 ELSE     ; * RLM01
+         CLIENT.NAME = 'Name Not Found'                          ; * RLM01
+      END                                                        ; * RLM01
+      READV CARRIER.NAME FROM F.CARRIERS, CARRIER.ID, 1 ELSE     ; * RLM01
+         CARRIER.NAME = 'Name Not Found'                         ; * RLM01
+      END                                                        ; * RLM01
+      EMAIL.OUT<1>='DFriend@AFSLogistics.Com'                    ; * RLM01
+      EMAIL.OUT<2>='OHolman@AFSLogistics.Com'                    ; * RLM01
+      EMAIL.OUT<3>=''                                            ; * RLM01
+      EMAIL.OUT<4>='DataProc@AFSLogistics.Com'                   ; * RLM01
+      EMAIL.OUT<5>='New EDI Client Encountered'                  ; * RLM01
+      EMAIL.OUT<6,-1>='An EDI record has been processed that contains a client ID that has not been properly setup for EDI.'      ; * RLM01
+      EMAIL.OUT<6,-1>='Specifically, this program had to create a subfile for the client under EDI.BILLS.HIST.'      ; * RLM01
+      EMAIL.OUT<6,-1>=''                                         ; * RLM01
+      EMAIL.OUT<6,-1>='Program Name: ':PROG.NAME                 ; * RLM01
+      EMAIL.OUT<6,-1>='Client Number: ':TO.CLIENT.ID:'-':CLIENT.NAME      ; * RLM01
+      EMAIL.OUT<6,-1>='Carrier Number: ':CARRIER.ID:'-':CARRIER.NAME      ; * RLM01
+      EMAIL.OUT<6,-1>='Pro Number: ':PRO.NUMBER                  ; * RLM01
+      VIN=EMAIL.OUT                                              ; * RLM01
+      VOUT=''                                                    ; * RLM01
+*     CALL SENDMAIL.NEW(VIN,VOUT)                                ; * RLM01 ; * JMK01
+      CALL SENDMAIL(VIN,VOUT)                                    ; * RLM01 ; * JMK01
+      RETURN                                                     ; * RLM01
+*
+* End of program
+*
+9999:**
+      CRT @(0,0):@(-3):@(0,21):PROG.NAME:@(0,22):CO.NAME
+      END

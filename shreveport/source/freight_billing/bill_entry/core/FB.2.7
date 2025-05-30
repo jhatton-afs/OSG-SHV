@@ -1,0 +1,209 @@
+***************************************************************   
+*
+* PROGRAM FB.2.7
+* PROGRAM TO INQUIRE ON FEDEX INVOICE
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: David R. Friend
+* DATE: May 13, 1998
+*
+* 070908 - NPR01 Added check for 'Invoice' on FB.BILLS.HIST file for Client 01075
+* 030309 - NPR02 - T090253 - Highlight Client name based on ranking
+* 101811 - JMK01 - SysAid#88 - Shipment info not pulling up
+* 100119 - NKH01 - ACCU-588 Changed call from FB.2.1.NW.OCR to FB.2.1.NW
+*
+* Initialize variables
+*
+$OPTIONS HEADER.EJECT
+      ERRMSG=''
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+      PROMPT''
+      PROG.NAME='FB.2.7'
+      PROG.DESC='INVOICE INQUIRY'
+      PACK.NAME='FREIGHT BILLING'
+      CO.NAME='AFS Logistics, LLC'
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.2.7' ; UPL.VOUT = ''         ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      CLIENT.ID='' ; CLIENT.NAME='' ; CARRIER.ID=''
+      CARRIER.NAME=''
+      HLA = '' ; HLB = ''                ; *NPR02
+*
+* Open general files
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+*     OPEN '','FB.CHECKS' TO F.CHECKS ELSE CALL OPEN.ABORT("FB.CHECKS",PROG.NAME) ; * JCW 09/08/06
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         EXECUTE 'CREATE-FILE FB.BILLS.CRX 1 103' PASSLIST CAPTURING OUTPUT
+         OPEN '','FB.BILLS.CRX' TO F.CRX ELSE CALL OPEN.ABORT("FB.BILLS.CRX",PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE CALL OPEN.ABORT("FB.TABLES",PROG.NAME)
+      OPEN '','FED.INV.XREF' TO F.INV.XREF ELSE CALL OPEN.ABORT("FED.INV.XREF",PROG.NAME)
+      OPEN '','BCTRL' TO F.BCTRL ELSE
+         CALL OPEN.ABORT('BCTRL',PROG.NAME)
+      END
+      CALL GET.USER(USER)
+      READ DBCTRL FROM F.BCTRL,USER ELSE DBCTRL=''
+
+*
+* Enter invoice number
+*********************************************************************************
+100:  GOSUB 8000                         ; * Display screen
+      HELP="Enter invoice number. [cr]=Exit."
+      CALL GEN.IN(8,3,'#-###-#####  ','',Q,0,13,'','',0,-13,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X' ! QI='EX' ! QI=''
+            STOP
+         CASE Q MATCH "1N'-'3N'-'5N"
+            NULL
+*DF        CASE Q MATCH "9N"
+*DF          TEMP = Q[1,1]:'-':Q[2,3]:'-':Q[5,5]
+*DF          Q=TEMP
+*DF        CASE 1
+*DF          CALL ELINE('Invalid entry.')
+*DF          GOTO 100
+      END CASE
+      INV.NUM=Q
+      CRT @(8,3):INV.NUM
+      DARRAY=''
+      INV.AMT=0
+      AMT.TO.PAY=0
+*
+* Get invoice item
+*********************************************************************************
+      READ DINV.XREF FROM F.INV.XREF,INV.NUM ELSE
+         W.ID.PRO = "01075*":INV.NUM:"*0"          ; * NPR01
+         DINV.XREF = W.ID.PRO            ; * NPR01
+         READ PRO.REC FROM F.CRX, W.ID.PRO ELSE    ; * NPR01
+            CALL ELINE(INV.NUM:' Is not on file')
+            GOTO 100
+         END
+      END
+      NUM.PROS=DCOUNT(DINV.XREF,CHAR(254))
+      OLD.CLIENT.ID=''
+      FOR I = 1 TO NUM.PROS
+         READ PRO.REC FROM F.CRX,DINV.XREF<I> ELSE
+            CALL ELINE(DINV.XREF<I>:' Is not on file - Skipping')
+            DARRAY<I,1>=FIELD(DINV.XREF<I>,'*',2)
+            ****GOTO GET.NEXT.RECORD
+            CONTINUE
+         END
+         INV.AMT=INV.AMT+PRO.REC<8>-PRO.REC<10>-PRO.REC<11>
+         AMT.TO.PAY=AMT.TO.PAY+PRO.REC<8>
+         DARRAY<I,1>=FIELD(DINV.XREF<I>,'*',2)
+         DARRAY<I,2>=PRO.REC<2>
+         DARRAY<I,3>=PRO.REC<8>-PRO.REC<10>-PRO.REC<11>
+         DARRAY<I,4>=PRO.REC<8>
+         DARRAY<I,5>=PRO.REC<41,2>:' ':PRO.REC<41,1>
+         DARRAY<I,5>=TRIM(DARRAY<I,5>)
+         DARRAY<I,6>=PRO.REC<37>
+         DARRAY<I,7>=PRO.REC<15>
+         DARRAY<I,8>=PRO.REC<14>
+         DARRAY<I,9>=PRO.REC<1>
+         DARRAY<I,10>=FIELD(DINV.XREF<I>,'*',1)
+         IF PRO.REC<39>='R' THEN
+            DARRAY<I,5>='REJECTED BILL'
+            DARRAY<I,4>=0
+            AMT.TO.PAY=AMT.TO.PAY-PRO.REC<8>
+         END
+         CLIENT.ID=PRO.REC<1>
+         IF OLD.CLIENT.ID='' THEN OLD.CLIENT.ID=CLIENT.ID
+         IF CLIENT.ID#OLD.CLIENT.ID THEN
+            CALL ELINE('More than one client for this invoice - Using the first one')
+         END
+
+      NEXT I
+      READ DCLIENT FROM F.CLIENTS,CLIENT.ID THEN
+         HIN = DCLIENT<240> ; HOUT = ""  ; * NPR02  Highlight based on ranking
+         CALL CLIENT.HL(HIN,HOUT) ; HLB = HOUT<1,1> ; HLA = HOUT<1,2>  ; * NPR02
+         CLIENT.LINE=CLIENT.ID:' ':DCLIENT<2>      ; * NPR02
+      END ELSE
+         CALL ELINE(CLIENT.ID:' Is not on file')
+         CLIENT.LINE=CLIENT.ID:' *** Unknown ***'
+      END
+      CRT @(42,3):INV.AMT'R26,#10'
+      CRT @(69,3):AMT.TO.PAY'R26,#10'
+      CRT @(8,4):HLB:CLIENT.LINE[1,30]:HLA 'L#30'  ; * NPR02
+      CRT @(76,4):NUM.PROS'R#3'
+      LAST.PAGE=INT(NUM.PROS/15)
+      IF REM(NUM.PROS,15) THEN LAST.PAGE=LAST.PAGE+1
+      PAGE=1
+      GOSUB 8100
+      GOTO 100
+
+*
+* Display screen
+*********************************************************************************
+8000: CALL SCR.HEAD('','','',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,3):'Invoice #':@(25,3):'Invoice Amount':@(55,3):'Amount To Pay'
+      CRT @(0,4):'Client'
+      CRT @(55,4):'Number of Airbills'
+      CRT @(0,5):STR('-',79)
+      RETURN
+*
+* Display check detail
+*********************************************************************************
+8100: START.POS=(PAGE*15)-14
+      STOP.POS=START.POS+14
+      IF STOP.POS GT NUM.PROS THEN STOP.POS=NUM.PROS
+      CRT @(0,6):@(-3):' Ln Airbills....... Shp Date Inv Amt  Amt Pd Cut Back/Prc Date  Ck Date  Check #'
+      LN=6
+      FOR I=START.POS TO STOP.POS
+         LN=LN+1
+*        CRT @(0,LN):TEXT'L#41':CARR.CHGS'R26,#13':ACT.CHGS'R26,#13':VAR'R26,#13'
+         LINE=I'R#3':' ':DARRAY<I,1>'L#15':' '
+         LINE=LINE:DARRAY<I,2>'D2/':DARRAY<I,3>'R26#8'
+         LINE=LINE:DARRAY<I,4>'R26#8':' '
+         IF DARRAY<I,5>#'' THEN
+            LINE=LINE:DARRAY<I,5>'L#17'
+         END ELSE
+            LINE=LINE:SPACE(9):DARRAY<I,6>'D2/':' '
+         END
+         LINE=LINE:DARRAY<I,7>'D2/':' '
+         LINE=LINE:DARRAY<I,8>'L#8'
+         CRT @(0,LN):LINE
+
+      NEXT I
+
+*********************************************************************************
+8110: HELP="Enter line #. [B]=Back page. [F]=Forward page. [X]=Exit display. [EX]=Exit."
+      CALL GEN.IN(0,22,'Enter selection ###','',Q,0,3,'','',1,-3,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='B'
+            PAGE=PAGE-1
+            IF PAGE=0 THEN PAGE=LAST.PAGE
+            GOTO 8100
+         CASE QI='F' ! QI=''
+            PAGE=PAGE+1
+            IF PAGE GT LAST.PAGE THEN PAGE=1
+            GOTO 8100
+         CASE QI='X'
+            CRT @(0,6):@(-3)
+            RETURN
+         CASE QI='EX'
+            STOP
+         CASE QI >= START.POS AND QI <= STOP.POS
+            IF NOT(DBCTRL<9>) THEN
+*              DATA DARRAY<QI,9>,DARRAY<QI,10>,'38101',DARRAY<QI,1>    ; * JMK01
+               CARRIER.ID=DARRAY<QI,10>  ; * JMK01
+               READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE CARRIER.REC=''   ; * JMK01
+               REMIT.ZIP=CARRIER.REC<5>[1,5]       ; * JMK01
+               DATA DARRAY<QI,9>,DARRAY<QI,10>,REMIT.ZIP,DARRAY<QI,1>  ; * JMK01
+            END ELSE
+               DATA DARRAY<QI,9>,DARRAY<QI,10>,DARRAY<QI,1>
+            END
+            EXECUTE 'FB.2.1.NW'          ; * NKH01
+            GOSUB 8000
+            CRT @(8,3):INV.NUM
+            CRT @(42,3):INV.AMT'R26,#10'
+            CRT @(69,3):AMT.TO.PAY'R26,#10'
+            CRT @(8,4):HLB:CLIENT.LINE[1,30]:HLA 'L#30'      ; * NPR02
+            CRT @(76,4):NUM.PROS'R#3'
+            GOTO 8100
+      END CASE
+      CALL ELINE('Invalid entry.')
+      GOTO 8110

@@ -1,0 +1,989 @@
+********************************************************************************
+* PROGRAM FB.3.20.13
+* LOGISTICS REVENUE ANALYSIS
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR : Mike Kerbow
+* DATE   : July 2, 2002
+*
+* FORMATTING MODS:
+* James Barberousse : October 3, 2002
+*
+* 04/21/06 : JCW01 : Add FB.PROC.DATE.XREF for performance
+* 05/08/06 : JCW02  CHANGES TO '@SELECTED', 'CLEARSELECT', AND 'STMT<X>'
+* 031208 - JMK01 - T080799 - Remove duplicates in FB History Reporting
+* 081809 - NPR01 - T091057 - Replace Sandra Long with Stacy Rittenbach wherever the former occurs
+********************************************************************************
+*
+      $INCLUDE PROG.ADMIN INC_OPTIONS
+      $INCLUDE FILE.DEFS INC_DIVISION.CODES
+
+* Initialize variables
+
+      PROMPT''
+      CALL CHANNEL(CH.NUM)
+      CALL GET.USER(USER.NAME)
+      USER.NAME=OCONV(USER.NAME,'MCU')
+      MASK.CHAR='-'
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+      PROG.NAME='FB.3.20.13'
+      PROG.DESC='Previous to Current Logistics Analysis'
+      PACK.NAME='Freight Billing'
+
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'REV.COMP.RPT' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      CLIENT.ID='' ; CLIENT.NAME=''
+      PRV.BEG.DATE=DATE()
+      PRV.END.DATE=DATE()
+      CUR.BEG.DATE=DATE()
+      CUR.END.DATE=DATE()
+
+* Open files
+
+      OPEN '','CLIENTS' TO F.CLIENT ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+
+      OPEN '','CARRIERS' TO F.CARRIER ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+
+      OPEN '','BCTRL' TO F.BCTRL ELSE
+         CALL READ.ABORT('BCTRL',PROG.NAME)
+      END
+
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+         END
+      END
+      OPEN '','DICT FBWORK':CH.NUM TO F.DICT.WORK ELSE
+         CALL OPEN.ABORT('DICT FBWORK':CH.NUM,PROG.NAME)
+      END
+      OPEN '','FB.NFSC' TO F.NFSC ELSE
+         CALL OPEN.ABORT('FB.NFSC',PROG.NAME)
+      END
+      OPEN '','PCIN' TO F.PCIN ELSE
+         CALL OPEN.ABORT('PCIN',PROG.NAME)
+      END
+      OPEN '','PCOUT' TO F.PCOUT ELSE
+         CALL OPEN.ABORT('PCOUT',PROG.NAME)
+      END
+      OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+         CALL OPEN.ABORT('BILLDATA.':USER.NAME,PROG.NAME)
+      END
+      CLEARFILE F.WORK
+      READ DTARIFF.DATE.XREF FROM F.TABLES,'TARIFF.DATE.XREF' ELSE DTARIFF.DATE.XREF=''
+      READ DTARIFFS FROM F.TABLES,'TARIFFS' ELSE DTARIFFS=''
+      READ LI.CODES FROM F.TABLES,'LI.CODES' ELSE LI.CODES=''
+
+* Create work file dictionary items
+
+*      TEMP=''
+*      TEMP<1>='S'
+*      TEMP<2>='1'
+*      TEMP<7>='MD2'
+*      TEMP<9>='R'
+*      TEMP<10>='10'
+*      WRITE TEMP ON F.DICT.WORK,'PRV.ACT.CHG'
+*      TEMP<2>='2'
+*      WRITE TEMP ON F.DICT.WORK,'PRV.LOG.COM'
+*      TEMP<2>='3'
+*      WRITE TEMP ON F.DICT.WORK,'CUR.ACT.CHG'
+*      TEMP<2>='4'
+*      WRITE TEMP ON F.DICT.WORK,'CUR.LOG.COM'
+*      TEMP<2>='0'
+*      TEMP<7>=''
+*      TEMP<8>='G1*1'
+*      TEMP<9>='R'
+*      TEMP<10>='15'
+*      WRITE TEMP ON F.DICT.WORK,'PRO'
+*      TEMP<8>='G0*1'
+*      TEMP<10>=5
+*      WRITE TEMP ON F.DICT.WORK,'CARRIER#'
+*      TEMP<8,-1>='TCARRIERS;X;;1'
+*      TEMP<9>='L'
+*      TEMP<10>=30
+*      WRITE TEMP ON F.DICT.WORK,'CARRIER.NAME'
+
+*  WORK FILE CONSISTS OF ITEMS WITH THE FOLLOWING DETAIL
+*    ATTRIBUTE   DESCRIPTION
+*  Variable Attribute Description.....................................
+*               ID    Carrier.Number*Pro*Version
+*
+*               1     1-Minimum shipment, 2-Normal Shipment
+*               2     I-Inbound, O-Outbound, T-Third Party
+
+* Read files and initialize variables
+
+      READ PRINTER.REC FROM F.TABLES,'PRINTERS' ELSE
+         CALL READ.ABORT('FB.TABLES','PRINTERS',PROG.NAME)
+      END
+      NUM.PRINTERS=DCOUNT(PRINTER.REC,@AM)
+
+* If user is a manager, give access to all managers' printers
+*NPR01      IF INDEX('BRIAN*KAREN*OWEN*CHRIS*DEBBIE*AMY*SANDRA*CGOSS',USER.NAME,1) THEN
+      IF INDEX('BRIAN*KAREN*OWEN*CHRIS*DEBBIE*AMY*SRITTENBACH*CBEASLEY*CGOSS',USER.NAME,1) THEN         ;*NPR01
+         FOR X=1 TO NUM.PRINTERS
+            PRINTER.REC<X,5>=1           ; * access value is 5
+         NEXT X
+      END
+
+* Setup printer list for POP.UP.LIST call if user does not want default
+      PRINTER.LIST=''
+      PRINTER.INDEX=''
+      COUNTER=0
+      FOR X=1 TO NUM.PRINTERS
+         IF PRINTER.REC<X,5> THEN
+            COUNTER+=1
+            PRINTER.LIST<COUNTER>=SPACE(1):PRINTER.REC<X,1>'L#30':SPACE(3):PRINTER.REC<X,2>'L#45'
+            PRINTER.INDEX<COUNTER>=X
+         END
+      NEXT X
+
+* Setup default printer
+      READ BCTRL.REC FROM F.BCTRL,USER.NAME ELSE
+         CALL READ.ABORT('BCTRL',USER.NAME,PROG.NAME)
+      END
+      USER.DEPARTMENT=BCTRL.REC<15>
+      BEGIN CASE
+         CASE USER.DEPARTMENT='AC'
+            SELECTED.PRINTER.NAME=PRINTER.REC<9,1>:'-':TRIM(FIELD(PRINTER.REC<9,2>,'-',2))
+            SELECTED.PRINTER.PATH=PRINTER.REC<9,3>
+         CASE USER.DEPARTMENT='AU'
+            SELECTED.PRINTER.NAME=PRINTER.REC<8,1>:'-':TRIM(FIELD(PRINTER.REC<8,2>,'-',2))
+            SELECTED.PRINTER.PATH=PRINTER.REC<8,3>
+         CASE USER.DEPARTMENT='FP'
+            SELECTED.PRINTER.NAME=PRINTER.REC<6,1>:'-':TRIM(FIELD(PRINTER.REC<6,2>,'-',2))
+            SELECTED.PRINTER.PATH=PRINTER.REC<6,3>
+         CASE USER.DEPARTMENT='IS'
+            SELECTED.PRINTER.NAME=PRINTER.REC<9,1>:'-':TRIM(FIELD(PRINTER.REC<9,2>,'-',2))
+            SELECTED.PRINTER.PATH=PRINTER.REC<9,3>
+         CASE USER.DEPARTMENT='LG'
+            SELECTED.PRINTER.NAME=PRINTER.REC<7,1>:'-':TRIM(FIELD(PRINTER.REC<7,2>,'-',2))
+            SELECTED.PRINTER.PATH=PRINTER.REC<7,3>
+         CASE USER.DEPARTMENT='SA'
+            SELECTED.PRINTER.NAME=PRINTER.REC<9,1>:'-':TRIM(FIELD(PRINTER.REC<9,2>,'-',2))
+            SELECTED.PRINTER.PATH=PRINTER.REC<9,3>
+         CASE USER.DEPARTMENT='TP'
+            SELECTED.PRINTER.NAME=PRINTER.REC<9,1>:'-':TRIM(FIELD(PRINTER.REC<9,2>,'-',2))
+            SELECTED.PRINTER.PATH=PRINTER.REC<9,3>
+         CASE 1
+            SELECTED.PRINTER.NAME=PRINTER.REC<9,1>:'-':TRIM(FIELD(PRINTER.REC<9,2>,'-',2))
+            SELECTED.PRINTER.PATH=PRINTER.REC<9,3>
+      END CASE
+
+*  Display heading
+
+50:***
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+
+* Prompt 1 : Get client number
+
+100:***
+      PAGE.NUM=1
+      PROMPT.NUM=1
+      BACK.FLAG=0
+      DISPLAY<PROMPT.NUM>=1
+      GOSUB DISPLAY.SCREEN
+      MASK=CLIENT.ID:STR(MASK.CHAR,5-LEN(CLIENT.ID))
+      HELP='Enter client number or letters of name for search. [A]=All [X]=Exit [EX]it'
+      CALL GEN.IN(18,3,MASK,'',Q,0,20,'','',1,18,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' AND CLIENT.ID#'' THEN QI=CLIENT.ID
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='X'
+            BACK.FLAG=1
+            DISPLAY<PROMPT.NUM>=0
+            GOSUB DISPLAY.SCREEN
+            GOTO EXIT.PROGRAM
+         CASE QI='A'
+            QI='ALL'
+            CLIENT.NAME='All Clients'
+         CASE NOT(QI MATCHES '0N')
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+            END CASE
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            GOTO 100
+         CASE NUM(QI)
+            QI=QI'R%5'
+         CASE 1
+            GOTO 100
+      END CASE
+      CLIENT.ID=QI
+      IF CLIENT.ID[1,2]='99' THEN
+         CALL ELINE('Client Number must NOT begin with 99.')
+         CLIENT.ID=''
+         GOTO 100
+      END
+      IF CLIENT.ID#'ALL' THEN
+         READ CLIENT.REC FROM F.CLIENT,CLIENT.ID ELSE
+            CALL ELINE('ERROR - Client ':CLIENT.ID:' not on file.')
+            CLIENT.ID=''
+            GOTO 100
+         END
+         CLIENT.NAME=CLIENT.REC<2>
+         LOGISTICS=CLIENT.REC<93>='Y'
+         CLIENT.CHG.DT=CLIENT.REC<84>
+         CLIENT.LOG.RATE=CLIENT.REC<85>
+         CL.LOG.FSC=CLIENT.REC<111>
+         MAX.LTL=15000
+         IF CLIENT.REC<150>#'' THEN MAX.LTL=CLIENT.REC<150>
+         CARR.ONLY.FSC=CLIENT.REC<189>
+      END
+
+* Prompt 2 : Get previous analysis period beginning date
+
+200:***
+      PAGE.NUM=1
+      PROMPT.NUM=2
+      BACK.FLAG=0
+      DISPLAY<PROMPT.NUM>=1
+      GOSUB DISPLAY.SCREEN
+      MASK=PRV.BEG.DATE'D2/':STR(MASK.CHAR,8-LEN(PRV.BEG.DATE'D2/'))
+      HELP='Enter the beginning date for the previous analysis period. [X]=Back [EX]it'
+      CALL GEN.IN(18,7,MASK,'DATE',Q,0,8,'','',1,18,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' AND PRV.BEG.DATE#'' THEN Q=PRV.BEG.DATE
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='X'
+            BACK.FLAG=1
+            DISPLAY<PROMPT.NUM>=0
+            GOTO 100
+      END CASE
+      PRV.BEG.DATE=Q
+
+* Prompt 3 : * Get previous analysis period ending date
+
+300:***
+      PAGE.NUM=1
+      PROMPT.NUM=3
+      BACK.FLAG=0
+      DISPLAY<PROMPT.NUM>=1
+      GOSUB DISPLAY.SCREEN
+      MASK=PRV.END.DATE'D2/':STR(MASK.CHAR,8-LEN(PRV.END.DATE'D2/'))
+      HELP='Enter the ending date for the previous analysis period. [X]=Back [EX]it'
+      CALL GEN.IN(18,8,MASK,'DATE',Q,0,8,'','',1,18,8,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' AND PRV.END.DATE#'' THEN Q=PRV.END.DATE
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='X'
+            BACK.FLAG=1
+            DISPLAY<PROMPT.NUM>=0
+            GOTO 200
+      END CASE
+      PRV.END.DATE=Q
+
+      IF PRV.END.DATE LT PRV.BEG.DATE THEN
+         CALL ELINE('Ending date is before beginning date.')
+         GOTO 300
+      END
+      OPRV.DATE=PRV.END.DATE'D4/'
+      PEDATE=OPRV.DATE[7,4]:OPRV.DATE[1,2]:OPRV.DATE[4,2]
+      PREVIOUS.DAYS=PRV.END.DATE-PRV.BEG.DATE
+
+* Prompt 4 : Get current analysis period beginning date
+
+400:***
+      PAGE.NUM=1
+      PROMPT.NUM=4
+      BACK.FLAG=0
+      DISPLAY<PROMPT.NUM>=1
+      GOSUB DISPLAY.SCREEN
+      MASK=CUR.BEG.DATE'D2/':STR(MASK.CHAR,8-LEN(CUR.BEG.DATE'D2/'))
+      HELP='Enter the beginning date for the current analysis period. [X]=Back [EX]it'
+      CALL GEN.IN(18,12,MASK,'DATE',Q,0,8,'','',1,18,12,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' AND CUR.BEG.DATE#'' THEN Q=CUR.BEG.DATE
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='X'
+            BACK.FLAG=1
+            DISPLAY<PROMPT.NUM>=0
+            GOTO 300
+      END CASE
+      CUR.BEG.DATE=Q
+
+      IF CUR.BEG.DATE LE PRV.END.DATE THEN
+         CALL ELINE('Warning! This date overlaps the previous period ending date.')
+      END
+
+* Prompt 5 : * Get current analysis period ending date
+
+500:***
+      PAGE.NUM=1
+      PROMPT.NUM=5
+      BACK.FLAG=0
+      DISPLAY<PROMPT.NUM>=1
+      GOSUB DISPLAY.SCREEN
+      MASK=CUR.END.DATE'D2/':STR(MASK.CHAR,8-LEN(CUR.END.DATE'D2/'))
+      HELP='Enter the ending date for the current analysis period. [X]=Back [EX]it'
+      CALL GEN.IN(18,13,MASK,'DATE',Q,0,8,'','',1,18,13,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' AND CUR.END.DATE#'' THEN Q=CUR.END.DATE
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='X'
+            BACK.FLAG=1
+            DISPLAY<PROMPT.NUM>=0
+            GOTO 400
+      END CASE
+      CUR.END.DATE=Q
+
+      IF CUR.END.DATE LT CUR.BEG.DATE THEN
+         CALL ELINE('Ending date is before beginning date.')
+         GOTO 500
+      END
+      OCUR.DATE=CUR.END.DATE'D4/'
+      CEDATE=OCUR.DATE[7,4]:OCUR.DATE[1,2]:OCUR.DATE[4,2]
+
+      CURRENT.DAYS=CUR.END.DATE-CUR.BEG.DATE
+
+      GOTO 700
+
+* Prompt 6 : Get printer
+
+600:***
+      PAGE.NUM=1
+      PROMPT.NUM=6
+      BACK.FLAG=0
+      DISPLAY<PROMPT.NUM>=1
+      GOSUB DISPLAY.SCREEN
+      MASK=SELECTED.PRINTER.NAME
+      HELP='Select a printer. [L]ist printers [X]=Back [EX]it'
+      CALL GEN.IN(18,15,MASK,'',Q,0,2,'','',2,18,15,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='X'
+            BACK.FLAG=1
+            DISPLAY<PROMPT.NUM>=0
+            GOTO 500
+         CASE QI='L'
+            HEADING='List of Available Network Printers'
+            CALL CENTER(HEADING,80)
+            HEADING:=SPACE(79-LEN(HEADING))
+            SELECTION=''
+            CRT @(0,23):'Select a printer. [X]=Back [E]xit List':@(-4):
+            CALL POP.UP.LIST(PRINTER.LIST,HEADING,17,20,SELECTION)
+            BEGIN CASE
+               CASE SELECTION='E'
+                  GOTO 600
+               CASE SELECTION='X'
+                  BACK.FLAG=1
+                  DISPLAY<PROMPT.NUM>=0
+                  GOSUB DISPLAY.SCREEN
+                  GOTO 500
+               CASE 1
+                  SELECTED.PRINTER.NAME=PRINTER.REC<PRINTER.INDEX<SELECTION>,1>
+                  SELECTED.PRINTER.PATH=PRINTER.REC<PRINTER.INDEX<SELECTION>,3>
+            END CASE
+         CASE QI=''
+         CASE 1
+            GOTO 600
+      END CASE
+
+* Ready to Continue?
+
+700:***
+      GOSUB DISPLAY.SCREEN
+      HELP='[ENTER]=Continue [X]=Back [EX]it'
+      CALL GEN.IN(0,22,'Enter selection : --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='X'
+            BACK.FLAG=1
+            GOTO 500
+         CASE QI=''
+         CASE 1
+            GOTO 700
+      END CASE
+      SUMM.ARRAY=''
+      CLIENT.ARRAY=''
+      PRV.ARRAY=''
+      CUR.ARRAY=''
+      IF CLIENT.ID='ALL' THEN
+         CLIENT.ALL=1
+         CLIENT.STMT='SSELECT CLIENTS # "99]"'
+         EXECUTE CLIENT.STMT RTNLIST CLIENT.LIST CAPTURING CLIENT.OUTPUT
+         CLIENT.TCNT=@SELECTED
+         IF CLIENT.TCNT=0 THEN STOP
+725:***
+         CLIENT.EOF=0
+         CLIENT.CNT=0
+         READNEXT CLIENT.ID FROM CLIENT.LIST ELSE GO 900
+         READ CLIENT.REC FROM F.CLIENT,CLIENT.ID ELSE
+            CALL ELINE('ERROR - Client ':CLIENT.ID:' not on file.')
+            CLIENT.ID=''
+            GOTO 100
+         END
+         CLIENT.NAME=CLIENT.REC<2>
+         LOGISTICS=CLIENT.REC<93>='Y'
+         CLIENT.CHG.DT=CLIENT.REC<84>
+         CLIENT.LOG.RATE=CLIENT.REC<85>
+         CL.LOG.FSC=CLIENT.REC<111>
+         MAX.LTL=15000
+         IF CLIENT.REC<150>#'' THEN MAX.LTL=CLIENT.REC<150>
+         CARR.ONLY.FSC=CLIENT.REC<189>
+      END ELSE
+         CLIENT.ALL=0
+      END
+750:* Start processing
+
+      TEXT='Selecting bills for client ':CLIENT.ID:' ':CLIENT.NAME:'...'
+      CALL CENTER(TEXT,80)
+      CRT @(0,18):TEXT:@(-4):
+
+* Select data file
+
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS ELSE GO 725
+      AUDIT.CLIENT.ID = CLIENT.ID
+      OPEN '','FB.AUDIT,':CLIENT.ID TO F.AUDIT THEN
+         READV SUB.CLIENT FROM F.AUDIT,'SUBSTITUTE',1 THEN
+            AUDIT.CLIENT.ID = SUB.CLIENT
+            OPEN '','FB.AUDIT,':AUDIT.CLIENT.ID TO F.AUDIT ELSE CLIENT.AUDIT=0
+         END ELSE
+            AUDIT.CLIENT.ID = CLIENT.ID
+         END
+      END
+      OPEN '','FB.AUDIT.TABLES,':AUDIT.CLIENT.ID TO F.AUDIT.TABLES ELSE GO 725
+      OPEN '','FB.AUDIT.ZIPS,':AUDIT.CLIENT.ID TO F.AUDIT.ZIPS ELSE GO 725
+
+      STMT = 'SELECT FB.PROC.DATE.XREF,':CLIENT.ID           ; * JCW01
+      STMT = STMT:' WITH DATE >= "':PRV.BEG.DATE'D2/':'" AND WITH DATE <= "':PRV.END.DATE'D2/':'"'   ; * JCW01
+      STMT = STMT:' OR'                  ; * JCW01
+      STMT = STMT:' WITH DATE >= "':CUR.BEG.DATE'D2/':'" AND WITH DATE <= "':CUR.END.DATE'D2/':'"'   ; * JCW01
+      EXECUTE STMT RTNLIST NDX.LIST CAPTURING NDX.MSG           ; * JCW01
+      IF @SELECTED > 0 THEN              ; * JCW01
+         STMT = 'QSELECT FB.PROC.DATE.XREF,':CLIENT.ID       ; * JCW01
+         EXECUTE STMT PASSLIST NDX.LIST RTNLIST FPX.LIST CAPTURING FPX.RESULTS     ; * JCW01
+      END ELSE                           ; * JCW01
+         CLEARSELECT                     ; * JCW01
+      END                                ; * JCW01
+
+      IF @SELECTED > 0 THEN              ; * JCW01
+         PREC='SELECT FB.BILLS.HIST,':CLIENT.ID
+         PREC:=' WITH VERSION EQ "0" AND WITH 12 LT "0" AND WITH 21 = "1" AND WITH 70 # ""'
+         PREC:=' SAVING UNIQUE @ID'       ; * JMK01
+         EXECUTE PREC PASSLIST FPX.LIST RTNLIST BILL.LIST CAPTURING BILL.OUTPUT
+      END
+      NUM.ITEMS=@SELECTED
+      IF NUM.ITEMS < 1 THEN GO 725
+
+      PRV.ACT.CHG.TOT=0
+      PRV.LOG.VAR.TOT=0
+      PRV.LOG.COM.TOT=0
+
+      CUR.ACT.CHG.TOT=0
+      CUR.LOG.VAR.TOT=0
+      CUR.LOG.COM.TOT=0
+
+* Sum up amounts
+
+800:***
+      READNEXT HIST.ID FROM BILL.LIST ELSE GOTO 725
+      READ HIST.REC FROM F.BILLS,HIST.ID THEN
+         CARRIER.ID=FIELD(HIST.ID,'*',1)
+         READ CARRIER.REC FROM F.CARRIER,CARRIER.ID ELSE CARRIER.REC=''
+         READ D.AUDIT FROM F.AUDIT,CARRIER.ID ELSE GO 800
+         IF D.AUDIT<11>#'ENABLE' THEN GO 800
+         READ BENCH.DFSC FROM F.NFSC,CARRIER.ID ELSE BENCH.DFSC=''
+         IF BENCH.DFSC<30>='DISABLE' THEN
+            BENCH.DFSC=''                   ; ** No Effect
+            CONTR.DFSC=''
+         END ELSE
+            READ CONTR.DFSC FROM F.NFSC,CARRIER.ID:"*":AUDIT.CLIENT.ID ELSE CONTR.DFSC=BENCH.DFSC
+            IF CONTR.DFSC<30>='DISABLE' THEN CONTR.DFSC=''
+         END
+         IOT=HIST.REC<2>
+         WT=HIST.REC<6>
+         CARRIER.CHG=HIST.REC<7>
+         ACTUAL.CHG=HIST.REC<8>
+         ACT.CHG=HIST.REC<8>-HIST.REC<12>          ; * Total invoice amount + logistics variance (flip signs because it is negative)
+         OVR.VAR=-HIST.REC<11>           ; * Overcharge variance
+         LOG.VAR=-HIST.REC<12>           ; * Logistics variance
+         BILL.MODE=HIST.REC<21>
+         PROC.DT=HIST.REC<37>            ; * Process date
+         LOCATE PROC.DT IN CLIENT.CHG.DT<1> BY 'AR' SETTING CPOS THEN NULL ELSE CPOS-=1
+         IF CPOS<1 THEN CPOS=1
+         IF CPOS>DCOUNT(CLIENT.CHG.DT<1>,@VM) THEN CPOS=DCOUNT(CLIENT.CHG.DT<1>,@VM)
+         LOG.COMM.PCT=CLIENT.LOG.RATE<1,CPOS>
+         OVR.COMM=HIST.REC<43>           ; * Overcharge commission
+         LOG.COMM=HIST.REC<44>           ; * Logistics commission
+         CLASSES = HIST.REC<74>
+         WEIGHTS = HIST.REC<75>
+         FRT.ARRAY=''                    ; * JMK14
+         MIS.ARRAY=''                    ; * JMK14
+         CONTR.MISC.CHG.AMTS=''
+         BENCH.MISC.CHG.AMTS=''
+         MISC.CHG.CODES=''
+         MISC.CHG.TIMES=DCOUNT(HIST.REC<70>,@VM)
+         FOR MISC.CHG.COUNT=1 TO MISC.CHG.TIMES
+            IF WEIGHTS<1,MISC.CHG.COUNT>='' & CLASSES<1,MISC.CHG.COUNT>='' THEN
+               MISC.CHG.POS=DCOUNT(MISC.CHG.CODES<1>,@VM)+1
+               MISC.CHG.CODES<1,MISC.CHG.POS>=HIST.REC<70,MISC.CHG.COUNT>
+               IF NOT(NUM(HIST.REC<77,MISC.CHG.COUNT>)) AND HIST.REC<77,MISC.CHG.COUNT>#'' THEN
+                  CONTR.MISC.CHG.AMTS<1,MISC.CHG.POS>=0
+               END ELSE
+                  CONTR.MISC.CHG.AMTS<1,MISC.CHG.POS>=HIST.REC<77,MISC.CHG.COUNT>
+               END
+               IF NOT(NUM(HIST.REC<79,MISC.CHG.COUNT>)) AND HIST.REC<79,MISC.CHG.COUNT>#'' THEN
+                  BENCH.MISC.CHG.AMTS<1,MISC.CHG.POS>=0
+               END ELSE
+                  BENCH.MISC.CHG.AMTS<1,MISC.CHG.POS>=HIST.REC<79,MISC.CHG.COUNT>
+               END
+            END
+         NEXT MISC.CHG.COUNT
+         A.VIN=''
+         A.VOUT=''
+         A.VIN<3>=HIST.REC<1>
+         A.VIN<10>=CARRIER.ID
+         A.VIN<11>=CLIENT.ID
+         A.VIN<12>=HIST.REC<2>
+         A.VIN<13,1>=HIST.REC<3>
+         A.VIN<13,2>=HIST.REC<27>
+         A.VIN<13,3>=HIST.REC<25>
+         A.VIN<14,1>=HIST.REC<4>
+         A.VIN<14,2>=HIST.REC<28>
+         A.VIN<14,3>=HIST.REC<26>
+         A.VIN<16>=USER.NAME
+         A.VIN<18>=CLASSES
+         A.VIN<19>=WEIGHTS
+         A.VIN<21>=MISC.CHG.CODES
+         A.VIN<22>=CONTR.MISC.CHG.AMTS
+         A.VIN<23>=BENCH.MISC.CHG.AMTS
+         A.VIN<24>=(CLIENT.REC<93>='Y')
+         A.VIN<35>=CL.LOG.FSC='N'
+         A.VIN<46>=MAX.LTL
+         A.VIN<48>=CLIENT.REC<188>
+         A.VIN<49>=CARR.ONLY.FSC
+         A.VIN<50>=CARRIER.REC<12>
+         A.VIN<51>='A'
+         VIN=A.VIN
+         CALL FB.AUTO(VIN,A.VOUT,D.AUDIT,CONTR.DFSC,BENCH.DFSC,DTARIFFS,DTARIFF.DATE.XREF,LI.CODES,F.AUDIT.TABLES,F.AUDIT.ZIPS,F.PCIN,F.PCOUT,F.TABLES)
+         WHY=A.VOUT<24>                     ; * Save for Debugging purposes
+         A.VOUT<24>=''                      ; * Kill Why So you can look at A.VOUT with Debugger
+*        IF USER.NAME='MKERBOW' THEN DEBUG
+         CONTR.AMT = A.VOUT<8>
+         BENCH.AMT = A.VOUT<9>
+         OLA.ERROR = A.VOUT<1>
+         CONTR.FSC.AMT=A.VOUT<46,7>
+         BEGIN CASE
+            CASE A.VIN<49>='Y'
+               BENCH.FSC.AMT=A.VOUT<47,7>
+            CASE A.VIN<49>='C'
+               BENCH.FSC.AMT=A.VOUT<47,7>
+            CASE A.VIN<49>='O'
+               BENCH.FSC.AMT=A.VOUT<83,7>
+            CASE 1
+               BENCH.FSC.AMT=A.VOUT<48,7>
+         END CASE
+         LOG.FSC.AMT=BENCH.FSC.AMT-CONTR.FSC.AMT
+         LOG.FSC.COMM=(LOG.FSC.AMT*LOG.COMM.PCT/10000)'R0'
+         LOG.FRT.COMM=LOG.COMM-LOG.FSC.COMM
+*         SUMM.ID=CLIENT.ID:'*':CARRIER.ID:'*':IOT:'*':BILL.MODE:'*':PROC.DT
+*         READ SUMM.REC FROM F.WORK,SUMM.ID ELSE SUMM.REC=''
+*         SUMM.ORG=SUMM.REC
+*         SUMM.REC<1>+=1
+*         SUMM.REC<2>+=WT
+*         SUMM.REC<4>+=CARRIER.CHG
+*         SUMM.REC<5>+=ACTUAL.CHG
+*         SUMM.REC<6>+=BENCH.AMT-CONTR.AMT
+*         SUMM.REC<7>+=BENCH.FSC.AMT-CONTR.FSC.AMT
+*         SUMM.REC<8>+=OVR.COMM
+*         SUMM.REC<9>+=LOG.COMM
+*         SUMM.REC<10>+=LOG.FRT.COMM
+*         SUMM.REC<11>+=LOG.FSC.COMM
+*         IF SUMM.REC<2>+0=0 THEN
+*            SUMM.REC<3>=0
+*            SUMM.REC<12>=0
+*            SUMM.REC<13>=0
+*         END ELSE
+*            SUMM.REC<3>=(SUMM.REC<2>/SUMM.REC<1>)'R0'
+*            SUMM.REC<12>=(SUMM.REC<10>/SUMM.REC<1>)'R0'
+*            SUMM.REC<13>=(SUMM.REC<11>/SUMM.REC<1>)'R0'
+*         END
+*         IF SUMM.REC#SUMM.ORG THEN
+*            WRITE SUMM.REC ON F.WORK,SUMM.ID
+*         END
+         LOCATE CLIENT.ID IN CLIENT.ARRAY<1> BY 'AR' SETTING CVAL ELSE
+            INS CLIENT.ID BEFORE CLIENT.ARRAY<1,CVAL>
+            INS CLIENT.NAME BEFORE CLIENT.ARRAY<2,CVAL>
+            FOR ATT=1 TO 20
+               INS 0 BEFORE PRV.ARRAY<ATT,CVAL>
+               INS 0 BEFORE CUR.ARRAY<ATT,CVAL>
+            NEXT ATT
+         END
+         IF PROC.DT >= CUR.BEG.DATE AND PROC.DT <= CUR.END.DATE THEN
+            CUR.ARRAY<1,CVAL>+=1
+            CUR.ARRAY<2,CVAL>+=WT
+            CUR.ARRAY<4,CVAL>+=CARRIER.CHG
+            CUR.ARRAY<5,CVAL>+=ACTUAL.CHG
+            CUR.ARRAY<6,CVAL>+=(BENCH.AMT-BENCH.FSC.AMT)-(CONTR.AMT-CONTR.FSC.AMT)
+            CUR.ARRAY<7,CVAL>+=BENCH.FSC.AMT-CONTR.FSC.AMT
+            CUR.ARRAY<8,CVAL>+=OVR.COMM
+            CUR.ARRAY<9,CVAL>+=LOG.COMM
+            CUR.ARRAY<10,CVAL>+=LOG.FRT.COMM
+            CUR.ARRAY<11,CVAL>+=LOG.FSC.COMM
+            IF CUR.ARRAY<2,CVAL>+0=0 THEN
+               CUR.ARRAY<3,CVAL>=0
+               CUR.ARRAY<12,CVAL>=0
+               CUR.ARRAY<13,CVAL>=0
+            END ELSE
+               CUR.ARRAY<3,CVAL>=(CUR.ARRAY<2,CVAL>/CUR.ARRAY<1,CVAL>)'R0'
+               CUR.ARRAY<12,CVAL>=(CUR.ARRAY<10,CVAL>/CUR.ARRAY<1,CVAL>)'R0'
+               CUR.ARRAY<13,CVAL>=(CUR.ARRAY<11,CVAL>/CUR.ARRAY<1,CVAL>)'R0'
+            END
+         END
+         IF PROC.DT >= PRV.BEG.DATE AND PROC.DT <= PRV.END.DATE THEN
+            PRV.ARRAY<1,CVAL>+=1
+            PRV.ARRAY<2,CVAL>+=WT
+            PRV.ARRAY<4,CVAL>+=CARRIER.CHG
+            PRV.ARRAY<5,CVAL>+=ACTUAL.CHG
+            PRV.ARRAY<6,CVAL>+=(BENCH.AMT-BENCH.FSC.AMT)-(CONTR.AMT-CONTR.FSC.AMT)
+            PRV.ARRAY<7,CVAL>+=BENCH.FSC.AMT-CONTR.FSC.AMT
+            PRV.ARRAY<8,CVAL>+=OVR.COMM
+            PRV.ARRAY<9,CVAL>+=LOG.COMM
+            PRV.ARRAY<10,CVAL>+=LOG.FRT.COMM
+            PRV.ARRAY<11,CVAL>+=LOG.FSC.COMM
+            IF PRV.ARRAY<2,CVAL>+0=0 THEN
+               PRV.ARRAY<3,CVAL>=0
+               PRV.ARRAY<12,CVAL>=0
+               PRV.ARRAY<13,CVAL>=0
+            END ELSE
+               PRV.ARRAY<3,CVAL>=(PRV.ARRAY<2,CVAL>/PRV.ARRAY<1,CVAL>)'R0'
+               PRV.ARRAY<12,CVAL>=(PRV.ARRAY<10,CVAL>/PRV.ARRAY<1,CVAL>)'R0'
+               PRV.ARRAY<13,CVAL>=(PRV.ARRAY<11,CVAL>/PRV.ARRAY<1,CVAL>)'R0'
+            END
+         END
+      END
+      GOTO 800
+
+* Build output file
+
+900:***
+      EXP.REC=''
+      EXP.LINE=''
+      EXP.LINE<1,1>='Client#'
+      EXP.LINE<1,2>='Client Name'
+      EXP.LINE<1,3>='Prv Qty'
+      EXP.LINE<1,4>='Cur Qty'
+      EXP.LINE<1,5>='% Change Qty'
+      EXP.LINE<1,6>='Prv Wt'
+      EXP.LINE<1,7>='Cur Wt'
+      EXP.LINE<1,8>='% Change Wt'
+      EXP.LINE<1,9>='Prv Avg Wt'
+      EXP.LINE<1,10>='Cur Avg Wt'
+      EXP.LINE<1,11>='% Change Avg Wt'
+      EXP.LINE<1,12>='Prv Carrier Chg'
+      EXP.LINE<1,13>='Cur Carrier Chg'
+      EXP.LINE<1,14>='% Change Carrier Chg'
+      EXP.LINE<1,15>='Prv Actual Chg'
+      EXP.LINE<1,16>='Cur Actual Chg'
+      EXP.LINE<1,17>='% Change Actual Chg'
+      EXP.LINE<1,18>='Prv OLA Log Var'
+      EXP.LINE<1,19>='Cur OLA Log Var'
+      EXP.LINE<1,20>='% Change OLA Log Var'
+      EXP.LINE<1,21>='Prv OLA FSC Log Var'
+      EXP.LINE<1,22>='Cur OLA FSC Log Var'
+      EXP.LINE<1,23>='% Change OLA FSC Log Var'
+      EXP.LINE<1,24>='Prv O/C Comm'
+      EXP.LINE<1,25>='Cur O/C Comm'
+      EXP.LINE<1,26>='% Change O/C Comm'
+      EXP.LINE<1,27>='Prv Log Comm'
+      EXP.LINE<1,28>='Cur Log Comm'
+      EXP.LINE<1,29>='% Change Log Comm'
+      EXP.LINE<1,30>='Prv Log FRT Comm'
+      EXP.LINE<1,31>='Cur Log FRT Comm'
+      EXP.LINE<1,32>='% Change Log FRT Comm'
+      EXP.LINE<1,33>='Prv Log FSC Comm'
+      EXP.LINE<1,34>='Cur Log FSC Comm'
+      EXP.LINE<1,35>='% Change Log FSC Comm'
+      EXP.LINE<1,36>='Prv Log FRT PerBill Comm'
+      EXP.LINE<1,37>='Cur Log FRT PerBill Comm'
+      EXP.LINE<1,38>='% Change Log FRT PerBill Comm'
+      EXP.LINE<1,39>='Prv Log FSC PerBill Comm'
+      EXP.LINE<1,40>='Cur Log FSC PerBill Comm'
+      EXP.LINE<1,41>='% Change Log FSC PerBill Comm'
+      EXP.REC<-1>=EXP.LINE
+      NVAL=DCOUNT(CLIENT.ARRAY<1>,@VM)
+      FOR VAL=1 TO NVAL
+         ROW=VAL+1
+         EXP.LINE=''
+         EXP.LINE<1,1>=CLIENT.ARRAY<1,VAL>
+         EXP.LINE<1,2>=CLIENT.ARRAY<2,VAL>
+         EXP.LINE<1,3>=PRV.ARRAY<1,VAL>
+         EXP.LINE<1,4>=CUR.ARRAY<1,VAL>
+         EXP.LINE<1,5>='=IF(C':ROW:'=0,"N/A",+(D':ROW:'-C':ROW:')/C':ROW:')'
+         EXP.LINE<1,6>=PRV.ARRAY<2,VAL>
+         EXP.LINE<1,7>=CUR.ARRAY<2,VAL>
+         EXP.LINE<1,8>='=IF(F':ROW:'=0,"N/A",+(G':ROW:'-F':ROW:')/F':ROW:')'
+         EXP.LINE<1,9>=PRV.ARRAY<3,VAL>
+         EXP.LINE<1,10>=CUR.ARRAY<3,VAL>
+         EXP.LINE<1,11>='=IF(I':ROW:'=0,"N/A",+(J':ROW:'-I':ROW:')/I':ROW:')'
+         EXP.LINE<1,12>=PRV.ARRAY<4,VAL>'R26'
+         EXP.LINE<1,13>=CUR.ARRAY<4,VAL>'R26'
+         EXP.LINE<1,14>='=IF(L':ROW:'=0,"N/A",+(M':ROW:'-L':ROW:')/L':ROW:')'
+         EXP.LINE<1,15>=PRV.ARRAY<5,VAL>'R26'
+         EXP.LINE<1,16>=CUR.ARRAY<5,VAL>'R26'
+         EXP.LINE<1,17>='=IF(O':ROW:'=0,"N/A",+(P':ROW:'-O':ROW:')/O':ROW:')'
+         EXP.LINE<1,18>=PRV.ARRAY<6,VAL>'R26'
+         EXP.LINE<1,19>=CUR.ARRAY<6,VAL>'R26'
+         EXP.LINE<1,20>='=IF(R':ROW:'=0,"N/A",+(S':ROW:'-R':ROW:')/R':ROW:')'
+         EXP.LINE<1,21>=PRV.ARRAY<7,VAL>'R26'
+         EXP.LINE<1,22>=CUR.ARRAY<7,VAL>'R26'
+         EXP.LINE<1,23>='=IF(U':ROW:'=0,"N/A",+(V':ROW:'-U':ROW:')/U':ROW:')'
+         EXP.LINE<1,24>=PRV.ARRAY<8,VAL>'R46'
+         EXP.LINE<1,25>=CUR.ARRAY<8,VAL>'R46'
+         EXP.LINE<1,26>='=IF(X':ROW:'=0,"N/A",+(Y':ROW:'-X':ROW:')/X':ROW:')'
+         EXP.LINE<1,27>=PRV.ARRAY<9,VAL>'R46'
+         EXP.LINE<1,28>=CUR.ARRAY<9,VAL>'R46'
+         EXP.LINE<1,29>='=IF(AA':ROW:'=0,"N/A",+(AB':ROW:'-AA':ROW:')/AA':ROW:')'
+         EXP.LINE<1,30>=PRV.ARRAY<10,VAL>'R46'
+         EXP.LINE<1,31>=CUR.ARRAY<10,VAL>'R46'
+         EXP.LINE<1,32>='=IF(AD':ROW:'=0,"N/A",+(AE':ROW:'-AD':ROW:')/AD':ROW:')'
+         EXP.LINE<1,33>=PRV.ARRAY<11,VAL>'R46'
+         EXP.LINE<1,34>=CUR.ARRAY<11,VAL>'R46'
+         EXP.LINE<1,35>='=IF(AG':ROW:'=0,"N/A",+(AH':ROW:'-AG':ROW:')/AG':ROW:')'
+         EXP.LINE<1,36>=PRV.ARRAY<12,VAL>'R46'
+         EXP.LINE<1,37>=CUR.ARRAY<12,VAL>'R46'
+         EXP.LINE<1,38>='=IF(AJ':ROW:'=0,"N/A",+(AK':ROW:'-AJ':ROW:')/AJ':ROW:')'
+         EXP.LINE<1,39>=PRV.ARRAY<13,VAL>'R46'
+         EXP.LINE<1,40>=CUR.ARRAY<13,VAL>'R46'
+         EXP.LINE<1,41>='=IF(AM':ROW:'=0,"N/A",+(AN':ROW:'-AM':ROW:')/AM':ROW:')'
+         EXP.REC<-1>=EXP.LINE
+      NEXT VAL
+      EXP.LINE=' '
+      EXP.REC<-1>=EXP.LINE
+      ROW=NVAL+3
+      BROW=NVAL+1
+      EXP.LINE=''
+      EXP.LINE<1,1>=''
+      EXP.LINE<1,2>='Totals'
+      EXP.LINE<1,3>='=SUM(C2:C':BROW:')'
+      EXP.LINE<1,4>='=SUM(D2:D':BROW:')'
+      EXP.LINE<1,5>='=IF(C':ROW:'=0,"N/A",+(D':ROW:'-C':ROW:')/C':ROW:')'
+      EXP.LINE<1,6>='=SUM(F2:F':BROW:')'
+      EXP.LINE<1,7>='=SUM(G2:G':BROW:')'
+      EXP.LINE<1,8>='=IF(F':ROW:'=0,"N/A",+(G':ROW:'-F':ROW:')/F':ROW:')'
+      EXP.LINE<1,9>='=SUM(I2:I':BROW:')'
+      EXP.LINE<1,10>='=SUM(J2:J':BROW:')'
+      EXP.LINE<1,11>='=IF(I':ROW:'=0,"N/A",+(J':ROW:'-I':ROW:')/I':ROW:')'
+      EXP.LINE<1,12>='=SUM(L2:L':BROW:')'
+      EXP.LINE<1,13>='=SUM(M2:M':BROW:')'
+      EXP.LINE<1,14>='=IF(L':ROW:'=0,"N/A",+(M':ROW:'-L':ROW:')/L':ROW:')'
+      EXP.LINE<1,15>='=SUM(O2:O':BROW:')'
+      EXP.LINE<1,16>='=SUM(P2:P':BROW:')'
+      EXP.LINE<1,17>='=IF(O':ROW:'=0,"N/A",+(P':ROW:'-O':ROW:')/O':ROW:')'
+      EXP.LINE<1,18>='=SUM(R2:R':BROW:')'
+      EXP.LINE<1,19>='=SUM(S2:S':BROW:')'
+      EXP.LINE<1,20>='=IF(R':ROW:'=0,"N/A",+(S':ROW:'-R':ROW:')/R':ROW:')'
+      EXP.LINE<1,21>='=SUM(U2:U':BROW:')'
+      EXP.LINE<1,22>='=SUM(V2:V':BROW:')'
+      EXP.LINE<1,23>='=IF(U':ROW:'=0,"N/A",+(V':ROW:'-U':ROW:')/U':ROW:')'
+      EXP.LINE<1,24>='=SUM(X2:X':BROW:')'
+      EXP.LINE<1,25>='=SUM(Y2:Y':BROW:')'
+      EXP.LINE<1,26>='=IF(X':ROW:'=0,"N/A",+(Y':ROW:'-X':ROW:')/X':ROW:')'
+      EXP.LINE<1,27>='=SUM(AA2:AA':BROW:')'
+      EXP.LINE<1,28>='=SUM(AB2:AB':BROW:')'
+      EXP.LINE<1,29>='=IF(AA':ROW:'=0,"N/A",+(AB':ROW:'-AA':ROW:')/AA':ROW:')'
+      EXP.LINE<1,30>='=SUM(AD2:AD':BROW:')'
+      EXP.LINE<1,31>='=SUM(AE2:AE':BROW:')'
+      EXP.LINE<1,32>='=IF(AD':ROW:'=0,"N/A",+(AE':ROW:'-AD':ROW:')/AD':ROW:')'
+      EXP.LINE<1,33>='=SUM(AG2:AG':BROW:')'
+      EXP.LINE<1,34>='=SUM(AH2:AH':BROW:')'
+      EXP.LINE<1,35>='=IF(AG':ROW:'=0,"N/A",+(AH':ROW:'-AG':ROW:')/AG':ROW:')'
+      EXP.LINE<1,36>='=SUM(AJ2:AJ':BROW:')'
+      EXP.LINE<1,37>='=SUM(AK2:AK':BROW:')'
+      EXP.LINE<1,38>='=IF(AJ':ROW:'=0,"N/A",+(AK':ROW:'-AJ':ROW:')/AJ':ROW:')'
+      EXP.LINE<1,39>='=SUM(AM2:AM':BROW:')'
+      EXP.LINE<1,40>='=SUM(AN2:AN':BROW:')'
+      EXP.LINE<1,41>='=IF(AM':ROW:'=0,"N/A",+(AN':ROW:'-AM':ROW:')/AM':ROW:')'
+      EXP.REC<-1>=EXP.LINE
+      BILLDATA.ID='RCR-':PEDATE:'-':CEDATE:'.XLS'
+      EXP.REC=CHANGE(EXP.REC,@VM,CHAR(9))
+      WRITE EXP.REC ON F.BILLDATA,BILLDATA.ID
+      STOP
+      IF PRV.LOG.VAR.TOT=0 THEN
+         PRV.LOG.VAR.PCT=0
+      END ELSE
+         IF PRV.ACT.CHG.TOT=0 THEN
+            PRV.LOG.VAR.PCT='UNDEFINED'
+         END ELSE
+            PRV.LOG.VAR.PCT=PRV.LOG.VAR.TOT/PRV.ACT.CHG.TOT*10000
+         END
+      END
+
+      IF PRV.LOG.COM.TOT=0 THEN
+         PRV.LOG.COM.PCT=0
+      END ELSE
+         IF PRV.LOG.VAR.TOT=0 THEN
+            PRV.LOG.COM.PCT='UNDEFINED'
+         END ELSE
+            PRV.LOG.COM.PCT=PRV.LOG.COM.TOT/PRV.LOG.VAR.TOT*10000
+         END
+      END
+
+      IF CUR.LOG.VAR.TOT=0 THEN
+         CUR.LOG.VAR.PCT=0
+      END ELSE
+         IF CUR.ACT.CHG.TOT=0 THEN
+            CUR.LOG.VAR.PCT='UNDEFINED'
+         END ELSE
+            CUR.LOG.VAR.PCT=CUR.LOG.VAR.TOT/CUR.ACT.CHG.TOT*10000
+         END
+      END
+
+      IF CUR.LOG.COM.TOT=0 THEN
+         CUR.LOG.COM.PCT=0
+      END ELSE
+         IF CUR.LOG.VAR.TOT=0 THEN
+            CUR.LOG.COM.PCT='UNDEFINED'
+         END ELSE
+            CUR.LOG.COM.PCT=CUR.LOG.COM.TOT/CUR.LOG.VAR.TOT*10000
+         END
+      END
+
+      ACT.CHG.VAR=CUR.ACT.CHG.TOT-PRV.ACT.CHG.TOT
+      LOG.VAR.VAR=CUR.LOG.VAR.TOT-PRV.LOG.VAR.TOT
+      LOG.COM.VAR=CUR.LOG.COM.TOT-PRV.LOG.COM.TOT
+
+      IF CUR.LOG.VAR.PCT#'UNDEFINED' AND PRV.LOG.VAR.PCT#'UNDEFINED' THEN
+         LOG.VAR.PCT=(CUR.LOG.VAR.PCT-PRV.LOG.VAR.PCT)/PRV.LOG.VAR.PCT*10000
+      END ELSE
+         LOG.VAR.PCT='UNDEFINED'
+      END
+
+      IF CUR.LOG.COM.PCT#'UNDEFINED' AND PRV.LOG.COM.PCT#'UNDEFINED' THEN
+         LOG.COM.PCT=(CUR.LOG.COM.PCT-PRV.LOG.COM.PCT)/PRV.LOG.COM.PCT*10000
+      END ELSE
+         LOG.COM.PCT='UNDEFINED'
+      END
+
+* Display all data
+
+      OUT1='Previous Period''R#15':SPACE(5):'Current Period''R#15':SPACE(5):'Variance''R#15'
+      OUT1=SPACE(79-LEN(OUT1)):OUT1
+
+      OUT2=('From : ':PRV.BEG.DATE'D2/')'R#15':SPACE(5):('From : ':CUR.BEG.DATE'D2/')'R#15'
+      OUT2=SPACE(59-LEN(OUT2)):OUT2
+
+      OUT3=('To   : ':PRV.END.DATE'D2/')'R#15':SPACE(5):('To   : ':CUR.END.DATE'D2/')'R#15'
+      OUT3=SPACE(59-LEN(OUT3)):OUT3
+
+      OUT4=PRV.ACT.CHG.TOT'R26,#15':SPACE(5):CUR.ACT.CHG.TOT'R26,#15':SPACE(5):ACT.CHG.VAR'R26,#15'
+      OUT4='Inv + Log Var $ :*':OUT4
+      OUT4=CHANGE(OUT4,'*',SPACE(80-LEN(OUT4)))
+
+      OUT5=PRV.LOG.VAR.TOT'R26,#15':SPACE(5):CUR.LOG.VAR.TOT'R26,#15':SPACE(5):LOG.VAR.VAR'R26,#15'
+      OUT5='Log Var       $ :*':OUT5
+      OUT5=CHANGE(OUT5,'*',SPACE(80-LEN(OUT5)))
+
+      OUT6=PRV.LOG.COM.TOT'R26,#15':SPACE(5):CUR.LOG.COM.TOT'R26,#15':SPACE(5):LOG.COM.VAR'R26,#15'
+      OUT6='Log Comm      $ :*':OUT6
+      OUT6=CHANGE(OUT6,'*',SPACE(80-LEN(OUT6)))
+
+      OUT7=PRV.LOG.VAR.PCT'R26,#15':'%':SPACE(4):CUR.LOG.VAR.PCT'R26,#15':'%':SPACE(4):LOG.VAR.PCT'R26,#15':'%'
+      OUT7='Log Var       % :*':OUT7
+      OUT7=CHANGE(OUT7,'*',SPACE(80-LEN(OUT7)))
+
+      OUT8=PRV.LOG.COM.PCT'R26,#15':'%':SPACE(4):CUR.LOG.COM.PCT'R26,#15':'%':SPACE(4):LOG.COM.PCT'R26,#15':'%'
+      OUT8='Log Comm      % :*':OUT8
+      OUT8=CHANGE(OUT8,'*',SPACE(80-LEN(OUT8)))
+
+      CRT @(0,4):@(-3)
+      CRT @(0, 5):OUT1:
+      CRT @(0, 6):OUT2:
+      CRT @(0, 7):OUT3:
+      CRT @(0, 9):OUT4:
+      CRT @(0,10):OUT5:
+      CRT @(0,11):OUT6:
+      CRT @(0,13):OUT7:
+      CRT @(0,14):OUT8:
+
+*  Wait for input
+
+1000:***
+      HELP='[ENTER]=Continue [EX]it'
+      CALL GEN.IN(0,22,'Enter selection : --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI=''
+            GOTO 50
+         CASE 1
+            GOTO 1000
+      END CASE
+
+********************************************************************************
+
+DISPLAY.SCREEN:***
+      CRT @(0,3):@(-3)
+      BEGIN CASE
+         CASE PAGE.NUM=1
+            IF DISPLAY<1> THEN
+               CRT @( 0, 3):'Client Number   : ':CLIENT.ID:STR(' ',6-LEN(CLIENT.ID)):CLIENT.NAME
+            END
+            IF DISPLAY<2> THEN
+               CRT @( 0, 5):'Previous Analysis Period'
+               CRT @( 0, 6):'--------------------------'
+               CRT @( 0, 7):'Beginning Date  : ':PRV.BEG.DATE'D2/'
+            END
+            IF DISPLAY<3> THEN
+               CRT @( 0, 8):'Ending Date     : ':PRV.END.DATE'D2/'
+            END
+            IF DISPLAY<4> THEN
+               CRT @( 0,10):'Current Analysis Period'
+               CRT @( 0,11):'--------------------------'
+               CRT @( 0,12):'Beginning Date  : ':CUR.BEG.DATE'D2/'
+            END
+            IF DISPLAY<5> THEN
+               CRT @( 0,13):'Ending Date     : ':CUR.END.DATE'D2/'
+            END
+            IF DISPLAY<6> THEN
+               CRT @( 0,15):'Printer         : ':SELECTED.PRINTER.NAME
+            END
+      END CASE
+      RETURN
+
+********************************************************************************
+
+SET.DISPLAY.VARIABLE:***
+      NUM.PROMPTS=6
+      DISPLAY=''
+      FOR X=1 TO NUM.PROMPTS
+         DISPLAY<X>=0
+      NEXT X
+      RETURN
+
+********************************************************************************
+
+EXIT.PROGRAM:***
+      CRT @(0,23):@(-4):
+      STOP

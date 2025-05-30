@@ -1,0 +1,369 @@
+* PROGRAM FB.DIV.ANALYSIS.RPT
+* PROGRAM TO PROCESS "FREIGHT COSTS BY DIVISION" REPORT
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: VALERIE DOTY
+* DATE: DECEMBER 9, 1993
+*
+************************************************************************
+*
+* Last updated by AFS.SOURCE (valerie) at 13:31:52 on 05/13/1994.
+*   ADDED NEW DIVISION CODES INSERT.
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_DIVISION.CODES
+*
+* Initialize variables
+*
+      PROMPT''
+      STATUS=''
+      ERRMSG=''
+      CALL CHANNEL(CH.NUM)
+      CALL GET.USER(USER.NAME)
+      PROG.NAME='FB.DIV.ANALYSIS.RPT'
+      PROG.DESC='Division Analysis Report'
+      PACK.NAME='Freight Billing'
+      WIDTH = 180
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.DIV.ANALYSIS.RPT' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      TOTAL.SHIP = 0
+      TOTAL.AMT = 0
+      MAT DIV.REC = ''
+*
+*  SET UP DIVISION ARRAY
+*
+      DIV.ARRAY = ''
+*     DIV.ARRAY<1> = DIVISION CODES
+*     DIV.ARRAY<2> = NUMBER OF BILLS, SUBVALUED BY MONTH
+*     DIV.ARRAY<3> = ACTUAL CHARGES, SUBVALUED BY MONTH
+*
+* Diminsion arrays
+*
+      DIM MONTHS(12)
+*
+* Open files
+*
+      OPEN '','BCUST' TO F.CLIENT ELSE
+        CALL OPEN.ABORT('BCUST',PROG.NAME)
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIP ELSE
+        CALL OPEN.ABORT('ZIPS',PROG.NAME)
+      END
+      OPEN '','FB.CONTROL' TO F.CONTROL ELSE
+        CALL OPEN.ABORT('FB.CONTROL',PROG.NAME)
+      END
+      OPEN '','FBWORK':CH.NUM TO WORK.FILE ELSE
+        EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+        OPEN '','FBWORK':CH.NUM TO WORK.FILE ELSE
+          CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+        END
+      END
+      CLEARFILE WORK.FILE
+      OPEN '','DICT FBWORK':CH.NUM TO F.DICT.WORK ELSE
+        CALL OPEN.ABORT('DICT FBWORK':CH.NUM,PROG.NAME)
+      END
+*
+* Create work file dictionary items
+*
+      TEMP=''
+      TEMP<1>='S'
+      TEMP<2>='0'
+      TEMP<8> = 'AS(2)'
+      TEMP<9>='R'
+      TEMP<10>=15
+      WRITE TEMP ON F.DICT.WORK,'SORTER'
+*
+* Display screen heading
+*
+30    CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+* Get client number to process
+*
+50    HELP.PROMPT="Enter the client number you want to process. S=Search. ''=Exit."
+      CRT @(0,3):@(-3)
+      CALL GEN.IN(0,3,'Enter Client Number #####','',Q,0,20,'','',1,-5,3,0,QI,HELP.PROMPT,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+        CASE QI='' ! QI='EX' ! QI='X'
+          STOP
+        CASE ALPHA(QI)
+          CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+          CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+          IF ITEM.LIST='' ! DCOUNT(ITEM.LIST<1>,@VM) > 1 THEN GOTO 50
+          IF NOT(NUM(ITEM.LIST<1,1>)) THEN GOTO 50
+          Q=ITEM.LIST<1,1>'R%5'
+      END CASE
+      CLIENT.ID=Q'R%5'
+      CRT @(20,3):CLIENT.ID
+      READ CLIENT.REC FROM F.CLIENT,CLIENT.ID ELSE
+        GOTO 50
+      END
+      CLIENT.NAME=CLIENT.REC<2>
+      FYBD=CLIENT.REC<29>
+*
+* Get current period beginning and ending dates
+*
+100   HELP='Enter the current period beginning date.'
+      CALL GEN.IN(0,5,'Current period beginning date.  ':DATE()'D2/','DATE',BEG.DATE,1,8,'','',1,-8,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN GOTO 50
+      IF QI='EX' THEN STOP
+      CRT @(32,5):BEG.DATE'D2/'
+*
+* Get current period ending date
+*
+200   HELP='Enter the current period ending date.'
+      CALL GEN.IN(0,7,'Current period ending date.     ':DATE()'D2/','DATE',END.DATE,0,8,'','',1,-8,7,0,QI,HELP,0,23)
+      IF QI='X' THEN GOTO 100
+      IF QI='EX' THEN STOP
+      IF END.DATE LT BEG.DATE THEN
+        GOTO 200
+      END
+      CRT @(32,7):END.DATE'D2/'
+*
+* Ask if data correct
+*
+      HELP="Enter Y if information correct or N if incorrect."
+      CALL GEN.IN(0,22,'Is the information correct? Y','',Q,0,1,'','',2,-1,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='Y' ! QI='' ELSE GOTO 30
+*
+* Create beginning of year and monthly descriptions
+*
+      MATREAD MONTHS FROM F.CONTROL,'MONTHS' ELSE
+        CALL READ.ABORT('FB.CONTROL','MONTHS',PROG.NAME)
+      END
+*
+      BEG.MO=OCONV(BEG.DATE,'DM')
+      BEG.YR=OCONV(BEG.DATE,'DY')
+      FISCAL.MO=FIELD(FYBD,'.',1)'R0'
+      IF BEG.MO < FISCAL.MO THEN FISCAL.YR=BEG.YR-1 ELSE FISCAL.YR=BEG.YR
+      F.DATE=FISCAL.MO'R%2':'.01.':FISCAL.YR
+      F.DATE=ICONV(F.DATE,'D2.')
+*
+      END.MO=OCONV(END.DATE,'DM')
+      HEAD4 = SPACE(WIDTH)
+      HEAD4[1,6] = 'BRANCH'
+      FOR I = 1 TO 12
+         MO.PTR = BEG.MO + I - 1
+         IF MO.PTR > 12 THEN MO.PTR -= 12
+         HEAD4[8+(13*(I-1)),13] = MONTHS(MO.PTR) 'R#13'
+         IF MO.PTR = END.MO THEN I = 13
+      NEXT I
+      HEAD4[165,13] = 'TOTALS' 'R#13'
+      HEAD4 := "'L'"
+*
+      CRT @(0,2):@(-3)
+      LINE='Processing Client ':CLIENT.ID:' ':CLIENT.NAME
+      CALL CENTER(LINE,80)
+      CRT @(0,10):LINE
+      CRT
+*
+* Select data for current client
+*
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS ELSE
+        CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,PROG.NAME)
+      END
+      OPEN '','DIVISION.CODES,':CLIENT.ID TO F.DIVISION.CODE ELSE
+        CALL OPEN.ABORT('DIVISION.CODES',PROG.NAME)
+      END
+*
+      SENTENCE = 'SELECT FB.BILLS.HIST,':CLIENT.ID
+      SENTENCE := ' WITH 1 GE "':OCONV(BEG.DATE,'D2/'):'"'
+      SENTENCE := ' AND WITH 1 LE "':OCONV(END.DATE,'D2/'):'"'
+      EXECUTE SENTENCE PASSLIST CAPTURING OUTPUT
+*
+      IF SYSTEM(11) ELSE
+        GOTO 50
+      END
+      NUM.ITEMS = @SELECTED
+      COUNTER=0
+*
+************************************************************************
+*   MAIN PROCESS
+************************************************************************
+*
+   GOSUB READ.HISTORY
+   GOSUB BUILD.HEADING
+   GOSUB BUILD.REPORT
+*
+   PRINTER OFF
+   PRINTER CLOSE
+   STOP
+*
+************************************************************************
+READ.HISTORY:*    READ THE HISTORY FILE AND BUILD DIVISION TOTALS
+************************************************************************
+*
+      DONE = 0
+      LOOP
+        READNEXT HIST.ID ELSE DONE = 1
+      UNTIL DONE = 1 DO
+        COUNTER=COUNTER+1
+        CALL PROG.BAR(21,COUNTER,NUM.ITEMS,PER)
+        IF FIELD(HIST.ID,'*',3) GT 0 ELSE
+          READ HIST.REC FROM F.BILLS,HIST.ID THEN
+            BALDUE=0
+            PRO=FIELD(HIST.ID,'*',2)
+            START=LEN(PRO)-1
+            IF PRO[START,2]='BD' ! PRO[START,2]='AD' THEN BALDUE=1
+            DIV = HIST.REC<9>
+            LOCATE(DIV,DIV.ARRAY,1;DIV.POS) ELSE
+               DIV.ARRAY<1,DIV.POS> = DIV
+            END
+            BILL.DATE = HIST.REC<1>
+            BILL.MO = OCONV(BILL.DATE,'D2/')[1,2] + 0
+            DIV.ARRAY<3,DIV.POS,BILL.MO> += HIST.REC<8>
+            IF NOT( BALDUE ) THEN
+              DIV.ARRAY<2,DIV.POS,BILL.MO> += 1
+            END
+          END
+        END
+      REPEAT
+*
+   GOSUB BUILD.WORK
+*
+   RETURN
+*
+************************************************************************
+BUILD.WORK:*   BUILD A WORK FILE FROM TOTALS FOR SORTING
+************************************************************************
+*
+      DIV.CNT = DCOUNT(DIV.ARRAY<1>,CHAR(253))
+      FOR I = 1 TO DIV.CNT
+         ID = DIV.ARRAY<1,I>
+         REC = ''
+         REC<1> = DIV.ARRAY<2,I>
+         REC<2> = DIV.ARRAY<3,I>
+         WRITE REC ON WORK.FILE, ID
+      NEXT I
+*
+   RETURN
+*
+************************************************************************
+BUILD.HEADING:*
+************************************************************************
+*
+      L.TAB=90-(LEN(PROG.DESC)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):PROG.DESC
+      R.TAB=WIDTH-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE()) - 3
+      HEAD1=PROG.NAME:SPACE(L.TAB):PROG.DESC:SPACE(R.TAB):TIMEDATE():"'L'"
+*
+      TITLE='For Client: ':CLIENT.ID:' ':CLIENT.NAME
+      L.TAB=90-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+*     R.TAB=(WIDTH-LEN(TEMP))- 12
+*     HEAD2=TEMP:SPACE(R.TAB):"PAGE 'PL'"
+      R.TAB=(WIDTH-LEN(TEMP))-20
+      HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )':"PAGE 'PL'"
+      HEAD3=BEG.DATE'D2/':' to ':END.DATE'D2/'
+      CALL CENTER(HEAD3,WIDTH)
+      HEAD3=HEAD3:"'LL'"
+*
+      HED=HEAD1:HEAD2:HEAD3:HEAD4
+      EXECUTE 'TERM ,,,,,,':WIDTH:',64' CAPTURING OUTPUT
+      PRINTER ON
+      LASER.STR=''
+      ESC=CHAR(27)
+      LASER.STR:=ESC:'E'         ;*RESET THE PRINTER
+      LASER.STR:=ESC:'&l1O'      ;*SET TO LANDSCAPE
+      LASER.STR:=ESC:'&l8D'      ;*SET TO LPI
+      LASER.STR:=ESC:'&l2E'      ;*SET TOP MARGIN TO 2 LINES
+      LASER.STR:=ESC:'&l65F'     ;*SET TO 65 LINES
+      LASER.STR:=ESC:'(s18h'     ;*SET TO 18 CHARACTERS/INCH
+      LASER.STR:='0p'            ;*PROPORTIONAL PRINTING OFF
+      LASER.STR:='0s'            ;*ITALICS OFF
+      LASER.STR:='0T'            ;*LINE PRINTER FONT
+      LASER.STR:=ESC:'&l1H'      ;*BIN SELECT
+      LASER.STR:=ESC:'&a0L'      ;*SET LEFT MARGIN
+*      LASER.STR:=ESC:'&a176M'    ;*SET RIGHT MARGIN
+      LASER.STR:=ESC:'&s0C'      ;*ENABLE LINE WRAP
+      LASER.STR:=ESC:'"g0F'      ;*PAPER OUT
+      PRINT LASER.STR:
+      PAGE 0
+      HEADING HED
+*
+   RETURN
+*
+************************************************************************
+BUILD.REPORT:*   SORT WORK FILE AND PRINT
+************************************************************************
+*
+      COUNTER=0
+      EXECUTE 'SSELECT FBWORK':CH.NUM:' BY-DSND SORTER' PASSLIST CAPTURING OUTPUT
+      NUM.ITEMS = @SELECTED
+*
+      DONE.LOOP = 0
+      LOOP
+        READNEXT ID ELSE DONE.LOOP = 1
+      UNTIL DONE.LOOP = 1 DO
+        COUNTER=COUNTER+1
+        CALL PROG.BAR(21,COUNTER,NUM.ITEMS,PER)
+        READ REC FROM WORK.FILE,ID THEN
+           LINE = SPACE(WIDTH)
+           GOSUB READ.DIV
+           GOSUB BUILD.LINE
+           PRINT LINE
+           PRINT
+        END
+      REPEAT
+*
+*   PRINT REPORT TOTALS
+*
+   LINE = SPACE(WIDTH)
+   LINE[164,6] = STR('=',6)
+   LINE[171,7] = STR('=',7)
+   PRINT LINE
+   PRINT
+   TOTAL.AMT = INT(OCONV(TOTAL.AMT,'MD2'))
+   LINE = SPACE(WIDTH)
+   LINE[164,6] = TOTAL.SHIP 'R#6'
+   LINE[171,7] = TOTAL.AMT 'R#7'
+   PRINT LINE
+   PRINT
+*
+   RETURN
+*
+************************************************************************
+BUILD.LINE:*
+************************************************************************
+*
+   FOR I = 1 TO 12
+      MO.PTR = BEG.MO + I - 1
+      IF MO.PTR > 12 THEN MO.PTR -= 12
+      TEMP.AMT = INT(OCONV(REC<2,1,MO.PTR>,'MD2'))
+      LINE[9+(13*(I-1)),5] = REC<1,1,MO.PTR> 'R#5'
+      LINE[15+(13*(I-1)),6] = TEMP.AMT 'R#6'
+      IF MO.PTR = END.MO THEN I = 13
+   NEXT I
+   DIV.SHIP = SUM( REC<1> )
+   DIV.AMT  = SUM( REC<2> )
+   TOTAL.SHIP += DIV.SHIP
+   TOTAL.AMT  += DIV.AMT
+   DIV.AMT = INT(OCONV(DIV.AMT,'MD2'))
+*
+   LINE[165,5] = DIV.SHIP 'R#5'
+   LINE[171,7] = DIV.AMT 'R#7'
+*
+   RETURN
+*
+************************************************************************
+READ.DIV:*
+************************************************************************
+*
+      MATREAD DIV.REC FROM F.DIVISION.CODE, ID ELSE MAT DIV.REC = ''
+      READ ZIP.REC FROM F.ZIP, DIV.ZIP ELSE ZIP.REC = 'Unknown'
+      CITY = ZIP.REC<1>
+      STATE = ZIP.REC<2>
+      TEMP = CITY : ' ' : STATE
+      LINE[1,9] = TEMP 'L#9'
+*
+   RETURN
+*
+************************************************************************
+*
+END

@@ -1,0 +1,350 @@
+      $OPTIONS HEADER.EJECT
+      $OPTIONS EXEC.EQ.PERF
+      $OPTIONS INFO.ABORT
+      ERRMSG=''
+* PROGRAM LI.PRINT.BILLS
+* PROGRAM TO PRINT LOGISTICS INVOICES
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: VALERIE DOTY
+* DATE:   FEBRUARY 17, 1994
+*
+*
+* 101606 - JMK01 - REMOVE CURSOR SAVE FUNCTION
+* 102406 - DRF01 - REMOVE JMK01 CHANGE
+***********************************************************************
+*
+* Initialize variables
+*
+      PROMPT''
+      PROG.NAME = 'LI.PRINT.BILLS'
+      PROG.DESC = 'INVOICE PRINT'
+      PACK.NAME = 'LOGISTICS INVOICING'
+      YEAR = OCONV(DATE(),'D2Y')
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'LI.PRINT.BILLS' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      YES = 1
+      NO = 0
+      TEST = 1
+      NIL = ''
+      LINES.PER.PAGE = 11
+      FIRST.LINE = 14
+      NUM.HEADLINES = 13
+      PAGES.PRINTED = 0
+      BILLS.PER.PAGE = 2
+*
+* Open files
+*
+      OPEN '', 'LI.BILLS' TO LI.BILLS ELSE
+         CALL OPEN.ABORT("LI.BILLS", PROG.NAME)
+      END
+      OPEN '', 'LI.CLIENTS' TO LI.CLIENTS ELSE
+         CALL OPEN.ABORT("LI.CLIENTS", PROG.NAME)
+      END
+      
+      VIN='BILLDATA'                  ;* VOC Pointer to Source Location on AFS
+      VIN<2>='FORMS'                  ;* Sub Folder on AFS that has the file
+      VIN<3>='AFS INVOICE.PRN'        ;* FileName to Load
+      CALL READ.PCFILE(VIN,VOUT)      ;* Read File
+      IF VOUT[1,5]='ERROR' THEN
+         CALL OPEN.ABORT(VOUT,PROG.NAME)
+      END
+      INVOICE.FORM = VOUT
+      
+      
+*
+* Display page heading
+*
+      CALL AFS.SCR.HEAD(CO.ID, FILE.ID, PERIOD, PROG.NAME, PROG.DESC, PACK.NAME, CO.NAME, TIME.DATE, 1)
+      
+      
+*
+***********************************************************************
+* Get invoice number or print all not already printed.
+***********************************************************************
+*
+100   CRT @(0, 3):@(-3):'Invoice(s) to print:':
+      MODE = ''
+      NUM.ITEMS = 1
+      BILL.COUNT = 0
+      COUNTER = 0
+      HELP = "Enter invoice number. [A] = All invoices not already printed. [cr] = Exit."
+      CALL GEN.IN(23,3,'-------------','',Q,0,13,'','',0,-13,3,0,QI,HELP,0,23)
+      QI = OCONV(QI, 'MCU')
+      BEGIN CASE
+         CASE QI = ''
+            PRINTER OFF
+            PRINTER CLOSE
+            STOP
+         CASE QI = 'A'
+            SENTENCE = 'SSELECT LI.BILLS'
+            SENTENCE := ' WITH LIB.PRT.DATE = ""'
+            SENTENCE := ' BY 23 BY 21 BY 22'
+            EXECUTE SENTENCE PASSLIST CAPTURING OUTPUT
+            IF NOT(SYSTEM(11)) THEN
+               CALL ELINE('No open invoices.')
+               GOTO 100
+            END
+            NUM.ITEMS = @SELECTED
+            MODE = 'A'
+*DF        CASE QI MATCHES "2N'-'1N0N"
+*DF          Q = QI[1,2] : QI[4,99]
+*DF        CASE NUM(QI)
+*DF          Q = QI
+         CASE 1
+            STR.POS=INDEX(QI,' ',1)
+            IF STR.POS THEN
+               CALL ELINE('Not allowed spaces in the invoice')
+               GOTO 100
+            END
+      END CASE
+      
+*      CALL ELINE('Load Manual Feed Paper on the OPTRA_N and Ready the printer!') ;* JR
+      
+*DF   IF LEN(Q) < 7 AND Q[1,2] # YEAR THEN Q = YEAR : Q
+      IF MODE = 'A' THEN
+         DONE = NO
+         LOOP
+            READNEXT BILL.ID ELSE DONE = YES
+         UNTIL DONE DO
+            COUNTER=COUNTER+1
+            CALL PROG.BAR(22,COUNTER,NUM.ITEMS,PER)
+            CRT @(0,12) :
+            GOSUB READ.INVOICE
+         REPEAT
+      END ELSE
+         BILL.ID = Q
+         GOSUB READ.INVOICE
+      END
+      GOTO 100
+      
+*
+***********************************************************************
+READ.INVOICE: * Read invoice item
+***********************************************************************
+*
+      
+      READU BILL.REC FROM LI.BILLS, BILL.ID THEN
+         IF PAGES.PRINTED = 0 THEN
+            GOSUB START.PRINT
+         END
+         SHIP.ID = BILL.REC<3>
+         GOSUB READ.SHIPPER
+         GOSUB BUILD.INVOICE
+         GOSUB PRINT.INVOICE
+         BILL.REC<2,-1> = DATE()
+         WRITE BILL.REC ON LI.BILLS, BILL.ID
+      END
+*
+      RELEASE LI.BILLS, BILL.ID
+*
+      RETURN
+*
+***********************************************************************
+BUILD.INVOICE: *  BUILD THE INVOICE BEFORE PRINTING
+***********************************************************************
+*
+      BILL.COUNT += 1
+      HEAD.LINE = ''
+*
+      HEAD.LINE<2> = SPACE(15)
+      HEAD.LINE<2> := OCONV(BILL.REC<1>,'D2-')
+      HEAD.LINE<2> := SPACE(47)
+      HEAD.LINE<2> := BILL.ID 'L#14'
+*
+      HEAD.LINE<4> = SPACE(8)
+      HEAD.LINE<4> := BILL.REC<6> 'L#35'
+      HEAD.LINE<4> := SPACE(27)
+      HEAD.LINE<4> := BILL.REC<4>
+*
+      HEAD.LINE<5> = SPACE(8)
+      HEAD.LINE<5> := BILL.REC<7> 'L#35'
+*
+      HEAD.LINE<6> = SPACE(8)
+      HEAD.LINE<6> := BILL.REC<8>
+*
+      HEAD.LINE<7> = SPACE(8)
+      HEAD.LINE<7> := (BILL.REC<9>:', ':BILL.REC<10>:'  ':BILL.REC<11>) 'L#35'
+      HEAD.LINE<7> := SPACE(27)
+      HEAD.LINE<7> := BILL.REC<5>
+*
+      HEAD.LINE<9> = SPACE(8)
+      HEAD.LINE<9> := SHIP.REC<1> 'L#35'
+      HEAD.LINE<9> := SPACE(11)
+      HEAD.LINE<9> := BILL.REC<12>
+*
+      HEAD.LINE<10> = SPACE(8)
+      HEAD.LINE<10> := SHIP.REC<2> 'L#35'
+      HEAD.LINE<10> := SPACE(11)
+      HEAD.LINE<10> := BILL.REC<13>
+*
+      HEAD.LINE<11> = SPACE(8)
+      HEAD.LINE<11> := (SHIP.REC<4>:', ':SHIP.REC<5>:'  ':SHIP.REC<6>) 'L#35'
+      HEAD.LINE<11> := SPACE(11)
+      HEAD.LINE<11> := BILL.REC<15>:', ':BILL.REC<16>:'  ':BILL.REC<17>
+*
+      GOSUB BUILD.BODY
+*
+      RETURN
+*
+***********************************************************************
+BUILD.BODY: *  BUILD THE DETAIL OF THE INVOICE
+***********************************************************************
+*
+      BODY.LINE = ''
+      NUM.DETAIL = DCOUNT(BILL.REC<25>,CHAR(253))
+      TOTAL.BILL = 0
+*
+      FOR I = 1 TO NUM.DETAIL
+         BODY.LINE<I> = SPACE(4)
+         BODY.LINE<I> := BILL.REC<26,I> 'R#5' : '  '
+         BODY.LINE<I> := FIELD(BILL.REC<25,I>,' ',2,99) 'L#46' : ' '
+         BODY.LINE<I> := BILL.REC<27,I> 'R#7' : ' '
+         BODY.LINE<I> := OCONV(BILL.REC<28,I>,'MD2') 'R#9' : '  '
+         BODY.LINE<I> := OCONV(BILL.REC<29,I>,'MD2') 'R#16'
+         TOTAL.BILL += BILL.REC<29,I>
+      NEXT I
+      LINE.NO = NUM.DETAIL + 1
+*
+      IF BILL.REC<19> OR BILL.REC<20> THEN
+         BODY.LINE<LINE.NO> = SPACE(45) : 'DISCOUNT'
+         BODY.LINE<LINE.NO> := SPACE(13) : BILL.REC<19> 'R#9'
+         BODY.LINE<LINE.NO> := '  ' : OCONV(BILL.REC<20>,'MD2') 'R#16'
+         TOTAL.BILL -= BILL.REC<20>
+         LINE.NO += 1
+      END
+*
+      BODY.LINE<LINE.NO> = SPACE(77) : STR('-',16)
+      LINE.NO += 1
+      BODY.LINE<LINE.NO> = SPACE(77) : OCONV(TOTAL.BILL,'MD2') 'R#16'
+      LINE.NO += 11 - MOD(LINE.NO,LINES.PER.PAGE)
+      IF BILL.REC<18> = 1 THEN
+         BODY.LINE<LINE.NO> = SPACE(86) : 'PREPAID'
+      END ELSE
+         BODY.LINE<LINE.NO> = SPACE(86) : 'COLLECT'
+      END
+*
+      RETURN
+      
+*
+***********************************************************************
+READ.SHIPPER: *  READ THE SHIPPER'S RECORD
+***********************************************************************
+*
+      READ SHIP.REC FROM LI.CLIENTS, SHIP.ID ELSE
+         SHIP.REC = ''
+      END
+*
+      RETURN
+*
+***********************************************************************
+PRINT.INVOICE: *
+***********************************************************************
+*
+      NUM.PAGES = INT( LINE.NO / LINES.PER.PAGE )
+      NUM.PAGES += ( MOD( LINE.NO, LINES.PER.PAGE ) # 0 )
+*
+      FOR I = 1 TO NUM.PAGES
+         IF PAGES.PRINTED>0 AND NOT(MOD(PAGES.PRINTED,BILLS.PER.PAGE)) THEN
+            PAGE
+            GOSUB PRINT.FORM
+            PRINT ''
+            PRINT ''
+         END
+         
+*OH     IF NOT(MOD(PAGES.PRINTED,BILLS.PER.PAGE)) THEN PRINT
+         PRINT ''
+         FOR J = 1 TO NUM.HEADLINES
+            PRINT HEAD.LINE<J>
+         NEXT J
+         FOR J = 1 TO LINES.PER.PAGE
+            PTR = ((I - 1) * LINES.PER.PAGE) + J
+            PRINT BODY.LINE<PTR>
+         NEXT J
+         IF NOT(MOD(PAGES.PRINTED,BILLS.PER.PAGE)) THEN
+            FOR J = 1 TO 8
+               PRINT
+            NEXT J
+         END
+         PAGES.PRINTED += 1
+      NEXT I
+*
+      RETURN
+*
+***********************************************************************
+START.PRINT: *
+***********************************************************************
+*
+      PRINTER ON
+      
+*      EXECUTE 'SP-ASSIGN C0F15'
+      LASER=''
+      LASER<1>=0                         ;* Portrait
+      LASER<2>=6                         ;* Lines per inch
+      LASER<3>=66                        ;* Page length
+      LASER<4>=12                        ;* Characters per inch
+      LASER<5>=0                         ;* Set spacing (1=NonPro,1=Proprotional)
+      LASER<6>=0                         ;* Italics (0=off,1=on)
+*      LASER<7>=8                         ;* Bin selection (0=Tray,1=,2=Manual Feed,3=Envelop and Rotate)
+      LASER<7>=0                         ;* Bin selection (0=Tray,1=,2=Manual Feed,3=Envelop and Rotate)
+      LASER<8>=0                         ;* Paper output
+      LASER<9>=0                         ;* Font Number
+      
+      LENGTH=LASER<3>-1
+      MARGIN=0
+      
+      ESC=CHAR(27)
+      LASER.STR=''
+      LASER.STR= ESC:"E"
+      LASER.STR:= ESC:"&l":LASER<1>:"O"  ;* Set orientation
+      LASER.STR:= ESC:"&l":LASER<2>:"D"  ;* Lines per inch
+      LASER.STR:= ESC:"&l":LASER<3>:"F"  ;* Page length
+      LASER.STR:= ESC:"(s":LASER<4>:"h"  ;* Char Per Inch (PITCH)
+      LASER.STR:= LASER<5>:"p"           ;* Set spacing
+      LASER.STR:= LASER<6>:"s"           ;* Italics off
+      LASER.STR:= "0b"                   ;* Stroke Weight
+      LASER.STR:= "8.50v"                ;* Point Size
+      LASER.STR:= LASER<9>:"T"           ;* FONT
+      LASER.STR:= ESC:"(8U"              ;* SELECT SYMBOL SET
+      LASER.STR:= ESC:"&l":LASER<7>:"H"  ;* Bin selection
+      LASER.STR:= ESC:"&a":MARGIN:"L"
+      LASER.STR:= ESC:'"g':LASER<8>:'F'  ;* Paper output
+      PRINT LASER.STR:
+      
+      HEADING ''
+      GOSUB PRINT.FORM
+      
+      RETURN
+      
+      
+      
+      
+      
+***********************************************************************
+PRINT.FORM: 
+***********************************************************************
+      
+      PRINT ESC:'&f0S':                  ;* Save the current Cursor Position ; * JMK01 * DRF01
+      PRINT INVOICE.FORM:
+      ESC=CHAR(27)
+      LASER.STR=''
+      LASER.STR:= ESC:"&l":LASER<2>:"D"  ;* Lines per inch
+      LASER.STR:= ESC:"&l":LASER<3>:"F"  ;* Page length
+      LASER.STR:= ESC:"(s":LASER<4>:"h"  ;* Char Per Inch (PITCH)
+      LASER.STR:= LASER<5>:"p"           ;* Set spacing
+      LASER.STR:= LASER<6>:"s"           ;* Italics off
+      LASER.STR:= "0b"                   ;* Stroke Weight
+      LASER.STR:= "8.50v"                ;* Point Size
+      LASER.STR:= LASER<9>:"T"           ;* FONT
+      LASER.STR:= ESC:"(8U"              ;* SELECT SYMBOL SET
+      PRINT LASER.STR:
+      PRINT ESC:'&f1S':                  ;* Restore the Cursor Postion
+      
+      RETURN
+      
+      
+*
+***********************************************************************
+*
+      END

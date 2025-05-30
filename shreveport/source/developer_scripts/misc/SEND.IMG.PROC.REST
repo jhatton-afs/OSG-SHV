@@ -1,0 +1,200 @@
+      SUBROUTINE SEND.IMG.PROC.REST(VIN,VOUT)
+***********************************************************************
+* Program name : SEND.IMG.PROC.REST
+* Author       : Greg Bino
+* Date written : 03-06-2019
+* Library      : FBBP
+* COPYRIGHT (C) 2019 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* SEND IMAGE processed/reject UPDATE TO OCR IMAGE DATABASE
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 10:30:52 on 02/24/2021.
+*
+* Start modification history
+* Mod 00 03-06-19, grb, accu-118  New program
+* 111819 - GRB01 - ACCU-XXX Add PRO NUM AND SEQ NUMBER TO CALL
+* 02/15/21 : NKH01 : ACCU-1133 Added server checking for dev
+* End modification history
+*
+************************************************************************
+*
+* Initialize variables
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE UNIVERSE.INCLUDE UDO.H
+
+      STATUS = 0
+
+      IMAGE.NO = VIN<1>
+      STATUS = VIN<2>
+      PRO.NUM = VIN<3>                   ; * GRB01
+      SEQ.NO = VIN<4>                    ; * GRB01
+      RESP.CNT=1
+      RESP = ''
+      VOUT=''
+      TIME.LINE=''
+      ST.TIME = TIME()
+      TIME.LINE<1,1,1>=TIME()            ; * start time
+      PROMPT ''
+
+      PROG.NAME='SEND.IMG.PROC.REST'
+      CALL GET.SERVER.INFO(SVR.VIN,SVR.VOUT)       ; * NKH01
+      SERVER.NAME=SVR.VOUT<1>                      ; * NKH01            
+
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'SEND.IMG.PROC.REST' ; UPL.VOUT = ''
+      ***    CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+      OPEN 'CONTROL' TO FILE.CNTL ELSE
+         CALL ELINE('UNABLE TO OPEN CONTROL FILE')
+         RETURN
+      END
+      OPEN 'OCR.LOG' TO F.OCR ELSE
+         CALL ELINE('UNABLE TO OPEN OCR FILE')
+         RETURN
+      END
+
+      READ XMLPARAMS FROM FILE.CNTL,"CLIENT.OCR.IMG.PROC" THEN
+         URL = XMLPARAMS<1>
+         SERVER = XMLPARAMS<2>
+
+         LOGGING = XMLPARAMS<4>          ; * Y/N
+         LOGFILE = XMLPARAMS<5>
+         EMAIL.RECIP = XMLPARAMS<6>
+         TEST.FLG = XMLPARAMS<7>
+      END ELSE
+
+         **  URL = 'https://imagingws.afs.net/images/setAsProcessed?imageKey=':IMAGE.NO:"&status=":STATUS
+         ***     URL = 'https://imagingws.afs.net/images/setAsProcessed?imageKey=':IMAGE.NO:'proNumber=':PRO.NUM:'sequence=':SEQ.NO:"&status=":STATUS
+        IF SERVER.NAME = 'AFS' THEN   ; * NKH01                     
+           URL = 'http://imagingws.afs.net/images/setAsProcessed?imageKey=':IMAGE.NO:'&proNumber=':PRO.NUM:'&sequence=':SEQ.NO:"&status=":STATUS   
+        END ELSE                      ; * NKH01
+           URL = 'http://imagingws.qa.afs.net/images/setAsProcessed?imageKey=':IMAGE.NO:'&proNumber=':PRO.NUM:'&sequence=':SEQ.NO:"&status=":STATUS   ; * NKH01      
+        END                           ; * NKH01                           
+         LOGFILE="IMG.PROC.LOG"
+         LOGGING = "N"
+*          EMAIL.RECIP = 'gbino@afs.net'
+         TEST.FLG = @FALSE
+      END
+
+      IF LOGGING = "Y" OR LOGGING = 1 THEN
+         LOGGING = @TRUE
+      END ELSE
+         LOGGING = @FALSE
+      END
+      IF LOGGING THEN
+         STAT = PROTOCOLLOGGING(LOGFILE, "ON", 10)
+      END
+
+      TESTING = 0
+
+      EMAIL.OUT=''
+      EMAIL.OUT<1,-1>='nmeddaugh@afs.net'
+      EMAIL.OUT<2,-1>= EMAIL.RECIP
+      EMAIL.OUT<4>='FBBP_SEND.IMG.PROC.REST@afs.net'
+      EMAIL.OUT<5>='Error while trying trying to update image with proc date .'
+      IF SERVER.NAME = 'AFS' THEN   ; * NKH01                     
+         URL = 'http://imagingws.afs.net/images/setAsProcessed?imageKey=':IMAGE.NO:'&proNumber=':PRO.NUM:'&sequence=':SEQ.NO:"&status=":STATUS
+      END ELSE                      ; * NKH01
+         URL = 'http://imagingws.qa.afs.net/images/setAsProcessed?imageKey=':IMAGE.NO:'&proNumber=':PRO.NUM:'&sequence=':SEQ.NO:"&status=":STATUS  ; * NKH01
+      END                           ; * NKH01                           
+      GOSUB SEND.REST.REQUEST
+      GOSUB PARSE.RESULTS
+
+      TIME.LINE<1,1,1>=TIME()            ; * finish time
+
+9999: * THE END
+      IF LOGGING THEN
+         LOG.RET = PROTOCOLLOGGING(LOGFILE,"OFF",10)
+      END
+      IF FAILED THEN
+         WRITE RESTDATA ON F.OCR,"IMG.PROC*":DATE():"*":TIME()
+      END
+      RETURN
+**********************************************************************
+SEND.REST.REQUEST:
+**********************************************************************
+      METHOD="GET"
+*
+      STAT = SETHTTPDEFAULT("VERSION", "1.1")
+***      STAT = CREATEREQUEST(URL, METHOD, RESTGET)
+ **     STAT = CREATESECURITYCONTEXT(CTX, "TLSv1.2")
+ **     STAT = CREATESECUREREQUEST(URL, METHOD, RESTGET,CTX)
+       STAT = CREATEREQUEST(URL, METHOD, RESTGET)
+      STAT = SETREQUESTHEADER(RESTGET, "Content-Type", "application/json;charset=utf-8")
+      STAT = SUBMITREQUEST(RESTGET, 60000, "", HEADER, RESTDATA, HTTPSTATUS)
+
+      RETURN
+
+************************************************************************
+PARSE.RESULTS:
+************************************************************************
+
+      BEGIN CASE
+         CASE TRIM(RESTDATA) = 'Failed to Update'
+            FAILED = 1
+         CASE TRIM(RESTDATA) = 'Updated Successfully'
+            FAILED = 0
+         CASE TRIM(RESTDATA) ='Image status set to REJECTED'
+            FAILED = 0
+         CASE TRIM(RESTDATA) ='Image status set to PROCESSED'
+            FAILED = 0
+
+         CASE TRIM(RESTDATA) = 'Image has been marked as processed and PRO Number has been updated'
+            FAILED = 0
+         CASE TRIM(RESTDATA)[1,34] = 'Image has been marked as processed'
+            FAILED = 0
+         CASE TRIM(RESTDATA)[1,24]= 'Error: This image (key #'
+            FAILED = 0
+         CASE TRIM(RESTDATA)[1,24]= '' AND STATUS ="REJECTED"
+            FAILED = 0
+         CASE 1
+            FAILED = 1
+      END CASE
+
+      IF FAILED THEN
+         VOUT = 'FAILED'
+         VOUT =TRIM(RESTDATA)
+         GOSUB REPORT.INTERNAL.ERROR
+      END ELSE
+         VOUT = 'SUCCESS'
+      END
+      RETURN
+
+************************************************************************
+REPORT.INTERNAL.ERROR:
+************************************************************************
+      EMAIL.START.TIME = TIME()
+
+      EMAIL.OUT<6, -1> = 'URL = ':URL
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = 'IMAGE = ':IMAGE.NO
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = 'ERROR = ':VOUT
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = ' '
+
+      EVIN=EMAIL.OUT
+      EVOUT=''
+***      CALL SENDMAIL(EVIN,EVOUT)
+
+      RETURN
+************************************************************************
+REPORT.FATAL.ERROR:
+************************************************************************
+      EMAIL.START.TIME = TIME()
+      EMAIL.OUT<1>=EMAIL.RECIP
+*       EMAIL.OUT<1,-1> = 'gbino@afs.net'
+      EMAIL.OUT<1,-1> = 'dfriend@afs.net'
+      EMAIL.OUT<1,-1> = 'nmeddaugh@afs.net'
+      FATAL.ERROR.SUBJ = 'REST IMAGE PROC ERROR'
+      EMAIL.OUT<5>=FATAL.ERROR.SUBJ
+      EMAIL.OUT<6,-1> = 'URL = ':URL
+      EVIN=EMAIL.OUT
+      EVOUT=''
+      CALL SENDMAIL(EVIN,EVOUT)
+      IDATE=DATE()
+      ITIME=TIME()
+      TIME.BLOCK=INT(ITIME/600)
+      *  VOUT<1> = "ERROR"
+      RETURN
+   END

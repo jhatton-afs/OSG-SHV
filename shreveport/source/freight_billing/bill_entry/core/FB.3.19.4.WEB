@@ -1,0 +1,818 @@
+*SUBROUTINE TO PRINT MISROUTE REPORT
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: TAMI SEAGO
+* DATE: AUGUST 2, 1999
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE EXPRESS
+* WRITTEN CONSENT OF SAME.
+*
+* 050806 - JCW01 - CHANGES TO '@SELECTED', 'CLEARSELECT', AND 'STMT<X>'
+* 062608 - JMK01 - CHANGE TO WORK WITH WEB SERVICES
+* 011909 - JMK02 - T090086 - AFSx Performance Report errors
+*
+***********************************************************************
+$OPTIONS HEADER.EJECT
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+*
+* CALL SCREEN HEADING
+*
+      PROG.NAME='FB.3.19.4.WEB'
+      PROG.DESC='Summary by Customer/Vendor of Misroute Letters'
+      PACK.NAME='FREIGHT PAYMENT'
+*     CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.3.19.4.WEB' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+*
+* INITIALIZE VARIABLES
+*
+      GOSUB DECLARE.VARIABLES
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)
+      CMD=0                              ; * JMK01
+      HUSH ON                            ; * JMK01
+      INPUT CLIENT.ID                    ; * JMK01
+      CLIENT.ID=CLIENT.ID'R%5'           ; * JMK01
+      INPUT BEG.DATE                     ; * JMK01
+      BEG.DATE=ICONV(BEG.DATE,'D')       ; * JMK01
+      INPUT END.DATE                     ; * JMK01
+      END.DATE=ICONV(END.DATE,'D')       ; * JMK01
+      HUSH OFF                           ; * JMK01
+      CMD=1                              ; * JMK01
+      ERROR=''                           ; * JMK01
+      IND=0                              ; * JMK01
+      XML.REC='<?xml version="1.0" encoding="ISO-8859-1" ?> '          ; * JMK01
+      IND+=3                             ; * JMK01
+      XML.REC<-1>=SPACE(IND):'<FB.3.19.4.WEB>'     ; * JMK01
+      IND+=3                             ; * JMK01
+      XML.REC<-1>=SPACE(IND):'<CustomerVendors>'   ; * JMK01
+      IND+=3                             ; * JMK01
+
+      TEMP=''
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         IF CMD THEN                     ; * JMK01
+            ERROR='CANNOT OPEN CARRIERS FILE.'     ; * JMK01
+            GO EXPORT.FINISH             ; *JMK01
+         END ELSE                        ; * JMK01
+            CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+         END                             ; * JMK01
+      END
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            IF CMD THEN                  ; * JMK01
+               ERROR='CANNOT OPEN CARRIERS FILE.'  ; * JMK01
+               GO EXPORT.FINISH          ; *JMK01
+            END ELSE                     ; * JMK01
+               CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+            END                          ; *JMK01
+         END
+      END
+      OPEN 'DICT','FBWORK':CH.NUM TO F.DICT.WORK ELSE
+         IF CMD THEN                     ; * JMK01
+            ERROR='CANNOT OPEN CARRIERS FILE.'     ; * JMK01
+            GO EXPORT.FINISH             ; *JMK01
+         END ELSE                        ; * JMK01
+            CALL OPEN.ABORT('DICT FBWORK':CH.NUM,PROG.NAME)
+         END                             ; * JMK01
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+         IF CMD THEN                     ; * JMK01
+            ERROR='CANNOT OPEN CARRIERS FILE.'     ; * JMK01
+            GO EXPORT.FINISH             ; *JMK01
+         END ELSE                        ; * JMK01
+            CALL OPEN.ABORT("ZIPS",PROG.NAME)
+         END                             ; * JMK01
+      END
+
+*
+* Create work file dictionary items
+*
+      TEMP=''
+      TEMP<1>='S'
+      TEMP<2>=0
+      TEMP<8>='G0*1'
+      TEMP<9>='R'
+      TEMP<10>=30
+      WRITE TEMP ON F.DICT.WORK,'CUST.VEND'
+      TEMP<9>='L'
+      TEMP<10>=30
+      TEMP<8>='G1*1'
+      WRITE TEMP ON F.DICT.WORK,'LOC.DESC'
+      TEMP<9>='R'
+      TEMP<10>=5
+      TEMP<8>='G2*1'
+      WRITE TEMP ON F.DICT.WORK,'LTR.TYPE'
+      TEMP<9>='D2/'
+      TEMP<10>=8
+      TEMP<8>='G3*1'
+      WRITE TEMP ON F.DICT.WORK,'LTR.DATE'
+      TEMP<9>=''
+      TEMP<10>=1
+      TEMP<8>='G4*1'
+      WRITE TEMP ON F.DICT.WORK,'SORT.CODE'
+      TEMP<9>=''
+      TEMP<10>=1
+      TEMP<8>='G5*1'
+      WRITE TEMP ON F.DICT.WORK,'VC.WAIVED'
+
+
+      IF CMD=1 THEN GO CLIENT.START      ; * JMK01
+
+
+
+*
+* Get Client Number
+*
+50:   HELP="Enter the client number. 'EX'=Exit."
+      CALL GEN.IN(0,3,'Enter Client Number #####','',Q,0,20,'','',2,-5,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX' ! QI='X'
+            GOTO EXIT.PROGRAM
+         CASE QI=''
+            GOTO EXIT.PROGRAM
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 50
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 50
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO 50
+            END CASE
+         CASE NUM(QI)
+            Q=QI'R%5'
+         CASE 1
+            GOTO 50
+      END CASE
+      CLIENT.ID=Q
+      CLIENT.ID=CLIENT.ID'R%5'
+      CRT @(20,3):CLIENT.ID:@(-4)
+CLIENT.START:*                          ; * JMK01
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         IF CMD THEN                     ; * JMK01
+            ERROR='CANNOT OPEN CLIENTS FILE'       ; * JMK01
+            GO EXPORT.FINISH             ; * JMK01
+         END ELSE                        ; * JMK01
+            CALL OPEN.ABORT('CLIENTS',PROG,NAME)
+         END                             ; * JMK01
+      END
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         IF CMD THEN                     ; *JMK01
+            ERROR='ERROR - Client ':CLIENT.ID:' not on file.'          ; * JMK01
+            GO EXPORT.FINISH
+         END ELSE                        ; * JMK01
+            CALL ELINE('ERROR - Client ':CLIENT.ID:' not on file.')
+            GOTO 50
+         END                             ; * JMK01
+      END
+      OPEN '','VEND.CUST,':CLIENT.ID TO F.VC ELSE
+         IF CMD THEN                     ; * JMK01
+            ERROR='CANNOT OPEN VEND.CUST,':CLIENT.ID:' FILE'           ; * JMK01
+            GO EXPORT.FINISH
+         END ELSE                        ; * JMK01
+            CALL OPEN.ABORT('VEND.CUST,':CLIENT.ID,PROG,NAME)
+         END                             ; *JMK01
+      END
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS.HIST ELSE
+         IF CMD THEN                     ; * JMK01
+            ERROR='CANNOT OPEN FB.BILLS.HIST,':CLIENT.ID:' FILE'       ; * JMK01
+            GO EXPORT.FINISH             ; * JMK01
+         END ELSE                        ; * JMK01
+            CALL ELINE("ERROR - Cannot open FB.BILLS for client ":CLIENT.ID)
+         END                             ; * JMK01
+      END
+      CLIENT.NAME=CLIENT.REC<2>
+      IF CMD THEN GO CMD.START           ; * JMK01
+      CRT@(27,3):CLIENT.NAME
+*
+* Get current period beginning date
+*
+150:  HELP="Enter the beginning date. 'X'=Back to client. 'EX'=Exit."
+      IF DATE.1='' THEN DATE.1=DATE()'D2/'
+      CALL GEN.IN(0,7,'Beginning date.  ':DATE.1'D2/','DATE',BEG.DATE,1,8,'','',1,17,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT@(0,5):@(-3):
+            GOTO 50
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+      END CASE
+      CRT @(17,7):BEG.DATE'D2/'
+      DATE.1=BEG.DATE
+*
+* Get current period ending date
+*
+      END.DATE=DATE()
+200:  HELP="Enter the ending date. 'X'=Back to beginning date. 'EX'=Exit."
+      CALL GEN.IN(0,9,'Ending date.     ':END.DATE'D2/','DATE',Q,0,8,'','',1,-8,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI=''
+            Q=END.DATE
+         CASE QI='X'
+            CRT@(0,7):@(-3):
+            GOTO 150
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+      END CASE
+      END.DATE=Q
+      IF END.DATE LT BEG.DATE THEN
+         CALL ELINE('Invalid ending date.')
+         GOTO 200
+      END
+      CRT @(17,9):END.DATE'D2/'
+
+*
+*
+* Verify selection criteria is correct.
+*
+450:  HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT@(0,15):@(-3):
+            GOTO 200
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO 450
+      END CASE
+CMD.START:*                              ; * JMK01
+*
+      CLEARFILE F.WORK
+*
+* Select bills to process.
+*
+      STMT='SELECT VEND.CUST,':CLIENT.ID
+      STMT:=' WITH 17 GE "':BEG.DATE'D4-':'"'
+      STMT:=' AND WITH 17 LE "':END.DATE'D4-':'"'
+      EXECUTE STMT PASSLIST CAPTURING OUTPUT
+      NUM.SELECTED = @SELECTED
+      IF @SELECTED < 1 THEN
+         IF CMD THEN                     ; * JMK01
+            ERROR='ERROR - No data retrieved'      ; * JMK01
+            GO EXPORT.FINISH             ; * JMK01
+         END ELSE                        ; * JMK01
+            CALL ELINE('ERROR - No data retreived')
+         END                             ; * JMK01
+         STOP
+      END
+
+      LOOP
+         DONE=0
+         READNEXT VC.ID ELSE DONE=1
+      UNTIL DONE=1 DO
+         READ VC.REC FROM F.VC,VC.ID THEN
+            VC.NAME = VC.REC<1>
+            VC.CITY = VC.REC<5>
+            VC.ST = VC.REC<6>
+            VC.DESC = VC.NAME:', ':VC.CITY:', ':VC.ST
+            VC.WAIVED=OCONV(VC.REC<10>,'MCU')
+            LOC.ZIPS = VC.REC<11>
+            NUM.LOC = DCOUNT(LOC.ZIPS<1>,@VM)
+            FOR LOC.POS = 1 TO NUM.LOC
+               LOC.ZIP = VC.REC<11,LOC.POS>
+               READ ZIP.REC FROM F.ZIPS,LOC.ZIP THEN
+                  LOC.DESC = ZIP.REC<1> :', ':ZIP.REC<2>:' '
+               END ELSE
+                  LOC.DESC = ''
+               END
+               PRO.IDS = VC.REC<16,LOC.POS>
+               NUM.PROS = DCOUNT(PRO.IDS<1,1>,@SVM)
+               FOR SHIP.POS = 1 TO NUM.PROS
+                  LTR.DATE = VC.REC<17,LOC.POS,SHIP.POS>
+                  PRO.ID = VC.REC<16,LOC.POS,SHIP.POS>
+                  IF LTR.DATE LT BEG.DATE OR LTR.DATE GT END.DATE THEN GO SKIP.PRO
+                  PRO.NUM = FIELD(PRO.ID,'*',2)
+                  UNAPPR.CARRIER.ID = FIELD(PRO.ID,'*',1)
+                  READV UNAPPR.CARRIER FROM F.CARRIERS,UNAPPR.CARRIER.ID,1 ELSE UNAPPR.CARRIER = ''
+                  LTR.TYPE = VC.REC<15,LOC.POS,SHIP.POS>
+                  IF LTR.TYPE = 'TA' THEN
+                     GO SKIP.PRO
+                  END
+                  READ PRO.REC FROM F.BILLS.HIST,PRO.ID ELSE PRO.REC = ''
+                  ACTUAL.CHG = PRO.REC<8>
+                  MISROUTE.CHG = PRO.REC<63>
+                  EXCESSIVE.CHG = ACTUAL.CHG - MISROUTE.CHG
+                  SHIP.DATE = PRO.REC<1>
+                  IF EXCESSIVE.CHG LE 0 THEN GO SKIP.PRO
+                  DM.AMT = VC.REC<19,LOC.POS,SHIP.POS>
+                  APPR.CARRIER.ID = PRO.REC<69>
+                  IF APPR.CARRIER.ID = '' THEN APPR.CARRIER.ID = PRO.REC<23,1>
+                  CONF = VC.REC<20,LOC.POS,SHIP.POS>
+                  READV APPR.CARRIER FROM F.CARRIERS,APPR.CARRIER.ID,1 ELSE APPR.CARRIER = ''
+                  IF LTR.TYPE[1,3] = 'LTR' THEN
+                     SORT.CODE = LTR.TYPE[4,1]
+                  END ELSE
+                     SORT.CODE = LTR.TYPE[1,1]
+                  END
+                  IF VC.WAIVED = '' THEN VC.WAIVED = 'N'
+*                 WORK.ID=VC.DESC:'*':LOC.DESC:'*':LTR.TYPE:'*':LTR.DATE:'*':SORT.CODE:'*':VC.WAIVED ; * JMK02
+                  WORK.ID=CHANGE(VC.DESC,'*',''):'*':CHANGE(LOC.DESC,' ',''):'*':LTR.TYPE:'*':LTR.DATE:'*':SORT.CODE:'*':VC.WAIVED           ; * JMK02
+                  READ WORK.REC FROM F.WORK,WORK.ID ELSE WORK.REC=''
+                  WORK.REC<1,-1> = UNAPPR.CARRIER
+                  WORK.REC<2,-1> = PRO.NUM
+                  WORK.REC<3,-1> = EXCESSIVE.CHG
+                  IF LTR.TYPE = 'DM' THEN WORK.REC<4,-1> = DM.AMT ELSE WORK.REC<4,-1> = ''
+                  WORK.REC<5,-1> = APPR.CARRIER
+                  WORK.REC<6,-1> = SHIP.DATE
+                  IF CONF # '' THEN
+                     WORK.REC<7,-1> = 'C'
+                  END
+                  IF PRO.REC<111> # '' THEN
+                     NUM.CHG = DCOUNT(PRO.REC<111>,@VM)
+                     CHANGE = ''
+                     FOR T = 1 TO NUM.CHG
+                        TEXT = ''
+                        TEXT='* Misroute changed by ': PRO.REC<111,T>:' on ':PRO.REC<114,T>'D2/'
+                        IF PRO.REC<112,T> # '' THEN TEXT := ' from ' :PRO.REC<112,T>'R26#8'
+                        IF PRO.REC<113,T> # '' THEN
+                           T.CARR.ID = PRO.REC<113,T>
+                           READV CARRIER.NAME FROM F.CARRIERS,T.CARR.ID,1 ELSE CARRIER.NAME = ''
+                           IF PRO.REC<112,T> # '' THEN
+                              TEXT := ' ': CARRIER.NAME
+                           END ELSE
+                              TEXT := ' from carrier ' :CARRIER.NAME
+                           END
+                        END
+                        IF PRO.REC<115,T> # '' THEN TEXT := ' - ':PRO.REC<115,T>
+                        CHANGE<1,T> = TEXT
+                     NEXT X
+                     WORK.REC<8> = CHANGE
+                  END
+                  WRITE WORK.REC ON F.WORK,WORK.ID
+SKIP.PRO:
+               NEXT SHIP.POS
+            NEXT LOC.POS
+         END
+      REPEAT
+      IF CMD=1 THEN                      ; * JMK01
+         GOSUB EXPORT.REPORT             ; * JMK01
+      END ELSE                           ; * JMK01
+         GOSUB PRINT.REPORT
+      END                                ; * JMK01
+
+*
+EXIT.PROGRAM:*
+      STOP
+
+*
+
+
+PRINT.REPORT:*****
+*
+      PREC='SSELECT FBWORK':CH.NUM
+      PREC := ' BY CUST.VEND'
+      PREC := ' BY LOC.DESC'
+      PREC := ' BY SORT.CODE'
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+      IF @SELECTED < 1 THEN
+         CALL ELINE('ERROR - No data retreived')
+         STOP
+      END
+      PRINTER ON
+      GOSUB SETUP.PTR
+
+      VC.TOTAL.LINE=''
+      TITLE='Vendor List'
+      CTR=INT(WIDTH/2)
+      L.TAB=CTR-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):TITLE
+      R.TAB=WIDTH-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE())
+      HEAD1=PROG.NAME:SPACE(L.TAB):TITLE:SPACE(R.TAB):TIMEDATE():"'L'"
+*
+
+      TITLE='For Client: ':CLIENT.ID:' ':CLIENT.NAME
+      L.TAB=CTR-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+      R.TAB=(WIDTH-LEN(TEMP))-20
+      HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )':"PAGE 'PL'"
+      TITLE='Bills processed from ':BEG.DATE'D2/':' to ':END.DATE'D2/'
+      L.TAB=CTR-(LEN(TITLE)/2)
+      TEMP=SPACE(L.TAB):TITLE
+      HEAD3=TEMP:"'L'"
+      HEAD5="'L'"
+*
+      HEAD6="Customer/Vendor"
+      HEAD6:=SPACE(31):"Wvd"
+      HEAD6:=SPACE(2):"Location/Division"
+      HEAD6:=SPACE(3):"Ltr Type"
+      HEAD6:=SPACE(2):"Ltr Date"
+      HEAD6:=SPACE(6):"Carrier Used"
+      HEAD6:=SPACE(8):"Shp Date"
+      HEAD6:=SPACE(6):"Pro #"
+      HEAD6:=SPACE(10):"Approved Carrier"
+      HEAD6:=SPACE(6):"Excess Frt"
+      HEAD6:=SPACE(6):"DM Amt"
+      HEAD6:=SPACE(5):"Confd"
+      HEAD6:="'L'"
+
+      DONE = 0
+      HEAD7='--------------------------------------------  ---  ------------------  '
+      HEAD7:='--------  --------   --------------------   --------   --------------  ---------------------  ------------  ------------  -----'
+
+*
+      HED=HEAD1:HEAD2:HEAD3:HEAD5:HEAD6:HEAD7
+      VIN=''
+      VIN<3>='R'
+      HEADING HED
+      LOOP
+         READNEXT ID ELSE DONE = 1
+      UNTIL DONE = 1 DO
+         GOSUB BUILD.DET.LINE
+      REPEAT
+      GOSUB VENDOR.BREAK
+      PRINT
+      IF LTR1.TOTAL GT 0 THEN
+         PRINT "Letter 1's "'L#15':LTR1.TOTAL'R#5':SPACE(147):LTR1.CHG.TOTAL'R26#10'
+      END
+      IF LTR2.TOTAL GT 0 THEN
+         PRINT "Letter 2's "'L#15':LTR2.TOTAL'R#5':SPACE(147):LTR2.CHG.TOTAL'R26#10'
+      END
+      IF LTR3.TOTAL GT 0 THEN
+         PRINT "Letter 3's "'L#15':LTR3.TOTAL'R#5':SPACE(147):LTR3.CHG.TOTAL'R26#10'
+      END
+      IF LTR4.TOTAL GT 0 THEN
+         PRINT "Letter 4's "'L#15':LTR4.TOTAL'R#5':SPACE(147):LTR4.CHG.TOTAL'R26#10'
+      END
+      IF LTR5.TOTAL GT 0 THEN
+         PRINT "Letter 5's "'L#15':LTR4.TOTAL'R#5':SPACE(147):LTR5.CHG.TOTAL'R26#10'
+      END
+      IF LTR6.TOTAL GT 0 THEN
+         PRINT "Letter 6's "'L#15':LTR6.TOTAL'R#5':SPACE(147):LTR6.CHG.TOTAL'R26#10'
+      END
+      IF WV.TOTAL GT 0 THEN
+         PRINT "Waived"'L#15':WV.TOTAL'R#5':SPACE(147):WV.CHG.TOTAL'R26#10'
+      END
+      IF DM.TOTAL GT 0 THEN
+         PRINT "Debit Memo's "'L#15':DM.TOTAL'R#5':SPACE(147):DM.EXC.TOTAL'R26#10':SPACE(4):CLIENT.DM.TOTAL'R26#10'
+      END
+      PRINT DM.SINGLE.BREAK
+      PRINT 'GRAND TOTALS ':SPACE(154):CLIENT.EXCESSIVE.TOTAL'R26#10':SPACE(4):CLIENT.DM.TOTAL'R26#10'
+      PRINT DM.DOUBLE.BREAK
+      PRINTER OFF
+      RETURN
+
+BUILD.DET.LINE:***
+      VC.DESC=FIELD(ID,'*',1)
+      LOC.DESC=FIELD(ID,'*',2)
+      VC.WAIVED=FIELD(ID,'*',6)
+      IF OLD.VC#VC.DESC THEN
+         GOSUB VENDOR.BREAK
+      END ELSE
+         LINE = SPACE(49)
+      END
+      NUM.LTRS = NUM.LTRS + 1
+      IF OLD.LOC#LOC.DESC THEN
+         LINE := SPACE(2):LOC.DESC'L#20'
+         OLD.LOC=LOC.DESC
+      END ELSE
+         LINE := SPACE(22)
+      END
+      READ DWORK FROM F.WORK,ID ELSE RETURN
+      LTR.TYPE = FIELD(ID,'*',3)
+      LTR.DATE = FIELD(ID,'*',4)
+      PRO.IDS = DWORK<2>
+      BEGIN CASE
+         CASE LTR.TYPE = 'LTR1'
+            LTR.DESC = 'LETTER 1'
+         CASE LTR.TYPE = 'LTR2'
+            LTR.DESC = 'LETTER 2'
+         CASE LTR.TYPE = 'LTR3'
+            LTR.DESC = 'LETTER 3'
+         CASE LTR.TYPE = 'LTR4'
+            LTR.DESC = 'LETTER 4'
+         CASE LTR.TYPE = 'LTR5'
+            LTR.DESC = 'LETTER 5'
+         CASE LTR.TYPE = 'LTR6'
+            LTR.DESC = 'LETTER 6'
+         CASE LTR.TYPE = 'DM'
+            LTR.DESC = 'DEBIT MEMO'
+         CASE LTR.TYPE = 'WV'
+            LTR.DESC = 'WAIVED'
+      END CASE
+      LINE := LTR.DESC'L#8':'  ':LTR.DATE'D2/'
+      NUM.PROS = DCOUNT(PRO.IDS,@VM)
+      FOR X = 1 TO NUM.PROS
+         PRO.ID = PRO.IDS<1,X>
+         UNAPPR.CARRIER = DWORK<1,X>
+         APPR.CARRIER = DWORK<5,X>
+         EXCESSIVE.CHARGES = DWORK<3,X>
+         SHIP.DATE = DWORK<6,X>
+         CONF = DWORK<7,X>
+         CHANGE = DWORK<8>
+         EXCESSIVE.TOTAL = EXCESSIVE.TOTAL + EXCESSIVE.CHARGES
+         DM.CHG.TOTAL = DWORK<4,X>
+         IF X = 1 THEN
+            LINE := SPACE(3)
+         END ELSE
+            LINE = SPACE(92)
+         END
+         IF X = 1 AND DM.CHG.TOTAL GT 0 THEN
+            LINE := UNAPPR.CARRIER'L#20':'   ':SHIP.DATE'D2/':'   ':PRO.ID'L#15':' ':APPR.CARRIER'L#20':SPACE(5):EXCESSIVE.CHARGES'R26#10':SPACE(4):DM.CHG.TOTAL'R26#10':SPACE(5):CONF
+         END ELSE
+            LINE := UNAPPR.CARRIER'L#20':'   ':SHIP.DATE'D2/':'   ':PRO.ID'L#15':' ':APPR.CARRIER'L#20':SPACE(5):EXCESSIVE.CHARGES'R26#10':SPACE(18):CONF
+         END
+         IF LINE#'' THEN PRINT LINE
+         IF CHANGE # '' THEN
+            NUM.CHG = DCOUNT(CHANGE<1>,@VM)
+            CALL ELINE(NUM.CHG)
+            FOR T = 1 TO NUM.CHG
+               PRINT ' ''L#51':CHANGE<1,T>
+            NEXT T
+         END
+      NEXT X
+      BEGIN CASE
+         CASE LTR.TYPE = 'LTR1'
+            LTR1.TOTAL = LTR1.TOTAL+1
+            LTR1.CHG.TOTAL = LTR1.CHG.TOTAL+EXCESSIVE.TOTAL
+         CASE LTR.TYPE = 'LTR2'
+            LTR2.TOTAL = LTR2.TOTAL+1
+            LTR2.CHG.TOTAL = LTR2.CHG.TOTAL+EXCESSIVE.TOTAL
+         CASE LTR.TYPE = 'LTR3'
+            LTR3.TOTAL = LTR3.TOTAL+1
+            LTR3.CHG.TOTAL = LTR3.CHG.TOTAL+EXCESSIVE.TOTAL
+         CASE LTR.TYPE = 'LTR4'
+            LTR4.TOTAL = LTR4.TOTAL+1
+            LTR4.CHG.TOTAL = LTR4.CHG.TOTAL+EXCESSIVE.TOTAL
+         CASE LTR.TYPE = 'LTR5'
+            LTR5.TOTAL = LTR5.TOTAL+1
+            LTR5.CHG.TOTAL = LTR5.CHG.TOTAL+EXCESSIVE.TOTAL
+         CASE LTR.TYPE = 'LTR6'
+            LTR6.TOTAL = LTR6.TOTAL+1
+            LTR6.CHG.TOTAL = LTR6.CHG.TOTAL+EXCESSIVE.TOTAL
+         CASE LTR.TYPE = 'DM'
+            DM.TOTAL = DM.TOTAL+1
+            DM.EXC.TOTAL = DM.EXC.TOTAL + EXCESSIVE.TOTAL
+         CASE LTR.TYPE = 'WV'
+            WV.TOTAL = WV.TOTAL+1
+            WV.CHG.TOTAL = WV.CHG.TOTAL+EXCESSIVE.TOTAL
+      END CASE
+      VC.EXCESSIVE.TOTAL = VC.EXCESSIVE.TOTAL + EXCESSIVE.TOTAL
+      CLIENT.EXCESSIVE.TOTAL = CLIENT.EXCESSIVE.TOTAL + EXCESSIVE.TOTAL
+      VC.DM.TOTAL = VC.DM.TOTAL + DM.CHG.TOTAL
+      CLIENT.DM.TOTAL = CLIENT.DM.TOTAL + DM.CHG.TOTAL
+      EXCESSIVE.TOTAL = 0
+      RETURN
+
+EXPORT.REPORT:*****                     ; * JMK01
+*
+      PREC='SSELECT FBWORK':CH.NUM
+      PREC := ' BY CUST.VEND'
+      PREC := ' BY LOC.DESC'
+      PREC := ' BY SORT.CODE'
+      EXECUTE PREC RTNLIST WORK.LIST CAPTURING OUTPUT
+      IF @SELECTED < 1 THEN
+         ERROR='ERROR - No data retreived'
+         GO EXPORT.FINISH
+      END
+
+*
+      DONE=0
+      LOOP
+         READNEXT ID FROM WORK.LIST ELSE DONE = 1
+      UNTIL DONE = 1 DO
+         VC.DESC=FIELD(ID,'*',1)
+         LOC.DESC=FIELD(ID,'*',2)
+         VC.WAIVED=FIELD(ID,'*',6)
+         XML.REC<-1>=SPACE(IND):'<VCDesc>'
+         IND+=3
+         IF VC.DESC#'' THEN
+            XML.REC<-1>=SPACE(IND):'<CustomerVendor>':VC.DESC:'</CustomerVendor>'
+         END
+         IF VC.WAIVED#'' THEN
+            XML.REC<-1>=SPACE(IND):'<Wvd>':VC.WAIVED:'</Wvd>'
+         END
+         IF LOC.DESC#'' THEN
+            XML.REC<-1>=SPACE(IND):'<LocationDivision>':LOC.DESC:'</LocationDivision>'
+         END
+         NUM.LTRS = NUM.LTRS + 1
+         READ DWORK FROM F.WORK,ID THEN
+            XML.REC<-1>=SPACE(IND):'<Letters>'
+            IND+=3
+            LTR.TYPE = FIELD(ID,'*',3)
+            LTR.DATE = FIELD(ID,'*',4)
+            PRO.IDS = DWORK<2>
+            BEGIN CASE
+               CASE LTR.TYPE = 'LTR1'
+                  LTR.DESC = 'LETTER 1'
+               CASE LTR.TYPE = 'LTR2'
+                  LTR.DESC = 'LETTER 2'
+               CASE LTR.TYPE = 'LTR3'
+                  LTR.DESC = 'LETTER 3'
+               CASE LTR.TYPE = 'LTR4'
+                  LTR.DESC = 'LETTER 4'
+               CASE LTR.TYPE = 'LTR5'
+                  LTR.DESC = 'LETTER 5'
+               CASE LTR.TYPE = 'LTR6'
+                  LTR.DESC = 'LETTER 6'
+               CASE LTR.TYPE = 'DM'
+                  LTR.DESC = 'DEBIT MEMO'
+               CASE LTR.TYPE = 'WV'
+                  LTR.DESC = 'WAIVED'
+            END CASE
+            LINE := LTR.DESC'L#8':'  ':LTR.DATE'D2/'
+            IF LTR.DESC#'' THEN
+               XML.REC<-1>=SPACE(IND):'<LtrType>':LTR.DESC:'</LtrType>'
+            END
+            IF LTR.DATE#'' THEN
+               XML.REC<-1>=SPACE(IND):'<LtrDate>':LTR.DATE'D2/':'</LtrDate>'
+            END
+            NUM.PROS = DCOUNT(PRO.IDS,@VM)
+            IF NUM.PROS>0 THEN
+               XML.REC<-1>=SPACE(IND):'<Pros>'
+               IND+=3
+               FOR X = 1 TO NUM.PROS
+                  PRO.ID = PRO.IDS<1,X>
+                  UNAPPR.CARRIER = DWORK<1,X>
+                  APPR.CARRIER = DWORK<5,X>
+                  EXCESSIVE.CHARGES = DWORK<3,X>
+                  SHIP.DATE = DWORK<6,X>
+                  CONF = DWORK<7,X>
+                  CHANGE = DWORK<8>
+                  EXCESSIVE.TOTAL = EXCESSIVE.TOTAL + EXCESSIVE.CHARGES
+                  DM.CHG.TOTAL = DWORK<4,X>
+                  IF UNAPPR.CARRIER#'' THEN
+                     XML.REC<-1>=SPACE(IND):'<CarrierUsed>':UNAPPR.CARRIER:'</CarrierUsed>'
+                  END
+                  IF SHIP.DATE#'' THEN
+                     XML.REC<-1>=SPACE(IND):'<ShipDate>':SHIP.DATE'D2/':'</ShipDate>'
+                  END
+                  IF PRO.ID#'' THEN
+                     XML.REC<-1>=SPACE(IND):'<ProNo>':PRO.ID:'</ProNo>'
+                  END
+                  IF APPR.CARRIER#'' THEN
+                     XML.REC<-1>=SPACE(IND):'<ApprovedCarrier>':APPR.CARRIER:'</ApprovedCarrier>'
+                  END
+                  IF EXCESSIVE.CHARGES#'' THEN
+                     XML.REC<-1>=SPACE(IND):'<ExcessFrt>':EXCESSIVE.CHARGES'R26':'</ExcessFrt>'
+                  END
+                  IF DM.CHG.TOTAL#'' THEN
+                     XML.REC<-1>=SPACE(IND):'<DMAmt>':DM.CHG.TOTAL'R26':'</DMAmt>'
+                  END
+                  IF CONF#'' THEN
+                     XML.REC<-1>=SPACE(IND):'<Confd>':CONF:'</Confd>'
+                  END
+                  IF CHANGE # '' THEN
+                     NUM.CHG = DCOUNT(CHANGE<1>,@VM)
+                     IF NUM.CHG THEN
+                        IND+=3
+                        XML.REC<-1>=SPACE(IND):'<Comments>'
+                        FOR T = 1 TO NUM.CHG
+                           IF CHANGE<1,T>#'' THEN
+                              XML.REC<-1>=SPACE(IND):'<Comment>':CHANGE<1,T>:'</Comment>'
+                           END
+                        NEXT T
+                        IND-=3
+                        XML.REC<-1>=SPACE(IND):'</Comments>'
+                     END
+                  END
+               NEXT X
+               IND-=3
+               XML.REC<-1>=SPACE(IND):'</Pros>'
+               IND-=3
+               XML.REC<-1>=SPACE(IND):'</Letters>'
+            END
+         END
+         IND-=3
+         XML.REC<-1>=SPACE(IND):'</VCDesc>'
+      REPEAT
+EXPORT.FINISH:*
+      IF ERROR#'' THEN
+         XML.REC<-1>=SPACE(IND):'<Errors>':ERROR:'</Errors>'
+      END
+      IND-=3
+      XML.REC<-1>=SPACE(IND):'</CustomerVendors>'
+      IND-=3
+      XML.REC<-1>=SPACE(IND):'</FB.3.19.4.WEB>'
+      IND-=3
+      XML.REC=CHANGE(XML.REC,'&','&amp;')
+      XML.REC=CHANGE(XML.REC,@AM,CHAR(10))
+      CRT XML.REC
+      RETURN
+
+
+
+
+SETUP.PTR:***
+      LASER=''
+      LASER<1>=1                         ; * LANDSCAPE
+      LASER<2>=8                         ; * Lines per inch
+      LASER<3>=60                        ; * Page length
+      LASER<4>=19                        ; * Characters per inch
+      LASER<5>=0                         ; * Set spacing (1=NonPro,1=Proprotional)
+      LASER<6>=0                         ; * Italics (0=off,1=on)
+      LASER<7>=1                         ; * Bin selection
+      LASER<8>=0                         ; * Paper output
+      LASER<9>="4102"                    ; * Font Number
+      WIDTH = 198
+*
+      IF WIDTH GT 154 THEN TEMP=154 ELSE TEMP=WIDTH
+      LENGTH=LASER<3>-1
+      EXECUTE 'TERM ,,,,,,':WIDTH:',':LENGTH
+*
+      MARGIN=0
+      LASER.STR=''
+      LASER.STR= ESC:"E"
+      LASER.STR:= ESC:"&l":LASER<1>:"O"  ; * Set orientation
+      LASER.STR:= ESC:"&l":LASER<2>:"D"  ; * Lines per inch
+      LASER.STR:= ESC:"&l":LASER<3>:"F"  ; * Page length
+      LASER.STR:= ESC:"(s":LASER<4>:"h"  ; * Char Per Inch (PITCH)
+      LASER.STR:= LASER<5>:"p"           ; * Set spacing
+      LASER.STR:= LASER<6>:"s"           ; * Italics off
+      LASER.STR:= "0b"                   ; * Stroke Weight
+      LASER.STR:= "8.50v"                ; * Point Size
+      LASER.STR:= LASER<9>:"T"           ; * FONT
+      LASER.STR:= ESC:"(8U"              ; * SELECT SYMBOL SET
+      LASER.STR:= ESC:"&l":LASER<7>:"H"  ; * Bin selection
+      LASER.STR:= ESC:"&a":MARGIN:"L"
+      LASER.STR:= ESC:'"g':LASER<8>:'F'  ; * Paper output
+      PRINT LASER.STR:
+      RETURN
+
+DECLARE.VARIABLES:
+
+
+      DONE = 0
+      OLD.VC='*****'
+      OLD.LOC='*****'
+      CLIENT.DM.TOTAL = 0
+      CLIENT.EXCESSIVE.TOTAL = 0
+      VC.EXCESSIVE.TOTAL = 0
+      VC.DM.TOTAL = 0
+      EXCESSIVE.TOTAL = 0
+      DM.TOTAL = 0
+      NUM.LTRS = 0
+      ESC=CHAR(27)
+      PROMPT ''
+      CLIENT.ID=''
+      BEG.DATE=''
+      END.DATE=''
+      DATE.1=''
+      STMT=''
+      LTR1.TOTAL=0
+      LTR2.TOTAL=0
+      LTR3.TOTAL=0
+      LTR4.TOTAL=0
+      LTR5.TOTAL=0
+      LTR6.TOTAL=0
+      DM.TOTAL=0
+      WV.TOTAL=0
+      LTR1.CHG.TOTAL = 0
+      LTR2.CHG.TOTAL=0
+      LTR3.CHG.TOTAL=0
+      LTR4.CHG.TOTAL=0
+      LTR5.CHG.TOTAL=0
+      LTR6.CHG.TOTAL=0
+      DM.CHG.TOTAL=0
+      DM.EXC.TOTAL=0
+      WV.CHG.TOTAL=0
+      SINGLE.BREAK =SPACE(165):'------------'
+      DOUBLE.BREAK =SPACE(165):'============'
+      DM.SINGLE.BREAK =SPACE(165):'------------  ------------'
+      DM.DOUBLE.BREAK =SPACE(165):'============  ============'
+      RETURN
+
+VENDOR.BREAK:
+      IF OLD.VC # '*****' THEN
+         IF VC.DM.TOTAL # 0 THEN
+            PRINT DM.SINGLE.BREAK
+            VC.TOTAL.LINE = SPACE(47):NUM.LTRS'R#5':SPACE(115):VC.EXCESSIVE.TOTAL'R26#10':SPACE(4):VC.DM.TOTAL'R26#10'
+            PRINT VC.TOTAL.LINE
+            PRINT DM.DOUBLE.BREAK
+         END ELSE
+            PRINT SINGLE.BREAK
+            VC.TOTAL.LINE = SPACE(47):NUM.LTRS'R#5':SPACE(115):VC.EXCESSIVE.TOTAL'R26#10'
+            PRINT VC.TOTAL.LINE
+            PRINT DOUBLE.BREAK
+         END
+         PRINT
+      END
+      IF VC.WAIVED = 'Y' THEN
+         VC.WVD = 'W '
+      END ELSE
+         VC.WVD ='  '
+      END
+      LINE = VC.DESC'L#45':'  ':VC.WVD
+      VC.EXCESSIVE.TOTAL = 0
+      VC.DM.TOTAL = 0
+      OLD.VC=VC.DESC
+      OLD.LOC=''
+      NUM.LTRS = 0
+      RETURN

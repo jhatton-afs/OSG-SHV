@@ -1,0 +1,674 @@
+***********************************************************************
+*
+*
+* PROGRAM TO PROCESS SERVICE FAILURE
+*
+*
+* AUTHOR: David Friend
+*
+*                           EDIT HISTORY
+*                           ------------
+*    DATE  : NAME : DESCRIPTION
+*  ---------------------------------------------------
+* 05/08/06 : JCW01: CHANGES TO '@SELECTED', 'CLEARSELECT', AND 'STMT<X>'
+* 07/06/06 : JCW02: MODIFY TO WORK WITH NEW EDI.BILLS.HIST STRUCTURE
+* 12/08/08 : NPR01: ADDED OPTION TO CREATE AN EXCEL SPREADSHEET.
+***********************************************************************
+*
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Initialize variables
+*
+      PROMPT''
+      STATUS=''
+      PROG.NAME='FB.3.20.6'
+      PROG.DESC='Service Failure for FedEx'
+      PACK.NAME='EDI'
+      TEMP.NAME=''
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.3.20.6' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      ORIG.CLIENT.ID=''
+      ROW.CNT=1 ; * NPR01
+*
+* Open files
+*
+*     OPEN '','EDI.BILLS.HIST' TO EDI.BILLS ELSE    ; * JCW02
+*       CALL OPEN.ABORT('EDI.BILLS.HIST',PROG.NAME) ; * JCW02
+*     END                                           ; * JCW02
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+        CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)  ; * JCW02
+*
+      OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE   ; * NPR01
+        CALL OPEN.ABORT('CLIENTS',PROG.NAME)             ; * NPR01
+      END                                                ; * NPR01
+*
+* Display screen heading
+*
+30    CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+
+*
+* Get client number to process or all
+*
+ENTER.CLIENT:***
+      HELP='Enter the client number to report or <RETURN> for All clients.'
+      CALL GEN.IN(0,3,'Enter client number.  #####','',Q,0,8,'','',1,-5,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      ALL.ONE=''
+      BEGIN CASE
+        CASE QI='X'!QI='EX'
+          GOTO EXIT.PROGRAM
+        CASE QI=''
+          ALL.ONE='ALL'
+        CASE NOT(QI MATCHES "0N")
+          CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+          CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+          BEGIN CASE
+             CASE ITEM.LIST = ''
+                GOTO ENTER.CLIENT                    ;* START OVER
+             CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                GOTO ENTER.CLIENT                    ;* START OVER
+             CASE 1
+                IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                GOTO ENTER.CLIENT                    ;* START OVER
+          END CASE
+        CASE NUM(QI)
+        CASE 1
+           GO ENTER.CLIENT                           ;* START OVER
+      END CASE
+      QI=QI'R%5'
+      IF ALL.ONE#'ALL' THEN
+        READ CLIENT.REC FROM F.CLIENTS,QI ELSE
+          CALL ELINE('Client ':QI:' is not on file.')
+          GOTO ENTER.CLIENT
+        END
+        TEMP.NAME=CLIENT.REC<2>
+      END ELSE
+        QI='ALL'
+        TEMP.NAME='All clients.'
+      END
+      CRT@(22,3):QI:' - ':TEMP.NAME
+      IF QI#'ALL' THEN CLIENT.ID=QI ELSE CLIENT.ID=''
+      ORIG.CLIENT.ID=QI'R%5'
+*
+* Get current period beginning and ending dates
+*
+ENTER.BEG.DATE:***
+      HELP='Enter the data processed beginning date.'
+      CALL GEN.IN(0,7,'Beginning ship date.  ':DATE()'D2/','DATE',BEG.DATE,0,8,'','',2,-8,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN GOTO ENTER.CLIENT
+      IF QI='EX' THEN GOTO EXIT.PROGRAM
+      IF QI='' THEN BEG.DATE=DATE()
+      CRT @(22,7):BEG.DATE'D2/'
+*
+* Get current period ending date
+*
+ENTER.END.DATE:***
+*
+      HELP='Enter the data processed ending date.'
+      CALL GEN.IN(0,9,'Ending ship date.     ':DATE()'D2/','DATE',END.DATE,0,8,'','',2,-8,9,0,QI,HELP,0,23)
+      IF QI='X' THEN GOTO ENTER.BEG.DATE
+      IF QI='EX' THEN GOTO EXIT.PROGRAM
+      IF QI='' THEN END.DATE=DATE()
+      IF END.DATE LT BEG.DATE THEN
+        CALL ELINE('Invalid ending date.')
+        GOTO ENTER.END.DATE
+      END
+      CRT @(22,9):END.DATE'D2/'
+*
+* Start changes - NPR01
+*
+ENTER.PRINT.SSHEET :***   NPR01
+*
+*  Allow option to Create EXCEL Spreadsheet or Hard Copy printout   - * NPR01
+*
+      PRINT.FLAG = 'P'                                                              
+*
+      MASK = 'Create EXCEL Spreadsheet or Hard Copy printout -P'
+      HELP='[S]=Spreadsheet [P]=Printout [EX]=Exit'
+      CALL GEN.IN(0,11,MASK,'',Q,0,2,'','',2,-1,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+*
+      BEGIN CASE
+         CASE QI='X' GOTO ENTER.END.DATE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='P' OR QI=''
+            PRINT.FLAG = 'P'  
+         CASE QI='S'
+            PRINT.FLAG = 'S'
+         CASE 1
+            GOTO ENTER.CLIENT
+      END CASE
+*
+* End changes - NPR01
+*
+ENTER.VERIFICATION:***
+      HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            GO ENTER.END.DATE
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO ENTER.VERIFICATION
+      END CASE
+*
+* Start processing
+*
+400:  TEXT="Processing Date Range - Please Wait ... May Take Several Minutes."
+      CALL CENTER(TEXT,80)
+      CRT @(0,15):@(-3):TEXT
+*ZZ
+      ID.LOG = "FEDEX_SERV_FAIL_"
+      W.BEG.DATE = BEG.DATE'D2/'
+      CONVERT "/" TO "" IN W.BEG.DATE
+      W.END.DATE = END.DATE'D2/'
+      CONVERT "/" TO "" IN W.END.DATE
+      ID.LOG := W.BEG.DATE:"_THRU_":W.END.DATE:".TXT"
+      LOG.REC = "Started ":OCONV(DATE(),"D2/"):" at ":OCONV(TIME(),"MTS")
+      WRITE LOG.REC ON F.BILLDATA, ID.LOG
+*ZZ
+*
+*** BEGIN JCW02
+*     STMT='SSELECT EDI.BILLS.HIST'                        ; * JCW02
+*     IF ORIG.CLIENT.ID='00ALL' ELSE                       ; * JCW02
+*       STMT:=' WITH CLIENT# = ':ORIG.CLIENT.ID:' AND'     ; * JCW02
+*     END                                                  ; * JCW02
+*     STMT:=' WITH CARRIER# = "00015"'                     ; * JCW02
+*     STMT:=' AND WITH 39 GE "':OCONV(BEG.DATE,'D2/'):'"'  ; * JCW02
+*     STMT:=' AND WITH 39 LE "':OCONV(END.DATE,'D2/'):'"'  ; * JCW02
+*     STMT:=' AND WITH VERSION = "0"'                      ; * JCW02
+*     STMT:=' BY CLIENT.NAME'                              ; * JCW02
+*     EXECUTE STMT RTNLIST BILLS.LIST CAPTURING OUTPUT     ; * JCW02
+*     NUM.BILLS=@SELECTED                                  ; * JCW02
+*     IF @SELECTED < 1 THEN ; * JCW01                      ; * JCW02
+*       CALL ELINE('ERROR - No clients on file.')          ; * JCW02
+*       GOTO EXIT.PROGRAM                                  ; * JCW02
+*     END                                                  ; * JCW02
+
+      STMT.B =' WITH CARRIER# = "00015"'
+      STMT.B:=' AND WITH 39 GE "':OCONV(BEG.DATE,'D2/'):'"'
+      STMT.B:=' AND WITH 39 LE "':OCONV(END.DATE,'D2/'):'"'
+      STMT.B:=' AND WITH VERSION = "0"'
+      IF ORIG.CLIENT.ID # '00ALL' THEN
+        *** PROCESS SINGLE CLIENT OPTION
+        STMT = 'SELECT EDI.BILLS.HIST,':ORIG.CLIENT.ID:STMT.B
+        EXECUTE STMT RTNLIST BILLS.LIST CAPTURING OUTPUT
+        NUM.BILLS=@SELECTED
+        IF @SELECTED < 1 THEN
+          CALL ELINE('No records selected!')
+          GOTO EXIT.PROGRAM
+        END        
+      END ELSE
+        *** PROCESS ALL CLIENTS
+        STMT = 'SELECT VOC "EDI.BILLS.HIST" *A7'
+        EXECUTE STMT RTNLIST CAPTURING OUTPUT
+        STMT = 'SSELECT CLIENTS BY NAME'
+        EXECUTE STMT PASSLIST CAPTURING OUTPUT
+        IF USER.NAME = 'XNPRATT' THEN                                                 ;* ZZ??
+           EXECUTE 'SSELECT CLIENTS WITH @ID NE "10356"' PASSLIST CAPTURING OUTPUT    ;* ZZ??
+        END ELSE
+           EXECUTE STMT PASSLIST CAPTURING OUTPUT
+        END
+        IF @SELECTED < 1 THEN
+          CALL ELINE('ERROR - No clients selected.')
+          GOTO EXIT.PROGRAM
+        END
+        ALL.BILLS = ''
+        REC.CNT = 0
+        DONE = 0
+        LOOP UNTIL DONE DO
+          READNEXT CLIENT.ID THEN
+            READ DCLIENT FROM F.CLIENTS, CLIENT.ID ELSE DCLIENT = ''
+            CL.NAME=DCLIENT<2>
+            CL.STR = 'Searching ':CLIENT.ID:' ':CL.NAME
+            CL.STR = CL.STR:SPACE(78-LEN(CL.STR))
+            CRT @(0,16):CL.STR
+*            IF CLIENT.ID='10356' AND END.DATE < "12479" THEN GOTO SKIP.CLIENT
+            IF CLIENT.ID='10356' AND USER.NAME = 'XNPRATT' THEN GOTO SKIP.CLIENT     ; ;* ZZ??
+            IF CLIENT.ID[1,1] = "9" OR  CLIENT.ID[1,1] = "8" THEN GOTO SKIP.CLIENT   ; *ZZ
+            STMT = 'SELECT EDI.BILLS.HIST,':CLIENT.ID:STMT.B
+            EXECUTE STMT RTNLIST EDI.BILLS.HIST CAPTURING OUTPUT
+*ZZ
+            LOG.REC<-1> = "CLIENT ":CLIENT.ID:" - Selected EDI.BILLS.HIST records <<":OUTPUT:">> ":OCONV(DATE(),"D2/"):" at ":OCONV(TIME(),"MTS")
+            WRITE LOG.REC ON F.BILLDATA, ID.LOG
+*ZZ
+            IF @SELECTED > 0 THEN
+              REC.CNT += @SELECTED
+              BILLS.DONE = 0
+              LOOP UNTIL BILLS.DONE DO
+                READNEXT EDI.HIST.ID FROM EDI.BILLS.HIST THEN
+                  EDI.BILL = CLIENT.ID:'*':EDI.HIST.ID
+                  ALL.BILLS<-1> = EDI.BILL
+                END ELSE
+                  BILLS.DONE = 1
+                END
+              REPEAT
+            END
+SKIP.CLIENT:***
+          END ELSE
+            DONE = 1
+          END
+        REPEAT
+        IF REC.CNT > 0 THEN
+          NUM.BILLS = REC.CNT
+          LIST.NAME = 'FB.3.20.6.':CH.NUM
+          WRITELIST ALL.BILLS ON LIST.NAME
+          EXECUTE 'GET.LIST ':LIST.NAME RTNLIST BILLS.LIST CAPTURING OUTPUT
+          IF USER.NAME # 'JWEBERT' THEN EXECUTE 'DELETE.LIST ':LIST.NAME CAPTURING OUTPUT
+        END ELSE
+          CALL ELINE('ERROR - No clients selected.')
+          GOTO EXIT.PROGRAM
+        END
+      END
+*** END JCW02
+
+      COUNTER.1=0
+*
+* Set-up printer
+*
+      IF PRINT.FLAG = "P" THEN
+         WIDTH=176
+         CTR=INT(WIDTH/2)
+**************************************************************
+         VIN=''
+         VIN<3>='L'
+         CALL LASER.CODE(VIN,VOUT)
+         IF VOUT<1>#'' THEN 
+           CALL ELINE(VOUT<1>)
+           STOP
+         END
+         IF VOUT<3>#'' THEN EXECUTE VOUT<3>
+         PRINTER ON
+         IF VOUT<2>#'' THEN PRINT VOUT<2>:
+*
+*
+*
+         L.TAB=CTR-(LEN(PROG.DESC)/2)
+         L.TAB=L.TAB-LEN(PROG.NAME)
+         TEMP=PROG.NAME:SPACE(L.TAB):PROG.DESC
+         R.TAB=WIDTH-LEN(TEMP)
+         R.TAB=R.TAB-LEN(TIMEDATE())
+         HEAD1=PROG.NAME:SPACE(L.TAB):PROG.DESC:SPACE(R.TAB):TIMEDATE():"'L'"
+*
+         TITLE='EDI Bills shipped from ':BEG.DATE'D2/':' to ':END.DATE'D2/':' On file as of ':DATE()'D2/'
+         L.TAB=CTR-(LEN(TITLE)/2)
+         L.TAB=L.TAB-LEN(CO.NAME)
+         TEMP=CO.NAME:SPACE(L.TAB):TITLE
+         R.TAB=(WIDTH-LEN(TEMP))-20
+*DF         HEAD2=TEMP:SPACE(R.TAB):"PAGE 'PL'"
+         HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )':"PAGE 'PL'"
+         HEAD3="'L'"
+*
+         HEAD4=""
+         HEAD5=STR('-',WIDTH):"'L'"
+*
+         HEAD7='    '
+         HEAD6=SPACE(37)
+         HEAD7:=SPACE(1):'Client Name''L#32'
+         HEAD6:='Total''L#5'
+         HEAD7:='Bills''L#5'
+         HEAD6:=SPACE(2):'# Ser''L#5'
+         HEAD7:=SPACE(2):' Fail''L#5'
+         HEAD6:=SPACE(2):'% Ser''L#5'
+         HEAD7:=SPACE(2):' Fail''L#5'
+         HEAD6:=SPACE(1):'| # No''L#6'
+         HEAD7:=SPACE(1):'|  POD''L#6'
+         HEAD6:=SPACE(2):'% No ''L#5'
+         HEAD7:=SPACE(2):' POD ''L#5'
+         HEAD6:='| # Not''L#7'
+         HEAD7:='|  Ship''L#7'
+         HEAD6:=SPACE(2):'% Not ''L#6'
+         HEAD7:=SPACE(2):' Ship ''L#6'
+         HEAD6:='|  Total #''L#10'
+         HEAD7:='| Not Paid''L#10'
+         HEAD6:=SPACE(2):'   %    ''L#8'
+         HEAD7:=SPACE(2):'Not Paid''L#8'
+         HEAD6:=SPACE(1):'|    #   ''L#9'
+         HEAD7:=SPACE(1):'| Decline''L#9'
+         HEAD6:=SPACE(2):'  %    ''L#7'
+         HEAD7:=SPACE(2):'Decline''L#7'
+         HEAD6:=SPACE(1):'|   Net # ''L#10'
+         HEAD7:=SPACE(1):'| Not Paid''L#10'
+         HEAD6:=SPACE(2):'  Net % ''L#8'
+         HEAD7:=SPACE(2):'Not Paid''L#8'
+         HEAD6:=SPACE(2):'  Amount   ''L#11'
+         HEAD7:=SPACE(2):'  Billed   ''L#11'
+         HEAD6:=SPACE(2):' Amount  ''L#9'
+         HEAD7:=SPACE(2):'  Saved  ''L#9'
+         HEAD6:=SPACE(1):'  %  '
+         HEAD7:=SPACE(1):'Saved'
+         HEAD6:="'L'"
+         HEAD7:="'L'"
+*
+         HEAD8=STR('-',WIDTH):"'L'"
+         HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6:HEAD7:HEAD8
+         HEADING HED
+      END ELSE
+         GOSUB BUILD.XLS.HEADINGS     ;*NPR01
+      END
+*
+      OLD.CLIENT='*****'
+      DARRAY=''
+      DTOTAL.ARRAY=''
+*
+      LOOP
+        DONE=0
+        READNEXT EDI.ID FROM BILLS.LIST ELSE DONE=1
+      UNTIL DONE=1 DO
+        COUNTER.1=COUNTER.1+1
+        CALL PROG.BAR(22,COUNTER.1,NUM.BILLS,PER.2)
+        IF ORIG.CLIENT.ID # '00ALL' THEN                                      ; * NPR01
+           CLIENT.ID = ORIG.CLIENT.ID                                         ; * NPR01
+           EDI.HIST.ID = EDI.ID                                               ; * NPR01
+        END ELSE                                                              ; * NPR01
+           CALL PARSE.EDI.ID(EDI.ID, CLIENT.ID, EDI.HIST.ID)                  ; * JCW02
+        END                                                                   ; * NPR01
+*
+        IF OLD.CLIENT # CLIENT.ID THEN                                        ; * JCW02
+          OPEN 'EDI.BILLS.HIST,':CLIENT.ID TO F.EDI.HIST ELSE                 ; * JCW02
+             CALL OPEN.ABORT('EDI.BILLS.HIST,':CLIENT.ID, 'FB.3.20.6')        ; * JCW02
+          END                                                                 ; * JCW02
+        END                                                                   ; * JCW02
+*       READ DEDI.BILLS FROM EDI.BILLS,EDI.ID ELSE GOTO SKIP.BILL             ; * JCW02
+        READ DEDI.BILLS FROM F.EDI.HIST, EDI.HIST.ID ELSE                     ; * JCW02
+          CRT 'COULD NOT READ ':EDI.HIST.ID:' FROM EDI.BILLS.HIST,':CLIENT.ID ; * JCW02
+          GOTO SKIP.BILL                                                      ; * JCW02
+        END                                                                   ; * JCW02
+*       CLIENT.ID=FIELD(EDI.ID,'*',1)                                         ; * JCW02
+        IF OLD.CLIENT='*****' THEN 
+           OLD.CLIENT = CLIENT.ID
+           GOSUB OPEN.CLIENT.FILE
+        END
+        IF OLD.CLIENT#CLIENT.ID THEN
+           IF PRINT.FLAG = "P" THEN
+              GOSUB PRT.DET.LINE
+           END ELSE
+              GOSUB XLS.DET.LINE
+           END
+           DARRAY=''
+           OLD.CLIENT=CLIENT.ID
+           GOSUB OPEN.CLIENT.FILE
+        END
+        IF DEDI.BILLS<83>='41' OR DEDI.BILLS<83>='L7' OR DEDI.BILLS<83>='17' THEN
+          DARRAY<1>=DARRAY<1>+1
+          DARRAY<8>=DARRAY<8>+DEDI.BILLS<67>
+          DTOTAL.ARRAY<1>=DTOTAL.ARRAY<1>+1
+          DTOTAL.ARRAY<8>=DTOTAL.ARRAY<8>+DEDI.BILLS<67>
+        END
+        BEGIN CASE
+          CASE DEDI.BILLS<83>='41'
+             DARRAY<2>=DARRAY<2>+1
+             DTOTAL.ARRAY<2>=DTOTAL.ARRAY<2>+1
+             DARRAY<9>=DARRAY<9>+DEDI.BILLS<67>
+             DTOTAL.ARRAY<9>=DTOTAL.ARRAY<9>+DEDI.BILLS<67>
+             GOSUB CHECK.FOR.DECLINE
+          CASE DEDI.BILLS<83>='17'
+             DARRAY<3>=DARRAY<3>+1
+             DTOTAL.ARRAY<3>=DTOTAL.ARRAY<3>+1
+             DARRAY<9>=DARRAY<9>+DEDI.BILLS<67>
+             DTOTAL.ARRAY<9>=DTOTAL.ARRAY<9>+DEDI.BILLS<67>
+             GOSUB CHECK.FOR.DECLINE
+          CASE DEDI.BILLS<83>='L7'
+             DARRAY<4>=DARRAY<4>+1
+             DTOTAL.ARRAY<4>=DTOTAL.ARRAY<4>+1
+             DARRAY<9>=DARRAY<9>+DEDI.BILLS<67>
+             DTOTAL.ARRAY<9>=DTOTAL.ARRAY<9>+DEDI.BILLS<67>
+             GOSUB CHECK.FOR.DECLINE
+          CASE DEDI.BILLS<91>#""
+             DARRAY<1>=DARRAY<1>+1
+             DARRAY<8>=DARRAY<8>+DEDI.BILLS<67>
+             DTOTAL.ARRAY<1>=DTOTAL.ARRAY<1>+1
+             DTOTAL.ARRAY<8>=DTOTAL.ARRAY<8>+DEDI.BILLS<67>
+        END CASE
+SKIP.BILL:***
+      REPEAT
+*
+      IF PRINT.FLAG = "P" THEN
+         GOSUB PRT.DET.LINE
+         CLIENT.ID='TOTAL'
+         FOR I = 1 TO 9
+           DARRAY<I>=DTOTAL.ARRAY<I>
+         NEXT I
+         PRINT STR('-',WIDTH)
+         GOSUB PRT.DET.LINE
+         PRINT STR('=',WIDTH)
+*
+         PRINTER OFF
+         PRINTER CLOSE
+      END
+*
+      IF PRINT.FLAG = "S" THEN
+         GOSUB XLS.DET.LINE
+         CLIENT.ID='TOTAL'
+         FOR I = 1 TO 9
+           DARRAY<I>=DTOTAL.ARRAY<I>
+         NEXT I
+         GOSUB XLS.DET.LINE
+         IF ROW.CNT GT "1" THEN
+            ID.XLS = "FEDEX_SERV_FAIL_"
+            W.BEG.DATE = BEG.DATE'D2/'
+            CONVERT "/" TO "" IN W.BEG.DATE
+            W.END.DATE = END.DATE'D2/'
+            CONVERT "/" TO "" IN W.END.DATE
+            ID.XLS := W.BEG.DATE:"_THRU_":W.END.DATE:".XLS"
+            TRY.CNT = 1
+            CONVERT @VM TO CHAR(9) IN XLS.REC
+TRY.WRITE :***
+            WRITE XLS.REC ON F.BILLDATA, ID.XLS ELSE
+               IF TRY.CNT LE 3 THEN
+                  GOTO TRY.WRITE
+               END ELSE
+                  CALL ELINE("Unable to save file ":ID.XLS:" to your U: drive")
+               END
+            END
+            CALL ELINE("File ":ID.XLS:" saved to your U: drive")
+         END
+      END
+*
+EXIT.PROGRAM:*
+*
+      STOP
+
+
+PRT.DET.LINE:***
+      IF CLIENT.ID#'TOTAL' THEN
+        READV CLIENT.NAME FROM F.CLIENTS,OLD.CLIENT,2 THEN
+           CLIENT.INFO=OLD.CLIENT:" ":CLIENT.NAME
+        END ELSE
+          CLIENT.INFO="'":OLD.CLIENT:"' ** Not On File **"
+        END
+      END ELSE
+        CLIENT.INFO='Grand Total'
+      END
+      DARRAY<1>=DARRAY<1>+0
+      DARRAY<2>=DARRAY<2>+0
+      DARRAY<3>=DARRAY<3>+0
+      DARRAY<4>=DARRAY<4>+0
+      DARRAY<5>=DARRAY<5>+0
+      DARRAY<6>=DARRAY<6>+0
+      LINE=CLIENT.INFO'L#33'
+      LINE=LINE:' ':DARRAY<1>'R#8'
+      LINE=LINE:DARRAY<2>'R#7'
+      LINE=LINE:' ':(DARRAY<2>*100/DARRAY<1>)'MR2#6'
+      LINE=LINE:' |':DARRAY<3>'R#5'
+      LINE=LINE:(DARRAY<3>*100/DARRAY<1>)'MR2#6'
+      LINE=LINE:' |':DARRAY<4>'R#6'
+      LINE=LINE:' ':(DARRAY<4>*100/DARRAY<1>)'MR2#6'
+      DARRAY<5>=DARRAY<2>+DARRAY<3>+DARRAY<4>
+      LINE=LINE:' |':DARRAY<5>'R#8'
+      LINE=LINE:' ':(DARRAY<5>*100/DARRAY<1>)'MR2#8'
+      LINE=LINE:'   |':DARRAY<6>'R#7'
+      IF DARRAY<5>+0 = 0 THEN
+         LINE=LINE:' ':SPACE(8)
+      END ELSE
+         LINE=LINE:' ':(DARRAY<6>*100/DARRAY<5>)'MR2#8'
+      END
+      DARRAY<7>=DARRAY<5>-DARRAY<6>
+      LINE=LINE:'  |':DARRAY<7>'R#7'
+      IF DARRAY<5>+0 = 0 THEN
+         LINE=LINE:' ':SPACE(9)
+      END ELSE
+         LINE=LINE:' ':(DARRAY<7>*100/DARRAY<5>)'MR2#9'
+      END
+      LINE=LINE:' ':DARRAY<8>'R26,#12'
+      LINE=LINE:DARRAY<9>'R26,#11'
+      IF DARRAY<8>+0=0 ELSE
+         LINE=LINE:'  ':(DARRAY<9>*100/DARRAY<8>)'MR2#6'
+      END
+      PRINT LINE
+      RETURN
+*
+* Start of Original Changes NPR01
+*
+XLS.DET.LINE:***
+*
+      IF CLIENT.ID#'TOTAL' THEN
+        READV CLIENT.NAME FROM F.CLIENTS,OLD.CLIENT,2 THEN
+           CLIENT.INFO=OLD.CLIENT:@VM:CLIENT.NAME
+        END ELSE
+          CLIENT.INFO=OLD.CLIENT:@VM:"Not on file"
+        END
+      END ELSE
+        CLIENT.INFO='Grand Total'
+      END
+      DARRAY<1>=DARRAY<1>+0
+      DARRAY<2>=DARRAY<2>+0
+      DARRAY<3>=DARRAY<3>+0
+      DARRAY<4>=DARRAY<4>+0
+      DARRAY<5>=DARRAY<5>+0
+      DARRAY<6>=DARRAY<6>+0
+*
+      TOT.BILLS = DARRAY<1> + 0
+      BILLS.NOT.PD = DARRAY<5> + 0
+*
+      XLINE=CLIENT.INFO
+      XLINE<1,3> = DARRAY<1>
+      XLINE<1,4> = DARRAY<2>
+      IF TOT.BILLS NE "0" THEN W.VAL = (DARRAY<2>*10000/TOT.BILLS) ELSE W.VAL = "0"
+      XLINE<1,5> = OCONV(W.VAL,"MR2")
+      XLINE<1,6> = DARRAY<3>
+      IF TOT.BILLS NE "0" THEN W.VAL = (DARRAY<3>*10000/TOT.BILLS) ELSE W.VAL = "0"
+      XLINE<1,7> = OCONV(W.VAL,"MR2")
+      XLINE<1,8> = DARRAY<4>
+      IF TOT.BILLS NE "0" THEN W.VAL = (DARRAY<4>*10000/TOT.BILLS) ELSE W.VAL = "0"
+      XLINE<1,9> = OCONV(W.VAL,"MR2")
+      DARRAY<5>  = DARRAY<2>+DARRAY<3>+DARRAY<4>
+      BILLS.NOT.PD = DARRAY<5> + 0
+      XLINE<1,10> = DARRAY<5>
+      IF TOT.BILLS NE "0" THEN W.VAL = (DARRAY<5>*10000/TOT.BILLS) ELSE W.VAL = "0"
+      XLINE<1,11> = OCONV(W.VAL,"MR2")
+      XLINE<1,12> = DARRAY<6>
+      IF BILLS.NOT.PD= 0 THEN
+         XLINE<1,13> = "0"
+      END ELSE
+         XLINE<1,13> = OCONV((DARRAY<6>*10000/BILLS.NOT.PD),"MR2")
+      END
+      DARRAY<7>=DARRAY<5>-DARRAY<6>
+      XLINE<1,14> = DARRAY<7>'R#7'
+      IF BILLS.NOT.PD = 0 THEN
+         XLINE<1,15> = "0"
+      END ELSE
+         XLINE<1,15> = OCONV((DARRAY<7>*10000/BILLS.NOT.PD),"MR2")
+      END
+      XLINE<1,16> = OCONV(DARRAY<8>,"MR2")
+      XLINE<1,17> = OCONV(DARRAY<9>,"MR2")
+      IF DARRAY<8>+0=0 THEN
+         XLINE<1,18> = "0"
+      END ELSE
+         XLINE<1,18> = OCONV((DARRAY<9>*10000/DARRAY<8>),"MR2")
+      END
+*
+      XLS.REC<ROW.CNT> = XLINE
+      ROW.CNT += 1
+*
+*ZZ
+      TRY.CNT2 = 0
+*
+WRITE.LOG :
+*
+      TRY.CNT2 += 1
+
+      LOG.REC<-1> = "CLIENT ":OLD.CLIENT:" - Processed on ":OCONV(DATE(),"D2/"):" at ":OCONV(TIME(),"MTS")
+      WRITE LOG.REC ON F.BILLDATA, ID.LOG ELSE
+         IF TRY.CNT2 LT 3 THEN
+            CALL ELIBE("Unable to write ":ID.LOG:" to your U: drive - RETURN to try again")
+            GOTO WRITE.LOG
+         END ELSE
+            STOP
+         END
+      END
+*ZZ
+*
+      RETURN
+*
+BUILD.XLS.HEADINGS :***
+*
+         XHEAD1 = ""
+*
+         XHEAD1      = "Client #"
+         XHEAD1<1,2> = "Client Name"
+         XHEAD1<1,3> = "Total Bills"
+         XHEAD1<1,4> = "# Ser Fail"
+         XHEAD1<1,5> = "% Ser Fail"
+         XHEAD1<1,6> = "# No POD"
+         XHEAD1<1,7> = "% No POD"
+         XHEAD1<1,8> = "# Not Ship"
+         XHEAD1<1,9> = "% Not Ship"
+         XHEAD1<1,10> = "Total # Not Paid"
+         XHEAD1<1,11> = "Total % Not Paid"
+         XHEAD1<1,12> = "# Decline"
+         XHEAD1<1,13> = "% Decline"
+         XHEAD1<1,14> = "Net # Not Paid"
+         XHEAD1<1,15> = "Net % Not Paid"
+         XHEAD1<1,16> = "Amount Billed"
+         XHEAD1<1,17> = "Amount Saved"
+         XHEAD1<1,18> = "% Saved"
+*
+         XLS.REC = XHEAD1
+         ROW.CNT += 1
+*
+RETURN
+*
+* End Original Changes NPR01
+*
+OPEN.CLIENT.FILE:***
+      OPEN '','FB.BILLS.HIST,':OLD.CLIENT TO F.BILLS.HIST ELSE
+        CALL OPEN.ABORT("FB.BILLS.HIST,":OLD.CLIENT,PROG.NAME)
+        STOP
+      END
+      RETURN
+CHECK.FOR.DECLINE:***
+      CARRIER.ID=FIELD(EDI.ID,'*',2)
+      PRO.NUM=FIELD(EDI.ID,'*',3)
+      VERSION=FIELD(EDI.ID,'*',4)
+      PRO.NUM=PRO.NUM:'BD'
+      BILLS.ID=CARRIER.ID:'*':PRO.NUM:'*':VERSION
+      READ DBILLS FROM F.BILLS.HIST, BILLS.ID THEN
+        DARRAY<6>=DARRAY<6>+1
+        DTOTAL.ARRAY<6>=DTOTAL.ARRAY<6>+1
+        DARRAY<9>=DARRAY<9>-DEDI.BILLS<67>
+        DTOTAL.ARRAY<9>=DTOTAL.ARRAY<9>-DEDI.BILLS<67>
+      END ELSE
+        PRO.NUM=FIELD(EDI.ID,'*',3)
+        PRO.NUM=PRO.NUM:'AD'
+        BILLS.ID=CARRIER.ID:'*':PRO.NUM:'*':VERSION
+*DF        READ DBILLS FROM F.BILLS.HIST, BILLS.ID THEN
+*DF          DARRAY<6>=DARRAY<6>+1
+*DF          DTOTAL.ARRAY<6>=DTOTAL.ARRAY<6>+1
+*DF          DARRAY<9>=DARRAY<9>-DEDI.BILLS<67>
+*DF          DTOTAL.ARRAY<9>=DTOTAL.ARRAY<9>-DEDI.BILLS<67>
+*DF        END 
+      END
+      RETURN

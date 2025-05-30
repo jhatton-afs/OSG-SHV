@@ -1,0 +1,172 @@
+***************************************************
+* Program name : LOAD.SW.DATA
+* Author       : David Friend
+* Date written : May 09, 2023
+* Library      : FBBP
+* COPYRIGHT (C) 2023 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* Load client SPRING WINDOWS EDI verify data
+*
+* Last updated by afs (AFSLOGISTICS\gbino) at 11:47:29 on 05/15/2023.
+*
+* Start modification history
+* 04/08/24 : NKH00 : ACCU-2631 New program 
+* End modification history.
+*******************************************************
+* Initialize variables
+
+      OTODAY=OCONV(DATE(),'D4/')
+      OBDAY=OCONV(DATE()-6,'D4/')
+      PROG.NAME='LOAD.SW.DATA'
+      PROG.DESC="Load Spring windows EDI verification file"
+      PACK.NAME="FAP"
+      VERSION = 0
+      CEOL=@(-4)
+      TB=CHAR(9)
+      CALL GET.USER.NEW(USER,CH.NUM)
+      GOSUB OPEN.FILES
+      RPT.SVC.PREFIX=CHAR(239):CHAR(187):CHAR(191)
+      BAD.CARRIER.HDR='Carrier#''L#10 ':'Name''L#35 ':'Status''L#6'
+      PREV.TEST=''
+      CLIENT.ID = "02427"
+
+10:   *
+      CALL AFS.SCR.HEAD(CO.ID, FILE.ID, '', PROG.NAME, PROG.DESC, PACK.NAME, CO.NAME, TIME.DATE, 1)
+      CRT @(0,03):@(-3):
+      CRT @(0,05):'Instructions for use BEFORE Continuing:'
+      CRT @(0,06):' 1 This data load is for client Spring Windows 2427'
+      CRT @(0,07):' 2 The file must be in the Text (Tab Delimited)(*.txt) format'
+      CRT @(0,08):' 3 The file must be in the pre determined template layout already given '
+      CRT @(0,09):" 4 The file must be in user's BILLDATA folder "
+
+100:  HELP='Enter the File Name to process or [EX]it'
+      CALL GEN.IN(0,3,'Enter File Name #########################','',Q,0,25,'','',1,-25,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+
+      BEGIN CASE
+         CASE QI='' ! QI='EX' ! QI='X'
+            STOP
+         CASE 1
+            RAW.ID=QI
+      END CASE
+
+VERIFY.SELECTION:***
+      HELP="X=Change. EX=Exit. ''=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. ------------','',Q,0,12,'','',0,-12,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,19):@(-3):
+            GOTO 100
+         CASE QI='EX'
+            STOP
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be [X], [EX], or <RTN>.')
+            GOTO VERIFY.SELECTION
+      END CASE
+   
+START.PREPROCESS.LOOP:*
+      FP.ID = RAW.ID
+      READ TEST FROM F.FP,FP.ID THEN
+         TEST.NVAL=DCOUNT(TEST,@AM)
+      END ELSE     
+         CALL ELINE('File NOT Found ':RAW.ID)
+         GO 10
+      END
+      BAD.CARRIER.LIST=''
+  
+READ.IMPORT.RECORD:*
+      READ FP.REC FROM F.FP,FP.ID THEN
+         FP.ORG=FP.REC
+         FP.REC=CHANGE(FP.REC,CHAR(9),@VM)
+         
+         HEAD.REC = OCONV(FP.REC<2>,'MCU')
+         TRAVERO = INDEX(HEAD.REC,"TRAVERO",1)         
+         IF TRAVERO > 0 THEN 
+            CARRIER.ID = "45065"
+         END ELSE
+            CARRIER.ID = "16540"
+         END
+         
+         IMP.NATT=DCOUNT(FP.REC,@AM)       
+         IMP.PER=''
+         FOR IMP.ATT=14 TO IMP.NATT
+            IF IMP.ATT=1 THEN GO NEXT.IMP.ATT
+            FP.LINE=TRIM(FP.REC<IMP.ATT>)
+            IF FP.LINE='' THEN GO NEXT.IMP.ATT
+            IF FP.LINE=' ' THEN GO NEXT.IMP.ATT
+            IF FP.LINE<1,2>='' THEN GO NEXT.IMP.ATT
+            IMP.REC=FP.LINE
+            GOSUB DEFINE.IMPORT.FIELDS
+            IF LOAD.NUM = "Total" THEN EXIT
+            GOSUB WRITE.FB.REC
+            IMP.ATT+=1
+
+NEXT.IMP.ATT:*
+         NEXT IMP.ATT
+         WRITE FP.ORG ON F.HIST,'RAN_':FP.ID
+         FP.REC=CHANGE(FP.REC,@VM,CHAR(9))
+         DELETE F.FP,FP.ID
+      END
+
+      STOP
+**********************************************************************
+OPEN.FILES:*
+**********************************************************************
+      OPEN '','BILLDATA.':USER TO F.FP ELSE
+         CALL OPEN.ABORT('BILLDATA',PROG.NAME)
+      END
+      OPEN '','VOC' TO F.VOC ELSE
+         CALL OPEN.ABORT("VOC",PROG.NAME)
+      END
+      OPEN '','SWED.EDI.DATA' TO F.DAT ELSE
+         CALL OPEN.ABORT('LIEBHERR.HISTORY',PROG.NAME)
+      END
+       OPEN '','SWED.EDI.DATA.HIST' TO F.HIST ELSE
+         CALL OPEN.ABORT('LIEBHERR.HISTORY',PROG.NAME)
+      END
+      
+      RETURN
+**********************************************************************
+DEFINE.IMPORT.FIELDS:*
+**********************************************************************
+      LOAD.NUM = IMP.REC<1,2>    
+      QUOTE.TOTAL = IMP.REC<1,3>
+      CONVERT "$" TO "" IN QUOTE.TOTAL
+      CONVERT "," TO "" IN QUOTE.TOTAL
+      CONVERT '"' TO "" IN QUOTE.TOTAL
+      CARRIER = IMP.REC<1,8>
+      PRO = LOAD.NUM
+
+      RETURN
+**********************************************************************
+WRITE.FB.REC:*
+**********************************************************************
+      PRO.ID=CARRIER.ID:'*':PRO:'*':VERSION          
+      T.DATE=DATE()
+      T.TIME=TIME()
+      USER='CLIENT-IMPORT'
+      REC = ''
+      REC<1> = QUOTE.TOTAL   
+      REC<2> = T.DATE
+      REC<3> = T.TIME   
+      WRITE REC ON F.DAT,PRO.ID
+      
+      RETURN
+**********************************************************************
+CONVERT.NUMBER:*
+**********************************************************************
+      TEST.NUM=CHANGE(TEST.NUM,'($','-')
+      TEST.NUM=CHANGE(TEST.NUM,')','')
+      TEST.NUM=CHANGE(TEST.NUM,'$','')
+      TEST.NUM=CHANGE(TEST.NUM,'"','')
+      TEST.NUM=CHANGE(TEST.NUM,',','')
+      
+      RETURN
+**********************************************************************
+PROGRAM.END:
+**********************************************************************
+
+   END

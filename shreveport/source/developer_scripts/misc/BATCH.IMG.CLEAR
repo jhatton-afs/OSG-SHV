@@ -1,0 +1,187 @@
+***********************************************************************
+* Program name : BATCH.IMG.CLEAR
+* Author       : Greg Bino
+* Date written : 01-10-2019
+* Library      : FBBP
+* COPYRIGHT (C) 2019 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* SEND IMAGE UPDATE FOR LIST OF IMAGE NUMBERS
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 08:08:59 on 02/16/2021.
+*
+* Start modification history
+* Mod 00 01-10-19, grb, 21092.0000  New program
+* 02/15/21 : NKH01 : ACCU-1133 Added server checking for dev
+* End modification history
+*
+************************************************************************
+*
+* Initialize variables
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE UNIVERSE.INCLUDE UDO.H
+
+      STATUS = 0
+      KEYER = "BATCH"
+KEYER = ""
+***KEYER="KCARTER"
+      RESP.CNT=1
+      RESP = ''
+      VOUT=''
+      TIME.LINE=''
+      ST.TIME = TIME()
+      TIME.LINE<1,1,1>=TIME()            ; * start time
+      PROMPT ''
+      TIMEOUT = 3000
+      PROG.NAME='BATCH.IMG.CLEAR'
+      CALL GET.SERVER.INFO(SVR.VIN,SVR.VOUT)       ; * NKH01
+      SERVER.NAME=SVR.VOUT<1>                      ; * NKH01            
+
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'BATCH.IMG.CLEAR' ; UPL.VOUT = ''
+      DUP.CNT=0
+      ***    CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+      OPEN 'CONTROL' TO FILE.CNTL ELSE
+         CALL ELINE('UNABLE TO OPEN CONTROL FILE')
+         RETURN
+      END
+      OPEN 'GRB' TO F.GRB ELSE
+         CALL ELINE('UNABLE TO OPEN GRB FILE')
+         RETURN
+      END
+      OPEN "CLEAN.UP" TO F.CLEAN ELSE
+         CALL ELINE('UNABLE TO OPEN CLEAN.UP FILE')
+      END
+
+      READ XMLPARAMS FROM FILE.CNTL,"CLIENT.OCR" THEN
+         URL = XMLPARAMS<1>
+         SERVER = XMLPARAMS<2>
+         SOAPACTION = XMLPARAMS<3>
+         LOGGING = XMLPARAMS<4>          ; * Y/N
+         LOGFILE = XMLPARAMS<5>
+         EMAIL.RECIP = XMLPARAMS<6>
+         TEST.FLG = XMLPARAMS<7>
+      END ELSE
+***         URL = 'https://imagingws.afs.net/images/list?clientFolder=': CLIENT.ID:'&underReview=null&excludeImported=true&limit=300'
+         LOGFILE="BATCH.UPDT"
+         LOGGING = "Y"
+*          EMAIL.RECIP = 'gbino@afs.net'
+         TEST.FLG = @FALSE
+      END
+
+      IF LOGGING = "Y" OR LOGGING = 1 THEN
+         LOGGING = @TRUE
+      END ELSE
+         LOGGING = @FALSE
+      END
+      IF LOGGING THEN
+         STAT = PROTOCOLLOGGING(LOGFILE, "ON", 10)
+      END
+
+      EMAIL.OUT=''
+      EMAIL.OUT<1,-1>='HelpDesk@afs.net'
+      EMAIL.OUT<2,-1>= EMAIL.RECIP
+      EMAIL.OUT<4>='FBBP_BATCH.IMG.UPDT@afs.net'
+      EMAIL.OUT<5>='Error while trying to access BATCH IMAGE CLEAR Web-Service .'
+      EXECUTE "GET-LIST BATCH.IMAGE.CLEAR"
+      EOJ = 0
+      LOOP
+         READNEXT IMAGE.NO ELSE EOJ = 1
+      UNTIL EOJ DO
+      ****   URL = 'https://imagingws.afs.net/images/update?imageKey=':IMAGE.NO:"&keyerName=":KEYER
+         IF SERVER.NAME = 'AFS' THEN   ; * NKH01                     
+            URL = 'https://imagingws.afs.net/images/imported-date/remove?imageKey=':IMAGE.NO
+         END ELSE                      ; * NKH01
+            URL = 'https://imagingws.qa.afs.net/images/imported-date/remove?imageKey=':IMAGE.NO    ; * NKH01
+         END                           ; * NKH01                                       
+
+         GOSUB SEND.REST.REQUEST
+         BEGIN CASE
+            CASE TRIM(RESTDATA) = 'Failed to Update'
+               FAILED = 1
+            CASE TRIM(RESTDATA) = 'Updated Successfully'
+               FAILED = 0
+               CASE TRIM(RESTDATA) = 'OK'
+               FAILED = 0
+            CASE TRIM(RESTDATA)[1,24]= 'Error: This image (key #'
+               FAILED = 0
+            CASE 1
+               FAILED = 1
+         END CASE
+
+         IF FAILED THEN
+            CRT @(0,20):" Error updating image ":RESTDATA
+            INPUT XX
+         END
+      REPEAT
+
+      TIME.LINE<1,1,1>=TIME()            ; * finish time
+
+9999: * THE END
+      IF LOGGING THEN
+         LOG.RET = PROTOCOLLOGGING(LOGFILE,"OFF",10)
+      END
+      WRITE RESP ON F.GRB,"OCR.BATCH.IMG.CLEAR"
+      RETURN
+***********************************************************************
+SEND.REST.REQUEST:
+***********************************************************************
+      METHOD="GET"
+*
+      STAT = SETHTTPDEFAULT("VERSION", "1.1")
+      STAT = CREATESECURITYCONTEXT(CTX, "TLSv1.2")
+      STAT = CREATESECUREREQUEST(URL, METHOD, RESTGET,CTX)
+      STAT = SETREQUESTHEADER(RESTGET, "Content-Type", "application/json;charset=utf-8")
+      STAT = SUBMITREQUEST(RESTGET, 30000, "", HEADER, RESTDATA, HTTPSTATUS)
+
+      RETURN
+
+****************************************************
+ERR.HANDLER:
+*****************************************************
+
+      ERRCODE = "" ; ERRMSG = ""
+      S = UDOGetLastError(ERRCODE, ERRMSG)
+      ERROR = "UDO ERROR: (":ERRCODE:") ":ERRMSG
+      VOUT<1> =ERROR
+
+      RETURN
+
+************************************************************************
+REPORT.INTERNAL.ERROR:
+************************************************************************
+      EMAIL.START.TIME = TIME()
+
+      EMAIL.OUT<6, -1> = 'URL = ':URL
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = 'ERROR = ':ERROR
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = ' '
+
+      EVIN=EMAIL.OUT
+      EVOUT=''
+      CALL SENDMAIL(EVIN,EVOUT)
+****      VOUT<1> = "ERROR"
+      VOUT<1> = 0
+      RETURN
+************************************************************************
+REPORT.FATAL.ERROR:
+************************************************************************
+      EMAIL.START.TIME = TIME()
+      EMAIL.OUT<1>=EMAIL.RECIP
+*       EMAIL.OUT<1,-1> = 'gbino@afs.net'
+      EMAIL.OUT<1,-1> = 'dfriend@afs.net'
+      EMAIL.OUT<1,-1> = 'nmeddaugh@afs.net'
+      FATAL.ERROR.SUBJ = 'REST REQUEST ERROR'
+      EMAIL.OUT<5>=FATAL.ERROR.SUBJ
+      EMAIL.OUT<6,-1> = 'URL = ':URL
+      EVIN=EMAIL.OUT
+      EVOUT=''
+      CALL SENDMAIL(EVIN,EVOUT)
+      IDATE=DATE()
+      ITIME=TIME()
+      TIME.BLOCK=INT(ITIME/600)
+      *  VOUT<1> = "ERROR"
+      RETURN
+   END

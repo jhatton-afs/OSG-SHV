@@ -1,0 +1,175 @@
+***********************************************************************
+* Program name : OCR.DELETE.BATCH
+* Author       : Nicole Hennick
+* Date written : 04-07-2022
+* Library      : FBBP
+* COPYRIGHT (C) 2019 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* Remove batches from the image database
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 07:52:42 on 04/07/2022.
+*
+* Start modification history
+* 04/07/22 : NKH00 : ACCU-1423 New program
+* End modification history
+*
+************************************************************************
+*
+* Initialize variables
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE UNIVERSE.INCLUDE UDO.H
+
+      ITEM_SIZE = 0
+      STATUS = 0
+      VOUT=''
+      IMAGE.ARR = ''
+      IMAGE.CNT = 0
+      CALL GET.SERVER.INFO(SVR.VIN,SVR.VOUT)       ; * NKH01
+      SERVER.NAME=SVR.VOUT<1>                      ; * NKH01                  
+      PROMPT ''
+      PROG.NAME='OCR.DELETE.BATCH'
+      CALL GET.USER.NEW(USER,CH.NUM)
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'OCR.DELETE.BATCH' ; UPL.VOUT = ''
+      ***    CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+      KEYER = 'BDL-':USER
+      OPEN '','OPERATOR' TO F.OP ELSE CALL OPEN.ABORT("OPERATOR",PROG.NAME)
+      READV OP.FLG FROM F.OP,USER,80 ELSE
+         OP.FLG = "N"
+      END
+      OPEN '','DELETED.BATCHES' TO DELETED.BATCHES ELSE CALL OPEN.ABORT("DELETED.BATCHES",PROG.NAME)
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE CALL OPEN.ABORT("CLIENTS",PROG.NAME)      
+      IF OP.FLG # "Y" THEN
+         CALL ELINE("You are not setup to delete batches... ")
+         STOP
+      END
+
+      EOJ=0
+      LOOP
+      UNTIL EOJ DO
+10:      
+         CRT @(-1)
+         CRT @(5,2):"OCR Delete Batch"
+         CRT@(10,10):"Enter Client or (E)nd ": ; INPUT CLIENT.ID
+         CLIENT.ID = OCONV(CLIENT.ID,"MCU")
+         IF CLIENT.ID[1,1] = "E" THEN
+            EOJ=1
+            CONTINUE
+         END
+         CLIENT.ID = CLIENT.ID"R%5"    
+         READ CLIENT.REC FROM F.CLIENTS, CLIENT.ID ELSE
+            CALL ELINE('Client ':CLIENT.ID:' is not a valid client')
+            GOTO 10
+         END     
+         
+         CRT @(10,12):"Enter Batch or (E)nd ": ; INPUT BATCH
+         IF BATCH[1,1] = "E" or BATCH[1,1] = "e" THEN
+            EOJ=1
+            CONTINUE
+         END
+         IF BATCH = "X" OR BATCH = "x" OR BATCH = "" THEN
+            GOTO 10
+         END
+
+         STATUS = 0
+         VOUT=''
+         RESPONSE = ''
+         IMAGE.CNT = 0
+         IMAGE.ARR = ''
+         CRT@(10,22):"Return to Delete Batch or (X) to change ": ; INPUT RESPONSE
+         RESPONSE = OCONV(RESPONSE,'MCU')
+         IF RESPONSE = "X" THEN CONTINUE
+
+         IF SERVER.NAME = 'AFS' THEN    
+            URL = 'http://imagingws.afs.net/images/list?clientFolder=':CLIENT.ID:'&underReview=null&excludeImported=true&limit=15000'                            
+         END ELSE                         
+            URL = 'http://imagingws.qa.afs.net/images/list?clientFolder=':CLIENT.ID:'&underReview=null&excludeImported=true&limit=15000'                  
+         END                           
+         GOSUB SEND.REST.REQUEST
+         GOSUB PARSE.RESULTS
+         GOSUB REMOVE.IMAGES 
+         IF IMAGE.CNT > 1 THEN
+            CRT@(10,14):'Batch ':BATCH:' has been deleted' ; INPUT RESPONSE   
+            DEL.REC = ''
+            CONVERT @VM TO @SM IN IMAGE.ARR
+            READ DEL.REC FROM DELETED.BATCHES, CLIENT.ID THEN
+               DEL.REC<1,-1> = BATCH
+               DEL.REC<2,-1> = USER
+               DEL.REC<3,-1> = DATE()
+               DEL.REC<4,-1> = IMAGE.ARR
+            END ELSE            
+               DEL.REC<1> = BATCH
+               DEL.REC<2> = USER
+               DEL.REC<3> = DATE()
+               DEL.REC<4> = IMAGE.ARR
+            END
+            WRITE DEL.REC ON DELETED.BATCHES, CLIENT.ID
+         END         
+      REPEAT         
+
+      RETURN
+      
+***********************************************************************
+SEND.REST.REQUEST:
+***********************************************************************
+      METHOD="GET"
+
+      STAT = SETHTTPDEFAULT("VERSION", "1.1")
+      STAT = CREATEREQUEST(URL, METHOD, RESTGET)
+      STAT = SETREQUESTHEADER(RESTGET, "Content-Type", "application/json;charset=utf-8")
+      STAT = SUBMITREQUEST(RESTGET, 60000, "", HEADER, RESTDATA, HTTPSTATUS)
+
+      RETURN
+
+************************************************************************
+PARSE.RESULTS:
+************************************************************************
+      ARRY = ''
+      UDOHANDLE = ""
+      STATUS =UDORead(RESTDATA, UDOFORMAT_JSON, UDOHANDLE )
+      NEW.LINE =""
+      ST = UDOArrayGetSize(UDOHANDLE, ITEM_SIZE)
+      FOR I = 1 TO ITEM_SIZE
+         ST = UDOArrayGetItem(UDOHANDLE, I, result_udo, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         ST = UDOGetProperty(result_udo, "imageKey", IMAGE.NO, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN IMAGE.NO = ""
+         ST = UDOGetProperty(result_udo, "imagePath", IMAGE.PATH, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         BATCH.NO = FIELD(IMAGE.PATH,"\",9)       
+         BATCH.NO = FIELD(BATCH.NO,"_",1)         
+         IF BATCH = BATCH.NO THEN         
+            IMAGE.ARR<1,-1> = IMAGE.NO
+         END
+      NEXT I
+
+      RETURN
+      
+******************************************************
+REMOVE.IMAGES:
+******************************************************
+      IMAGE.CNT = DCOUNT(IMAGE.ARR<1>,@VM)
+      IF IMAGE.CNT < 1 THEN
+         CRT@(10,14):'Batch ':BATCH:' not found' ; INPUT RESPONSE       
+      END ELSE
+         FOR X = 1 TO IMAGE.CNT
+            IMAGE.NO = IMAGE.ARR<1,X>
+            IF SERVER.NAME = 'AFS' THEN   
+               URL = 'http://imagingws.afs.net/images/update?imageKey=':IMAGE.NO:"&keyerName=":KEYER
+            END ELSE        
+               URL = 'http://imagingws.qa.afs.net/images/update?imageKey=':IMAGE.NO:"&keyerName=":KEYER 
+            END                                 
+            GOSUB SEND.REST.REQUEST
+         NEXT X
+      END
+
+      RETURN
+
+****************************************************
+ERR.HANDLER:
+*****************************************************
+      ERRCODE = "" ; ERRMSG = ""
+      S = UDOGetLastError(ERRCODE, ERRMSG)
+      ERROR = "UDO ERROR: (":ERRCODE:") ":ERRMSG
+      VOUT<1> =ERROR
+
+      RETURN
+

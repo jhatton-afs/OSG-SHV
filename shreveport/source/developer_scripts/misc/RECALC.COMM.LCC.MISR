@@ -1,0 +1,344 @@
+      SUBROUTINE RECALC.COMM.LCC.MISR(RCVIN,RCVOUT,CLIENT.ITM,TEMP.REC,F.CLIENTS,F.CARRIERS,F.NFSC,F.PCIN,F.PCOUT,F.TABLES,F.AUDIT,F.AUDIT.TABLES,F.AUDIT.ZIPS,F.TRANSPORT)
+*******************************************************************************
+* 022515 - JMK01 - SysAid#15482 - NON- SMC Carrier Service 1,1,11,17
+* 031715 - JMK02 - SysAid#16032 - Webrater issues withe SEFL
+*******************************************************************************
+
+      CALL GET.USER(USER)
+      CLIENT.ID = RCVIN<1>
+      PRO.ID    = RCVIN<2>
+
+      CLIENT          = CLIENT.ID
+      AUDIT.CLIENT.ID = CLIENT.ID
+
+      CL.LOGISTICS     = CLIENT.ITM<93>
+      CL.AUTO.MISROUTE = CLIENT.ITM<94>
+      CLIENT.DOW       = CLIENT.ITM<151>
+
+      CK.CS=0
+      READ NSMC.LIST FROM F.TABLES,'NSMC.CARRIERS' ELSE NSMC.LIST=''
+
+      GOSUB PROCESS
+
+      RETURN
+
+      PROCESS :
+
+      CARRIER.ID = FIELD(PRO.ID,"*",1)
+      CARRIER    = CARRIER.ID
+
+      LOCATE CARRIER IN NSMC.LIST SETTING WPOS THEN CK.CS=1
+
+      READ CARRIER.REC FROM F.CARRIERS, CARRIER.ID ELSE CARRIER.REC = ""
+      CARRIER.SCAC = CARRIER.REC<12>
+      CARRIER.TYPE = 'A'
+      IF CARRIER.REC<44>='6' THEN
+         CARRIER.TYPE='B'
+      END
+
+      CARRIER.MODE=CARRIER.REC<44>
+
+*?????????  Check if these flags are needed and if so they need to be set up as in FB.2.1.NW
+
+      GOIN=1                  ; *?????????
+      CARRIER.AUDIT = 1       ; *?????????
+      CLIENT.AUDIT  = 1       ; *?????????
+      VC.OVERRIDE   = "N"     ; *?????????
+
+      AVIN='' ; AVOUT=''      ; *?????????
+
+      READV T.MODE FROM F.TRANSPORT,CARRIER.MODE,1 ELSE T.MODE = ''
+      T.MODE = OCONV(T.MODE,'MCU')
+      LTL.CAR=CARRIER.MODE=1
+
+*?????????  Check if these flags are needed
+
+
+      IF CARRIER.AUDIT THEN GOIN=1
+      IF LTL.CAR & CLIENT.AUDIT & CL.LOGISTICS='Y' & CL.AUTO.MISROUTE='Y' THEN GOIN=1
+
+      BILL.DATE = TEMP.REC<1>
+      IOT       = TEMP.REC<2>
+      ORIG.ZIP  = TEMP.REC<3>
+      DEST.ZIP  = TEMP.REC<4>
+      MISROUTE.AMOUNT = TEMP.REC<63>
+
+
+      SVC.DAYS  = TEMP.REC<220>
+      ORIG.SVC.DAYS = SVC.DAYS
+      SVC.DAYS.ERROR = ""
+      IF SVC.DAYS = "" THEN
+         SVC.DAYS.ERROR = "RECALC"
+         GOSUB RECALC.SVC.DAYS2
+      END
+
+
+      CARRIER.ARRAY=''
+
+
+      LCC.CAPTURE=1
+      PRO.NO=FIELD(PRO.ID,'*',2)
+      PRO.LENGTH=LEN(PRO.NO)
+      DUP=FIELD(PRO.ID,'*',3)
+      IF PRO.NO[PRO.LENGTH-1,2] = 'BD' THEN BAL.DUE = 1 ELSE BAL.DUE = 0
+      IF PRO.NO[PRO.LENGTH-1,2] = 'AD' THEN ADD.DUE = 1 ELSE ADD.DUE = 0
+      IF PRO.NO[PRO.LENGTH-1,2] = 'CM' THEN CR.MEMO = 1 ELSE CR.MEMO = 0
+      NEVERPAY.FLAG = (TEMP.REC<66>='N' AND TEMP.REC<39>='R')
+      HOLD.FLAG = (TEMP.REC<66>#'N' AND TEMP.REC<39>='R')
+      IF DUP THEN LCC.CAPTURE=0
+      IF HOLD.FLAG THEN LCC.CAPTURE=0
+      IF NEVERPAY.FLAG THEN LCC.CAPTURE=0
+      IF CLIENT.ID[1,2]='99' THEN LCC.CAPTURE=0
+      IF TEMP.REC<21>#1 THEN LCC.CAPTURE=0
+      IF CLIENT.ITM<93>#'Y' THEN LCC.CAPTURE=0
+      IF CLIENT.ITM<93>="Y" THEN
+         IF CLIENT.ITM<149>#'' THEN
+            IF BILL.DATE<CLIENT.ITM<149> THEN LCC.CAPTURE=0
+         END
+      END
+      IF CLIENT.ITM<94>#'Y' THEN LCC.CAPTURE=0
+      IF TEMP.REC<2>='T' THEN LCC.CAPTURE=0
+      IF ADD.DUE OR BAL.DUE THEN LCC.CAPTURE=0
+
+
+      IF LCC.CAPTURE THEN
+         GET.LCC=1
+         IF USER='DAVID' THEN CALL ELINE('LCC PRESS BREAK')
+         IF TEMP.REC<21>#'1' THEN GET.LCC=0
+         IF TEMP.REC<74>='' THEN GET.LCC=0
+         IF TEMP.REC<75>='' THEN GET.LCC=0
+
+         IF TEMP.REC<119>='1' THEN GET.LCC=0
+         IF GOIN THEN
+            IF AVIN<45>=1 THEN GET.LCC=0
+            IF AVIN='' AND TEMP.REC<119>=1 THEN GET.LCC=0
+         END ELSE
+            IF TEMP.REC<119>=1 THEN GET.LCC=0
+         END
+         IF GET.LCC THEN
+            GCVIN=''
+            GCVIN<1>=AUDIT.CLIENT.ID
+            GCVIN<2>=PRO.ID
+            GCVIN<3>=CLIENT.ID
+            GCVOUT=''
+            CARRIER.ARRAY=''
+
+            CALL FIND.GOOD.CARRIERS.NPR(GCVIN,GCVOUT,TEMP.REC,CARRIER.ARRAY,F.CLIENTS,F.CARRIERS,F.NFSC,F.PCIN,F.PCOUT,F.TABLES,F.AUDIT,F.AUDIT.TABLES,F.AUDIT.ZIPS)
+
+
+            TEMP.HOLD=''
+            TEMP.REC<37>=''
+            IF TEMP.REC<37>='' THEN
+               TEMP.HOLD=TEMP.REC
+               NXT.PROC.DT=DATE()
+               CALL NEXT.PROCESS.DATE(NXT.PROC.DT,CLIENT.DOW)
+               TEMP.HOLD<37>=NXT.PROC.DT
+               COMM.VIN=PRO.ID
+               COMM.VIN<2>=CLIENT.ITM<84>
+               COMM.VIN<3>=CLIENT.ITM<34>
+               COMM.VIN<4>=CLIENT.ITM<33>
+               COMM.VIN<5>=CLIENT.ITM<85>
+               COMM.VIN<6>=CLIENT.ITM<88>
+               FOR LL = 1 TO 7
+                  COMM.VIN<4,LL> += "500"       ;* Logistics %   - Artificially increased to force changes in comm calcs.
+                  COMM.VIN<5,LL> += "500"       ;* Overcharge %  - Artificially increased to force changes in comm calcs.
+               NEXT LL
+               COMM.VIN<7>=CARRIER.ID
+               COMM.VIN<8>=CLIENT.ID
+               COMM.VIN<9>=USER
+               COMM.VIN<10>=CLIENT.ITM<131>
+               COMM.VIN<13>=CLIENT.ITM<187>
+               COMM.VIN<14>=CLIENT.ITM<200>
+               COMM.VIN<15>=CLIENT.ITM<208>
+               COMM.VIN<16>=CLIENT.ITM<209>
+               COMM.VIN<17>=CLIENT.ITM<210>
+               COMM.VIN<18>=CLIENT.ITM<211>
+               COMM.VIN<19>=CLIENT.ITM<212>
+               COMM.VIN<20>=CLIENT.ITM<213>
+               COMM.VIN<21>=CLIENT.ITM<214>
+               COMM.VIN<22>=CLIENT.ITM<215>
+               COMM.VIN<23>=CLIENT.ITM<216>
+               COMM.VIN<24>=CLIENT.ITM<217>
+               COMM.VIN<25>=CLIENT.ITM<218>
+               COMM.VIN<26>=CLIENT.ITM<219>
+               COMM.VIN<28>=CLIENT.ITM<268>
+               CALL CALC.COMMISSION(TEMP.HOLD,COMM.VIN,COMM.VOUT)
+               DISCOUNT.COMM=COMM.VOUT<1>
+               OVERCHG.COMM=COMM.VOUT<2>
+               CONSULTING.COMM=COMM.VOUT<3>
+               EXP.DIST.COMM=COMM.VOUT<4>
+               MGMT.SVC.COMM=COMM.VOUT<5>
+               MISR.CONS.COMM=COMM.VOUT<6>
+               TEMP.HOLD<42>=DISCOUNT.COMM
+               TEMP.HOLD<43>=OVERCHG.COMM
+               TEMP.HOLD<44>=CONSULTING.COMM
+               TEMP.HOLD<32>=EXP.DIST.COMM
+               TEMP.HOLD<165>=MGMT.SVC.COMM
+               TEMP.HOLD<203>=MISR.CONS.COMM
+
+            END
+            LCC.AMOUNT=CARRIER.ARRAY<1,1>
+            LCC.CARRIER=CARRIER.ARRAY<2,1>
+            IF TEMP.HOLD#'' THEN
+               TRUE.COST=TEMP.HOLD<8>+TEMP.HOLD<44>
+            END ELSE
+               TRUE.COST=TEMP.REC<8>+TEMP.REC<44>
+            END
+            LOCATE CARRIER.ID IN CARRIER.ARRAY<2> SETTING LPOS THEN
+               IF LCC.AMOUNT GE TRUE.COST OR LCC.CARRIER=CARRIER.ID THEN
+                  LCC.AMOUNT=''
+                  LCC.CARRIER=''
+               END
+               LCC.ARRAY=CARRIER.ARRAY
+            END ELSE
+               LCC.AMOUNT=''
+               LCC.CARRIER=''
+               LCC.ARRAY=''
+            END
+            IF LCC.AMOUNT+0=0 ELSE
+               READV LCC.NAME FROM F.CARRIERS,LCC.CARRIER,1 ELSE LCC.NAME='Unknown Carrier'
+               CRT @(43,20):LCC.AMOUNT'R26#10'
+               CRT @(56,20):LCC.CARRIER'%5':' ':LCC.NAME'L#10'
+            END
+         END ELSE
+            LCC.AMOUNT=''
+            LCC.CARRIER=''
+            LCC.ARRAY=''
+            CRT @(56,20):'                 '
+         END
+         LCC.OVR.AMOUNT=LCC.AMOUNT
+         LCC.OVR.CARRIER=LCC.CARRIER
+         IF CLIENT.ID='01457' OR CLIENT.ID='01529' THEN
+            IF LCC.AMOUNT+0#0 AND VC.OVERRIDE='Y' THEN
+               LCC.AMOUNT=''
+               LCC.CARRIER=''
+               LCC.NAME=''
+            END
+         END
+      END
+
+      RETURN
+
+      RECALC.SVC.DAYS :
+
+      SVC.VIN=""
+      SVC.VIN<3>=CARRIER.SCAC
+      SVC.VIN<4>=CARRIER.TYPE
+      SVC.VIN<5>=ORIG.ZIP
+      SVC.VIN<6>=DEST.ZIP
+
+      SVC.DOUT=''
+
+      CALL RWS.SVC(SVC.VIN,SVC.VOUT,F.TABLES)
+*
+      W.ERROR=SVC.VOUT<1>
+      IF W.ERROR NE "" THEN SVC.DAYS.ERROR = W.ERROR
+
+      SVC.DAYS     = SVC.VOUT<2>
+      ORIG.DIR.FLG = SVC.VOUT<3>
+      DEST.DIR.FLG = SVC.VOUT<4>
+      COMB.DIR.FLG = SVC.VOUT<5>
+
+      IF ORIG.DIR.FLG='I' THEN SVC.DAYS+=1
+      IF DEST.DIR.FLG='I' THEN SVC.DAYS+=1
+*
+      RETURN
+
+RECALC.SVC.DAYS2:* Copied from FB.2.1.AUDIT.OWEN
+
+      JL.FLAG=0
+      TRANSIT.TIME=''
+      IF CARRIER.SCAC#'' THEN
+         ORIG.ZIP = "99999"
+         DEST.ZIP = "99999"
+         SVC.VIN=''
+         SVC.VIN<1>='BOTH'
+         SVC.VIN<2>='10000'
+         SVC.VIN<3>=CARRIER.SCAC
+         SVC.VIN<4>=CARRIER.TYPE
+         SVC.VIN<5>=ORIG.ZIP
+         SVC.VIN<6>=DEST.ZIP
+         SVC.VOUT=''
+
+         CALL RWS.SVC(SVC.VIN,SVC.VOUT,F.TABLES)
+
+         SVC.ERROR=SVC.VOUT<1>
+
+         W.ERROR=SVC.VOUT<1>
+         IF W.ERROR NE "" THEN SVC.DAYS.ERROR = W.ERROR
+         SVC.DAYS     = SVC.VOUT<2>
+         TRANSIT.TIME=SVC.VOUT<2>
+         ORIG.DIR.FLG=SVC.VOUT<3>
+         DEST.DIR.FLG=SVC.VOUT<4>
+         COMB.DIR.FLG=SVC.VOUT<5>
+
+         IF CARRIER.SCAC='CNWY' THEN
+            ORIG.DIR.FLG='D'
+            DEST.DIR.FLG='D'
+            COMB.DIR.FLG='D'
+         END
+
+         ID.JL.TAB = "JL*":CLIENT:"*":CARRIER.SCAC
+         READ JL.REC FROM F.TABLES, ID.JL.TAB ELSE JL.REC = ""
+*
+         LOCATE DEST.ZIP IN JL.REC SETTING DEST.POS THEN DEST.DIR.FLG = "D"
+*
+         LOCATE ORIG.ZIP IN JL.REC SETTING ORIG.POS THEN ORIG.DIR.FLG = "D"
+*
+         IF ORIG.DIR.FLG='D' AND DEST.DIR.FLG='D' THEN
+            COMB.DIR.FLG='D'
+         END
+*        IF COMB.DIR.FLG#'' AND COMB.DIR.FLG#'D' THEN        ; * JMK01
+         IF COMB.DIR.FLG#'D' THEN        ; * JMK01
+            JL.FLAG=1
+         END
+      END
+      IF CK.CS THEN
+         ORIG.DIR.FLG=''                 ; * JMK01
+         DEST.DIR.FLG=''                 ; * JMK01
+         COMB.DIR.FLG=''                 ; * JMK01
+         TRANSIT.TIME=''                 ; * JMK02
+         IF COMB.DIR.FLG='' THEN
+            JL.FLAG=0
+         END
+         OPEN '','CARRIER.SVC' TO F.CS THEN
+            CS.ID=CARRIER:'*':ORIG.ZIP
+            READ CS.REC FROM F.CS,CS.ID ELSE
+               CS.ID=CARRIER:'*':ORIG.ZIP[1,3]
+               READ CS.REC FROM F.CS,CS.ID ELSE
+                  CS.REC=''
+               END
+            END
+            IF CS.REC#'' THEN
+               DEST.FOUND=0
+               LOCATE DEST.ZIP IN CS.REC<1> SETTING DPOS THEN
+                  DEST.FOUND=1
+               END ELSE
+                  LOCATE DEST.ZIP[1,3] IN CS.REC<1> SETTING DPOS THEN
+                     DEST.FOUND=1
+                  END
+               END
+               IF DEST.FOUND THEN
+                  TRANSIT.TIME=CS.REC<3,DPOS>
+                  ORIG.DIR.FLG='D'
+                  DEST.DIR.FLG=CS.REC<2,DPOS>
+                  COMB.DIR.FLG=''
+                  IF DEST.DIR.FLG#'' THEN
+                     IF ORIG.DIR.FLG='D' AND DEST.DIR.FLG='D' THEN
+                        COMB.DIR.FLG='D'
+                     END ELSE
+                        COMB.DIR.FLG='I'
+                     END
+                  END
+                  NVAL=DCOUNT(CS.REC<13>,@VM)
+                  CARR.DATA.DATE=CS.REC<13,NVAL>
+*                 IF COMB.DIR.FLG#'' AND COMB.DIR.FLG#'D' THEN         ; * JMK01
+                  IF COMB.DIR.FLG#'D' THEN         ; * JMK01
+                     JL.FLAG=1
+                  END
+               END
+            END
+         END
+      END
+
+      RETURN

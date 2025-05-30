@@ -1,0 +1,398 @@
+*************************************************************************
+* Program : BATCH.FB.STATUS
+*           Import Carrier Service data from Non-SMC Carriers
+* Author  : JMK
+* Date    : October 2007
+*
+* Copyright (c) 2002 by AFS Logistics, LLC. - All Rights Reserved
+*************************************************************************
+* Format of CARRIER.SVC Text file            Format of CARRIER.SVC
+* Tab delimited with 6 possible fields       ITEM ID = CARRIER*CLIENT*ORIGIN ZIP (OR ALL)
+* ----------------------------------------------------------------------
+* (1) AFS Carrier #                          REC< 1> Dest ZipCode (3 or 5/6) multivalued
+* (2) Origin ZipCode (3 or 5/6)              REC< 2> Direct/Indirect (D/I) multivalued
+* (3) Dest ZipCode   (3 or 5/6)              REC< 3> Service Days multivalued
+* (4) Direct/Indirect (D/I)
+* (5) Service Days
+*************************************************************************
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+* Initialize general variables
+      PROMPT''
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='BPY'
+      PROG.DESC='Batch PY Data Build'
+      PACK.NAME='Payroll'
+      MASK.CHAR='-'
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'BPY' ; UPL.VOUT = ''  ; * NPR_UPL 04/22/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/22/2010
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+      CLIENT.ID=''
+      CARRIER.ID=''
+      USER.PWD=''
+      USER.TYPE='AFSPY'
+      USER.ID=''
+
+* Write screen header
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+
+** Restrict program usage
+*      VALID.USER=1
+*      BEGIN CASE
+*         CASE USER.NAME='OWEN'
+*         CASE USER.NAME='KAREN'
+*         CASE USER.NAME='MKERBOW'
+*         CASE USER.NAME='NPRATT'
+*         CASE 1
+*            VALID.USER=0
+*      END CASE
+*
+*      IF NOT(VALID.USER) THEN
+*         TEMP='**  This is a restricted access application  **'
+*         CALL CENTER(TEMP,80)
+*         CRT @(0,12):TEMP
+*         GOTO THE.END
+*      END
+
+* Open other files
+
+      OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+         OPEN '','VOC' TO F.VOC ELSE
+            CALL ELINE('Unable to open VOC file - Call IS Department.')
+            GOTO THE.END
+         END
+         READ BILLDATA.REC FROM F.VOC,'BILLDATA' ELSE
+            CALL ELINE('Unable to open VOC BILLDATA.')
+            GOTO THE.END
+         END
+         BILLDATA.REC<2>:='\':USER.NAME
+         WRITE BILLDATA.REC ON F.VOC,'BILLDATA.':USER.NAME ELSE
+            CALL ELINE('Your user name ':USER.NAME:' is not in the BILLDATA folder - Call IS Department.')
+            GOTO THE.END
+         END
+         OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+            CALL ELINE('Unable to open BILLDATA.':USER.NAME:'.')
+            GOTO THE.END
+         END
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL ELINE('Unable to open CARRIERS.')
+      END
+
+      CRT @(0,03):@(-3):
+      CRT @(0,05):'Instructions for use BEFORE Continuing:'
+*                  012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789
+      CRT @(0,06):'Step  1 Open the Finalized (Sales or Office) commission spreadsheet into Excel'
+      CRT @(0,07):"Step  2 Click [Save As] to open the Save As Window"
+      CRT @(0,08):"Step  3 In the top of the Save As Window, in the [Save in:] box,"
+      CRT @(0,09):"        Select the [billdata on 'afs' (U:)] drive icon"
+      CRT @(0,10):"        In the selection window, double click the ":USER.NAME:' Folder'
+      CRT @(0,11):"        Note: (You should now see '":USER.NAME:"' in the [Save in:] box)."
+      CRT @(0,12):"Step  4 Change the [File name:] to SALES-COMMISSION or OFFICE-COMMISSION"
+      CRT @(0,13):"Step  5 Change the [Save as type:] pull down to [Text (Tab delimited)(*.txt)]"
+      CRT @(0,14):"Step  6 Cick Save to save the file, Click OK again, then Click Yes"
+      CRT @(0,15):"        Note: Ignore 'Not Compatible' messages you receive and click OK, then YES"
+      CRT @(0,16):"Step  7 Execute this program to build the Payroll Files"
+      CRT @(0,17):"        Export files will be EPI2UC01.csv for Office and EPI2UCs0.csv for Sales"
+      CRT @(0,18):"Step  8 Transfer the files from the U:\":USER.NAME:" folder to the payroll folder."
+      CRT @(0,19):"        Open the file and verify the batch totals, then upload to ADP"
+100:  ***
+      LN='Enter [Y] to process your Payroll Spreadsheet into the Payroll company file: '
+      MASK='N-'
+      HELP='[Y]=Yes [N]=No [EX]=Exit'
+      CALL GEN.IN(0,22,LN:MASK,'',Q,0,2,'','',2,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX' OR QI='N' OR QI=''
+            GOTO THE.END
+         CASE QI='Y'
+            NULL
+         CASE 1
+            GOTO 100
+      END CASE
+      IF USER.NAME='MKERBOW' THEN DEBUG
+      IF USER.NAME='NPRATT' THEN DEBUG
+
+*************************************************************
+* Select the file(s) for processing from the BillData Drive *
+*************************************************************
+      STMT='SSELECT BILLDATA.':USER.NAME:' "SALES-COMMISSION.TXT""OFFICE-COMMISSION.TXT"'
+      EXECUTE STMT RTNLIST BILLDATA.LIST CAPTURING BILLDATA.RESULTS
+      NUM.ITEMS=@SELECTED
+      IF NUM.ITEMS < 1 THEN
+         CALL ELINE('No Files To Process.')
+         GOTO 100
+      END
+
+      BILLDATA.EOF=0
+      BILLDATA.CNT=0
+      LOOP
+         READNEXT BILLDATA.IN.ID FROM BILLDATA.LIST ELSE BILLDATA.EOF=1
+      UNTIL BILLDATA.EOF DO
+*****************************
+* Determine which file you have and setup the approprate paramaters
+*****************************
+         TYPE=OCONV(FIELD(BILLDATA.IN.ID,'-',1),'MCU')
+         BEGIN CASE
+            CASE TYPE='OFFICE'
+               BILLDATA.OUT.ID='EPI2UC01.csv'
+            CASE TYPE='SALES'
+               BILLDATA.OUT.ID='EPI2UCs0.csv'
+            CASE 1
+               CALL ELINE('Bad File type of ':TYPE:'.  Skipping')
+               GOTO NEXT.FILE
+         END CASE
+
+
+* Read in the existing Carrier Service text file
+         READ PY.IMPORT FROM F.BILLDATA,BILLDATA.IN.ID ELSE
+            CALL ELINE(BILLDATA.IN.ID:' does not exist.')
+            GOTO NEXT.FILE
+         END
+         PY.IMPORT=CHANGE(PY.IMPORT,CHAR(12),'')
+         PY.IMPORT=CHANGE(PY.IMPORT,TAB,@VM)
+         UP.PY.IMPORT=ICONV(PY.IMPORT,'MCU')
+         PY.EXPORT=''
+         PY.EXPORT<1,1>="co code"
+         PY.EXPORT<1,2>="batch id"
+         PY.EXPORT<1,3>="file #"
+         PY.EXPORT<1,4>="temp dept"
+         PY.EXPORT<1,5>="earnings 3 code"
+         PY.EXPORT<1,6>="earnings 3 amount"
+
+* Status lines
+         NATT=DCOUNT(PY.IMPORT,@AM)
+         CRT @(0,5):'Total items in import file ':BILLDATA.IN.ID:' = ':NATT:@(-3)
+         CRT @(0,7):'Total Items processed'
+         CRT @(0,8):'---------------------'
+
+* Set counters and gather data for processing
+         * Find Heading line to determine column positions
+         * Data should start on the 2nd line of the heading
+         HEADING.POS=INDEX(UP.PY.IMPORT,"TRUCKLOAD",1)
+         HEADING.ATT=COUNT(PY.IMPORT[1,HEADING.POS],@AM)+1
+         HEADING.LINE=PY.IMPORT<HEADING.ATT>
+
+         BEGIN CASE
+
+            CASE TYPE="SALES"
+               EARNINGS.CODE='10'
+               TL.COL =3                 ; * Truckload
+               FP.COL =4                 ; * Freight Payment
+               AU.COL =5                 ; * Audit
+               INT.COL =6                ; * International
+               LOG.COL =7                ; * Logistics
+               AF.COL =8                 ; * Air Freight
+               MET.COL =9                ; * Metroplex
+               MR.COL =10                ; * Managed Returns
+               UPS.COL =11               ; * UPS
+               STC.COL =12               ; * Scott Traffic Company
+               TTL.COL =13               ; * Totals of all of the above
+               MAX.VALS=13
+
+            CASE TYPE="OFFICE"
+               EARNINGS.CODE='C'
+               TL.COL =15                ; * Truckload
+               FP.COL =16                ; * Freight Payment
+               AU.COL =17                ; * Audit
+               INT.COL =18               ; * International
+               LOG.COL =19               ; * Logistics
+               AF.COL =20                ; * Air Freight
+               MET.COL = 0               ; * Metroplex NOTE: THIS VERSION IS MISSING METROPLEX
+               MR.COL =21                ; * Managed Returns
+               UPS.COL =22               ; * UPS
+               STC.COL =23               ; * Scott Traffic Company
+               UNI.COL =24               ; * Unitrans
+               TTL.COL =25               ; * Totals of all of the above
+               MAX.VALS=25
+
+         END CASE
+
+* Determine Column numbers for the Different Departments
+
+         ALREADY.THERE=0
+         ALREADY.THERE.BOTH.MATCH=0
+         ALREADY.THERE.AMOUNTS.MATCH=0
+         ALREADY.THERE.DATES.MATCH=0
+         ALREADY.THERE.NEITHER.MATCH=0
+
+         ALREADY.THERE.NULL=0
+         NOT.THERE=0
+
+         RESULTS.ARRAY=''
+         ERROR.ARRAY=''
+         PERC=0
+         PREV.CLIENT.NUMBER=''
+
+* Prepare the file for processing
+         NUM.PROS=DCOUNT(PY.IMPORT,@AM)
+         LINE.ERROR=0
+         NEW.LINE=''
+         NEW.LINE<1,1>='2UC'
+         NEW.LINE<1,2>='V10'
+         FOR ATT=HEADING.ATT+1 TO NATT
+            CRT @(0,9):ATT'R#21'
+            CALL PROG.BAR(11,ATT,NATT,PERC)
+            PY.LINE=PY.IMPORT<ATT>
+            FILE.NO=PY.LINE<1,1>
+            IF FILE.NO='' THEN
+               ERROR = 'Line ':ATT:' File # is blank. ENTIRE LINE SKIPPED!'
+               GOSUB ERROR.HANDLER
+               GO GET.NEXT.ATT
+            END
+            NEW.LINE<1,3>=FILE.NO
+
+*** Truckload
+            IF TL.COL#0 THEN
+               TL.AMT=TRIM(PY.LINE<1,TL.COL>)
+               IF TL.AMT+0 > 0 THEN
+                  NEW.LINE<1,4>='TL0000'
+                  NEW.LINE<1,5>=EARNINGS.CODE
+                  NEW.LINE<1,6>=TL.AMT
+                  PY.EXPORT<-1>=NEW.LINE
+               END
+            END
+
+*** Freight Payment
+            IF FP.COL#0 THEN
+               FP.AMT=TRIM(PY.LINE<1,FP.COL>)
+               IF FP.AMT+0 > 0 THEN
+                  NEW.LINE<1,4>='FP0000'
+                  NEW.LINE<1,5>=EARNINGS.CODE
+                  NEW.LINE<1,6>=FP.AMT
+                  PY.EXPORT<-1>=NEW.LINE
+               END
+            END
+
+*** Audit
+            IF AU.COL#0 THEN
+               AU.AMT=TRIM(PY.LINE<1,AU.COL>)
+               IF AU.AMT+0 > 0 THEN
+                  NEW.LINE<1,4>='AU0000'
+                  NEW.LINE<1,5>=EARNINGS.CODE
+                  NEW.LINE<1,6>=AU.AMT
+                  PY.EXPORT<-1>=NEW.LINE
+               END
+            END
+
+*** International
+            IF INT.COL#0 THEN
+               INT.AMT=TRIM(PY.LINE<1,INT.COL>)
+               IF INT.AMT+0 > 0 THEN
+                  NEW.LINE<1,4>='IN0000'
+                  NEW.LINE<1,5>=EARNINGS.CODE
+                  NEW.LINE<1,6>=INT.AMT
+                  PY.EXPORT<-1>=NEW.LINE
+               END
+            END
+
+*** Logistics
+            IF LOG.COL#0 THEN
+               LOG.AMT=TRIM(PY.LINE<1,LOG.COL>)
+               IF LOG.AMT+0 > 0 THEN
+                  NEW.LINE<1,4>='LG0000'
+                  NEW.LINE<1,5>=EARNINGS.CODE
+                  NEW.LINE<1,6>=LOG.AMT
+                  PY.EXPORT<-1>=NEW.LINE
+               END
+            END
+
+*** Air Freight
+            IF AF.COL#0 THEN
+               AF.AMT=TRIM(PY.LINE<1,AF.COL>)
+               IF AF.AMT+0 > 0 THEN
+                  NEW.LINE<1,4>='AF0000'
+                  NEW.LINE<1,5>=EARNINGS.CODE
+                  NEW.LINE<1,6>=AF.AMT
+                  PY.EXPORT<-1>=NEW.LINE
+               END
+            END
+
+*** Metroplex
+            IF MET.COL#0 THEN
+               MP.AMT=TRIM(PY.LINE<1,MET.COL>)
+               IF MP.AMT+0 > 0 THEN
+                  NEW.LINE<1,4>='MP0000'
+                  NEW.LINE<1,5>=EARNINGS.CODE
+                  NEW.LINE<1,6>=MP.AMT
+                  PY.EXPORT<-1>=NEW.LINE
+               END
+            END
+
+**** Managed Returns
+*             IF MR.COL#0 THEN
+*                MR.AMT=TRIM(PY.LINE<1,MR.COL>)
+*                IF MR.AMT+0 > 0 THEN
+*                  NEW.LINE<1,4>='MR0000'
+*                  NEW.LINE<1,5>=EARNINGS.CODE
+*                  NEW.LINE<1,6>=MR.AMT
+*                  PY.EXPORT<-1>=NEW.LINE
+*                END
+*              END
+
+*** UPS
+            IF UPS.COL#0 THEN
+               UPS.AMT=TRIM(PY.LINE<1,UPS.COL>)
+               IF UPS.AMT+0 > 0 THEN
+                  NEW.LINE<1,4>='UP0000'
+                  NEW.LINE<1,5>=EARNINGS.CODE
+                  NEW.LINE<1,6>=UPS.AMT
+                  PY.EXPORT<-1>=NEW.LINE
+               END
+            END
+
+*** STC
+            IF STC.COL#0 THEN
+               STC.AMT=TRIM(PY.LINE<1,STC.COL>)
+               IF STC.AMT+0 > 0 THEN
+                  NEW.LINE<1,4>='ST0000'
+                  NEW.LINE<1,5>=EARNINGS.CODE
+                  NEW.LINE<1,6>=STC.AMT
+                  PY.EXPORT<-1>=NEW.LINE
+               END
+            END
+
+*** UNI
+            IF UNI.COL#0 THEN
+               UNI.AMT=TRIM(PY.LINE<1,UNI.COL>)
+               IF UNI.AMT+0 > 0 THEN
+                  NEW.LINE<1,4>='UN0000'
+                  NEW.LINE<1,5>=EARNINGS.CODE
+                  NEW.LINE<1,6>=UNI.AMT
+                  PY.EXPORT<-1>=NEW.LINE
+               END
+            END
+
+GET.NEXT.ATT:****
+         NEXT ATT
+
+* Update files
+
+         PY.EXPORT=CHANGE(PY.EXPORT,@VM,",")
+         WRITE PY.EXPORT ON F.BILLDATA,BILLDATA.OUT.ID THEN
+            CALL ELINE('File ':BILLDATA.OUT.ID:' has been written on your U:\':USER.NAME:' Folder')
+         END ELSE
+            CALL ELINE('Could not write ':BILLDATA.OUT.ID:'. Call Help Desk about program "FBBP BPY".')
+         END
+*        DELETE F.BILLDATA,BILLDATA.IN.ID
+*        BILLDATA.IN.ID.DONE=BILLDATA.IN.ID:'-DONE'
+*        WRITE PY.IMPORT ON F.BILLDATA,BILLDATA.IN.ID.DONE
+         STOP
+NEXT.FILE:*
+      REPEAT
+
+*************************************************************************
+
+THE.END:***
+* End of program
+      CRT @(0,23):
+      STOP
+ERROR.HANDLER:***
+      ERROR.ARRAY<-1>=ERROR
+      LINE.ERROR=1
+      RETURN
+   END

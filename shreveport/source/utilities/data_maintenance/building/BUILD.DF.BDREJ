@@ -1,0 +1,943 @@
+***********************************************************************
+* PROGRAM: BUILD.DF.BDREJ
+* PROGRAM TO BUILD A DELIMITED FILE
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+*
+* FREIGHT BILLING/EDI PACKAGE
+*
+* AUTHOR       : David R. Friend
+* DATE CREATED : 08/06/97
+* DESCRIPTION  : This program is the front-end for building a delimited
+*                file for all the bills paid during the specified dates
+*                so data can be worked with under excel.  This program
+*                collects the input then calls BUILD.DF.SUB to actually
+*                create the tab-delimited file.
+***********************************************************************
+* MODIFIED     : 03/24/99 Tami Seago
+*              : 08/15/02 James Barberousse
+*              : 11/01/02 JMK01 - ADD LCC FOR FILTER
+*              : 01/21/03 JMK02 - ADD EMAIL OPTIONS FOR ALL CLIENTS
+*              : 11/13/03 JMK03 - ADD FILTERS TO SS FROM BCTRL
+*              : 11/25/03 JMK04 - ADJUST FILTERS FROM BCTRL
+*              : 11/26/03 JMK05 - FILTER ADJUSTMENTS FROM BCTRL
+*              : 01/30/04 JMK06 - ADJUST SUPER USER ACCESS
+*              : 02/05/04 JMK07 - ADD RERATE FOR DARLING 00850
+*              : 02/10/04 JMK08 - ADD TRB EMAIL OVERRIDE
+*              : 02/11/04 JMK09 - REMOVE COMM.ACCESS FROM SUPER.USER
+*              : 04/06/04 JMK10 - ADD ACCESS FOR DWIMBERLY
+*              : 06/17/04 JMK11 - ADD ACCESS FOR MWADE
+*              : 06/21/04 JMK12 - ADD ACCESS FOR MPACE
+*              : 03/26/09 JMK13 - ADD ACCESS FOR LRUSSELL
+*              : 08/18/09 NPR01 - Replace Sandra Long with Stacy Rittenbach wherever the former occurs
+*              : 10/13/09 JMK14 - Replace Lance Russell with Shane Oneal
+* 072312 - RLM01 - Sysaid #3073 - Replace former employees' email addresseswith current employees
+* 100114 - DRF01 - SysAid 12490 - Added SRICHARDSON
+* 012215 - DRF02 - SysAid 14856 Gave Ken access
+* 031615 - DRF03 - SysAid 15959 Gave April same access as Cynthia
+* 070115 - DRF04 - SysAid 18393 Gave Robbie Jester access
+* 032916 - GRB01 - SysAid 23614 Gave Robert Gonzalez access
+***********************************************************************
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+* Initialize variables
+
+      PROMPT''
+      CALL CHANNEL(CH.NUM)
+      CALL GET.USER(USER)
+      USER=OCONV(USER,'MCU')
+      RESTRICT.ACCESS=0
+
+      PROG.NAME='BUILD.DF.BDREJ'
+      PROG.DESC='Build File of Balance Due/Rejected Freight Bills by Client by Carrier'
+      PACK.NAME='Freight Billing'
+      TAB=CHAR(9)
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'BUILD.DF.BDREJ' ; UPL.VOUT = ''                    ;* NPR_UPL 04/22/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/22/2010
+      MASK.CHAR='-'
+      BACK.FLAG=0
+      PAGE.NUM=1 ; PROMPT.NUM=1
+
+      TYPE.OF.REPORT='STD'
+
+      CLIENT.ID='ALL' ; CLIENT.NAME='' ; DIVISION='N'        ; *  100
+      LOGISTICS.ONLY='NO' ; LOG.ONLY=0   ; *  200
+      SEPARATE.DIVISIONS='NO' ; SEP.DIVISIONS=0    ; *  300
+      DIVISIONAL.ID='ALL' ; CITY.STATE='' ; DIV.EMAIL.ADDR=''          ; *  400
+      CARRIER.ID='ALL' ; CARRIER.NAME=''           ; *  500
+      MODE='ALL' ; MODE.DESC=''          ; *  600
+      FILE.SEL='2' ; FILE.DESC='' ; AUTO=0         ; *  700
+      BEG.DATE=DATE()                    ; *  800
+      END.DATE=DATE() ; DAYS=0           ; *  900
+      RPT.TYPE='A'                       ; * 1000
+      VERSION='100'                      ; * 1100
+      SORT='1'                           ; * 1200
+
+* Open general files
+
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','FB.BUILD.SPEC' TO F.BUILD.SPEC ELSE
+         CALL OPEN.ABORT('FB.BUILD.SPEC',PROG.NAME)
+      END
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+         CALL OPEN.ABORT('FB.TRANSPORT',PROG.NAME)
+      END
+      OPEN '','FB.CUT.BACKS' TO F.CUT.BACKS ELSE
+         CALL OPEN.ABORT('FB.CUT.BACKS',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      READ LI.CODES FROM F.TABLES,'LI.CODES' ELSE
+         CALL ELINE('Cannot read LI.CODES from FB.TABLES.')
+         GOTO THE.END
+      END
+      READ AFS.SERV.LEV FROM F.TABLES,'AIR.SERVLEV*BASE' ELSE
+         CALL ELINE('Cannot read LI.CODES from FB.TABLES.')
+         GOTO THE.END
+      END
+      OPEN '','VOC' TO F.VOC ELSE
+         CALL ELINE('Unable to open VOC file - Call IS Department.')
+         GOTO THE.END
+      END
+      READ BILLDATA.REC FROM F.VOC,'BILLDATA' ELSE
+         CALL ELINE('Unable to open VOC BILLDATA - Call IS Department.')
+         GOTO THE.END
+      END
+      BILLDATA.REC<2>:='\':USER
+      WRITE BILLDATA.REC ON F.VOC,'BILLDATA.':USER ELSE
+         CALL ELINE('Your user name ':USER:' is not in the BILLDATA folder - Call IS Department.')
+         GOTO THE.END
+      END
+
+* Display heading
+
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+      GOSUB SET.DISPLAY.VARIABLE
+      IF RESTRICT.ACCESS THEN
+         BEGIN CASE
+               *
+               * Authorized Users
+               *
+            CASE USER = 'DEBBIE'
+            CASE USER = 'KAREN'
+            CASE USER = 'BRIAN'
+            CASE USER = 'BRIANP'
+            CASE USER = 'SMATTHEWS'
+            CASE USER = 'KRISTY'
+*            CASE USER = 'MPACE'
+            CASE USER = 'AMY'
+            CASE USER = 'CYNTHIA'
+*            CASE USER = 'CJEANSONNE'
+            CASE USER = 'MSMITH'
+            CASE USER = 'DAVID'
+            CASE USER = 'MYRA'
+            CASE USER = 'OWEN'
+            CASE USER = 'MARY'
+*            CASE USER = 'CHAD'
+            CASE USER = 'KATHY'
+            CASE USER = 'SCOTT'
+            CASE USER = 'WPARDUE'
+            CASE USER = 'WAYNE'
+            CASE USER = 'JENNIFER'
+            CASE USER = 'KWINDERWEEDLE'
+            CASE USER = 'JMCCULLINAUDIT'
+            CASE USER = 'RGONZALEZ'       ;* GRB01
+            CASE USER = 'AHICKS'
+*            CASE USER = 'MJENKINS'
+*            CASE USER = 'MPACE'          ; * JMK12
+            CASE USER = 'DONNA'
+*            CASE USER = 'EBROUSSARD'
+*            CASE USER = 'KMESSENGER'
+*            CASE USER = 'MDODSON'
+*            CASE USER = 'WCARTOLANO'
+*           CASE USER = 'KATHYJ'; * JMK13
+*           CASE USER = 'LRUSSELL'       ; * JMK13 ; * JMK14
+            CASE USER = 'SONEAL'         ; * JMK13 ; * JMK14
+*            CASE USER = 'AWEEKS'
+*            CASE USER = 'TIA'
+*            CASE USER = 'ABULLOCK'
+*            CASE USER = 'JJOHNSON'
+            CASE USER = 'MKERBOW'
+*            CASE USER = 'MRICE'
+*DF            CASE USER = 'BSMITH'
+            CASE USER = 'PFORTE'
+            CASE USER = 'SSMITH'
+*            CASE USER = 'MRICE'
+*            CASE USER = 'GMENTEL'
+*            CASE USER = 'DWIMBERLY'      ; * JMK10
+*            CASE USER = 'MWADE'          ; * JMK11
+*NPR01            CASE USER = 'SANDRA'         ; * JMK11
+            CASE USER = 'SRITTENBACH'     ;* NPR01
+            CASE USER = 'CBEASLEY'
+            CASE USER = 'CGOSS'
+*            CASE USER = 'RCASON'
+*            CASE USER = 'KCHAUVIN'
+*            CASE USER = 'RKEYES'
+            CASE USER = 'BJEPPSON'
+            CASE USER = 'SRICHARDSON'
+            CASE USER = 'KHOSKINS'     ; * DRF02
+            CASE USER = 'ARSEXTONAUDIT'     ; * DRF03
+            CASE USER = 'RJESTER'     ; * DRF04
+               *
+               * Restrict the other
+               *
+            CASE 1
+               CALL FB.PRINT.CENT(1,80,12,'Restricted Access Application')
+               CALL FB.PRINT.CENT(1,80,14,'Access Denied! See Owen for Access')
+               CALL ELINE('')
+               SUBJ='User ':USER:' tried to access BUILD.DF.BDREJ'
+               TEXT=USER:' tried to access BUILD.DF.BDREJ'
+               GOSUB ACCESS.NOTIFY       ; * JMK05
+               STOP
+         END CASE
+      END
+* Enter client ID
+
+100:***
+      PAGE.NUM=1
+      PROMPT.NUM=1
+      BACK.FLAG=0
+      DISPLAY<PROMPT.NUM>=1
+      GOSUB DISPLAY.SCREEN
+      MASK=CLIENT.ID:STR(MASK.CHAR,5-LEN(CLIENT.ID))
+      HELP='Enter client number or name for search. [ALL] [X]=Exit [EX]it'
+      CALL GEN.IN(29,3,MASK,'',Q,0,20,'','',2,29,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=CLIENT.ID
+      BEGIN CASE
+         CASE QI='EX' OR QI='EXI' OR QI='EXIT'
+            GOTO THE.END
+         CASE QI='X'
+            BACK.FLAG=1
+            DISPLAY<PROMPT.NUM>=0
+            GOSUB DISPLAY.SCREEN
+            GOTO THE.END
+         CASE QI='ALL'
+         CASE NOT(QI MATCHES '0N')
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+            END CASE
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            GOTO 100
+         CASE NUM(QI)
+            QI=QI'R%5'
+         CASE 1
+            GOTO 100
+      END CASE
+      CLIENT.ID=QI
+      IF CLIENT.ID#'ALL' THEN
+         READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+            CALL ELINE('ERROR: Client ':CLIENT.ID:' not on file.')
+            GOTO 100
+         END
+         CLIENT.NAME=CLIENT.REC<2>
+         SVC.SLS=CLIENT.REC<115>         ; * JMK03
+      END ELSE
+         CLIENT.NAME=''
+      END
+      GOSUB DISPLAY.SCREEN
+
+      IF CLIENT.ID#'ALL' THEN
+         OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.HIST ELSE
+            CALL OPEN.ABORT('FB.BILLS.HIST,':CLIENT.ID,PROG.NAME)
+         END
+         DIVISION=CLIENT.REC<12>
+         IF DIVISION='Y' THEN
+            OPEN '','DIVISION.CODES,':CLIENT.ID TO F.DIVISION ELSE
+               CALL OPEN.ABORT('DIVISION.CODES,':CLIENT.ID,PROG.NAME)
+            END
+            LOGISTICS.ONLY='NO'
+            GOTO 300
+         END ELSE
+            LOGISTICS.ONLY='NO'
+            SEPARATE.DIVISIONS='NO'
+            DIVISIONAL.ID=''
+            CITY.STATE=''
+            DIV.EMAIL.ADDR=''
+            GOTO 500
+         END
+      END
+
+* Include bills from logistics clients (Y/N)?
+
+200:***
+      PAGE.NUM=1
+      PROMPT.NUM=2
+      IF BACK.FLAG AND NOT(DISPLAY<PROMPT.NUM>) THEN GOTO 100
+      BACK.FLAG=0
+      DISPLAY<PROMPT.NUM>=1
+      GOSUB DISPLAY.SCREEN
+      MASK=LOGISTICS.ONLY:STR(MASK.CHAR,4-LEN(LOGISTICS.ONLY))
+      HELP='Only include bills from logistics clients? [Y]es [N]o [X]=Back [EX]it'
+      CALL GEN.IN(29,4,MASK,'',Q,0,4,'','',2,29,4,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=LOGISTICS.ONLY
+      BEGIN CASE
+         CASE QI='EX' OR QI='EXI' OR QI='EXIT'
+            GOTO THE.END
+         CASE QI='X'
+            BACK.FLAG=1
+            DISPLAY<PROMPT.NUM>=0
+            GOTO 100
+         CASE QI='N' OR QI='NO' OR QI='0'
+            QI='NO'
+         CASE QI='Y' OR QI='YE' OR QI='YES' OR QI='1'
+            QI='YES'
+         CASE 1
+            GOTO 200
+      END CASE
+      LOGISTICS.ONLY=QI
+      GOSUB DISPLAY.SCREEN
+      IF CLIENT.ID='ALL' THEN
+         SEPARATE.DIVISIONS='NO'
+         DIVISIONAL.ID=''
+         CITY.STATE=''
+         DIV.EMAIL.ADDR=''
+         GOTO 500
+      END
+
+* Do separate divisional reports (Y/N)?
+
+300:***
+      PAGE.NUM=1
+      PROMPT.NUM=3
+      IF BACK.FLAG AND NOT(DISPLAY<PROMPT.NUM>) THEN GOTO 200
+      BACK.FLAG=0
+      DISPLAY<PROMPT.NUM>=1
+      GOSUB DISPLAY.SCREEN
+      MASK=SEPARATE.DIVISIONS:STR(MASK.CHAR,4-LEN(SEPARATE.DIVISIONS))
+      HELP='Build a separate report for each division? [Y]es [N]o [X]=Back [EX]it'
+      CALL GEN.IN(29,5,MASK,'',Q,0,4,'','',2,29,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=SEPARATE.DIVISIONS
+      BEGIN CASE
+         CASE QI='EX' OR QI='EXI' OR QI='EXIT'
+            GOTO THE.END
+         CASE QI='X'
+            BACK.FLAG=1
+            DISPLAY<PROMPT.NUM>=0
+            GOTO 200
+         CASE QI='N' OR QI='NO' OR QI='0'
+            QI='NO'
+         CASE QI='Y' OR QI='YE' OR QI='YES' OR QI='1'
+            QI='YES'
+         CASE 1
+            GOTO 300
+      END CASE
+      SEPARATE.DIVISIONS=QI
+      GOSUB DISPLAY.SCREEN
+      IF SEPARATE.DIVISIONS='NO' THEN
+         DIVISIONAL.ID='ALL'
+         CITY.STATE=''
+         DIV.EMAIL.ADDR=''
+         GOTO 500
+      END
+
+* Enter divisional ID
+
+400:***
+      PAGE.NUM=1
+      PROMPT.NUM=4
+      IF BACK.FLAG AND NOT(DISPLAY<PROMPT.NUM>) THEN GOTO 300
+      BACK.FLAG=0
+      DISPLAY<PROMPT.NUM>=1
+      GOSUB DISPLAY.SCREEN
+      MASK=DIVISIONAL.ID:STR(MASK.CHAR,5-LEN(DIVISIONAL.ID))
+      HELP='Enter division number. [ALL] [L]ist [X]=Back [EX]it'
+      CALL GEN.IN(29,6,MASK,'',Q,0,5,'','',2,29,6,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=DIVISIONAL.ID
+      BEGIN CASE
+         CASE QI='EX' OR QI='EXI' OR QI='EXIT'
+            GOTO THE.END
+         CASE QI='X'
+            BACK.FLAG=1
+            DISPLAY<PROMPT.NUM>=0
+            GOTO 300
+         CASE QI='L'
+            EXECUTE 'SORT DIVISION.CODES,':CLIENT.ID:' CITY.STATE HEADING "List of all Division Codes for ':CLIENT.ID:' - ':CLIENT.NAME:"'CL'":'"'
+            CALL ELINE('')
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            GOSUB DISPLAY.SCREEN
+            GOTO 400
+         CASE QI='ALL'
+         CASE NUM(QI)
+            QI=QI'R%5'
+         CASE 1
+            GOTO 400
+      END CASE
+      DIVISIONAL.ID=QI
+      CITY.STATE=''
+      IF DIVISION='Y' AND DIVISIONAL.ID#'ALL' THEN
+         READ DDIV FROM F.DIVISION,DIVISIONAL.ID THEN
+            ZIP.VAR=DDIV<1>
+            CALL FB.READ.ZIP(ZIP.VAR,CITY,STATE)
+            CITY.STATE=CITY:', ':STATE
+            DIV.EMAIL.ADDR=DDIV<9>
+         END ELSE
+            CALL ELINE('Division ':DIVISIONAL.ID:' has not been set up.')
+            GOTO 400
+         END
+      END
+      GOSUB DISPLAY.SCREEN
+
+* Enter carrier ID
+
+500:***
+      PAGE.NUM=1
+      PROMPT.NUM=5
+      IF BACK.FLAG AND NOT(DISPLAY<PROMPT.NUM>) THEN GOTO 400
+      BACK.FLAG=0
+      DISPLAY<PROMPT.NUM>=1
+      GOSUB DISPLAY.SCREEN
+      MASK=CARRIER.ID:STR(MASK.CHAR,5-LEN(CARRIER.ID))
+      HELP='Enter carrier number or name for search. [ALL] [X]=Back [EX]it'
+      CALL GEN.IN(29,7,MASK,'',Q,0,20,'','',2,29,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=CARRIER.ID
+      BEGIN CASE
+         CASE QI='EX' OR QI='EXI' OR QI='EXIT'
+            GOTO THE.END
+         CASE QI='X'
+            BACK.FLAG=1
+            DISPLAY<PROMPT.NUM>=0
+            GOTO 400
+         CASE QI='ALL'
+         CASE NOT(QI MATCHES '0N')
+            CALL SOUNDEX.DISPLAY(QI,'CARRIERS','SDX.CARRIER,NAME',1,ITEM.LIST)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+            END CASE
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            GOSUB DISPLAY.SCREEN
+            GOTO 500
+         CASE NUM(QI)
+            QI=QI'R%5'
+         CASE 1
+            GOTO 500
+      END CASE
+      CARRIER.ID=QI
+      IF CARRIER.ID#'ALL' THEN
+         READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE
+            CALL ELINE('ERROR: Carrier ':CARRIER.ID:' not on file.')
+            GOTO 500
+         END
+         CARRIER.NAME=CARRIER.REC<1>
+      END ELSE
+         CARRIER.NAME=''
+      END
+      GOSUB DISPLAY.SCREEN
+
+      IF CARRIER.ID#'ALL' THEN
+         MODE=''
+         MODE.DESC=''
+         GOTO 700
+      END
+
+* Enter transportation mode
+
+600:***
+      PAGE.NUM=1
+      PROMPT.NUM=6
+      IF BACK.FLAG AND NOT(DISPLAY<PROMPT.NUM>) THEN GOTO 500
+      BACK.FLAG=0
+      DISPLAY<PROMPT.NUM>=1
+      GOSUB DISPLAY.SCREEN
+      MASK=MODE:STR(MASK.CHAR,4-LEN(MODE))
+      HELP='Enter transportation mode. [ALL] [L]ist [X]=Back [EX]it'
+      CALL GEN.IN(29,8,MASK,'',Q,0,4,'','',2,29,8,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=MODE
+      BEGIN CASE
+         CASE QI='EX' OR QI='EXI' OR QI='EXIT'
+            GOTO THE.END
+         CASE QI='X'
+            BACK.FLAG=1
+            DISPLAY<PROMPT.NUM>=0
+            GOTO 500
+         CASE QI='L'
+            EXECUTE 'SORT FB.TRANSPORT BY MODE MODE 1 (I'
+            CALL ELINE('')
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            GOSUB DISPLAY.SCREEN
+            GOTO 600
+         CASE QI='ALL'
+         CASE NUM(QI)
+         CASE 1
+            GOTO 600
+      END CASE
+      MODE=QI
+      IF MODE#'ALL' THEN
+         READ TRANS.REC FROM F.TRANSPORT,MODE ELSE
+            CALL ELINE('ERROR: Transportation Code ':MODE:' not on file.')
+            GOTO 600
+         END
+         MODE.DESC=TRANS.REC<1>
+      END ELSE
+         MODE.DESC=''
+      END
+      GOSUB DISPLAY.SCREEN
+
+      IF CLIENT.ID='ALL' THEN
+         FILE.SEL=''
+         FILE.DESC=''
+         AUTO=0
+         GOTO 800
+      END
+
+* Enter file selection
+
+700:***
+      PAGE.NUM=1
+      PROMPT.NUM=7
+      IF BACK.FLAG AND NOT(DISPLAY<PROMPT.NUM>) THEN GOTO 600
+      BACK.FLAG=0
+      DISPLAY<PROMPT.NUM>=1
+      GOSUB DISPLAY.SCREEN
+      MASK=FILE.SEL:STR(MASK.CHAR,4-LEN(FILE.SEL))
+      IF CLIENT.ID='00574' THEN
+         HELP='[1]=Current [2]=History [3]=Last Processed [4]=Accrual [X]=Back [EX]it'
+      END ELSE
+         HELP='[1]=Current [2]=History [3]=Last Processed [X]=Back [EX]it'
+      END
+      CALL GEN.IN(29,9,MASK,'',Q,0,4,'','',0,29,9,0,QI,HELP,0,23)
+      IF QI='' THEN QI=FILE.SEL
+      QI=OCONV(QI,'MCU')
+      AUTO=0
+      BEGIN CASE
+         CASE QI='EX' OR QI='EXI' OR QI='EXIT'
+            GOTO THE.END
+         CASE QI='X'
+            BACK.FLAG=1
+            DISPLAY<PROMPT.NUM>=0
+            GOTO 600
+         CASE QI=1
+            FILE='FB.BILLS,':CLIENT.ID
+            FILE.DESC='Current'
+         CASE QI=2
+            FILE='FB.BILLS.HIST,':CLIENT.ID
+            FILE.DESC='History'
+         CASE QI=3
+            OPEN '','FB.UNPROCESS,':CLIENT.ID TO F.UP ELSE
+               CALL ELINE('Cannot open FB.UNPROCESS,':CLIENT.ID:'. "Last" option not available.')
+               GOTO 700
+            END
+            READ DDATES FROM F.UP,'PROCESS.DATES' ELSE
+               CALL ELINE('FB.UNPROCESS,':CLIENT.ID:' PROCESS.DATES not on file.  "Last" option not available.')
+               GOTO 700
+            END
+            FILE='FB.BILLS.HIST,':CLIENT.ID
+            FILE.DESC='Last Processed'
+            BEG.DATE=DDATES<1>
+            END.DATE=DDATES<2>
+            DAYS=END.DATE-BEG.DATE+1
+            AUTO=1
+         CASE QI=4 AND CLIENT.ID='00574'
+            FILE='FB.BILLS.HIST,':CLIENT.ID
+            FILE.DESC='Accrual'
+         CASE 1
+            GOTO 700
+      END CASE
+      IF CLIENT.ID#'ALL' THEN
+         OPEN FILE TO FB.BILLS ELSE CALL OPEN.ABORT(FILE,PROG.NAME)
+      END
+      FILE.SEL=QI
+
+      IF AUTO THEN
+         DISPLAY<PROMPT.NUM+1>=1
+         DISPLAY<PROMPT.NUM+2>=1
+         GOSUB DISPLAY.SCREEN
+         GOTO 1000
+      END ELSE
+         GOSUB DISPLAY.SCREEN
+      END
+
+* Enter beginning date
+
+800:***
+      PAGE.NUM=1
+      PROMPT.NUM=8
+      IF BACK.FLAG AND NOT(DISPLAY<PROMPT.NUM>) THEN GOTO 700
+      BACK.FLAG=0
+      DISPLAY<PROMPT.NUM>=1
+      GOSUB DISPLAY.SCREEN
+      MASK=BEG.DATE'D4-'
+      HELP='Enter beginning date. [T]oday [X]=Back [EX]it'
+      CALL GEN.IN(29,10,MASK,'',Q,0,10,'','',2,29,10,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=BEG.DATE'D4-'
+      BEGIN CASE
+         CASE QI='EX' OR QI='EXI' OR QI='EXIT'
+            GOTO THE.END
+         CASE QI='X'
+            BACK.FLAG=1
+            DISPLAY<PROMPT.NUM>=0
+            GOTO 700
+         CASE QI='T'
+            QI=DATE()'D4-'
+         CASE QI MATCHES '0N'
+            BEGIN CASE
+               CASE LEN(QI)=4
+                  QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,4]
+               CASE LEN(QI)=6
+                  IF QI[5,2]<50 THEN
+                     QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,2]:QI[5,2]
+                  END ELSE
+                     QI=QI[1,2]:'.':QI[3,2]:'.':'19':QI[5,2]           ; * ((DATE()-365)'D4/')[7,2]:QI[5,2]
+                  END
+               CASE LEN(QI)=8
+                  QI=QI[1,2]:'.':QI[3,2]:'.':QI[5,4]
+               CASE 1
+                  CALL ELINE('Use one of the following formats: MMDD or MMDDYY or MMDDYYYY.')
+                  GOTO 800
+            END CASE
+      END CASE
+      BEG.DATE=ICONV(QI,'D')
+      IF BEG.DATE='' THEN
+         CALL ELINE('Invalid date.')
+         GOTO 800
+      END
+      GOSUB DISPLAY.SCREEN
+
+* Enter ending date
+
+900:***
+      PAGE.NUM=1
+      PROMPT.NUM=9
+      IF BACK.FLAG AND NOT(DISPLAY<PROMPT.NUM>) THEN GOTO 800
+      BACK.FLAG=0
+      DISPLAY<PROMPT.NUM>=1
+      GOSUB DISPLAY.SCREEN
+      MASK=END.DATE'D4-'
+      HELP='Enter ending date. [T]oday [X]=Back [EX]it'
+      CALL GEN.IN(29,11,MASK,'',Q,0,10,'','',2,29,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=END.DATE'D4'
+      BEGIN CASE
+         CASE QI='EX' OR QI='EXI' OR QI='EXIT'
+            GOTO THE.END
+         CASE QI='X'
+            BACK.FLAG=1
+            DISPLAY<PROMPT.NUM>=0
+            GOTO 800
+         CASE QI='T'
+            QI=DATE()'D4-'
+         CASE QI MATCHES '0N'
+            BEGIN CASE
+               CASE LEN(QI)=4
+                  QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,4]
+               CASE LEN(QI)=6
+                  IF QI[5,2]<50 THEN
+                     QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4/')[7,2]:QI[5,2]
+                  END ELSE
+                     QI=QI[1,2]:'.':QI[3,2]:'.':'19':QI[5,2]           ; * ((DATE()-365)'D4/')[7,2]:QI[5,2]
+                  END
+               CASE LEN(QI)=8
+                  QI=QI[1,2]:'.':QI[3,2]:'.':QI[5,4]
+               CASE 1
+                  CALL ELINE('Use one of the following formats: MMDD or MMDDYY or MMDDYYYY.')
+                  GOTO 900
+            END CASE
+      END CASE
+      END.DATE=ICONV(QI,'D')
+      IF END.DATE='' THEN
+         CALL ELINE('Invalid date.')
+         GOTO 900
+      END
+      IF BEG.DATE GT END.DATE THEN
+         CALL ELINE('Beginning date cannot exceed ending date.')
+         GOTO 900
+      END
+      GOSUB DISPLAY.SCREEN
+      DAYS=END.DATE-BEG.DATE+1
+
+* Which report type to produce Rejects, Balance Dues or Both
+
+1000:***
+      PAGE.NUM=1
+      PROMPT.NUM=10
+      IF BACK.FLAG AND NOT(DISPLAY<PROMPT.NUM>) THEN GOTO 900
+      BACK.FLAG=0
+      DISPLAY<PROMPT.NUM>=1
+      GOSUB DISPLAY.SCREEN
+      MASK=RPT.TYPE:STR(MASK.CHAR,4-LEN(RPT.TYPE))
+      HELP='Only include [B]alance Dues, [R]ejects or [A]ll (Both)[X]=Back [EX]it'
+      CALL GEN.IN(29,12,MASK,'',Q,0,4,'','',2,29,12,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=RPT.TYPE
+      BEGIN CASE
+         CASE QI='EX' OR QI='EXI' OR QI='EXIT'
+            GOTO THE.END
+         CASE QI='X'
+            BACK.FLAG=1
+            DISPLAY<PROMPT.NUM>=0
+            GOTO 100
+         CASE QI='B'
+         CASE QI='R'
+         CASE QI='A'
+         CASE 1
+            GOTO 1000
+      END CASE
+      RPT.TYPE=QI
+      GOSUB DISPLAY.SCREEN
+
+* Enter version number
+
+1100:***
+      PAGE.NUM=1
+      PROMPT.NUM=11
+      IF BACK.FLAG AND NOT(DISPLAY<PROMPT.NUM>) THEN GOTO 1000
+      BACK.FLAG=0
+      DISPLAY<PROMPT.NUM>=1
+      GOSUB DISPLAY.SCREEN
+      MASK=VERSION:STR(MASK.CHAR,4-LEN(VERSION))
+      HELP='Enter version number. [L]ist [X]=Back [EX]it'
+      CALL GEN.IN(29,13,MASK,'',Q,0,4,'','',0,29,13,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=VERSION
+      BEGIN CASE
+         CASE QI='EX' OR QI='EXI' OR QI='EXIT'
+            GOTO THE.END
+         CASE QI='X'
+            BACK.FLAG=1
+            DISPLAY<PROMPT.NUM>=0
+            GOTO 1000
+         CASE QI='L'
+            STMT='SORT FB.BUILD.SPEC BY FMT BY CLIENT.ID FMT CLIENT.ID 1 (I'
+            EXECUTE STMT
+            CALL ELINE('')
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,2):STR('=',79)
+            GOSUB DISPLAY.SCREEN
+            GOTO 1100
+         CASE QI=''
+            GOTO 1100
+         CASE 1
+            IF CLIENT.ID[1,2]='99' AND QI#8 AND QI#733 AND QI#734 THEN
+               BEGIN CASE
+                  CASE USER='BRIAN'
+                  CASE USER='OWEN'
+                  CASE USER='CHRIS'
+                  CASE USER='DONNA'
+*DF                  CASE USER='BSMITH'
+                  CASE USER='CHAD'
+                  CASE USER='SCOTT'
+                  CASE USER='KRISTY'
+                  CASE USER='MPACE'
+                  CASE USER='BRIANP'
+                  CASE USER = 'RJESTER'     ; * DRF04
+                  CASE 1
+                     CALL ELINE('Must use version 8, 733, or 734 for client ':CLIENT.ID:'.')
+                     GOTO 1100
+               END CASE
+            END
+            ID='FMT*':CLIENT.ID:'*':QI
+            READ DSPECS FROM F.BUILD.SPEC,ID ELSE
+               ID='FMT**':QI
+               READ DSPECS FROM F.BUILD.SPEC,ID ELSE
+                  CALL ELINE('Version ':QI:' has not been setup.')
+                  GOTO 1100
+               END
+            END
+      END CASE
+      VERSION=QI
+      GOSUB DISPLAY.SCREEN
+
+* Enter sort criteria
+
+1200:***
+      PAGE.NUM=1
+      PROMPT.NUM=12
+      IF BACK.FLAG AND NOT(DISPLAY<PROMPT.NUM>) THEN GOTO 1100
+      BACK.FLAG=0
+      DISPLAY<PROMPT.NUM>=1
+      GOSUB DISPLAY.SCREEN
+      IF CLIENT.ID#'ALL' THEN SORT=CLIENT.REC<135>
+      MASK=SORT:STR(MASK.CHAR,4-LEN(SORT))
+      HELP='Enter sort version number. [X]=Back [EX]it'
+      CALL GEN.IN(29,14,MASK,'',Q,0,4,'','',0,29,14,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=SORT
+      BEGIN CASE
+         CASE QI='EX' OR QI='EXI' OR QI='EXIT'
+            GOTO THE.END
+         CASE QI='X'
+            BACK.FLAG=1
+            DISPLAY<PROMPT.NUM>=0
+            GOTO 1100
+         CASE QI=''
+            GOTO 1200
+         CASE 1
+            ID='DF.SORT*':QI
+            READ D.SORT FROM F.TABLES,ID ELSE
+               CALL ELINE('Sort Version ':QI:' has not been setup.')
+               GOTO 1200
+            END
+      END CASE
+      SORT=QI
+      GOSUB DISPLAY.SCREEN
+
+* Verify selection criteria is correct
+
+VERIFY.SELECTION:***
+      HELP='ENTER to continue. [X]=Back [EX]it'
+      CALL GEN.IN(0,22,'Enter Selection : ----','',Q,0,4,'','',0,-4,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX' OR QI='EXI' OR QI='EXIT'
+            GOTO THE.END
+         CASE QI='X'
+            BACK.FLAG=1
+            CRT @(0,22):@(-3)
+            GOTO 1200
+         CASE QI=''
+         CASE 1
+            GOTO VERIFY.SELECTION
+      END CASE
+
+START.BUILD:***
+*DFDEBUG
+      IF VERSION='111' THEN
+         READ BILLDATA.REC FROM F.VOC,'BILLDATA' ELSE
+            CALL ELINE('Unable to open VOC BILLDATA.')
+            GOTO THE.END
+         END
+         USER='cognas'
+         BILLDATA.REC<2>:='\':USER
+         WRITE BILLDATA.REC ON F.VOC,'BILLDATA.':USER ELSE
+            CALL ELINE('Your user name ':USER:' is not in the BILLDATA folder - Call IS Department.')
+            GOTO THE.END
+         END
+         OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE
+            CALL ELINE('Unable to open BILLDATA.':USER:'.')
+            GOTO THE.END
+         END
+      END ELSE
+         READ BILLDATA.REC FROM F.VOC,'BILLDATA' ELSE
+            CALL ELINE('Unable to open VOC BILLDATA.')
+            GOTO THE.END
+         END
+         BILLDATA.REC<2>:='\':USER
+         WRITE BILLDATA.REC ON F.VOC,'BILLDATA.':USER ELSE
+            CALL ELINE('Your user name ':USER:' is not in the BILLDATA folder - Call IS Department.')
+            GOTO THE.END
+         END
+         OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE
+            CALL ELINE('Unable to open BILLDATA.':USER:'.')
+            GOTO THE.END
+         END
+
+      END
+
+* Set up for call to BUILD.DF.SUB
+
+      VIN=''
+      VIN<1>=CLIENT.ID
+      VIN<2>=LOG.ONLY
+      VIN<3>=CARRIER.ID
+      VIN<4>=MODE
+      VIN<5>=FILE.SEL
+      VIN<6>=BEG.DATE
+      VIN<7>=END.DATE
+      VIN<8>=RPT.TYPE
+      VIN<9>=VERSION
+      VIN<10>=SORT
+      VIN<13>=USER
+      VOUT=''
+      CALL BUILD.DF.SUB.BDREJ(F.CLIENTS,F.CARRIERS,F.TRANSPORT,F.TABLES,F.BILLDATA,VIN,VOUT)
+      SSNAME=VOUT<1>                     ; * JMK07
+
+      GOTO THE.END
+
+********************************************************************************
+
+DISPLAY.SCREEN:***
+      CRT @(0,3):@(-3)
+      BEGIN CASE
+         CASE PAGE.NUM=1
+            IF DISPLAY<1> THEN
+               CRT @( 0, 3):'Client Number              : ':CLIENT.ID:STR(' ',6-LEN(CLIENT.ID)):CLIENT.NAME
+            END
+            IF DISPLAY<2> THEN
+               CRT @( 0, 4):'Logistics Clients Only     : ':LOGISTICS.ONLY
+            END
+            IF DISPLAY<3> THEN
+               CRT @( 0, 5):'Build Separate Report      : ':SEPARATE.DIVISIONS
+            END
+            IF DISPLAY<4> THEN
+               CRT @( 0, 6):'Division                   : ':DIVISIONAL.ID:STR(' ',6-LEN(DIVISIONAL.ID)):CITY.STATE
+            END
+            IF DISPLAY<5> THEN
+               CRT @( 0, 7):'Carrier Number             : ':CARRIER.ID:STR(' ',6-LEN(CARRIER.ID)):CARRIER.NAME
+            END
+            IF DISPLAY<6> THEN
+               CRT @( 0, 8):'Transportation Mode        : ':MODE:STR(' ',6-LEN(MODE)):MODE.DESC
+            END
+            IF DISPLAY<7> THEN
+               CRT @( 0, 9):'File Selection             : ':FILE.SEL:STR(' ',6-LEN(FILE.SEL)):FILE.DESC
+            END
+            IF DISPLAY<8> THEN
+               CRT @( 0,10):'Beginning Date             : ':BEG.DATE'D4-'
+            END
+            IF DISPLAY<9> THEN
+               CRT @( 0,11):'Ending Date                : ':END.DATE'D4-'
+            END
+            IF DISPLAY<10> THEN
+               CRT @( 0,12):'[R]ejects, [B]al Due, [A]ll: ':RPT.TYPE
+            END
+            IF DISPLAY<11> THEN
+               CRT @( 0,13):'Version Specs              : ':VERSION
+            END
+            IF DISPLAY<12> THEN
+               CRT @( 0,14):'Sort Specs                 : ':SORT
+            END
+      END CASE
+      RETURN
+
+********************************************************************************
+
+SET.DISPLAY.VARIABLE:***
+      NUM.PROMPTS=21
+      DISPLAY=''
+      FOR X=1 TO NUM.PROMPTS
+         DISPLAY<X>=0
+      NEXT X
+      RETURN
+
+********************************************************************************
+
+ACCESS.NOTIFY:***
+      MVIN=''                            ; * JMK03
+*     MVIN<1>='OHolman@afs.net'          ; * JMK03
+      MVIN<1>='BFranklin@afs.net'        ; * JMK03  ; * RLM01
+*     MVIN<1,-1>='KGilbert@afs.net'      ; * RLM01
+      MVIN<1,-1>='BRose@afs.net'         ; * RLM01
+      MVIN<2>='DFriend@afs.net'
+      MVIN<4>='AFS'                      ; * JMK03
+      MVIN<5>=SUBJ                       ; * JMK03
+      MVIN<6>=TEXT                       ; * JMK03
+      CALL SENDMAIL(MVIN,MVOUT)          ; * JMK03
+      RETURN
+THE.END:***
+      CRT @(0,23):@(-4):
+      STOP
+   END

@@ -1,0 +1,359 @@
+      *****     SUBROUTINE SEND.IMAGE.ID(VIN,VOUT,F.TABLES,STATUS)
+*****************************************************************************
+* Program name : SEND.IMAGE.ID
+* Author       : Greg Bino
+* Date written : 11-29-2018
+* Library      : FBBP
+* COPYRIGHT (C) 1998 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* SEND CLIENT TO OCR WEBSERVICE INTERFACE
+*
+* Last updated by AFS (gbino) at 07:57:18 on 11/28/2018.
+*
+* Start modification history
+* Mod 00 11-28-18, grb, 21092.0000  New program
+* End modification history
+*
+******************************************************************************
+*
+* Initialize variables
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE UNIVERSE.INCLUDE XML.H
+      COMMON PROG.PARAMS(24)
+      EQU CH.NUM TO PROG.PARAMS(1)
+      EQU USER TO PROG.PARAMS(2)
+      EQU SERVER.NAME TO PROG.PARAMS(3)
+
+****      CALL CHANNEL(CH.NUM)
+****      CALL GET.USER(USER)
+
+
+**** SEND CLIENT
+**** RECEIVE ARRAY
+**** PARSE.ARRAY
+      VIN = 33626403
+      IMAGE.ID = VIN<1>"R%8"
+      RESP.CNT=1
+      RESP = ''
+      VOUT=''
+      TIME.LINE=''
+      ST.TIME = TIME()
+      TIME.LINE<1,1,1>=TIME()            ; * start time
+      PROMPT ''
+      TIMEOUT = 3000
+      PROG.NAME='SEND.IMAGE.ID'
+
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'SEND.IMAGE.ID' ; UPL.VOUT = ''
+      ***    CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+      OPEN 'CONTROL' TO FILE.CNTL ELSE
+         CALL ELINE('UNABLE TO OPEN CONTROL FILE')
+         RETURN
+      END
+      OPEN 'GRB' TO F.GRB ELSE
+         CALL ELINE('UNABLE TO OPEN GRB FILE')
+         RETURN
+      END
+
+      READ XMLPARAMS FROM FILE.CNTL,"CLIENT.OCR" THEN
+         URL = XMLPARAMS<1>
+         SERVER = XMLPARAMS<2>
+         SOAPACTION = XMLPARAMS<3>
+         LOGGING = XMLPARAMS<4>          ; * Y/N
+         LOGFILE = XMLPARAMS<5>
+         EMAIL.RECIP = XMLPARAMS<6>
+         TEST.FLG = XMLPARAMS<7>
+      END ELSE
+         URL = "http://accu214-devservicesint.afs.net:22468/ocr/ocrservice.asmx"
+**         SOAPACTION = "http://afslogistics.com/GetImageInfoByClientId"
+            SOAPACTION = "http://afslogistics.com/Update"
+         LOGFILE='GBTEST'
+         LOGGING = "Y"
+         EMAIL.RECIP = 'gbino@afs.net'
+         TEST.FLG = @FALSE
+      END
+
+      IF LOGGING = "Y" OR LOGGING = 1 THEN
+         LOGGING = @TRUE
+      END ELSE
+         LOGGING = @FALSE
+      END
+      TESTING = 0
+      TESTING.URL = 0
+      RESULTS.DTL.RAW = ''
+      RESULTS.DTL = ''
+      RESULTS.HDR = ''
+      EMAIL.OUT=''
+      EMAIL.OUT<1,-1>='HelpDesk@afs.net'
+      EMAIL.OUT<2,-1>= EMAIL.RECIP
+      EMAIL.OUT<4>='FBBP_PCMXML@afs.net'
+      EMAIL.OUT<5>='Error while trying trying to access pcmiler Web-Service .'
+*
+      Ret = setHTTPDefault( "VERSION" , "1.1" )    ; * required with this webservice
+      GOSUB OPEN.SOAP.CONNECTION
+      IF SOAP.RET = 0 THEN
+         GOSUB SETREQUEST
+         IF SEND.RET = 0 THEN
+            GOSUB PARSE.RESULTS
+         END
+      END
+      STATUS = SEND.RET
+*****      IF VOUT<1> LE 0 THEN               ; * no miles so must be error
+*****         VOUT<1> = "ERROR"
+*****      END
+*
+      TIME.LINE<1,1,1>=TIME()            ; * finish time
+
+9999: * THE END
+      IF LOGGING THEN
+         LOG.RET = PROTOCOLLOGGING(LOGFILE,"OFF",10)
+      END
+      WRITE RESP ON F.GRB,"OCR.RESP"
+      RETURN
+*************************************************************************
+OPEN.SOAP.CONNECTION:
+*************************************************************************
+      MAX.TRIES = 5
+      ATTEMPTS = 0
+      LOOP
+         ATTEMPTS = ATTEMPTS + 1
+         START.FUNCTION.TIME = TIME()
+         IF LOGGING THEN
+            LOG.RET = PROTOCOLLOGGING(LOGFILE,"ON",10)
+         END
+         SOAP.RET = SoapCreateRequest(URL , SOAPACTION , SoapReq)
+      UNTIL SOAP.RET = 0 OR ATTEMPTS > MAX.TRIES DO
+         IF SOAP.RET <> 0 THEN
+            FATAL.ERROR.SUBJ = 'Cannot connect to GREENVILLE web-service'
+            EMAIL.OUT<6>='FBBP SEND.IMAGE.ID could not connect for user ':USER:' on ':OCONV(DATE(),'D2/'):' at ':OCONV(TIME(),'MTHS'):'.'
+            EMAIL.OUT<6>:='  Please confirm Greenville webservice is working correctly.'
+            GOSUB REPORT.FATAL.ERROR
+            RETURN TO 9999
+         END
+      REPEAT
+
+      RETURN
+**********************************************************************
+SETREQUEST:
+**********************************************************************
+
+      GOSUB BUILD.XML.REQUEST
+      SETREQUEST.TYPE = 1
+      SETREQUEST.STATUS = soapSetRequestContent(SoapReq, XML.REQUEST, SETREQUEST.TYPE)
+      *
+      BEGIN CASE
+         CASE SETREQUEST.STATUS = 0      ; * Successful
+            START.FUNCTION.TIME = TIME()
+            GOSUB SUBMIT.REQUEST
+         CASE 1
+            BEGIN CASE
+               CASE SETREQUEST.STATUS = 1
+                  SETREQUEST.DESC = 'Invalid request handle.'
+               CASE SETREQUEST.TYPE = 1
+                  SETREQUEST.DESC = '1'
+               CASE SETREQUEST.STATUS = 2
+                  SETREQUEST.DESC = 'Unable to Open the file named ':XML.REQUEST
+               CASE SETREQUEST.STATUS = 3
+                  SETREQUEST.DESC = 'Unable to Read the file named ':XML.REQUEST
+               CASE 1
+                  SETREQUEST.DESC = 'Undefined Status'
+            END CASE
+
+            EMAIL.OUT<5>='SEND.IMAGE.ID soapSetRequest returned the following error - ': SETREQUEST.DESC
+            EMAIL.OUT<6>='FBBP SEND.IMAGE.ID could not SetRequestContent for user':USER:' on ':OCONV(DATE(),'D2/'):' at ':OCONV(TIME(),'MTHS'):'.'
+            EMAIL.OUT<6>:=' Please confirm PCMILER webservice are working correctly.'
+            EMAIL.OUT<6>:= 'SETREQUEST.STATUS =':SETREQUEST.STATUS:' - ':SETREQUEST.DESC
+            GOSUB REPORT.INTERNAL.ERROR
+            RETURN TO 9999
+      END CASE
+      RETURN
+
+*****************************************************************
+BUILD.XML.REQUEST:
+*****************************************************************
+
+      TIME.LINE<1,1,2>=TIME()
+      xmlns=''
+      XML.REQUEST = ''
+      XML.REQUEST := '<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+      XML.REQUEST := '<soap:Body>'
+      XML.REQUEST := '<Update xmlns="http://afslogistics.com/">'
+      XML.REQUEST := '<ImageKey>':IMAGE.ID:'</ImageKey>'
+      XML.REQUEST := '</Update>'
+      XML.REQUEST := '</soap:Body>'
+      XML.REQUEST := '</soap:Envelope>'
+
+      RETURN
+******************************************************************************
+SUBMIT.REQUEST:
+******************************************************************************
+      TIME.LINE<1,1,3>=TIME()
+      SEND.RET = SoapSubmitRequest(SoapReq, TIMEOUT, RESULTS.HDR, RESULTS.DTL.RAW, RESULTS.STATUS)
+      IF SEND.RET <> 0 THEN
+         FATAL.ERROR.SUBJ = 'SEND.IMAGE.ID received a fatal error while submitting a web-service request'
+         FAULT.INFO = ''
+         SOAP.FAULT.STATUS = SOAPGetFault(RESULTS.DTL.RAW, FAULT.INFO)
+         BEGIN CASE
+            CASE SOAP.FAULT.STATUS = 0
+*No problem to report
+            CASE SOAP.FAULT.STATUS = 1
+            CASE SOAP.FAULT.STATUS = 2
+               EMAIL.OUT<6>='SEND.IMAGE.ID reports a Soap Fault of 2'
+               EMAIL.OUT<6,-1>='A SOAP.FAULT.STATUS OF ':SOAP.FAULT.STATUS:' was returned for User ':USER:' on ':OCONV(DATE(),'D2/'):' at ':OCONV(TIME(),'MTHS'):'.'
+               EMAIL.OUT<6,-1> = 'SOAP Fault not found in response data.'
+            CASE 1
+*Unidentified cause
+               EMAIL.OUT<6>='SEND.IMAGE.ID reports an Unknown Soap Fault'
+               EMAIL.OUT<6,-1>='SOAP.FAULT.STATUS=':SOAP.FAULT.STATUS:' FAULT.INFO=':FAULT.INFO
+         END CASE
+         IF SOAP.FAULT.STATUS # 0 THEN
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>='Ret=':SEND.RET
+            EMAIL.OUT<6,-1>='RESULTS.STATUS=':RESULTS.STATUS
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>='Fault Code=':FAULT.INFO<1>
+            EMAIL.OUT<6,-1>='Fault String=':FAULT.INFO<2>
+            EMAIL.OUT<6,-1>='Fault Detail=':FAULT.INFO<3>
+            EMAIL.OUT<6,-1>='Fault Actor=':FAULT.INFO<4>
+            EMAIL.OUT<6,-1>=' '
+            GOSUB REPORT.FATAL.ERROR
+            RETURN TO 9999
+         END
+      END ELSE
+         RESULTS.STATUS = ''
+      END
+      TIME.LINE<1,1,4>=TIME()
+
+      RETURN
+******************************************************************************
+PARSE.RESULTS:
+******************************************************************************
+
+      DEBUG
+*** These first lines here need to account for what we receive via the SOAP envelope
+      TEMP.ARRAY =''
+      RESULTS.DTL = RESULTS.DTL.RAW
+      RESULTS.DTL = CHANGE(RESULTS.DTL, '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">' ,'')
+
+      RESULTS.DTL = CHANGE(RESULTS.DTL, '<soap:Body>' ,'')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, ' xmlns="http://afslogistics.com"', '')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, ' xsi:nil="true"', '')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, ' xmlns="http://afslogistics.com/">', '')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, '</soap:Body>', '')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, '</soap:Envelope>', '')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, '<?xml version="1.0" encoding="utf-8"?>', '')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, '<GetImageInfoByClientIdResponse', '')
+      RESULTS.DTL = CHANGE(RESULTS.DTL, '</GetImageInfoByClientIdResponse>', '')
+      NODE.VALUE = ''
+      RESULTS.DTL.CNT = (COUNT(RESULTS.DTL, '/OCRImage'))    ; * Divide by two as it will count both begin and end tags
+      STAT.VAL = 'GetImageInfoByClientIdResult Main Document'
+      STATUS = XDOMOpen(RESULTS.DTL, XML.FROM.STRING, MYDOM)
+      STAT.VAL = 'GetImageInfoByClientIdResult'
+      STATUS = XDOMLocate(MYDOM, 'GetImageInfoByClientIdResult',"",GET.IMAGE.HANDLE)
+      STAT.VAL = 'OCRImage'
+      STATUS = XDOMLocateNode(GET.IMAGE.HANDLE, XDOM.CHILD, X, XDOM.ELEMENT.NODE, OCR.IMAGE.HANDLE)
+      STAT.VAL = 'UpdateResult'
+      STATUS = XDOMLocateNode(OCR.IMAGE.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, CLIENT.HANDLE)
+      STATUS = XDOMGetNodeVAlue(CLIENT.HANDLE, NODE.VALUE)
+      TEMP.ARRAY<1> = NODE.VALUE
+      NODE.VALUE = ''
+      * OCRImage end
+      RESP.CNT+=1
+      * GetImageInfoByClientIdResult end
+      * GetImageInfoByClientIdResults Main Document end
+      DEBUG
+
+
+
+
+
+*      STAT.VAL = 'OCRImage Main Document'
+*      STATUS = XDOMOpen(RESULTS.DTL, XML.FROM.STRING, MYDOM)
+*       STAT.VAL = 'GetImageInfoByClientIdResult'
+*        STATUS = XDOMLocate(MYDOM, 'GetImageInfoByClientIdResult',"",OCR.IMAGE.HANDLE)
+
+*   DEBUG
+
+      ****     STATUS = XDOMLocate(MYDOM, 'OCRImage',"",OCR.IMAGE.HANDLE)
+*            FOR X = 1 TO RESULTS.DTL.CNT
+*               STAT.VAL = 'OCRImage'
+
+      ****       STATUS = XDOMLocateNode(OCR.IMAGE.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, CLIENT.HANDLE)
+      ***        STATUS = XDOMLocateNode(OCR.IMAGE.HANDLE, XDOM.CHILD, X, XDOM.ELEMENT.NODE, OCR.HANDLE)
+*        STATUS = XDOMGetNodeName(OCR.IMAGE.HANDLE, NODENAME)
+*       STATUS = XDOMLocateNode(OCR.IMAGE.HANDLE,XDOM.NEXT.SIBLING, X, XDOM.ELEMENT.NODE, OCR.HANDLE)
+*               STATUS = XDOMGetNodeVAlue(OCR.HANDLE, NODE.VALUE)
+      **** TEMP.ARRAY<1> = NODE.VALUE ; NODE.VALUE = ''
+
+
+*               STAT.VAL = 'Clientid'
+      ****       STATUS = XDOMLocateNode(OCR.IMAGE.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, CLIENT.HANDLE)
+*              STATUS = XDOMLocateNode(OCR.IMAGE.HANDLE, XDOM.CHILD, 1, XDOM.ELEMENT.NODE, CLIENT.HANDLE)
+*               STATUS = XDOMGetNodeVAlue(CLIENT.HANDLE, NODE.VALUE)
+*               TEMP.ARRAY<1> = NODE.VALUE ; NODE.VALUE = ''
+*               STAT.VAL = 'CarrierId'
+      **   STATUS = XDOMLocateNode(OCR.IMAGE.HANDLE, XDOM.CHILD, 2, XDOM.ELEMENT.NODE, CARRIER.HANDLE)
+*               STATUS = XDOMLocateNode(OCR.IMAGE.HANDLE, XDOM.CHILD, 2, XDOM.ELEMENT.NODE, CARRIER.HANDLE)
+*               STATUS = XDOMGetNodeVAlue(CARRIER.HANDLE, NODE.VALUE)
+*               TEMP.ARRAY<2> = NODE.VALUE ; NODE.VALUE = ''
+*               STAT.VAL = 'ImageKey'
+*               STATUS = XDOMLocateNode(OCR.IMAGE.HANDLE, XDOM.CHILD, 3, XDOM.ELEMENT.NODE, IMAGE.KEY.HANDLE)
+*               STATUS = XDOMGetNodeVAlue(IMAGE.KEY.HANDLE, NODE.VALUE)
+*               TEMP.ARRAY<3> = NODE.VALUE ; NODE.VALUE = ''
+*               STAT.VAL = 'Pronum'
+*               STATUS = XDOMLocateNode(OCR.IMAGE.HANDLE, XDOM.CHILD, 4, XDOM.ELEMENT.NODE, PRONUM.HANDLE)
+*               STATUS = XDOMGetNodeVAlue(PRONUM.HANDLE, NODE.VALUE)
+*               DTL.RATE = OCONV(ICONV(NODE.VALUE, 'MD2') * 10, 'MD3')
+*               TEMP.ARRAY<4> = NODE.VALUE ; NODE.VALUE = ''
+*               FOR R = 1 TO 4
+*                  RESP<R,RESP.CNT> = TEMP.ARRAY<R>
+*               NEXT R
+*               RESP.CNT+=1
+*           NEXT X
+
+      * OCRImage end
+
+      * OCRImage Main end
+
+      RETURN
+
+******************************************************************************
+REPORT.INTERNAL.ERROR:
+******************************************************************************
+      EMAIL.START.TIME = TIME()
+
+      EMAIL.OUT<6, -1> = 'URL = ':URL
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = 'XML.REQUEST = ':XML.REQUEST
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = 'RESULTS.HDR = ':RESULTS.HDR
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = 'RESULTS.DTL.RAW = ':RESULTS.DTL.RAW
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = 'RESULTS.DTL = ':RESULTS.DTL
+      EVIN=EMAIL.OUT
+      EVOUT=''
+      CALL SENDMAIL(EVIN,EVOUT)
+****      VOUT<1> = "ERROR"
+      VOUT<1> = 0
+      RETURN
+******************************************************************************
+REPORT.FATAL.ERROR:
+******************************************************************************
+      EMAIL.START.TIME = TIME()
+      EMAIL.OUT<1>=EMAIL.RECIP
+      EMAIL.OUT<1,-1> = 'gbino@afs.net'
+      EMAIL.OUT<5>=FATAL.ERROR.SUBJ
+      EMAIL.OUT<6,-1> = 'URL = ':URL
+      EVIN=EMAIL.OUT
+      EVOUT=''
+      CALL SENDMAIL(EVIN,EVOUT)
+      IDATE=DATE()
+      ITIME=TIME()
+      TIME.BLOCK=INT(ITIME/600)
+      VOUT<1> = "ERROR"
+      RETURN
+   END

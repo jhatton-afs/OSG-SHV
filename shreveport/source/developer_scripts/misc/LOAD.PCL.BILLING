@@ -1,0 +1,449 @@
+***************************************************
+* Program name : LOAD.PCL.BILLING
+* Author       : unknown
+* Date written : 11-03-1997
+* Library      : FBBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+**
+*
+* Last updated by AFS (nmeddaugh) at 07:57:18 on 01/03/2022.
+*
+* Start modification history
+* 041014 - JMK01 - Project#408 - Import SLC Parcel Data Into Freight Payment application
+* 010915 - JMK02 - SysAid#14599 - LaJuanyka Johnson
+* 031115 - JMK03 - SysAid#15586 - Paragon Athletics - data needs to be moved
+* 110515 - DRF01 - SysAid 20990 - replaced LMetz with ar in the email
+* 060316 - GRB01 - SysAid 24996 Add CDUNGAN
+* 010220 - DRF02 - ACCU-523 - Added a description for 02901 - Plow & Hearth of MISC Flat Fee for Weekly Service if it is blank and the code is billing option is Misc Flat Fee for Addl Service - Weekly
+* 010322 - NKH01 - ACCU-1554 Check if program already ran today
+* End modification history
+*
+********************************************************
+
+      CALL GET.USER.NEW(USER,CH.NUM)
+**      CALL CHANNEL(CH.NUM)
+  UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'LOAD.PCL.BILLING' ; UPL.VOUT = ''  
+      UPL.VIN<3> = USER
+      UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)   
+      GOSUB OPEN.FILES
+      READV OP.FLG FROM F.OP,USER,25 ELSE
+         OP.FLG = "N"
+      END
+      IF OP.FLG # "Y" THEN
+         *****    BEGIN CASE
+         ******        CASE USER='LCOOK'               ; * JMK02
+         ******        CASE USER='MARY'
+         ****        CASE USER='CDUNGAN'             ; * GRB01
+         *****        CASE USER='DAVID'
+         *****        CASE USER='GBINO'
+         ***        CASE 1
+         CALL ELINE('UNAUTHORIZED ACCESS')
+         STOP
+         ****    END CASE
+      END
+      OTODAY=OCONV(DATE(),'D4/')
+      OBDAY=OCONV(DATE()-6,'D4/')
+      RPT.SVC.PREFIX=CHAR(239):CHAR(187):CHAR(191)
+      SLC.CODE=0
+
+      READ PCL.PROCESS FROM F.TABLES,"PCL.PROCESS" THEN      ; * add flag to see if completed
+         IF PCL.PROCESS<1> # DATE() AND PCL.PROCESS<2> # DATE() THEN
+            CALL ELINE('STEPS 1 AND 2 OF THE WEEKLY PCL LOAD PROCESS HAVE NOT COMPLETED')
+            STOP
+         END
+      END      
+      READ USER.REC FROM F.BCTRL,USER ELSE USER.REC=''
+      USER.NAME=USER.REC<13>
+      IF USER # 'DAVID' AND USER.NAME # 'GBINO' THEN
+         WB.ID='SLC_WB_':FIELD(OTODAY,'/',3):FIELD(OTODAY,'/',1):FIELD(OTODAY,'/',2):'.TXT'
+         READ TEST FROM F.SLC.BILL,WB.ID THEN
+            TEST.NVAL=DCOUNT(TEST,@AM)
+            IF TEST.NVAL<5 THEN
+               MVIN=''
+               SUBJ='SLC Weekly Billing File Corrupt'
+               TEXT=USER:' attempted to import the SLC Weekly Billing file '
+               TEXT<1,-1>='which appears to be corrupt '
+               TEXT<1,-1>='on ':DATE()'D2/':' ':OCONV(TIME(),'MTHS')
+               TEXT<1,-1>=' '
+               TEXT<1,-1>='Please review and advise when to continue.'
+               TEXT<1,-1>=' '
+               MVIN=''
+               MVIN<1> = 'nmeddaugh@afs.net'
+               MVIN<3,-1>='DFriend@afs.net'
+               MVIN<3,-1>='RJanagathan@afs.net'
+               MVIN<4>='AFS'
+               MVIN<5>=SUBJ
+               MVIN<6>=TEXT
+               CALL SENDMAIL(MVIN,MVOUT)
+               CALL ELINE('Weekly Billing File is not available to import!')
+               ABORT
+            END
+         END ELSE
+            READ TEST FROM F.SLC.BILL.HIST,WB.ID ELSE
+               MVIN=''
+               SUBJ='SLC Weekly Billing File Not Available for Import'
+               TEXT=USER:' attempted to import the SLC Weekly Billing file '
+               TEXT<1,-1>='which does not exist '
+               TEXT<1,-1>='on ':DATE()'D2/':' ':OCONV(TIME(),'MTHS')
+               TEXT<1,-1>=' '
+               TEXT<1,-1>='Please review and advise when to continue.'
+               TEXT<1,-1>=' '
+               MVIN=''
+               MVIN<1> = 'nmeddaugh@afs.net'
+               MVIN<3,-1>='DFriend@afs.net'
+               MVIN<3,-1>='RJanagathan@afs.net'
+               MVIN<4>='AFS'
+               MVIN<5>=SUBJ
+               MVIN<6>=TEXT
+               CALL SENDMAIL(MVIN,MVOUT)
+               CALL ELINE('Weekly Billing File is not available to import!')
+               ABORT
+            END
+         END
+*
+* CHECK FOR THE EXISTENCE OF THE PARCEL FREIGHT PAYMENT DATA IMPORT FILE FOR THIS WEEK
+*
+         PCL.ID='SLC_PD_':FIELD(OTODAY,'/',3):FIELD(OTODAY,'/',1):FIELD(OTODAY,'/',2):'.TXT'
+         READ PCL.TEST FROM F.PCL.HIST,PCL.ID ELSE
+            CALL ELINE('Parcel Freight Payment Data File has not been imported yet!!! - Cannot continue!')
+              ABORT
+         END
+*
+* CHECK FOR THE EXISTENCE OF THE HEAVY FREIGHT PAYMENT DATA IMPORT FILE FOR THIS WEEK
+*
+         FP.ID='SLC_FRT_':FIELD(OBDAY,'/',3):FIELD(OBDAY,'/',1):FIELD(OBDAY,'/',2):'-':FIELD(OTODAY,'/',3):FIELD(OTODAY,'/',1):FIELD(OTODAY,'/',2):'.TXT'
+         READ FP.TEST FROM F.FP.HIST,FP.ID ELSE
+            CALL ELINE('Heavy Freight Payment Data File has not been imported yet!!! - Cannot continue!')
+           ABORT
+         END
+
+*
+* CHECK IF FILE HAS ALREADY BEEN RUN TODAY - NKH01
+*         
+         * Begin NKH01
+         FILE.LOAD.DT = ICONV(FIELD(OTODAY,'/',3):FIELD(OTODAY,'/',1):FIELD(OTODAY,'/',2),"D")
+         READ LOAD.CK FROM F.CTRL,"LOAD.PCL.BILLING" ELSE LOAD.CK = ""
+         IF LOAD.CK = FILE.LOAD.DT THEN
+            CALL ELINE('SLC Billing file for ':OTODAY:' has already been loaded')
+            ABORT
+         END ELSE                                                 
+            WRITEV FILE.LOAD.DT ON F.CTRL, "LOAD.PCL.BILLING", 1     
+         END
+         * End NKH01         
+         
+      END
+      
+      TB=CHAR(9)
+      DOW.REC=''
+      DOW.REC<1>='Mon'
+      DOW.REC<2>='Tue'
+      DOW.REC<3>='Wed'
+      DOW.REC<4>='Thu'
+      DOW.REC<5>='Fri'
+      DOW.REC<6>='Sat'
+      DOW.REC<7>='Sun'
+      INV.DATE=OTODAY
+      SLC.EOF=0
+      SLC.CNT=0
+      SLC.PER=''
+      SLC.STMT='SSELECT SLC.BILLING WITH @ID = "[.TXT""[.txt""[.Txt"'
+      EXECUTE SLC.STMT RTNLIST SLC.LIST CAPTURING SLC.RESULTS
+      SLC.TCNT=@SELECTED
+      LOOP
+         READNEXT SLC.ID FROM SLC.LIST ELSE SLC.EOF=1
+      UNTIL SLC.EOF DO
+         SLC.CNT+=1
+         CALL PROG.BAR(20,SLC.CNT,SLC.TCNT,SLC.PER)
+         READ SLC.BILL.REC FROM F.SLC.BILL,SLC.ID THEN
+            FILE.ORG=FIELD(SLC.ID,'_',1)
+            FILE.TYPE=FIELD(SLC.ID,'_',2)
+            FILE.DATE=FIELD(SLC.ID,'_',3)
+            SLC.BILL.ORG=SLC.BILL.REC
+            IF SLC.BILL.REC[1,3]=RPT.SVC.PREFIX THEN
+               LREC=LEN(SLC.BILL.REC)
+               SLC.BILL.REC=SLC.BILL.REC[4,LREC]
+            END
+            INV.DATE=ICONV(SLC.ID[12,2]:'/':SLC.ID[14,2]:'/':SLC.ID[8,4],'D')
+            READ PCL.BILL.DATE.XREF.REC FROM F.PCL.BILL.DATE.XREF,INV.DATE ELSE
+               PCL.BILL.DATE.XREF.REC=''
+            END
+            HDG.ROW=0
+            SLC.BILL.REC=CHANGE(SLC.BILL.REC,CHAR(9),@VM)
+            TEST.IDATE=ICONV(TRIM(FIELD(SLC.BILL.REC<1,6>,' ',1)),'D')
+            IF TEST.IDATE='' THEN
+               TEST.IDATE=ICONV(TRIM(FIELD(SLC.BILL.REC<1,7>,' ',1)),'D')
+               IF TEST.IDATE='' THEN HDG.ROW=1
+            END
+            NATT=DCOUNT(SLC.BILL.REC,@AM)
+            FOR ATT=1 TO NATT
+               CALL PROG.BAR(22,ATT,NATT,'')
+               IF ATT > HDG.ROW THEN
+                  SLC.BILL.LINE=CHANGE(SLC.BILL.REC<ATT>,'"','')
+                  PCL.BILL.GOOD=1
+                  IF TRIM(SLC.BILL.LINE)='' THEN PCL.BILL.GOOD=0
+                  IF TRIM(SLC.BILL.LINE)=' ' THEN PCL.BILL.GOOD=0
+                  IF INDEX(SLC.BILL.LINE,'(FRT PAY)',1) THEN PCL.BILL.GOOD=0
+                  IF PCL.BILL.GOOD THEN
+                     PCL.BILL.REC=''
+                     NVAL=DCOUNT(SLC.BILL.LINE,@VM)
+                     BEGIN CASE
+                        CASE FILE.TYPE='QB'
+                           PCL.BILL.REC<2>=TRIM(SLC.BILL.LINE<1,1>)    ; * Client Name
+                           PCL.BILL.REC<3>=TRIM(SLC.BILL.LINE<1,2>)    ; * Invoice Number
+                           PCL.BILL.REC<4>=TRIM(ICONV(SLC.BILL.LINE<1,4>,'MD2'))           ; * Total Savings
+                           PCL.BILL.REC<5>=TRIM(SLC.BILL.LINE<1,3>)    ; * Control Number
+                           PCL.BILL.REC<6>=TRIM(SLC.BILL.LINE<1,5>)    ; * PO #
+                           PCL.BILL.REC<8>=TRIM(SLC.BILL.LINE<1,7>)    ; * Type
+                           PCL.BILL.REC<12>=TRIM(SLC.BILL.LINE<1,8>)   ; * Billing Option
+                           PCL.BILL.REC<13>=TRIM(SLC.BILL.LINE<1,9>)   ; * Billing Code
+                           PCL.BILL.REC<14>=TRIM(SLC.BILL.LINE<1,10>)  ; * Description
+                           PCL.BILL.REC<15>=TRIM(ICONV(SLC.BILL.LINE<1,12>,'MD2')):'0'     ; * Rate
+                           PCL.BILL.REC<16>=TRIM(ICONV(SLC.BILL.LINE<1,11>,'MD2'))         ; * QTY
+                           PCL.BILL.REC<17>=TRIM(ICONV(SLC.BILL.LINE<1,13>,'MD2'))         ; * Amount Due
+                           PCL.BILL.REC<19>=TRIM(ICONV(SLC.BILL.LINE<1,6>,'D'))  ; * Invoice Date
+                        CASE 1
+                           PCL.BILL.REC<1>=TRIM(SLC.BILL.LINE<1,1>)    ; * Parent Client Name
+                           PCL.BILL.REC<2>=TRIM(SLC.BILL.LINE<1,2>)    ; * Client Name
+                           PCL.BILL.REC<3>=TRIM(SLC.BILL.LINE<1,3>)    ; * Invoice Number
+                           PCL.BILL.REC<4>=ICONV(TRIM(SLC.BILL.LINE<1,4>),'MD2')           ; * Total Savings
+                           PCL.BILL.REC<5>=TRIM(SLC.BILL.LINE<1,5>)    ; * Control Number
+                           PCL.BILL.REC<6>=TRIM(SLC.BILL.LINE<1,6>)    ; * PO #
+                           PCL.BILL.REC<7>=ICONV(TRIM(SLC.BILL.LINE<1,7>),'D')   ; * Service Date
+                           PCL.BILL.REC<8>=TRIM(SLC.BILL.LINE<1,8>)    ; * Type
+                           PCL.BILL.REC<9>=ICONV(TRIM(SLC.BILL.LINE<1,9>),'MD3')           ; * Savings
+                           PCL.BILL.REC<10>=ICONV(TRIM(SLC.BILL.LINE<1,10>),'MD0')         ; * Packages
+                           PCL.BILL.REC<11>=ICONV(TRIM(SLC.BILL.LINE<1,11>),'MD0')         ; * Transactions
+                           PCL.BILL.REC<12>=TRIM(SLC.BILL.LINE<1,12>)  ; * Billing Option
+                           PCL.BILL.REC<13>=TRIM(SLC.BILL.LINE<1,13>)  ; * Billing Code
+                           PCL.BILL.REC<14>=TRIM(SLC.BILL.LINE<1,14>)  ; * Description
+                           PCL.BILL.REC<15>=ICONV(TRIM(SLC.BILL.LINE<1,15>),'MD3')         ; * Rate
+                           PCL.BILL.REC<16>=ICONV(TRIM(SLC.BILL.LINE<1,16>),'MD2')         ; * QTY
+                           PCL.BILL.REC<17>=ICONV(TRIM(SLC.BILL.LINE<1,17>),'MD2')         ; * Amount Due
+                           PCL.BILL.REC<18>=TRIM(SLC.BILL.LINE<1,18>)  ; * Terms
+                           PCL.BILL.REC<19>=ICONV(TRIM(FIELD(SLC.BILL.LINE<1,19>,' ',1)),'D')        ; * Invoice Date
+                           PCL.BILL.REC<20>=ICONV(TRIM(FIELD(SLC.BILL.LINE<1,20>,' ',1)),'D')        ; * Due Date
+                           PCL.BILL.REC<21>=ICONV(TRIM(SLC.BILL.LINE<1,21>),'MD0')         ; * Account Rep
+                           PCL.BILL.REC<22>=ICONV(TRIM(SLC.BILL.LINE<1,22>),'MD0')'R%5'    ; * Shreveport Client ID
+                           PCL.BILL.REC<23>=ICONV(TRIM(SLC.BILL.LINE<1,23>),'MD0')         ; * Division Number
+                     END CASE
+                     IF PCL.BILL.REC<24>='' THEN
+                        SLC.NAME=PCL.BILL.REC<2>
+                        READ SLC.NAME.REC FROM F.NAME.NDX,SLC.NAME ELSE SLC.NAME.REC=''
+                        SHV.CLIENT.ID=SLC.NAME.REC<2>
+                        IF SHV.CLIENT.ID#'' THEN
+                           PCL.BILL.REC<22>=SHV.CLIENT.ID'R%5'
+                        END
+                     END
+                     IF PCL.BILL.REC<23>='' THEN
+                        PCL.BILL.REC<23>='00001'
+                     END
+                     IF PCL.BILL.REC<23>#'' THEN
+                        PCL.BILL.REC<23>=PCL.BILL.REC<23>'R%5'
+                     END
+                     CLIENT.ID=PCL.BILL.REC<22>
+                     IF PCL.BILL.REC<22>='02957' AND PCL.BILL.REC<23>#'00002' THEN         ; * JMK03
+                        PCL.BILL.REC<23>='00002'   ; * JMK03
+                     END                 ; * JMK03
+                     BILL.CLIENT.ID=CLIENT.ID
+                     READ CLIENT.REC FROM F.CLIENT,CLIENT.ID THEN
+                        IF CLIENT.REC<285>='Y' THEN
+                           BILL.CLIENT.ID=CLIENT.REC<147>
+                        END
+                     END
+                     PCL.BILL.REC<25>=BILL.CLIENT.ID
+                     READ BILL.CLIENT.REC FROM F.CLIENT,BILL.CLIENT.ID ELSE BILL.CLIENT.REC=''
+                     BILL.CLIENT.CO=BILL.CLIENT.REC<92>'R%5'
+                     SCT.FLG=0
+                     IF BILL.CLIENT.CO='00002' THEN SCT.FLG=1
+                     UNI.FLG=0
+                     IF BILL.CLIENT.CO='00003' THEN UNI.FLG=1
+                     UFM.FLG=0
+                     IF BILL.CLIENT.CO='00004' THEN UFM.FLG=1
+                     LGI.FLG=0
+                     IF BILL.CLIENT.CO='00005' THEN LGI.FLG=1
+                     VIN=PCL.BILL.REC<12>          ; * Billing Option
+                     VIN<2>=PCL.BILL.REC<13>       ; * Billing Code
+                     VIN<3>=PCL.BILL.REC<14>       ; * Description
+                     CALL GET.SLC.SALES.CODE(VIN,VOUT)
+                     SLS.CODE=VOUT<1>
+                     IF SLS.CODE<1000 THEN
+                        IF SCT.FLG THEN
+                           SLC.CODE+=1000
+                        END
+                        IF UNI.FLG THEN
+                           SLS.CODE+=3000
+                        END
+                        IF UFM.FLG THEN
+                           SLS.CODE+=6000
+                        END
+                        IF LGI.FLG THEN
+                           SLS.CODE+=7000
+                        END
+                     END
+                     PCL.BILL.REC<24>=SLS.CODE
+                     IF BILL.CLIENT.ID='02901' THEN    ; * DRF02
+                        IF PCL.BILL.REC<14>='' THEN    ; * DRF02
+                           IF PCL.BILL.REC<12>='Misc Flat Fee for Addl Service - Weekly' THEN    ; * DRF02
+                              PCL.BILL.REC<14>=PCL.BILL.REC<5>:': MISC Flat Fee for Weekly Service'    ; * DRF02
+                           END    ; * DRF02
+                        END    ; * DRF02
+                     END    ; * DRF02
+                     UPD.PCL.BILL=1
+
+                     IF PCL.BILL.REC<19>='' THEN UPD.PCL.BILL=0
+                     IF UPD.PCL.BILL THEN
+                        PCL.BILL.XREF.ID=BILL.CLIENT.ID:'*':INV.DATE
+                        SEQ=0
+                        LOOP
+                           SEQ+=1
+                           TEST.ID=PCL.BILL.XREF.ID:'*':SEQ
+                           READ TEST.REC FROM F.PCL.BILL,TEST.ID ELSE TEST.REC=''
+                        UNTIL TEST.REC='' DO
+                        REPEAT
+                        PCL.BILL.ID=TEST.ID
+                        WRITE PCL.BILL.REC ON F.PCL.BILL,PCL.BILL.ID
+
+                        READ XREF.REC FROM F.PCL.BILL.XREF,PCL.BILL.XREF.ID ELSE XREF.REC=''
+                        LOCATE SEQ IN XREF.REC<1> BY 'AR' SETTING SPOS ELSE
+                           XREF.REC<1,-1>=SEQ
+                           WRITE XREF.REC ON F.PCL.BILL.XREF,PCL.BILL.XREF.ID
+                        END
+
+                        PCL.BILL.HIST.ID=PCL.BILL.ID:'*':INV.DATE
+                        SEQ=0
+                        LOOP
+                           SEQ+=1
+                           TEST.ID=PCL.BILL.HIST.ID:'*':SEQ
+                           READ TEST.REC FROM F.PCL.BILL.HIST,TEST.ID ELSE TEST.REC=''
+                        UNTIL TEST.REC='' DO
+                        REPEAT
+                        PCL.BILL.HIST.ID=TEST.ID
+                        PCL.BILL.HIST.REC=PCL.BILL.REC
+                        PCL.BILL.HIST.REC<28>=USER
+                        PCL.BILL.HIST.REC<29>=TIME()
+                        PCL.BILL.HIST.REC<30>=DATE()
+                        WRITE PCL.BILL.HIST.REC ON F.PCL.BILL.HIST,PCL.BILL.HIST.ID
+                        LOCATE BILL.CLIENT.ID IN PCL.BILL.DATE.XREF.REC BY 'AR' SETTING CPOS ELSE
+                           INS BILL.CLIENT.ID BEFORE PCL.BILL.DATE.XREF.REC<CPOS>
+                        END
+                     END
+                  END
+               END
+NEXT.ATT:      *
+            NEXT ATT
+         END
+         WRITE SLC.BILL.ORG ON F.SLC.BILL.HIST,SLC.ID
+         DELETE F.SLC.BILL,SLC.ID
+         WRITE PCL.BILL.DATE.XREF.REC ON F.PCL.BILL.DATE.XREF,INV.DATE
+      REPEAT
+      READ PCL.BILL.DATE.XREF.REC FROM F.PCL.BILL.DATE.XREF,INV.DATE THEN
+         PROC.CNT=0
+         SLC.PROCESS.REC=''
+         SLC.PROCESS.REC<1,1>='Client#'
+         SLC.PROCESS.REC<1,2>='Name'
+         SLC.PROCESS.REC<1,3>='Last Process'
+         SLC.PROCESS.REC<1,4>='Proc DOW'
+         SLC.PROCESS.REC<1,5>='Processed'
+         NATT=DCOUNT(PCL.BILL.DATE.XREF.REC,@AM)
+         FOR ATT=1 TO NATT
+            BILL.CLIENT.ID=PCL.BILL.DATE.XREF.REC<ATT>
+            READ BILL.CLIENT.REC FROM F.CLIENT,BILL.CLIENT.ID ELSE BILL.CLIENT.REC=''
+            BEGIN CASE
+               CASE BILL.CLIENT.REC<151>='1'
+               CASE BILL.CLIENT.REC<152>='2'
+               CASE BILL.CLIENT.REC<153>='3'
+               CASE BILL.CLIENT.REC<154>='4'
+               CASE 1 ; PROC.CNT+=1
+            END CASE
+            SLC.PROCESS.NATT=DCOUNT(SLC.PROCESS.REC,@AM)
+            SLC.PROCESS.LINE=''
+            SLC.PROCESS.LINE<1,1>=BILL.CLIENT.ID
+            SLC.PROCESS.LINE<1,2>=BILL.CLIENT.REC<2>
+            SLC.PROCESS.LINE<1,3>=BILL.CLIENT.REC<82>'D2/'
+            SLC.PROCESS.LINE<1,4>=BILL.CLIENT.REC<151>:' ':DOW.REC<BILL.CLIENT.REC<151>>
+            IF BILL.CLIENT.REC<179>#'' THEN
+               SLC.PROCESS.LINE<1,5>='T'
+            END
+            SLC.PROCESS.LINE<1,6>='=IF(E':ATT+1:'="X",1,0)'
+            SLC.PROCESS.REC<-1>=SLC.PROCESS.LINE
+         NEXT ATT
+         SLC.PROCESS.REC<1,6>='=SUM(F2:F':NATT+1:')/':PROC.CNT:'*100'
+         SLC.PROCESS.NATT=DCOUNT(SLC.PROCESS.REC,@AM)
+         SLC.PROCESS.REC=CHANGE(SLC.PROCESS.REC,@VM,TB)
+         WRITE SLC.PROCESS.REC ON F.BILLDATA,'SLC.PARCEL.INVOICE_':FIELD(OTODAY,'/',3):FIELD(OTODAY,'/',1):FIELD(OTODAY,'/',2):'.XLS'
+         WRITE SLC.PROCESS.REC ON F.SLC.BILL.HIST,'SLC.PARCEL.INVOICE_':FIELD(OTODAY,'/',3):FIELD(OTODAY,'/',1):FIELD(OTODAY,'/',2):'.XLS'
+      END
+      TO_ADD=''
+      TO_ADD<1,-1>='MMckay@afs.net'
+      TO_ADD<1,-1>='ar@afs.net'          ; * DRF01
+      CC_ADD=''
+      CC_ADD<1,-1>='BRose@afs.net'
+      BCC_ADD=''
+      BCC_ADD<1,-1>='DFriend@afs.net'
+      BCC_ADD<1,-1>='LJuneau@afs.net'
+      FROM_ADD='Reports@afs.net'
+      SUBJECT='Parcel Weekly Billing File Import'
+      MESSAGE='Parcel billing file has been imported on ':DATE()'D4/':' at ':OCONV(TIME(),'MTHS'):' by ':USER.NAME:' and is waiting for application of adjustments.'
+      MESSAGE<1,-1>=' '
+      MESSAGE<1,-1>='Any client invoices requiring review should be generated at this time via troubleshooting mode.'
+      EMAIL.OUT=''                       ; * JMK157
+      EMAIL.OUT<1>=TO_ADD                ; * JMK157
+      EMAIL.OUT<2>=CC_ADD                ; * JMK157
+      EMAIL.OUT<3>=BCC_ADD               ; * JMK157
+      EMAIL.OUT<4>=FROM_ADD              ; * JMK157
+      EMAIL.OUT<5>=SUBJECT               ; * JMK157
+      EMAIL.OUT<6>=MESSAGE               ; * JMK157
+      EMAIL.OUT<7>=1                     ; * JMK157
+      CALL SENDMAIL(EMAIL.OUT,RESULT)    ; * JMK157
+      STOP
+      **********************************************************************
+OPEN.FILES:
+      **********************************************************************
+      OPEN '','SLC.BILLING' TO F.SLC.BILL ELSE
+         CALL OPEN.ABORT('SLC.BILLING','LOAD.PCL.BILLING')
+      END
+      OPEN '','SLC.BILLING.HIST' TO F.SLC.BILL.HIST ELSE
+         CALL OPEN.ABORT('SLC.BILLING.HIST','LOAD.PCL.BILLING')
+      END
+      OPEN '','PCL.BILLING' TO F.PCL.BILL ELSE
+         CALL OPEN.ABORT('PCL.BILLING','LOAD.PCL.BILLING')
+      END
+      OPEN '','PCL.BILLING.HIST' TO F.PCL.BILL.HIST ELSE
+         CALL OPEN.ABORT('PCL.BILLING.HIST','LOAD.PCL.BILLING')
+      END
+      OPEN '','PCL.BILLING.XREF' TO F.PCL.BILL.XREF ELSE
+         CALL OPEN.ABORT('PCL.BILLING.XREF','LOAD.PCL.BILLING')
+      END
+      OPEN '','SLC.NAME.NDX' TO F.NAME.NDX ELSE
+         CALL OPEN.ABORT('SLC.NAME.NDX','LOAD.PCL.BILLING')
+      END
+      OPEN '','PCL.BILL.DATE.XREF' TO F.PCL.BILL.DATE.XREF ELSE
+         CALL OPEN.ABORT('PCL.BILL.DATE.XREF','LOAD.PCL.BILLING')
+      END
+      OPEN '','CLIENTS' TO F.CLIENT ELSE
+         CALL OPEN.ABORT('CLIENTS','LOAD.PCL.BILLING')
+      END
+      OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE
+         CALL OPEN.ABORT('BILLDATA.':USER,'LOAD.PCL.BILLING')
+      END
+      OPEN '','SLC.PCL.DATA.HIST' TO F.PCL.HIST ELSE
+         CALL OPEN.ABORT('SLC.PCL.DATA.HIST',PROG.NAME)
+      END
+      OPEN '','SLC.FP.DATA.HIST' TO F.FP.HIST ELSE
+         CALL OPEN.ABORT('SLC.FP.DATA.HIST',PROG.NAME)
+      END
+      OPEN '','BCTRL' TO F.BCTRL ELSE
+         CALL OPEN.ABORT('BCTRL',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      OPEN '','OPERATOR' TO F.OP ELSE CALL OPEN.ABORT("OPERATOR",PROG.NAME)      ; * GRB01
+      OPEN '','CONTROL' TO F.CTRL ELSE             ; * NKH01
+         CALL OPEN.ABORT("CONTROL",PROG.NAME)      ; * NKH01
+      END                                          ; * NKH01
+      
+      RETURN
+   END

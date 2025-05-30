@@ -1,0 +1,1225 @@
+*******************************************
+*PRINT @(-1):"Now sleeping for 1hr"
+*EXECUTE 'SLEEP 3600'
+      PROMPT ""
+      CLIENT.ID=''
+      GET (ARG.,1) CLIENT.ID ELSE CLIENT.ID='ALL'
+      IF CLIENT.ID#'ALL' THEN
+         CLIENT.ID=CLIENT.ID'R%5'
+      END
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='EXPORT.OLA'
+      OPEN.EDATE=ICONV('01/01/2099','D')
+      TB=CHAR(9)
+      GOSUB OPEN.FILES
+      READ TARIFF.DATE.XREF.REC FROM F.TABLES,'TARIFF.DATE.XREF' ELSE TARIFF.DATE.XREF.REC=''
+      READ TARIFFS.REC FROM F.TABLES,'TARIFFS' ELSE TARIFFS.REC=''
+      READ LI.CODES.REC FROM F.TABLES,'LI.CODES' ELSE LI.CODES.REC=''
+      READ INTL.CODES.REC FROM F.TABLES,'INTL.CODES' ELSE INTL.CODES.REC=''
+      READ AIR.CODES.REC FROM F.TABLES,'AIR.CODES' ELSE AIR.CODES.REC=''
+*
+* SELECT CLIENT FILE
+*
+      TEXT='Selecting Clients.'
+      CALL CENTER(TEXT,80)
+      CRT @(0,10):TEXT
+*
+      CLIENT.OUTPUT=''
+      IF CLIENT.ID='ALL' THEN
+         CLIENT.STMT='QSELECT MD FB.AUDIT F7'
+      END ELSE
+         CLIENT.STMT='SELECT CLIENTS WITH @ID EQ "':CLIENT.ID:'"'
+      END
+      CRT CLIENT.STMT
+******************************************************************
+* Select of Client List
+******************************************************************
+      EXECUTE CLIENT.STMT RTNLIST CLIENT.LIST CAPTURING CLIENT.OUTPUT
+      CLIENT.ITEMS = @SELECTED
+      IF CLIENT.ITEMS < 1 THEN
+         CALL ELINE('ERROR - No clients on file.')
+         STOP
+      END
+      DEBUG
+      CLIENT.EOF=0
+      CLIENT.CNT=0
+      CLIENT.PER=0
+      LOOP
+         READNEXT CLIENT.ID FROM CLIENT.LIST ELSE CLIENT.EOF=1
+      UNTIL CLIENT.EOF DO
+         CLIENT.CNT+=1
+         IF CLIENT.ID='FB.AUDIT' OR CLIENT.ID[1,2]='99' THEN GO SKIP.CLIENT
+         READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE GO SKIP.CLIENT
+         CLIENT.NAME=CLIENT.REC<2>
+         CLIENT.STR=CHANGE(CLIENT.NAME,' ','-')
+         CRT @(0,12):CLIENT.ID:" ":CLIENT.NAME:" - Now selecting OLA Information":@(-3):
+         CALL PROG.BAR(14,CLIENT.CNT,CLIENT.ITEMS,CLIENT.PER)
+
+         GOSUB OPEN.CLIENT.FILES
+         GOSUB CLEAR.EXPORT.FILES
+
+*        AUDIT.ZIP.STMT='SSELECT FB.AUDIT.ZIPS,':CLIENT.ID  ; * GET THE OLA CARRIER LIST
+         AUDIT.ZIP.STMT='SELECT FB.AUDIT.ZIPS,':CLIENT.ID:' "00017*21075*16978*LTLALL*I""00017*21075*16978*LTLALL*O"'
+         EXECUTE AUDIT.ZIP.STMT RTNLIST AUDIT.ZIP.LIST CAPTURING AUDIT.ZIP.OUTPUT
+         AUDIT.ZIP.TCNT = @SELECTED
+         CRT @(0,16):CLIENT.ID:" ":CLIENT.NAME:" - Now processing ":AUDIT.ZIP.TCNT:" OLA Contracts":@(-4):
+         AUDIT.ZIP.EOF=0
+         AUDIT.ZIP.CNT=0
+         AUDIT.ZIP.PER=''
+         LOOP
+            READNEXT AUDIT.ZIP.ID FROM AUDIT.ZIP.LIST ELSE AUDIT.ZIP.EOF=1
+         UNTIL AUDIT.ZIP.EOF DO
+            AUDIT.ZIP.CNT+=1
+            IF AUDIT.ZIP.TCNT>0 THEN CALL PROG.BAR(18,AUDIT.ZIP.CNT,AUDIT.ZIP.TCNT,AUDIT.ZIP.PER)
+*
+* GATHER INFORMATION FOR EXPORT
+*
+            GOSUB AUDIT.ZIP.ASSIGN
+            IF AUDIT.ZIP.ERROR#'' THEN
+               CALL ELINE(AUDIT.ZIP.ERROR)
+               GO SKIP.AUDIT.ZIP
+            END
+            IF AUDIT.ZIP.REC<1>='DISABLE' THEN GO SKIP.AUDIT.ZIP
+            GOSUB CARRIER.ASSIGN
+            IF CARRIER.ERROR#'' THEN
+               CALL ELINE(CARRIER.ERROR)
+               GO SKIP.AUDIT.ZIP
+            END
+            GOSUB AUDIT.ASSIGN
+            IF AUDIT.ERROR#'' THEN
+               CALL ELINE(AUDIT.ERROR)
+               GO SKIP.AUDIT.ZIP
+            END
+            OBD.STR='NOF'
+            OED.STR='NOF'
+            LOCATE LOC.ZIP IN AUDIT.LOC.ZIP.ARRY<1> SETTING ZVAL THEN
+               LOCATE EFF.DATE IN AUDIT.BDATE.ARRY<1,ZVAL> SETTING BDSVAL THEN
+                  BDATE=AUDIT.BDATE.ARRY<1,ZVAL,BDSVAL>
+                  EDATE=AUDIT.EDATE.ARRY<1,ZVAL,BDSVAL>
+                  IF EDATE='' THEN EDATE=OPEN.EDATE
+                  OBDATE=OCONV(BDATE,'D4/')
+                  OEDATE=OCONV(EDATE,'D4/')
+                  OBD.STR=OBDATE[7,4]:OBDATE[1,2]:OBDATE[4,2]
+                  OED.STR=OEDATE[7,4]:OEDATE[1,2]:OEDATE[4,2]
+               END
+            END
+*
+* CREATE THE BENCHMARK TEMPLATE.ID
+*
+            OLA.BTEMP.ID=CARRIER.SCAC:'_':CLIENT.STR:'_BENCHMARK_':OBD.STR:'_':OED.STR
+*
+* CREATE THE CONTRACT TEMPLATE ID
+*
+            OLA.CTEMP.ID=CARRIER.SCAC:'_':CLIENT.STR:'_CONTRACT_':OBD.STR:'_':OED.STR
+*
+* PREPARE EXPORT INFORMATION
+*
+            GOSUB INIT.EXPORT.RECS
+            GOSUB INIT.EXPORT.HDGS
+            GOSUB INIT.LOOKUP.ARRAYS
+
+*
+* NOTES TAB
+*
+            OLA.NOTES.LINE=' '
+            OLA.NOTES.BREC<-1>=OLA.NOTES.LINE
+            OLA.NOTES.CREC<-1>=OLA.NOTES.LINE
+*
+* CARRIER INFO TAB
+*
+            OLA.CAR.LINE=''
+            OLA.CAR.LINE<1,1>=CARRIER.ID
+            OLA.CAR.LINE<1,2>=CARRIER.REC<1>
+            OLA.CAR.LINE<1,3>=CARRIER.REC<12>
+            OLA.CAR.LINE<1,4>=''
+            OLA.CAR.LINE<1,5>=''
+            OLA.CAR.LINE<1,6>=''
+            OLA.CAR.LINE<1,7>=CARRIER.REC<32>
+            OLA.CAR.LINE<1,8>=CARRIER.REC<33>
+            OLA.CAR.LINE<1,9>=CARRIER.REC<34>
+            OLA.CAR.LINE<1,10>=CARRIER.REC<35>
+            OLA.CAR.LINE<1,11>=CARRIER.REC<6>
+            OLA.CAR.LINE<1,12>=CARRIER.REC<8>
+            OLA.CAR.LINE<1,13>=CARRIER.REC<9>
+            OLA.CAR.LINE<1,14>=CARRIER.REC<2>
+            OLA.CAR.LINE<1,15>=CARRIER.REC<3>
+            OLA.CAR.LINE<1,16>=CARRIER.REC<4>
+            OLA.CAR.LINE<1,17>=CARRIER.REC<5>
+            OLA.CAR.LINE<1,18>=AUDIT.CORE
+            OLA.CAR.BREC<-1>=OLA.CAR.LINE
+            OLA.CAR.CREC<-1>=OLA.CAR.LINE
+*
+* CONTRACT INFO TAB
+*
+            OLA.BENCHMARK.LINE=''
+            OLA.BENCHMARK.LINE<1,1>='TRUE'
+            OLA.BENCHMARK.LINE<1,2>='WEIGHT'
+            OLA.BENCHMARK.LINE<1,3>='FALSE'
+            OLA.BENCHMARK.LINE<1,4>=OLA.BTEMP.ID
+            OLA.CONTRACT.BREC<-1>=OLA.BENCHMARK.LINE
+            OLA.CONTRACT.LINE=''
+            OLA.CONTRACT.LINE<1,1>='TRUE'
+            OLA.CONTRACT.LINE<1,2>='WEIGHT'
+            OLA.CONTRACT.LINE<1,3>='FALSE'
+            OLA.CONTRACT.LINE<1,4>=OLA.CTEMP.ID
+            OLA.CONTRACT.CREC<-1>=OLA.CONTRACT.LINE
+*
+* INSURANCE INFO TAB
+*
+            OLA.INS.LINE=''
+            OLA.INS.LINE<-1>='Physical Liability'
+            OLA.INS.LINE<-1>='Physical Damage'
+            OLA.INS.LINE<-1>='Cargo'
+            OLA.INS.BREC<-1>=OLA.INS.LINE
+            OLA.INS.CREC<-1>=OLA.INS.LINE
+*
+* ZONES TAB - LOCATION "ZONE"
+*
+            OLA.ZONES.LINE=''
+            OLA.ZONES.LINE<1,1>=LOC.ZIP
+            OLA.ZONES.LINE<1,4>=LOC.ZIP
+            OLA.ZONES.LINE<1,7>=CARRIER.SCAC
+            OLA.ZONES.BREC<-1>=OLA.ZONES.LINE
+            OLA.ZONES.CREC<-1>=OLA.ZONES.LINE
+
+            NZIPVAL=DCOUNT(AUDIT.ZIP.BZIP.ARRY,@VM)
+            FOR ZIPVAL=1 TO NZIPVAL
+               AUDIT.ZIP.BZIP=AUDIT.ZIP.BZIP.ARRY<1,ZIPVAL>
+               AUDIT.ZIP.EZIP=AUDIT.ZIP.EZIP.ARRY<1,ZIPVAL>
+               AUDIT.ZIP.QUOTE=AUDIT.ZIP.QUOTE.ARRY<1,ZIPVAL>
+               IF AUDIT.ZIP.QUOTE='N' THEN SVC.EXCP.FLG=1
+               AUDIT.ZIP.TABLE=AUDIT.ZIP.TABLE.ARRY<1,ZIPVAL>
+               IF AUDIT.ZIP.TABLE#'' THEN
+                  AUDIT.TABLE.ID=CARRIER.ID:'*':AUDIT.ZIP.TABLE
+                  GOSUB AUDIT.TABLE.ASSIGN
+                  IF AUDIT.TABLE.ERROR#'' THEN
+                     CALL ELINE(AUDIT.TABLE.ERROR)
+                     GO SKIP.AUDIT.ZIP
+                  END
+               END
+*
+* ZONES TAB - SHIPPING "ZONE"
+*
+               OLA.ZONES.LINE=''
+               OLA.ZONES.LINE<1,1>=AUDIT.ZIP.BZIP
+               OLA.ZONES.LINE<1,4>=AUDIT.ZIP.BZIP
+               OLA.ZONES.LINE<1,5>=AUDIT.ZIP.EZIP
+               OLA.ZONES.LINE<1,7>=CARRIER.SCAC
+               OLA.ZONES.BREC<-1>=OLA.ZONES.LINE
+               OLA.ZONES.CREC<-1>=OLA.ZONES.LINE
+               BEGIN CASE
+                  CASE AUDIT.ZIP.QUOTE='N'
+*
+* ServiceExceptions TAB
+*
+                     OLA.SVC.EXCP.LINE=''
+                     OLA.SVC.EXCP.LINE<1,1>='LTL'
+                     OLA.SVC.EXCP.LINE<1,2>=''
+                     BEGIN CASE
+                        CASE IOT='I'
+                           OLA.SVC.EXCP.LINE<1,3>=AUDIT.ZIP.BZIP
+                           OLA.SVC.EXCP.LINE<1,4>=LOC.ZIP
+                        CASE IOT='0'
+                           OLA.SVC.EXCP.LINE<1,3>=LOC.ZIP
+                           OLA.SVC.EXCP.LINE<1,4>=AUDIT.ZIP.BZIP
+                     END CASE
+                     OLA.SVC.EXCP.LINE<1,5>='D'
+                     OLA.SVC.EXCP.BREC<-1>=OLA.SVC.EXCP.LINE
+                     OLA.SVC.EXCP.CREC<-1>=OLA.SVC.EXCP.LINE
+                  CASE AUDIT.ZIP.QUOTE='Y'
+*
+* LTL-FAK BENCHMARK TAB
+*
+                     OLA.LTL.FAK.BLINE=''
+                     BEGIN CASE
+                        CASE IOT='I'
+                           OLA.LTL.FAK.BLINE<1,1>=AUDIT.ZIP.BZIP
+                           OLA.LTL.FAK.BLINE<1,2>=LOC.ZIP
+                        CASE IOT='0'
+                           OLA.LTL.FAK.BLINE<1,1>=LOC.ZIP
+                           OLA.LTL.FAK.BLINE<1,2>=AUDIT.ZIP.BZIP
+                     END CASE
+                     OLA.LTL.FAK.BLINE<1,3>='D'
+                     OLA.LTL.FAK.BLINE<1,4>='500'
+                     OLA.LTL.FAK.BLINE<1,5>=AUDIT.TABLE.BENCH.FAK.ARRY
+                     OLA.LTL.FAK.BREC<-1>=OLA.LTL.FAK.BLINE
+
+*
+* LTL-FAK CONTRACT TAB
+*
+                     OLA.LTL.FAK.CLINE=''
+                     BEGIN CASE
+                        CASE IOT='I'
+                           OLA.LTL.FAK.CLINE<1,1>=AUDIT.ZIP.BZIP
+                           OLA.LTL.FAK.CLINE<1,2>=LOC.ZIP
+                        CASE IOT='0'
+                           OLA.LTL.FAK.CLINE<1,1>=LOC.ZIP
+                           OLA.LTL.FAK.CLINE<1,2>=AUDIT.ZIP.BZIP
+                     END CASE
+                     OLA.LTL.FAK.CLINE<1,3>='D'
+                     OLA.LTL.FAK.CLINE<1,4>='500'
+                     OLA.LTL.FAK.CLINE<1,5>=AUDIT.TABLE.CONTR.FAK.ARRY
+                     OLA.LTL.FAK.CREC<-1>=OLA.LTL.FAK.CLINE
+
+*
+* LTL-DISCOUNTS BENCHMARK TAB
+*
+                     ABFNVAL=DCOUNT(AUDIT.TABLE.BENCH.FAK.ARRY,@VM)
+                     FOR INTER.STATUS=1 TO 2
+                        FOR ABFVAL=1 TO ABFNVAL
+                           OLA.LTL.DISC.BLINE=''
+                           OLA.LTL.DISC.BLINE<1,1>=AUDIT.TABLE.BENCH.FAK.ARRY<1,ABFVAL>
+                           OLA.LTL.DISC.BLINE<1,2>=AUDIT.TABLE.BENCH.FAK.ARRY<1,ABFVAL>
+                           OLA.LTL.DISC.BLINE<1,3>='0'
+                           OLA.LTL.DISC.BLINE<1,4>='9999'
+                           BEGIN CASE
+                              CASE IOT='I'
+                                 OLA.LTL.DISC.BLINE<1,5>=AUDIT.ZIP.BZIP
+                                 OLA.LTL.DISC.BLINE<1,6>=LOC.ZIP
+                              CASE IOT='0'
+                                 OLA.LTL.DISC.BLINE<1,5>=LOC.ZIP
+                                 OLA.LTL.DISC.BLINE<1,6>=AUDIT.ZIP.BZIP
+                           END CASE
+                           OLA.LTL.DISC.BLINE<1,7>='D'
+                           OLA.LTL.DISC.BLINE<1,8>='500'
+                           BEGIN CASE
+                              CASE INTER.STATUS=1
+                                 OLA.LTL.DISC.BLINE<1,9>='Y'
+                              CASE INTER.STATUS=2
+                                 OLA.LTL.DISC.BLINE<1,9>='N'
+                           END CASE
+                           AUDIT.BENCH.TARIFF.ID=AUDIT.TABLE.BENCH.TARIFF.ARRY<16,ABFVAL>
+                           SFW.BENCH.TARIFF.ID=''
+                           IF AUDIT.BENCH.TARIFF.ID#'' THEN
+                              GOSUB AUDIT.BENCH.TARIFF.ASSIGN
+                              IF AUDIT.BENCH.TARIFF.ERROR#'' THEN
+                                 CALL ELINE(AUDIT.BENCH.TARIFF.ERROR)
+                              END
+                           END
+                           OLA.LTL.DISC.BLINE<1,10>=SFW.BENCH.TARIFF.ID
+                           BEGIN CASE
+                              CASE INTER.STATUS=1
+                                 OLA.LTL.DISC.BLINE<1,11>=AUDIT.TABLE.INTRA.BENCH.MIN.AMT'MR26'
+                              CASE INTER.STATUS=2
+                                 OLA.LTL.DISC.BLINE<1,11>=AUDIT.TABLE.INTER.BENCH.MIN.AMT'MR26'
+                           END CASE
+                           OLA.LTL.DISC.BLINE<1,12>=AUDIT.TABLE.BENCH.TMIN.ARRY<1,ABFVAL>'MR26'
+                           OLA.LTL.DISC.BLINE<1,13>=AUDIT.TABLE.BENCH.L5C.ARRY<1,ABFVAL>'MR26'
+                           OLA.LTL.DISC.BLINE<1,14>=AUDIT.TABLE.BENCH.O5C.ARRY<1,ABFVAL>'MR26'
+                           OLA.LTL.DISC.BLINE<1,15>=AUDIT.TABLE.BENCH.O5C.ARRY<1,ABFVAL>'MR26'
+                           OLA.LTL.DISC.BLINE<1,16>=AUDIT.TABLE.BENCH.O5C.ARRY<1,ABFVAL>'MR26'
+                           OLA.LTL.DISC.BLINE<1,17>=AUDIT.TABLE.BENCH.O5C.ARRY<1,ABFVAL>'MR26'
+                           OLA.LTL.DISC.BLINE<1,18>=AUDIT.TABLE.BENCH.O5C.ARRY<1,ABFVAL>'MR26'
+                           OLA.LTL.DISC.BLINE<1,19>='0'
+                           OLA.LTL.DISC.BLINE<1,20>='0'
+                           OLA.LTL.DISC.BLINE<1,21>='0'
+                           LOCATE OLA.LTL.DISC.BLINE IN OLA.LTL.DISC.BREC SETTING BPOS ELSE
+                              OLA.LTL.DISC.BREC<-1>=OLA.LTL.DISC.BLINE
+                           END
+                           LOCATE SFW.BENCH.TARIFF.ID IN TARIFF.ARRY BY 'AR' SETTING TPOS ELSE
+                              INS SFW.BENCH.TARIFF.ID BEFORE TARIFF.ARRY<TPOS>
+                           END
+                        NEXT ABFVAL
+                     NEXT INTER.STATUS
+
+*
+* LTL-DISCOUNTS CONTRACT TAB
+*
+                     ACFNVAL=DCOUNT(AUDIT.TABLE.CONTR.FAK.ARRY,@VM)
+                     FOR INTER.STATUS=1 TO 2
+                        FOR ACFVAL=1 TO ACFNVAL
+                           OLA.LTL.DISC.CLINE=''
+                           OLA.LTL.DISC.CLINE<1,1>=AUDIT.TABLE.CONTR.FAK.ARRY<1,ACFVAL>
+                           OLA.LTL.DISC.CLINE<1,2>=AUDIT.TABLE.CONTR.FAK.ARRY<1,ACFVAL>
+                           OLA.LTL.DISC.CLINE<1,3>='0'
+                           OLA.LTL.DISC.CLINE<1,4>='9999'
+                           BEGIN CASE
+                              CASE IOT='I'
+                                 OLA.LTL.DISC.CLINE<1,5>=AUDIT.ZIP.BZIP
+                                 OLA.LTL.DISC.CLINE<1,6>=LOC.ZIP
+                              CASE IOT='0'
+                                 OLA.LTL.DISC.CLINE<1,5>=LOC.ZIP
+                                 OLA.LTL.DISC.CLINE<1,6>=AUDIT.ZIP.BZIP
+                           END CASE
+                           OLA.LTL.DISC.CLINE<1,7>='D'
+                           OLA.LTL.DISC.CLINE<1,8>='500'
+                           BEGIN CASE
+                              CASE INTER.STATUS=1
+                                 OLA.LTL.DISC.CLINE<1,9>='Y'
+                              CASE INTER.STATUS=2
+                                 OLA.LTL.DISC.CLINE<1,9>='N'
+                           END CASE
+                           AUDIT.CONTR.TARIFF.ID=AUDIT.TABLE.CONTR.TARIFF.ARRY<6,ACFVAL>
+                           SFW.CONTR.TARIFF.ID=''
+                           IF AUDIT.CONTR.TARIFF.ID#'' THEN
+                              GOSUB AUDIT.CONTR.TARIFF.ASSIGN
+                              IF AUDIT.CONTR.TARIFF.ERROR#'' THEN
+                                 CALL ELINE(AUDIT.CONTR.TARIFF.ERROR)
+                              END
+                           END
+                           OLA.LTL.DISC.CLINE<1,10>=SFW.CONTR.TARIFF.ID
+                           BEGIN CASE
+                              CASE INTER.STATUS=1
+                                 OLA.LTL.DISC.CLINE<1,11>=AUDIT.TABLE.INTRA.CONTR.MIN.AMT'MR26'
+                              CASE INTER.STATUS=2
+                                 OLA.LTL.DISC.CLINE<1,11>=AUDIT.TABLE.INTER.CONTR.MIN.AMT'MR26'
+                           END CASE
+                           OLA.LTL.DISC.CLINE<1,12>=AUDIT.TABLE.CONTR.TMIN.ARRY<1,ACFVAL>'MR26'
+                           OLA.LTL.DISC.CLINE<1,13>=AUDIT.TABLE.CONTR.L5C.ARRY<1,ACFVAL>'MR26'
+                           OLA.LTL.DISC.CLINE<1,14>=AUDIT.TABLE.CONTR.O5C.ARRY<1,ACFVAL>'MR26'
+                           OLA.LTL.DISC.CLINE<1,15>=AUDIT.TABLE.CONTR.O5C.ARRY<1,ACFVAL>'MR26'
+                           OLA.LTL.DISC.CLINE<1,16>=AUDIT.TABLE.CONTR.O5C.ARRY<1,ACFVAL>'MR26'
+                           OLA.LTL.DISC.CLINE<1,17>=AUDIT.TABLE.CONTR.O5C.ARRY<1,ACFVAL>'MR26'
+                           OLA.LTL.DISC.CLINE<1,18>=AUDIT.TABLE.CONTR.O5C.ARRY<1,ACFVAL>'MR26'
+                           OLA.LTL.DISC.CLINE<1,19>='0'
+                           OLA.LTL.DISC.CLINE<1,20>='0'
+                           OLA.LTL.DISC.CLINE<1,21>='0'
+                           LOCATE OLA.LTL.DISC.CLINE IN OLA.LTL.DISC.CREC SETTING CPOS ELSE
+                              OLA.LTL.DISC.CREC<-1>=OLA.LTL.DISC.CLINE
+                           END
+                           LOCATE SFW.CONTR.TARIFF.ID IN TARIFF.ARRY BY 'AR' SETTING TPOS ELSE
+                              INS SFW.CONTR.TARIFF.ID BEFORE TARIFF.ARRY<TPOS>
+                           END
+                        NEXT ACFVAL
+                     NEXT INTER.STATUS
+
+                     ACC.NVAL=DCOUNT(AUDIT.TABLE.ACC.ARRY<1>,@VM)
+*
+* Accessorials Benchmark Tab
+*
+                     FOR ACC.VAL=1 TO ACC.NVAL
+                        AFS.ACC.ID=AUDIT.TABLE.ACC.ARRY<1,ACC.VAL>
+                        AFS.ACC.DESC=''
+                        LOCATE AFS.ACC.ID IN LI.CODES.REC<1> SETTING ACC.POS THEN
+                           AFS.ACC.DESC=LI.CODES.REC<2,ACC.POS>
+                        END
+                        ACC.BENCH.AMT=AUDIT.TABLE.ACC.BENCH.ARRY<1,ACC.POS>
+                        IF ACC.BENCH.AMT#'' AND NUM(ACC.BENCH.AMT) AND AUDIT.ZIP.BZIP#'' AND LOC.ZIP#'' THEN
+                           OLA.ACC.BLINE=''
+                           OLA.ACC.BLINE<1,1>=AFS.ACC.DESC
+                           BEGIN CASE
+                              CASE IOT='I'
+                                 OLA.ACC.BLINE<1,2>=AUDIT.ZIP.BZIP
+                                 OLA.ACC.BLINE<1,3>=LOC.ZIP
+                              CASE IOT='0'
+                                 OLA.ACC.BLINE<1,2>=LOC.ZIP
+                                 OLA.ACC.BLINE<1,3>=AUDIT.ZIP.BZIP
+                           END CASE
+                           OLA.ACC.BLINE<1,4>='500'
+                           OLA.ACC.BLINE<1,5>='D'
+                           OLA.ACC.BLINE<1,6>='FALSE'
+                           OLA.ACC.BLINE<1,7>='WEIGHT'
+                           OLA.ACC.BLINE<1,8>='0'
+                           OLA.ACC.BLINE<1,9>='50000'
+                           OLA.ACC.BLINE<1,13>=ACC.BENCH.AMT'MR26'
+                           OLA.ACC.BREC<-1>=OLA.ACC.BLINE
+                           LOCATE AFS.ACC.DESC IN ACCESS.ARRY BY 'AL' SETTING ACC.POS ELSE
+                              INS AFS.ACC.DESC BEFORE ACCESS.ARRY<ACC.POS>
+                           END
+                        END
+                     NEXT ACC.VAL
+*
+* Accessorials Contract Tab
+*
+                     FOR ACC.VAL=1 TO ACC.NVAL
+                        AFS.ACC.ID=AUDIT.TABLE.ACC.ARRY<1,ACC.VAL>
+                        AFS.ACC.DESC=''
+                        LOCATE AFS.ACC.ID IN LI.CODES.REC<1> SETTING ACC.POS THEN
+                           AFS.ACC.DESC=LI.CODES.REC<2,ACC.POS>
+                        END
+                        ACC.CONTR.AMT=AUDIT.TABLE.ACC.CONTR.ARRY<1,ACC.POS>
+                        IF ACC.CONTR.AMT#'' AND NUM(ACC.CONTR.AMT) AND AUDIT.ZIP.BZIP#'' AND LOC.ZIP#'' THEN
+                           OLA.ACC.CLINE=''
+                           OLA.ACC.CLINE<1,1>=AFS.ACC.DESC
+                           BEGIN CASE
+                              CASE IOT='I'
+                                 OLA.ACC.CLINE<1,2>=AUDIT.ZIP.BZIP
+                                 OLA.ACC.CLINE<1,3>=LOC.ZIP
+                              CASE IOT='0'
+                                 OLA.ACC.CLINE<1,2>=LOC.ZIP
+                                 OLA.ACC.CLINE<1,3>=AUDIT.ZIP.BZIP
+                           END CASE
+                           OLA.ACC.CLINE<1,4>='500'
+                           OLA.ACC.CLINE<1,5>='D'
+                           OLA.ACC.CLINE<1,6>='FALSE'
+                           OLA.ACC.CLINE<1,7>='WEIGHT'
+                           OLA.ACC.CLINE<1,8>='0'
+                           OLA.ACC.CLINE<1,9>='50000'
+                           OLA.ACC.CLINE<1,13>=ACC.CONTR.AMT'MR26'
+                           OLA.ACC.CREC<-1>=OLA.ACC.CLINE
+                           LOCATE AFS.ACC.DESC IN ACCESS.ARRY BY 'AL' SETTING ACC.POS ELSE
+                              INS AFS.ACC.DESC BEFORE ACCESS.ARRY<ACC.POS>
+                           END
+                        END
+                     NEXT ACC.VAL
+
+               END CASE
+
+            NEXT ZIPVAL
+*
+* Lookups Tab
+*
+            ACCESS.NATT=DCOUNT(ACCESS.ARRY,@AM)
+            MODE.NATT=DCOUNT(MODE.ARRY,@AM)
+            TARIFF.NATT=DCOUNT(TARIFF.ARRY,@AM)
+            CLASS.NATT=DCOUNT(CLASS.ARRY,@AM)
+            OLA.LOOK.NATT=0
+            IF ACCESS.NATT>OLA.LOOK.NATT THEN OLA.LOOK.NATT=ACCESS.NATT
+            IF MODE.NATT>OLA.LOOK.NATT THEN OLA.LOOK.NATT=MODE.NATT
+            IF TARIFF.NATT>OLA.LOOK.NATT THEN OLA.LOOK.NATT=TARIFF.NATT
+            IF CLASS.NATT>OLA.LOOK.NATT THEN OLA.LOOK.NATT=CLASS.NATT
+            FOR OLA.LOOK.ATT=1 TO OLA.LOOK.NATT
+               OLA.LOOK.LINE=''
+               OLA.LOOK.LINE<1,1>=ACCESS.ARRY<OLA.LOOK.ATT>
+               OLA.LOOK.LINE<1,2>=MODE.ARRY<OLA.LOOK.ATT>
+               SFW.TARIFF.ID=TARIFF.ARRY<OLA.LOOK.ATT>
+               READ SFW.TARIFF.REC FROM F.SFW.TARIFF,SFW.TARIFF.ID ELSE SFW.TARIFF.REC=''
+               SFW.TARIFF.DESC=SFW.TARIFF.REC<1>
+               SFW.TARIFF.NAME=SFW.TARIFF.REC<2>
+               SFW.TARIFF.DATE=SFW.TARIFF.REC<3>
+               SFW.TARIFF.TYPE=SFW.TARIFF.REC<4>
+               OLA.LOOK.LINE<1,4>=SFW.TARIFF.ID
+               OLA.LOOK.LINE<1,5>=SFW.TARIFF.DESC
+               OLA.LOOK.LINE<1,6>=SFW.TARIFF.NAME
+               OLA.LOOK.LINE<1,7>=SFW.TARIFF.DATE'D4/'
+               OLA.LOOK.LINE<1,8>=SFW.TARIFF.TYPE
+               OLA.LOOK.LINE<1,10>=CLASS.ARRY<OLA.LOOK.ATT>
+               OLA.LOOK.BREC<-1>=OLA.LOOK.LINE
+               OLA.LOOK.CREC<-1>=OLA.LOOK.LINE
+            NEXT OLA.LOOK.ATT
+*
+* WRITE OUT BENCHMARK TEMPLATE RECORDS
+*
+            WRITE OLA.NOTES.BREC ON F.OLA.NOTES,OLA.BTEMP.ID
+            WRITE OLA.CAR.BREC ON F.OLA.CAR,OLA.BTEMP.ID
+            WRITE OLA.CONTRACT.BREC ON F.OLA.CONTRACT,OLA.BTEMP.ID
+            WRITE OLA.INS.BREC ON F.OLA.INS,OLA.BTEMP.ID
+            WRITE OLA.ACC.BREC ON F.OLA.ACC,OLA.BTEMP.ID
+            WRITE OLA.SVC.EXCP.BREC ON F.OLA.SVC.EXCP,OLA.BTEMP.ID
+            WRITE OLA.ZONES.BREC ON F.OLA.ZONES,OLA.BTEMP.ID
+            WRITE OLA.RATES.BREC ON F.OLA.RATES,OLA.BTEMP.ID
+            WRITE OLA.MARKUP.ACC.BREC ON F.OLA.MARKUP.ACC,OLA.BTEMP.ID
+            WRITE OLA.MARKUP.RATE.BREC ON F.OLA.MARKUP.RATE,OLA.BTEMP.ID
+            WRITE OLA.LTL.DISC.BREC ON F.OLA.LTL.DISC,OLA.BTEMP.ID
+            WRITE OLA.LTL.FAK.BREC ON F.OLA.LTL.FAK,OLA.BTEMP.ID
+            WRITE OLA.LOOK.BREC ON F.OLA.LOOK,OLA.BTEMP.ID
+            WRITE OLA.TRANS.LOOK.BREC ON F.OLA.TRANS.LOOK,OLA.BTEMP.ID
+            WRITE OLA.HELP.BREC ON F.OLA.HELP,OLA.BTEMP.ID
+*
+* WRITE OUT CONTRACT TEMPLATE RECORDS
+*
+            WRITE OLA.NOTES.CREC ON F.OLA.NOTES,OLA.CTEMP.ID
+            WRITE OLA.CAR.CREC ON F.OLA.CAR,OLA.CTEMP.ID
+            WRITE OLA.CONTRACT.CREC ON F.OLA.CONTRACT,OLA.CTEMP.ID
+            WRITE OLA.INS.CREC ON F.OLA.INS,OLA.CTEMP.ID
+            WRITE OLA.ACC.CREC ON F.OLA.ACC,OLA.CTEMP.ID
+            WRITE OLA.SVC.EXCP.CREC ON F.OLA.SVC.EXCP,OLA.CTEMP.ID
+            WRITE OLA.ZONES.CREC ON F.OLA.ZONES,OLA.CTEMP.ID
+            WRITE OLA.RATES.CREC ON F.OLA.RATES,OLA.CTEMP.ID
+            WRITE OLA.MARKUP.ACC.CREC ON F.OLA.MARKUP.ACC,OLA.CTEMP.ID
+            WRITE OLA.MARKUP.RATE.CREC ON F.OLA.MARKUP.RATE,OLA.CTEMP.ID
+            WRITE OLA.LTL.DISC.CREC ON F.OLA.LTL.DISC,OLA.CTEMP.ID
+            WRITE OLA.LTL.FAK.CREC ON F.OLA.LTL.FAK,OLA.CTEMP.ID
+            WRITE OLA.LOOK.CREC ON F.OLA.LOOK,OLA.CTEMP.ID
+            WRITE OLA.TRANS.LOOK.CREC ON F.OLA.TRANS.LOOK,OLA.CTEMP.ID
+            WRITE OLA.HELP.CREC ON F.OLA.HELP,OLA.CTEMP.ID
+
+*
+* WRITE OUT BENCHMARK TEMPLATE RECORDS FOR KC
+*
+            WRITE CHANGE(OLA.NOTES.BREC,@VM,TB) ON F.EXPORT,OLA.BTEMP.ID:'_Notes.csv'
+            WRITE CHANGE(OLA.CAR.BREC,@VM,TB) ON F.EXPORT,OLA.BTEMP.ID:'_CarrierInfo.csv'
+            WRITE CHANGE(OLA.CONTRACT.BREC,@VM,TB) ON F.EXPORT,OLA.BTEMP.ID:'_ContractInfo.csv'
+            WRITE CHANGE(OLA.INS.BREC,@VM,TB) ON F.EXPORT,OLA.BTEMP.ID:'_InsuranceInfo.csv'
+            WRITE CHANGE(OLA.ACC.BREC,@VM,TB) ON F.EXPORT,OLA.BTEMP.ID:'_Accessorials.csv'
+            WRITE CHANGE(OLA.SVC.EXCP.BREC,@VM,TB) ON F.EXPORT,OLA.BTEMP.ID:'_ServiceExceptions.csv'
+            WRITE CHANGE(OLA.ZONES.BREC,@VM,TB) ON F.EXPORT,OLA.BTEMP.ID:'_Zones.csv'
+            WRITE CHANGE(OLA.RATES.BREC,@VM,TB) ON F.EXPORT,OLA.BTEMP.ID:'_Rates.csv'
+            WRITE CHANGE(OLA.MARKUP.ACC.BREC,@VM,TB) ON F.EXPORT,OLA.BTEMP.ID:'_MarkupACC.csv'
+            WRITE CHANGE(OLA.MARKUP.RATE.BREC,@VM,TB) ON F.EXPORT,OLA.BTEMP.ID:'_MarkupRates.csv'
+            WRITE CHANGE(OLA.LTL.DISC.BREC,@VM,TB) ON F.EXPORT,OLA.BTEMP.ID:'_LTLDiscounts.csv'
+            WRITE CHANGE(OLA.LTL.FAK.BREC,@VM,TB) ON F.EXPORT,OLA.BTEMP.ID:'_LTLFAK.csv'
+            WRITE CHANGE(OLA.LOOK.BREC,@VM,TB) ON F.EXPORT,OLA.BTEMP.ID:'_Lookups.csv'
+            WRITE CHANGE(OLA.TRANS.LOOK.BREC,@VM,TB) ON F.EXPORT,OLA.BTEMP.ID:'_TransferLookups.csv'
+            WRITE CHANGE(OLA.HELP.BREC,@VM,TB) ON F.EXPORT,OLA.BTEMP.ID:'_HelpfulTip.csv'
+*
+* WRITE OUT CONTRACT TEMPLATE RECORDS FOR KC
+*
+            WRITE CHANGE(OLA.NOTES.CREC,@VM,TB) ON F.EXPORT,OLA.CTEMP.ID:'_Notes.csv'
+            WRITE CHANGE(OLA.CAR.CREC,@VM,TB) ON F.EXPORT,OLA.CTEMP.ID:'_CarrierInfo.csv'
+            WRITE CHANGE(OLA.CONTRACT.CREC,@VM,TB) ON F.EXPORT,OLA.CTEMP.ID:'_ContractInfo.csv'
+            WRITE CHANGE(OLA.INS.CREC,@VM,TB) ON F.EXPORT,OLA.CTEMP.ID:'_InsuranceInfo.csv'
+            WRITE CHANGE(OLA.ACC.CREC,@VM,TB) ON F.EXPORT,OLA.CTEMP.ID:'_Accessorials.csv'
+            WRITE CHANGE(OLA.SVC.EXCP.CREC,@VM,TB) ON F.EXPORT,OLA.CTEMP.ID:'_ServiceExceptions.csv'
+            WRITE CHANGE(OLA.ZONES.CREC,@VM,TB) ON F.EXPORT,OLA.CTEMP.ID:'_Zones.csv'
+            WRITE CHANGE(OLA.RATES.CREC,@VM,TB) ON F.EXPORT,OLA.CTEMP.ID:'_Rates.csv'
+            WRITE CHANGE(OLA.MARKUP.ACC.CREC,@VM,TB) ON F.EXPORT,OLA.CTEMP.ID:'_MarkupACC.csv'
+            WRITE CHANGE(OLA.MARKUP.RATE.CREC,@VM,TB) ON F.EXPORT,OLA.CTEMP.ID:'_MarkupRates.csv'
+            WRITE CHANGE(OLA.LTL.DISC.CREC,@VM,TB) ON F.EXPORT,OLA.CTEMP.ID:'_LTLDiscounts.csv'
+            WRITE CHANGE(OLA.LTL.FAK.CREC,@VM,TB) ON F.EXPORT,OLA.CTEMP.ID:'_LTLFAK.csv'
+            WRITE CHANGE(OLA.LOOK.CREC,@VM,TB) ON F.EXPORT,OLA.CTEMP.ID:'_Lookups.csv'
+            WRITE CHANGE(OLA.TRANS.LOOK.CREC,@VM,TB) ON F.EXPORT,OLA.CTEMP.ID:'_TransferLookups.csv'
+            WRITE CHANGE(OLA.HELP.CREC,@VM,TB) ON F.EXPORT,OLA.CTEMP.ID:'_HelpfulTip.csv'
+
+*
+* PREPARE EXPORT INFORMATION
+*
+*            GOSUB INIT.EXPORT.RECS
+*            GOSUB INIT.EXPORT.HDGS
+*            GOSUB INIT.LOOKUP.ARRAYS
+
+SKIP.AUDIT.ZIP: *
+         REPEAT
+SKIP.CLIENT: ***
+      REPEAT
+      STOP
+OPEN.FILES: *
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+         CALL OPEN.ABORT('ZIPS.CODES',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      OPEN '','SFW.TARIFF' TO F.SFW.TARIFF ELSE
+         CALL OPEN.ABORT('SFW.TARIFF',PROG.NAME)
+      END
+      OPEN '','SFW.TARIFF.NDX' TO F.SFW.TARIFF.NDX ELSE
+         CALL OPEN.ABORT('SFW.TARIFF.NDX',PROG.NAME)
+      END
+      OPEN '','KC_OLA' TO F.EXPORT ELSE
+         CALL OPEN.ABORT('KC_OLA',PROG.NAME)
+      END
+      RETURN
+OPEN.CLIENT.FILES: *
+      OPEN '','OLA.ACCESSORIALS,':CLIENT.ID TO F.OLA.ACC ELSE
+         EXECUTE 'CREATE-FILE DATA OLA.ACCESSORIALS,':CLIENT.ID:' 3,1 1001,1' CAPTURING FILE.RESULTS
+         OPEN '','OLA.ACCESSORIALS,':CLIENT.ID TO F.OLA.ACC ELSE
+            CALL OPEN.ABORT('OLA.ACCESSORIALS,':CLIENT.ID,PROG.NAME)
+         END
+      END
+      OPEN '','OLA.CARRIER.INFO,':CLIENT.ID TO F.OLA.CAR ELSE
+         EXECUTE 'CREATE-FILE DATA OLA.CARRIER.INFO,':CLIENT.ID:' 3,1 1001,1' CAPTURING FILE.RESULTS
+         OPEN '','OLA.CARRIER.INFO,':CLIENT.ID TO F.OLA.CAR ELSE
+            CALL OPEN.ABORT('OLA.CARRIER.INFO,':CLIENT.ID,PROG.NAME)
+         END
+      END
+      OPEN '','OLA.CONTRACT.INFO,':CLIENT.ID TO F.OLA.CONTRACT ELSE
+         EXECUTE 'CREATE-FILE DATA OLA.CONTRACT.INFO,':CLIENT.ID:' 3,1 1001,1' CAPTURING FILE.RESULTS
+         OPEN '','OLA.CONTRACT.INFO,':CLIENT.ID TO F.OLA.CONTRACT ELSE
+            CALL OPEN.ABORT('OLA.CONTRACT.INFO,':CLIENT.ID,PROG.NAME)
+         END
+      END
+      OPEN '','OLA.HELPFUL.TIPS,':CLIENT.ID TO F.OLA.HELP ELSE
+         EXECUTE 'CREATE-FILE DATA OLA.HELPFUL.TIPS,':CLIENT.ID:' 3,1 1001,1' CAPTURING FILE.RESULTS
+         OPEN '','OLA.HELPFUL.TIPS,':CLIENT.ID TO F.OLA.HELP ELSE
+            CALL OPEN.ABORT('OLA.HELPFUL.TIPS,':CLIENT.ID,PROG.NAME)
+         END
+      END
+      OPEN '','OLA.INSURANCE.INFO,':CLIENT.ID TO F.OLA.INS ELSE
+         EXECUTE 'CREATE-FILE DATA OLA.INSURANCE.INFO,':CLIENT.ID:' 3,1 1001,1' CAPTURING FILE.RESULTS
+         OPEN '','OLA.INSURANCE.INFO,':CLIENT.ID TO F.OLA.INS ELSE
+            CALL OPEN.ABORT('OLA.INSURANCE.INFO,':CLIENT.ID,PROG.NAME)
+         END
+      END
+      OPEN '','OLA.LOOKUPS,':CLIENT.ID TO F.OLA.LOOK ELSE
+         EXECUTE 'CREATE-FILE DATA OLA.LOOKUPS,':CLIENT.ID:' 3,1 1001,1' CAPTURING FILE.RESULTS
+         OPEN '','OLA.LOOKUPS,':CLIENT.ID TO F.OLA.LOOK ELSE
+            CALL OPEN.ABORT('OLA.LOOKUPS,':CLIENT.ID,PROG.NAME)
+         END
+      END
+      OPEN '','OLA.LTL.DISCOUNTS,':CLIENT.ID TO F.OLA.LTL.DISC ELSE
+         EXECUTE 'CREATE-FILE DATA OLA.LTL.DISCOUNTS,':CLIENT.ID:' 3,1 1001,1' CAPTURING FILE.RESULTS
+         OPEN '','OLA.LTL.DISCOUNTS,':CLIENT.ID TO F.OLA.LTL.DISC ELSE
+            CALL OPEN.ABORT('OLA.LTL.DISCOUNTS,':CLIENT.ID,PROG.NAME)
+         END
+      END
+      OPEN '','OLA.LTL.FAK,':CLIENT.ID TO F.OLA.LTL.FAK ELSE
+         EXECUTE 'CREATE-FILE DATA OLA.LTL.FAK,':CLIENT.ID:' 3,1 1001,1' CAPTURING FILE.RESULTS
+         OPEN '','OLA.LTL.FAK,':CLIENT.ID TO F.OLA.LTL.FAK ELSE
+            CALL OPEN.ABORT('OLA.LTL.FAK,':CLIENT.ID,PROG.NAME)
+         END
+      END
+      OPEN '','OLA.MARKUP.ACC,':CLIENT.ID TO F.OLA.MARKUP.ACC ELSE
+         EXECUTE 'CREATE-FILE DATA OLA.MARKUP.ACC,':CLIENT.ID:' 3,1 1001,1' CAPTURING FILE.RESULTS
+         OPEN '','OLA.MARKUP.ACC,':CLIENT.ID TO F.OLA.MARKUP.ACC ELSE
+            CALL OPEN.ABORT('OLA.MARKUP.ACC,':CLIENT.ID,PROG.NAME)
+         END
+      END
+      OPEN '','OLA.MARKUP.RATE,':CLIENT.ID TO F.OLA.MARKUP.RATE ELSE
+         EXECUTE 'CREATE-FILE DATA OLA.MARKUP.RATE,':CLIENT.ID:' 3,1 1001,1' CAPTURING FILE.RESULTS
+         OPEN '','OLA.MARKUP.RATE,':CLIENT.ID TO F.OLA.MARKUP.RATE ELSE
+            CALL OPEN.ABORT('OLA.MARKUP.RATE,':CLIENT.ID,PROG.NAME)
+         END
+      END
+      OPEN '','OLA.NOTES,':CLIENT.ID TO F.OLA.NOTES ELSE
+         EXECUTE 'CREATE-FILE DATA OLA.NOTES,':CLIENT.ID:' 3,1 1001,1' CAPTURING FILE.RESULTS
+         OPEN '','OLA.NOTES,':CLIENT.ID TO F.OLA.NOTES ELSE
+            CALL OPEN.ABORT('OLA.NOTES,':CLIENT.ID,PROG.NAME)
+         END
+      END
+      OPEN '','OLA.RATES,':CLIENT.ID TO F.OLA.RATES ELSE
+         EXECUTE 'CREATE-FILE DATA OLA.RATES,':CLIENT.ID:' 3,1 1001,1' CAPTURING FILE.RESULTS
+         OPEN '','OLA.RATES,':CLIENT.ID TO F.OLA.RATES ELSE
+            CALL OPEN.ABORT('OLA.RATES,':CLIENT.ID,PROG.NAME)
+         END
+      END
+      OPEN '','OLA.SERVICE.EXCEPTIONS,':CLIENT.ID TO F.OLA.SVC.EXCP ELSE
+         EXECUTE 'CREATE-FILE DATA OLA.SERVICE.EXCEPTIONS,':CLIENT.ID:' 3,1 1001,1' CAPTURING FILE.RESULTS
+         OPEN '','OLA.SERVICE.EXCEPTIONS,':CLIENT.ID TO F.OLA.SVC.EXCP ELSE
+            CALL OPEN.ABORT('OLA.SERVICE.EXCEPTIONS,':CLIENT.ID,PROG.NAME)
+         END
+      END
+      OPEN '','OLA.TRANSFER.LOOKUPS,':CLIENT.ID TO F.OLA.TRANS.LOOK ELSE
+         EXECUTE 'CREATE-FILE DATA OLA.TRANSFER.LOOKUPS,':CLIENT.ID:' 3,1 1001,1' CAPTURING FILE.RESULTS
+         OPEN '','OLA.TRANSFER.LOOKUPS,':CLIENT.ID TO F.OLA.TRANS.LOOK ELSE
+            CALL OPEN.ABORT('OLA.TRANSFER.LOOKUPS,':CLIENT.ID,PROG.NAME)
+         END
+      END
+      OPEN '','OLA.ZONES,':CLIENT.ID TO F.OLA.ZONES ELSE
+         EXECUTE 'CREATE-FILE DATA OLA.ZONES,':CLIENT.ID:' 3,1 1001,1' CAPTURING FILE.RESULTS
+         OPEN '','OLA.ZONES,':CLIENT.ID TO F.OLA.ZONES ELSE
+            CALL OPEN.ABORT('OLA.ZONES,':CLIENT.ID,PROG.NAME)
+         END
+      END
+      OPEN '','FB.AUDIT,':CLIENT.ID TO F.AUDIT ELSE
+         CALL OPEN.ABORT('FB.AUDIT,':CLIENT.ID,PROG.NAME)
+      END
+      OPEN '','FB.AUDIT.TABLES,':CLIENT.ID TO F.AUDIT.TABLES ELSE
+         CALL OPEN.ABORT('FB.AUDIT.TABLES,':CLIENT.ID,PROG.NAME)
+      END
+      OPEN '','FB.AUDIT.ZIPS,':CLIENT.ID TO F.AUDIT.ZIPS ELSE
+         CALL OPEN.ABORT('FB.AUDIT.ZIPS,':CLIENT.ID,PROG.NAME)
+      END
+      RETURN
+CLEAR.EXPORT.FILES: *
+      CLEARFILE F.OLA.ACC
+      CLEARFILE F.OLA.CAR
+      CLEARFILE F.OLA.CONTRACT
+      CLEARFILE F.OLA.HELP
+      CLEARFILE F.OLA.INS
+      CLEARFILE F.OLA.LOOK
+      CLEARFILE F.OLA.LTL.DISC
+      CLEARFILE F.OLA.LTL.FAK
+      CLEARFILE F.OLA.MARKUP.ACC
+      CLEARFILE F.OLA.MARKUP.RATE
+      CLEARFILE F.OLA.NOTES
+      CLEARFILE F.OLA.RATES
+      CLEARFILE F.OLA.SVC.EXCP
+      CLEARFILE F.OLA.TRANS.LOOK
+      CLEARFILE F.OLA.ZONES
+      RETURN
+INIT.EXPORT.RECS: *
+*
+* READ BENCHMARK TEMPLATE RECORDS
+*
+      READ OLA.NOTES.BREC FROM F.OLA.NOTES,OLA.BTEMP.ID:'_Notes.csv' ELSE OLA.NOTES.BREC=''
+      READ OLA.CAR.BREC FROM F.OLA.CAR,OLA.BTEMP.ID:'_CarrierInfo.csv' ELSE OLA.CAR.BREC=''
+      READ OLA.CONTRACT.BREC FROM F.OLA.CONTRACT,OLA.BTEMP.ID:'_ContractInfo.csv' ELSE OLA.CONTRACT.BREC=''
+      READ OLA.INS.BREC FROM F.OLA.INS,OLA.BTEMP.ID:'_InsuranceInfo.csv' ELSE OLA.INS.BREC=''
+      READ OLA.ACC.BREC FROM F.OLA.ACC,OLA.BTEMP.ID:'_Accessorials.csv' ELSE OLA.ACC.BREC=''
+      READ OLA.SVC.EXCP.BREC FROM F.OLA.SVC.EXCP,OLA.BTEMP.ID:'_ServiceExceptions.csv' ELSE OLA.SVC.EXCP.BREC=''
+      READ OLA.ZONES.BREC FROM F.OLA.ZONES,OLA.BTEMP.ID:'_Zones.csv' ELSE OLA.ZONES.BREC=''
+      READ OLA.RATES.BREC FROM F.OLA.RATES,OLA.BTEMP.ID:'_Rates.csv' ELSE OLA.RATES.BREC=''
+      READ OLA.MARKUP.ACC.BREC FROM F.OLA.MARKUP.ACC,OLA.BTEMP.ID:'_MarkupACC.csv' ELSE OLA.MARKUP.ACC.BREC=''
+      READ OLA.MARKUP.RATE.BREC FROM F.OLA.MARKUP.RATE,OLA.BTEMP.ID:'_MarkupRates.csv' ELSE OLA.MARKUP.RATE.BREC=''
+      READ OLA.LTL.DISC.BREC FROM F.OLA.LTL.DISC,OLA.BTEMP.ID:'_LTLDiscounts.csv' ELSE OLA.LTL.DISC.BREC=''
+      READ OLA.LTL.FAK.BREC FROM F.OLA.LTL.FAK,OLA.BTEMP.ID:'_LTLFAK.csv' ELSE OLA.LTL.FAK.BREC=''
+      READ OLA.LOOK.BREC FROM F.OLA.LOOK,OLA.BTEMP.ID:'_Lookups.csv' ELSE OLA.LOOK.BREC=''
+      READ OLA.TRANS.LOOK.BREC FROM F.OLA.TRANS.LOOK,OLA.BTEMP.ID:'_TransferLookups.csv' ELSE OLA.TRANS.LOOK.BREC=''
+      READ OLA.HELP.BREC FROM F.OLA.HELP,OLA.BTEMP.ID:'_HelpfulTip.csv' ELSE OLA.HELP.BREC=''
+*
+* READ CONTRACT TEMPLATE RECORDS
+*
+      READ OLA.NOTES.CREC FROM F.OLA.NOTES,OLA.CTEMP.ID:'_Notes.csv' ELSE OLA.NOTES.CREC=''
+      READ OLA.CAR.CREC FROM F.OLA.CAR,OLA.CTEMP.ID:'_CarrierInfo.csv' ELSE OLA.CAR.CREC=''
+      READ OLA.CONTRACT.CREC FROM F.OLA.CONTRACT,OLA.CTEMP.ID:'_ContractInfo.csv' ELSE OLA.CONTRACT.CREC=''
+      READ OLA.INS.CREC FROM F.OLA.INS,OLA.CTEMP.ID:'_InsuranceInfo.csv' ELSE OLA.INS.CREC=''
+      READ OLA.ACC.CREC FROM F.OLA.ACC,OLA.CTEMP.ID:'_Accessorials.csv' ELSE OLA.ACC.CREC=''
+      READ OLA.SVC.EXCP.CREC FROM F.OLA.SVC.EXCP,OLA.CTEMP.ID:'_ServiceExceptions.csv' ELSE OLA.SVC.EXCP.CREC=''
+      READ OLA.ZONES.CREC FROM F.OLA.ZONES,OLA.CTEMP.ID:'_Zones.csv' ELSE OLA.ZONES.CREC=''
+      READ OLA.RATES.CREC FROM F.OLA.RATES,OLA.CTEMP.ID:'_Rates.csv' ELSE OLA.RATES.CREC=''
+      READ OLA.MARKUP.ACC.CREC FROM F.OLA.MARKUP.ACC,OLA.CTEMP.ID:'_MarkupACC.csv' ELSE OLA.MARKUP.ACC.CREC=''
+      READ OLA.MARKUP.RATE.CREC FROM F.OLA.MARKUP.RATE,OLA.CTEMP.ID:'_MarkupRates.csv' ELSE OLA.MARKUP.RATE.CREC=''
+      READ OLA.LTL.DISC.CREC FROM F.OLA.LTL.DISC,OLA.CTEMP.ID:'_LTLDiscounts.csv' ELSE OLA.LTL.DISC.CREC=''
+      READ OLA.LTL.FAK.CREC FROM F.OLA.LTL.FAK,OLA.CTEMP.ID:'_LTLFAK.csv' ELSE OLA.LTL.FAK.CREC=''
+      READ OLA.LOOK.CREC FROM F.OLA.LOOK,OLA.CTEMP.ID:'_Lookups.csv' ELSE OLA.LOOK.CREC=''
+      READ OLA.TRANS.LOOK.CREC FROM F.OLA.TRANS.LOOK,OLA.CTEMP.ID:'_TransferLookups.csv' ELSE OLA.TRANS.LOOK.CREC=''
+      READ OLA.HELP.CREC FROM F.OLA.HELP,OLA.CTEMP.ID:'_HelpfulTip.csv' ELSE OLA.HELP.CREC=''
+
+** Benchmark Records
+*      OLA.ACC.BREC=''
+*      OLA.CAR.BREC=''
+*      OLA.CONTRACT.BREC=''
+*      OLA.HELP.BREC=''
+*      OLA.INS.BREC=''
+*      OLA.LOOK.BREC=''
+*      OLA.LTL.DISC.BREC=''
+*      OLA.LTL.FAK.BREC=''
+*      OLA.MARKUP.ACC.BREC=''
+*      OLA.MARKUP.RATE.BREC=''
+*      OLA.NOTES.BREC=''
+*      OLA.RATES.BREC=''
+*      OLA.SVC.EXCP.BREC=''
+*      OLA.TRANS.LOOK.BREC=''
+*      OLA.ZONES.BREC=''
+** Contract Records
+*      OLA.ACC.CREC=''
+*      OLA.CAR.CREC=''
+*      OLA.CONTRACT.CREC=''
+*      OLA.HELP.CREC=''
+*      OLA.INS.CREC=''
+*      OLA.LOOK.CREC=''
+*      OLA.LTL.DISC.CREC=''
+*      OLA.LTL.FAK.CREC=''
+*      OLA.MARKUP.ACC.CREC=''
+*      OLA.MARKUP.RATE.CREC=''
+*      OLA.NOTES.CREC=''
+*      OLA.RATES.CREC=''
+*      OLA.SVC.EXCP.CREC=''
+*      OLA.TRANS.LOOK.CREC=''
+*      OLA.ZONES.CREC=''
+      RETURN
+INIT.EXPORT.HDGS: *
+* Accessorials
+      OLA.ACC.HDG=''
+      OLA.ACC.HDG<1,1>='Accessorial'
+      OLA.ACC.HDG<1,2>='OrigZone'
+      OLA.ACC.HDG<1,3>='DestZone'
+      OLA.ACC.HDG<1,4>='Priority'
+      OLA.ACC.HDG<1,5>='Direct'
+      OLA.ACC.HDG<1,6>='AutoAdd'
+      OLA.ACC.HDG<1,7>='Break Type'
+      OLA.ACC.HDG<1,8>='Break Low'
+      OLA.ACC.HDG<1,9>='Break High'
+      OLA.ACC.HDG<1,10>='Percent'
+      OLA.ACC.HDG<1,11>='Per mile'
+      OLA.ACC.HDG<1,12>='CWT'
+      OLA.ACC.HDG<1,13>='Flat'
+      OLA.ACC.HDG<1,14>='Per UOM'
+      OLA.ACC.HDG<1,15>='Min'
+      OLA.ACC.HDG<1,16>='Max'
+      OLA.ACC.HDG<1,17>='DieselDay'
+      OLA.ACC.HDG<1,18>='DieselType'
+      OLA.ACC.BREC<-1>=OLA.ACC.HDG
+      OLA.ACC.CREC<-1>=OLA.ACC.HDG
+* CarrierInfo
+      OLA.CAR.HDG=''
+      OLA.CAR.HDG<1,1>='Carrier ID'
+      OLA.CAR.HDG<1,2>='Carrier Name'
+      OLA.CAR.HDG<1,3>='SCAC'
+      OLA.CAR.HDG<1,4>='TSACertified'
+      OLA.CAR.HDG<1,5>='Email Address'
+      OLA.CAR.HDG<1,6>='Password'
+      OLA.CAR.HDG<1,7>='Address'
+      OLA.CAR.HDG<1,8>='City'
+      OLA.CAR.HDG<1,9>='State'
+      OLA.CAR.HDG<1,10>='Zip'
+      OLA.CAR.HDG<1,11>='Phone'
+      OLA.CAR.HDG<1,12>='Fax'
+      OLA.CAR.HDG<1,13>='Contact Name'
+      OLA.CAR.HDG<1,14>='BILL Address'
+      OLA.CAR.HDG<1,15>='BILL City'
+      OLA.CAR.HDG<1,16>='BILL State'
+      OLA.CAR.HDG<1,17>='Bill Zip'
+      OLA.CAR.HDG<1,18>='Core'
+      OLA.CAR.BREC<-1>=OLA.CAR.HDG
+      OLA.CAR.CREC<-1>=OLA.CAR.HDG
+* ContractInfo
+      OLA.CONTRACT.HDG=''
+      OLA.CONTRACT.HDG<1,1>='LTL'
+      OLA.CONTRACT.HDG<1,2>='UOM'
+      OLA.CONTRACT.HDG<1,3>='LoadReverse'
+      OLA.CONTRACT.HDG<1,4>='ContractDescription'
+      OLA.CONTRACT.BREC<-1>=OLA.CONTRACT.HDG
+      OLA.CONTRACT.CREC<-1>=OLA.CONTRACT.HDG
+* Helpful Tips
+      OLA.HELP.HDG=' '
+      OLA.HELP.BREC<-1>=OLA.HELP.HDG
+      OLA.HELP.CREC<-1>=OLA.HELP.HDG
+* Insurance Info
+      OLA.INS.HDG=''
+      OLA.INS.HDG<1,1>=' '
+      OLA.INS.HDG<1,2>='Provider'
+      OLA.INS.HDG<1,3>='Effective Date'
+      OLA.INS.HDG<1,4>='Renewal Date'
+      OLA.INS.BREC<-1>=OLA.INS.HDG
+      OLA.INS.CREC<-1>=OLA.INS.HDG
+* Lookups
+      OLA.LOOK.HDG=''
+      OLA.LOOK.HDG<1,1>='Accessorials'
+      OLA.LOOK.HDG<1,2>='MODES'
+      OLA.LOOK.HDG<1,3>=' '
+      OLA.LOOK.HDG<1,4>='TARIFF_ID'
+      OLA.LOOK.HDG<1,5>='TARIFF_DESC'
+      OLA.LOOK.HDG<1,6>='TARIFF_NAME'
+      OLA.LOOK.HDG<1,7>='TARIFF_DATE'
+      OLA.LOOK.HDG<1,8>='TARIFF_TYPE'
+      OLA.LOOK.HDG<1,9>=' '
+      OLA.LOOK.HDG<1,10>='CLASS'
+      OLA.LOOK.BREC<-1>=OLA.LOOK.HDG
+      OLA.LOOK.CREC<-1>=OLA.LOOK.HDG
+* LTL-Discounts
+      OLA.LTL.DISC.HDG=''
+      OLA.LTL.DISC.HDG<1,1>='LOW_CLASS'
+      OLA.LTL.DISC.HDG<1,2>='HIGH_CLASS'
+      OLA.LTL.DISC.HDG<1,3>='LOW_MILES'
+      OLA.LTL.DISC.HDG<1,4>='HIGH_MILES'
+      OLA.LTL.DISC.HDG<1,5>='OrigZone'
+      OLA.LTL.DISC.HDG<1,6>='DestZone'
+      OLA.LTL.DISC.HDG<1,7>='DIRECT'
+      OLA.LTL.DISC.HDG<1,8>='PRIORITY'
+      OLA.LTL.DISC.HDG<1,9>='INTRASTATE'
+      OLA.LTL.DISC.HDG<1,10>='TARIFF_ID'
+      OLA.LTL.DISC.HDG<1,11>='AMC'
+      OLA.LTL.DISC.HDG<1,12>='MC'
+      OLA.LTL.DISC.HDG<1,13>='L5C'
+      OLA.LTL.DISC.HDG<1,14>='M5C'
+      OLA.LTL.DISC.HDG<1,15>='M1M'
+      OLA.LTL.DISC.HDG<1,16>='M2M'
+      OLA.LTL.DISC.HDG<1,17>='M5M'
+      OLA.LTL.DISC.HDG<1,18>='M10M'
+      OLA.LTL.DISC.HDG<1,19>='M20M'
+      OLA.LTL.DISC.HDG<1,20>='M30M'
+      OLA.LTL.DISC.HDG<1,21>='M40M'
+      OLA.LTL.DISC.BREC<-1>=OLA.LTL.DISC.HDG
+      OLA.LTL.DISC.CREC<-1>=OLA.LTL.DISC.HDG
+* LTL-FAK
+      OLA.LTL.FAK.HDG=''
+      OLA.LTL.FAK.HDG<1,1>='OrigZone'
+      OLA.LTL.FAK.HDG<1,2>='DestZone'
+      OLA.LTL.FAK.HDG<1,3>='DIRECT'
+      OLA.LTL.FAK.HDG<1,4>='PRIORITY'
+      OLA.LTL.FAK.HDG<1,5>='C50'
+      OLA.LTL.FAK.HDG<1,6>='C55'
+      OLA.LTL.FAK.HDG<1,7>='C60'
+      OLA.LTL.FAK.HDG<1,8>='C65'
+      OLA.LTL.FAK.HDG<1,9>='C70'
+      OLA.LTL.FAK.HDG<1,10>='C77'
+      OLA.LTL.FAK.HDG<1,11>='C85'
+      OLA.LTL.FAK.HDG<1,12>='C92'
+      OLA.LTL.FAK.HDG<1,13>='C100'
+      OLA.LTL.FAK.HDG<1,14>='C110'
+      OLA.LTL.FAK.HDG<1,15>='C125'
+      OLA.LTL.FAK.HDG<1,16>='C150'
+      OLA.LTL.FAK.HDG<1,17>='C175'
+      OLA.LTL.FAK.HDG<1,18>='C200'
+      OLA.LTL.FAK.HDG<1,19>='C250'
+      OLA.LTL.FAK.HDG<1,20>='C300'
+      OLA.LTL.FAK.HDG<1,21>='C400'
+      OLA.LTL.FAK.HDG<1,22>='C500'
+      OLA.LTL.FAK.BREC<-1>=OLA.LTL.FAK.HDG
+      OLA.LTL.FAK.CREC<-1>=OLA.LTL.FAK.HDG
+* Markup-ACC
+      OLA.MARKUP.ACC.HDG=''
+      OLA.MARKUP.ACC.HDG<1,1>='ACCESSORIAL'
+      OLA.MARKUP.ACC.HDG<1,2>='SELL_FACTOR'
+      OLA.MARKUP.ACC.HDG<1,3>='SELL_FLAT_FEE'
+      OLA.MARKUP.ACC.HDG<1,4>='SELL_DIFF_MIN'
+      OLA.MARKUP.ACC.HDG<1,5>='SELL_MIN'
+      OLA.MARKUP.ACC.HDG<1,6>='SELL_MAX'
+      OLA.MARKUP.ACC.BREC<-1>=OLA.MARKUP.ACC.HDG
+      OLA.MARKUP.ACC.CREC<-1>=OLA.MARKUP.ACC.HDG
+* Markup-Rate
+      OLA.MARKUP.RATE.HDG=''
+      OLA.MARKUP.RATE.HDG<1,1>='SELL_FACTOR'
+      OLA.MARKUP.RATE.HDG<1,2>='SELL_FLAT_FEE'
+      OLA.MARKUP.RATE.HDG<1,3>='SELL_DIFF_MIN'
+      OLA.MARKUP.RATE.HDG<1,4>='SELL_MIN'
+      OLA.MARKUP.RATE.HDG<1,5>='SELL_MAX'
+      OLA.MARKUP.RATE.BREC<-1>=OLA.MARKUP.RATE.HDG
+      OLA.MARKUP.RATE.CREC<-1>=OLA.MARKUP.RATE.HDG
+* Notes
+      OLA.NOTES.HDG=' '
+      OLA.NOTES.BREC<-1>=OLA.NOTES.HDG
+      OLA.NOTES.CREC<-1>=OLA.NOTES.HDG
+* Rates
+      OLA.RATES.HDG=''
+      OLA.RATES.HDG<1,1>='LOW_MILES'
+      OLA.RATES.HDG<1,2>='HIGH_MILES'
+      OLA.RATES.HDG<1,3>='OrigZone'
+      OLA.RATES.HDG<1,4>='DestZone'
+      OLA.RATES.HDG<1,5>='Mode'
+      OLA.RATES.HDG<1,6>='Min'
+      OLA.RATES.HDG<1,7>='Max'
+      OLA.RATES.HDG<1,8>='DIMFactor'
+      OLA.RATES.HDG<1,9>='FOT50000'
+      OLA.RATES.HDG<1,10>='PRIORITY'
+      OLA.RATES.BREC<-1>=OLA.RATES.HDG
+      OLA.RATES.CREC<-1>=OLA.RATES.HDG
+* ServiceExceptions
+      OLA.SVC.EXCP.HDG=''
+      OLA.SVC.EXCP.HDG<1,1>='ServiceType'
+      OLA.SVC.EXCP.HDG<1,2>='RateType'
+      OLA.SVC.EXCP.HDG<1,3>='OrigZone'
+      OLA.SVC.EXCP.HDG<1,4>='DestZone'
+      OLA.SVC.EXCP.HDG<1,5>='Direct'
+      OLA.SVC.EXCP.BREC<-1>=OLA.SVC.EXCP.HDG
+      OLA.SVC.EXCP.CREC<-1>=OLA.SVC.EXCP.HDG
+* Transfer Lookups
+      OLA.TRANS.LOOK.HDG=''
+      OLA.TRANS.LOOK.HDG<1,1>='DB_ID'
+      OLA.TRANS.LOOK.HDG<1,2>='TRANSFER_POINT_ID'
+      OLA.TRANS.LOOK.HDG<1,3>='GROUP_NAME'
+      OLA.TRANS.LOOK.HDG<1,4>='CHILD_ID'
+      OLA.TRANS.LOOK.HDG<1,5>='CHILD NAME'
+      OLA.TRANS.LOOK.HDG<1,6>='City'
+      OLA.TRANS.LOOK.HDG<1,7>='State'
+      OLA.TRANS.LOOK.HDG<1,8>='Zip'
+      OLA.TRANS.LOOK.HDG<1,9>='Code'
+      OLA.TRANS.LOOK.HDG<1,10>='Carrier'
+      OLA.TRANS.LOOK.HDG<1,11>='Carrier Code'
+      OLA.TRANS.LOOK.BREC<-1>=OLA.TRANS.LOOK.HDG
+      OLA.TRANS.LOOK.CREC<-1>=OLA.TRANS.LOOK.HDG
+* Zones
+      OLA.ZONES.HDG=''
+      OLA.ZONES.HDG<1,1>='Zone'
+      OLA.ZONES.HDG<1,2>='State'
+      OLA.ZONES.HDG<1,3>='City'
+      OLA.ZONES.HDG<1,4>='Zip'
+      OLA.ZONES.HDG<1,5>='ZipStart'
+      OLA.ZONES.HDG<1,6>='ZipEnd'
+      OLA.ZONES.HDG<1,7>='SCAC'
+      OLA.ZONES.HDG<1,8>='TRANSFER_POINT_ID'
+      OLA.ZONES.BREC<-1>=OLA.ZONES.HDG
+      OLA.ZONES.CREC<-1>=OLA.ZONES.HDG
+      RETURN
+INIT.LOOKUP.ARRAYS: *
+      ACCESS.ARRY=''
+
+      MODE.ARRY=''
+      MODE.ARRY<-1>='LTL'
+
+      TARIFF.ARRY=''
+
+      CLASS.ARRY=''
+      CLASS.ARRY<-1>='50'
+      CLASS.ARRY<-1>='55'
+      CLASS.ARRY<-1>='60'
+      CLASS.ARRY<-1>='65'
+      CLASS.ARRY<-1>='70'
+      CLASS.ARRY<-1>='77'
+      CLASS.ARRY<-1>='85'
+      CLASS.ARRY<-1>='92'
+      CLASS.ARRY<-1>='100'
+      CLASS.ARRY<-1>='110'
+      CLASS.ARRY<-1>='125'
+      CLASS.ARRY<-1>='150'
+      CLASS.ARRY<-1>='175'
+      CLASS.ARRY<-1>='200'
+      CLASS.ARRY<-1>='250'
+      CLASS.ARRY<-1>='300'
+      CLASS.ARRY<-1>='400'
+      CLASS.ARRY<-1>='500'
+
+      RETURN
+
+INIT.AFS.TARIFF.LIST: *
+      TARIFF.LIST=''
+      TARIFF.LIST<1,-1>='AACTCZ'
+      TARIFF.LIST<2,-1>='AACTCZ02'
+      TARIFF.LIST<1,-1>='ABF504'
+      TARIFF.LIST<2,-1>='ABF50401'
+      TARIFF.LIST<1,-1>='AFS500'
+      TARIFF.LIST<2,-1>='AFS50002'
+      TARIFF.LIST<1,-1>='AFS525'
+      TARIFF.LIST<2,-1>='AFS52502'
+      TARIFF.LIST<1,-1>='AFS95'
+      TARIFF.LIST<2,-1>='AFS50002'
+      TARIFF.LIST<1,-1>='ARFW500'
+      TARIFF.LIST<2,-1>='ARF50001'
+      TARIFF.LIST<1,-1>='ARFWCZ'
+      TARIFF.LIST<2,-1>='ARFWCZ02'
+      TARIFF.LIST<1,-1>='CENFUS'
+      TARIFF.LIST<2,-1>='CENFUS01'
+      TARIFF.LIST<1,-1>='CFW555'
+      TARIFF.LIST<2,-1>='CFW55504'
+      TARIFF.LIST<1,-1>='CTS599'
+      TARIFF.LIST<2,-1>='CTS59901'
+      TARIFF.LIST<1,-1>='INP500'
+      TARIFF.LIST<2,-1>='INP500'
+      TARIFF.LIST<1,-1>='INTPCZ'
+      TARIFF.LIST<2,-1>='INTPCZ02'
+      TARIFF.LIST<1,-1>='LITECZ'
+      TARIFF.LIST<2,-1>='LITECZ02'
+      TARIFF.LIST<1,-1>='LINT'
+      TARIFF.LIST<2,-1>='LINT0002'
+      TARIFF.LIST<1,-1>='MASCCZ'
+      TARIFF.LIST<2,-1>='MASCCZ02'
+      TARIFF.LIST<1,-1>='ODF559'
+      TARIFF.LIST<2,-1>='ODF55901'
+      TARIFF.LIST<1,-1>='RDW507'
+      TARIFF.LIST<2,-1>='RDW50703'
+      TARIFF.LIST<1,-1>='SAI500'
+      TARIFF.LIST<2,-1>='SAI50001'
+      TARIFF.LIST<1,-1>='SMC519'
+      TARIFF.LIST<2,-1>='SMC51906'
+      TARIFF.LIST<1,-1>='VIKNIN'
+      TARIFF.LIST<2,-1>='VIKNIN02'
+      TARIFF.LIST<1,-1>='VIKNUS'
+      TARIFF.LIST<2,-1>='VIKNUS01'
+      TARIFF.LIST<1,-1>='YFS500'
+      TARIFF.LIST<2,-1>='YFS50001'
+      RETURN
+
+CLIENT.ASSIGN: *
+      CLIENT.ERROR=''
+      CLIENT.NAME=''
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         CLIENT.ERROR<-1>=CLIENT.ID:' NOT ON FILE'
+         RETURN
+      END
+      CLIENT.NAME=CLIENT.REC<2>
+      RETURN
+
+CARRIER.ASSIGN: *
+      CARRIER.ERROR=''
+      CARRIER.REC=''
+      READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE
+         CARRIER.ERROR<-1>=CARRIER.ID:' NOT ON FILE'
+         RETURN
+      END
+      CARRIER.SCAC=CARRIER.REC<12>
+      RETURN
+
+AUDIT.ASSIGN: *
+      AUDIT.ERROR=''
+      AUDIT.REC=''
+      READ AUDIT.REC FROM F.AUDIT,AUDIT.ID ELSE
+         AUDIT.ERROR<-1>=AUDIT.ID:' NOT ON FILE'
+         RETURN
+      END
+      AUDIT.TYPE=AUDIT.REC<1>
+      AUDIT.BDATE.ARRY=AUDIT.REC<2>
+      AUDIT.EDATE.ARRY=AUDIT.REC<3>
+      AUDIT.LOC.ZIP.ARRY=AUDIT.REC<8>
+      AUDIT.LOC.STATUS.ARRY=AUDIT.REC<9>
+      AUDIT.BDATE.STATUS.ARRY=AUDIT.REC<10>
+      AUDIT.STATUS=AUDIT.REC<11>
+      AUDIT.LOC.SUB.ZIP.ARRY=AUDIT.REC<12>
+      AUDIT.CORE=AUDIT.REC<13>
+      RETURN
+
+AUDIT.ZIP.ASSIGN: *
+      AUDIT.ZIP.ERROR=''
+      AUDIT.ZIP.REC=''
+      READ AUDIT.ZIP.REC FROM F.AUDIT.ZIPS,AUDIT.ZIP.ID ELSE
+         AUDIT.ZIP.ERROR<-1>=AUDIT.ZIP.ID:' NOT ON FILE'
+         RETURN
+      END
+      CARRIER.ID=FIELD(AUDIT.ZIP.ID,'*',1)
+      LOC.ZIP=FIELD(AUDIT.ZIP.ID,'*',2)
+      EFF.DATE=FIELD(AUDIT.ZIP.ID,'*',3)
+      FRT.TYPE=FIELD(AUDIT.ZIP.ID,'*',4)
+      IOT=FIELD(AUDIT.ZIP.ID,'*',5)
+      AUDIT.ZIP.STATUS=AUDIT.ZIP.REC<1>
+      AUDIT.ZIP.BZIP.ARRY=AUDIT.ZIP.REC<2>
+      AUDIT.ZIP.EZIP.ARRY=AUDIT.ZIP.REC<3>
+      AUDIT.ZIP.QUOTE.ARRY=AUDIT.ZIP.REC<4>
+      AUDIT.ZIP.TABLE.ARRY=AUDIT.ZIP.REC<5>
+      AUDIT.ID=CARRIER.ID
+      RETURN
+
+AUDIT.TABLE.ASSIGN: *
+      AUDIT.TABLE.ERROR=''
+      AUDIT.TABLE.REC=''
+      READ AUDIT.TABLE.REC FROM F.AUDIT.TABLES,AUDIT.TABLE.ID ELSE
+         AUDIT.TABLE.ERROR<-1>=AUDIT.TABLE.ID:' NOT ON FILE'
+         RETURN
+      END
+      AUDIT.TABLE.CONTR.FAK.ARRY=AUDIT.TABLE.REC<2>
+      AUDIT.TABLE.CONTR.TMIN.ARRY=AUDIT.TABLE.REC<3>
+      AUDIT.TABLE.CONTR.L5C.ARRY=AUDIT.TABLE.REC<4>
+      AUDIT.TABLE.CONTR.O5C.ARRY=AUDIT.TABLE.REC<5>
+      AUDIT.TABLE.CONTR.TARIFF.ARRY=AUDIT.TABLE.REC<6>
+      AUDIT.TABLE.BENCH.FAK.ARRY=AUDIT.TABLE.REC<12>
+      AUDIT.TABLE.BENCH.TMIN.ARRY=AUDIT.TABLE.REC<13>
+      AUDIT.TABLE.BENCH.L5C.ARRY=AUDIT.TABLE.REC<14>
+      AUDIT.TABLE.BENCH.O5C.ARRY=AUDIT.TABLE.REC<15>
+      AUDIT.TABLE.BENCH.TARIFF.ARRY=AUDIT.TABLE.REC<16>
+      AUDIT.TABLE.ACC.ARRY=AUDIT.TABLE.REC<26>
+      AUDIT.TABLE.ACC.CONTR.ARRY=AUDIT.TABLE.REC<27>
+      AUDIT.TABLE.ACC.BENCH.ARRY=AUDIT.TABLE.REC<28>
+      AUDIT.TABLE.INTRA.MIN.ARRY=AUDIT.TABLE.REC<37>
+      AUDIT.TABLE.INTRA.CONTR.ARRY=AUDIT.TABLE.REC<38>
+      AUDIT.TABLE.INTRA.BENCH.ARRY=AUDIT.TABLE.REC<39>
+      AUDIT.TABLE.INTER.MIN.ARRY=AUDIT.TABLE.REC<40>
+      AUDIT.TABLE.INTER.CONTR.ARRY=AUDIT.TABLE.REC<41>
+      AUDIT.TABLE.INTER.BENCH.ARRY=AUDIT.TABLE.REC<42>
+      AUDIT.TABLE.INTRA.CONTR.MIN.AMT=0
+      AUDIT.TABLE.INTER.BENCH.MIN.AMT=0
+      LOCATE '@' IN AUDIT.TABLE.INTRA.MIN.ARRY<1> SETTING INTRA.POS THEN
+         AUDIT.TABLE.INTRA.CONTR.MIN.AMT=AUDIT.TABLE.INTRA.CONTR.ARRY<1,INTRA.POS>
+         AUDIT.TABLE.INTRA.BENCH.MIN.AMT=AUDIT.TABLE.INTRA.BENCH.ARRY<1,INTRA.POS>
+      END
+      LOCATE '@' IN AUDIT.TABLE.INTER.MIN.ARRY<1> SETTING INTER.POS THEN
+         AUDIT.TABLE.INTER.CONTR.MIN.AMT=AUDIT.TABLE.INTER.CONTR.ARRY<1,INTER.POS>
+         AUDIT.TABLE.INTER.BENCH.MIN.AMT=AUDIT.TABLE.INTER.BENCH.ARRY<1,INTER.POS>
+      END
+      AUDIT.TABLE.MIN.STATUS=AUDIT.TABLE.INTRA.MIN.ARRY=AUDIT.TABLE.INTER.MIN.ARRY
+      AUDIT.TABLE.CONTR.STATUS=AUDIT.TABLE.INTRA.CONTR.ARRY=AUDIT.TABLE.INTER.CONTR.ARRY
+      AUDIT.TABLE.BENCH.STATUS=AUDIT.TABLE.INTRA.BENCH.ARRY=AUDIT.TABLE.INTER.BENCH.ARRY
+      RETURN
+
+AUDIT.CONTR.TARIFF.ASSIGN: *
+      AUDIT.CONTR.TARIFF.ERROR=''
+      AUDIT.CONTR.TARIFF.REC=''
+      SFW.CONTR.TARIFF.ID=''
+      LOCATE AUDIT.CONTR.TARIFF.ID IN TARIFF.DATE.XREF.REC<1> SETTING CTPOS ELSE
+         AUDIT.CONTR.TARIFF.ERROR<-1>='Contract Tariff ':AUDIT.CONTR.TARIFF.ID:' not on file.'
+         RETURN
+      END
+      CONTR.TARIFF.MODULE=TARIFF.DATE.XREF.REC<2,CTPOS>
+      CONTR.TARIFF.DATE=TARIFF.DATE.XREF.REC<3,CTPOS>
+      LOCATE(CONTR.TARIFF.MODULE,TARIFF.LIST,1;TPOS) THEN
+         CONTR.TARIFF.NAME=TARIFF.LIST<2,TPOS>
+      END ELSE
+         CONTR.TARIFF.NAME=CONTR.TARIFF.MODULE
+      END
+      SFW.TARIFF.NDX.ID=CONTR.TARIFF.NAME:'_':CONTR.TARIFF.DATE
+      READ SFW.TARIFF.NDX.REC FROM F.SFW.TARIFF.NDX,SFW.TARIFF.NDX.ID ELSE
+         CALL ELINE('Cannot find a SFW Tariff for ':CONTR.TARIFF.MODULE:' eff date ':CONTR.TARIFF.DATE'D4/')
+         RETURN
+      END
+      SFW.CONTR.TARIFF.ID=SFW.TARIFF.NDX.REC<1>
+      READ SFW.CONTR.TARIFF.REC FROM F.SFW.TARIFF,SFW.CONTR.TARIFF.ID ELSE SFW.CONTR.TARIFF.REC=''
+      SFW.CONTR.TARIFF.DESC=SFW.CONTR.TARIFF.REC<1>
+      SFW.CONTR.TARIFF.NAME=SFW.CONTR.TARIFF.REC<2>
+      SFW.CONTR.TARIFF.DATE=SFW.CONTR.TARIFF.REC<3>
+      SFW.CONTR.TARIFF.TYPE=SFW.CONTR.TARIFF.REC<4>
+      RETURN
+
+AUDIT.BENCH.TARIFF.ASSIGN: *
+      AUDIT.BENCH.TARIFF.ERROR=''
+      AUDIT.BENCH.TARIFF.REC=''
+      SFW.BENCH.TARIFF.ID=''
+      LOCATE AUDIT.BENCH.TARIFF.ID IN TARIFF.DATE.XREF.REC<1> SETTING CTPOS ELSE
+         AUDIT.BENCH.TARIFF.ERROR<-1>='Benchmark Tariff ':AUDIT.BENCH.TARIFF.ID:' not on file.'
+         RETURN
+      END
+      BENCH.TARIFF.MODULE=TARIFF.DATE.XREF.REC<2,CTPOS>
+      BENCH.TARIFF.DATE=TARIFF.DATE.XREF.REC<3,CTPOS>
+      LOCATE(BENCH.TARIFF.MODULE,TARIFF.LIST,1;TPOS) THEN
+         BENCH.TARIFF.NAME=TARIFF.LIST<2,TPOS>
+      END ELSE
+         BENCH.TARIFF.NAME=BENCH.TARIFF.MODULE
+      END
+      SFW.TARIFF.NDX.ID=BENCH.TARIFF.NAME:'_':BENCH.TARIFF.DATE
+      READ SFW.TARIFF.NDX.REC FROM F.SFW.TARIFF.NDX,SFW.TARIFF.NDX.ID ELSE
+         CALL ELINE('Cannot find a SFW Tariff for ':BENCH.TARIFF.MODULE:' eff date ':BENCH.TARIFF.DATE'D4/')
+         RETURN
+      END
+      SFW.BENCH.TARIFF.ID=SFW.TARIFF.NDX.REC<1>
+      READ SFW.BENCH.TARIFF.REC FROM F.SFW.TARIFF,SFW.BENCH.TARIFF.ID ELSE SFW.BENCH.TARIFF.REC=''
+      SFW.BENCH.TARIFF.DESC=SFW.BENCH.TARIFF.REC<1>
+      SFW.BENCH.TARIFF.NAME=SFW.BENCH.TARIFF.REC<2>
+      SFW.BENCH.TARIFF.DATE=SFW.BENCH.TARIFF.REC<3>
+      SFW.BENCH.TARIFF.TYPE=SFW.BENCH.TARIFF.REC<4>
+      RETURN
+
+      END

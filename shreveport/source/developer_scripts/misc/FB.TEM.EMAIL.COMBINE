@@ -1,0 +1,300 @@
+*******************************************************
+* Program name : FB.REBUILD.OPEN.DATE.XREF
+* Author       : MIKE KERBOW
+* Date written : 11/2009
+* Library      : FBBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* PROCESS TO PREPARE TEM EMAILS
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 09:22:51 on 04/03/2019.
+*
+* Start modification history
+* 04/03/19 : NKH01 : ACCU-316 Modified CREATE-FILE file sizes
+* End modification history
+*
+*******************************************************
+$INCLUDE PROG.ADMIN INC_OPTIONS
+****************************************************************
+* Initialize variables
+****************************************************************
+      PROG.NAME='FB.TEM.EMAIL.COMBINE'
+      PROG.DESC='WEEKLY TEM EMAILS'
+      PACK.NAME='FREIGHT PAYMENT'
+      CALL CHANNEL(CH.NUM)
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.TEM.EMAIL.COMBINE' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+
+      INPUT PGM.MODE
+      INPUT CLIENT
+      PROCESS.TYPE=FIELD(PGM.MODE,'-',1)
+      ONCE=0
+      IF PROCESS.TYPE='ONCE' THEN
+         PROCESS.TYPE='STD'
+         ONCE=1
+      END
+      LOC.POS=''
+      MR.UPD=0
+      PROGRAM.MODE=FIELD(PGM.MODE,'-',2)
+      PROCESS.END.DATE=FIELD(PGM.MODE,'-',3)
+      IF PROCESS.END.DATE='' THEN PROCESS.END.DATE=DATE()
+      IF PROGRAM.MODE='FROM.PROCESS' THEN FROM.PROCESS=1 ELSE FROM.PROCESS=0
+
+****************************************************************
+* Open Files
+****************************************************************
+      OPEN '','EMAILDATA' TO EMAILDATA ELSE
+         CALL OPEN.ABORT("EMAILDATA",PROG.NAME)
+      END
+      TODAY=DATE()
+      PATH.ID='E:\ARDENT\PUBLIC\EMAILDATA\'
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','FB.BILLS.YTD' TO F.YTD ELSE
+         CALL OPEN.ABORT("FB.BILLS.YTD",PROG.NAME)
+      END
+      OPEN '','FB.LOGISTICS' TO F.LOGS ELSE
+         CALL OPEN.ABORT("FB.LOGISTICS",PROG.NAME)
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+         CALL OPEN.ABORT("ZIPS",PROG.NAME)
+      END
+
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+         CALL OPEN.ABORT('FB.TRANSPORT',PROG.NAME)
+      END
+      OPEN '','FB.TEM.EMAIL' TO F.TEM.EMAIL ELSE
+         CALL OPEN.ABORT('FB.TEM.EMAIL',PROG.NAME)
+      END
+      OPEN '','FB.TEM.EMAIL.HIST' TO F.TEM.EMAIL.HIST ELSE
+         CALL OPEN.ABORT('FB.TEM.EMAIL.HIST',PROG.NAME)
+      END
+*
+      OPEN '','AR.SLSMAN.1000.1' TO F.SLSMAN ELSE
+         CALL OPEN.ABORT('AR.SLSMAN.1000.1',PROG.NAME)
+      END
+      CALL GET.USER(USER)
+IF USER = 'gbino' THEN DEBUG
+
+      OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS.HIST ELSE
+         CALL OPEN.ABORT('FB.BILLS.HIST,':CLIENT,PROG.NAME)
+      END
+      OPEN '','VEND.CUST,':CLIENT TO F.VC ELSE
+         CALL OPEN.ABORT('VEND.CUST,':CLIENT,PROG.NAME)
+      END
+      OPEN '','FB.UNPROCESS,':CLIENT TO F.UP ELSE
+         EXECUTE 'CREATE-FILE DATA FB.UNPROCESS,':CLIENT:' 1009,1' CAPTURING OUTPUT    ; * NKH01
+         OPEN '','FB.UNPROCESS,':CLIENT TO F.UP ELSE
+            CALL OPEN.ABORT('FB.UNPROCESS,':CLIENT,PROG.NAME)
+         END
+      END
+      OPEN '','FB.TEM,':CLIENT TO F.TEM ELSE
+         CALL OPEN.ABORT('FB.TEM,':CLIENT,PROG.NAME)
+      END
+
+      OPEN '','NP.TEST' TO F.NP.TEST ELSE             ; * NPR010411
+         CALL OPEN.ABORT('NP.TEST',PROG.NAME)         ; * NPR010411
+      END                                             ; * NPR010411
+
+      ERROR.ARRAY=''
+
+****************************************************************
+* Read Client Information
+****************************************************************
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT ELSE
+         ERROR = 'ERROR - Client ':CLIENT:' not on file.'
+         ERROR.ARRAY<-1> = ERROR
+         GO EXIT.PROGRAM
+      END
+      PROCESS.MR.EMLS = CLIENT.REC<171>
+      DIVISIONS = CLIENT.REC<12>
+
+      IF PROCESS.MR.EMLS = 'N' THEN
+         ERROR='NO TEM EMAILS PROCESSED ON CLIENT ':CLIENT
+         ERROR.ARRAY<-1> = ERROR
+         GO EXIT.PROGRAM
+      END
+
+      SLSMAN.ID=CLIENT.REC<115>
+      READ SLSMAN.REC FROM F.SLSMAN,SLSMAN.ID ELSE SLSMAN.REC=''
+      SLSMAN.EMAIL=SLSMAN.REC<8>
+      IF OCONV(SLSMAN.EMAIL,'MCL')='none' THEN SLSMAN.EMAIL=''
+
+      LOG.ST.DT = CLIENT.REC<149>
+      COMPANY.NAME='AFS Logistics, LLC'
+      CLIENT.NAME=CLIENT.REC<2>
+      OPEN '','DIVISION.CODES,':CLIENT TO F.DIV ELSE
+         ERROR="Cannot open DIVISION.CODES for client ":CLIENT'R%5'
+         ERROR.ARRAY<-1> = ERROR
+         GO EXIT.PROGRAM
+      END
+      OPEN '','VEND.CUST,':CLIENT TO F.VC ELSE
+         ERROR="Cannot open VEND.CUST for client ":CLIENT'R%5'
+         ERROR.ARRAY<-1> = ERROR
+         GO EXIT.PROGRAM
+      END
+      DATE.POS = DCOUNT(CLIENT.REC<84>,@VM)
+      CONSULTING.COMM = CLIENT.REC<85,DATE.POS>
+      NUM.WARNINGS = CLIENT.REC<140>
+      MIN.DM.AMT = CLIENT.REC<141>
+      TYPE.DM = CLIENT.REC<142>
+      THROW.AWAY.AMT = CLIENT.REC<143>
+
+      READ CLIENT.YTD.REC FROM F.YTD,CLIENT ELSE CLIENT.YTD.REC=''
+***************************************************************
+* Start Processing the TEM EMAILs.
+***************************************************************
+      FIRST.BILL = 1                                            ; * NPR010411
+      STMT='SSELECT FB.TEM,':CLIENT
+      EXECUTE STMT RTNLIST TEM.LIST CAPTURING OUTPUT
+      NUM.ITMS = @SELECTED
+      IF NUM.ITMS = 0 THEN
+         ERROR = 'NO ITEMS SELECTED FOR TEM EMAILS'
+         IF FROM.PROCESS THEN
+            ERROR.ARRAY<-1> = ERROR
+         END ELSE
+            CALL ELINE(ERROR)
+         END
+      END
+      EOF=0
+      LOOP
+         READNEXT TEM.ID FROM TEM.LIST ELSE EOF=1
+      UNTIL EOF DO
+         READ TEM.REC FROM F.TEM,TEM.ID ELSE
+            GO SKIP.EMAIL
+         END
+*        ADD.LST=CHANGE(TEM.REC<1>,'|',';') ; * JMKXX
+         TEM.REC<1>=CHANGE(TEM.REC<1>,'|',@VM)     ; * JMKXX
+         MSR.EXC.AMT=TEM.REC<2>
+         LCC.EXC.AMT=TEM.REC<3>
+         IOT=TEM.REC<4>
+         PROC.DT=TEM.REC<5>
+         FRT.COST=TEM.REC<6>
+         MSR.AMT=TEM.REC<7>
+         LCC.AMT=TEM.REC<8>
+         BEG.DATE=TEM.REC<9>
+         END.DATE=TEM.REC<10>
+
+         CARRIER.ID=FIELD(TEM.ID,'*',1)
+         READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE CARRIER.REC=''
+         CARRIER.NAME=CARRIER.REC<1>
+
+         PRO.NO=FIELD(TEM.ID,'*',2)
+
+         READ FB.HIST.REC FROM F.BILLS.HIST,TEM.ID ELSE FB.HIST.REC=''
+         BILL.DATE=FB.HIST.REC<1>
+         ORIG.ZIP=FB.HIST.REC<3>
+         DEST.ZIP=FB.HIST.REC<4>
+         DIV.ID=FB.HIST.REC<9>
+         VC.ID=FB.HIST.REC<17>
+         PO.BOL=FB.HIST.REC<16,1>
+         ORIG.ST=FB.HIST.REC<25>
+         DEST.ST=FB.HIST.REC<26>
+         ORIG.CITY=FB.HIST.REC<27>
+         DEST.CITY=FB.HIST.REC<28>
+         PROC.DATE=FB.HIST.REC<37>
+
+         APRV.CARRIER=FB.HIST.REC<69>
+         READV APRV.CARRIER.NAME FROM F.CARRIERS,APRV.CARRIER,2 ELSE APRV.CARRIER.NAME='**Unknown**'
+
+         VC.REC=''
+         IF VC.ID#'' THEN
+            READ VC.REC FROM F.VC,VC.ID ELSE VC.REC=''
+         END
+         DIV.REC=''
+         IF DIV.ID#'' THEN
+            READ DIV.REC FROM F.DIV,DIV.ID ELSE DIV.REC=''
+         END
+*
+* PASS 1 - CONSOLIDATE ALL EMAIL ADDRESSES
+         TEM.EMAIL.ID=CLIENT:'|':BEG.DATE:'|':END.DATE
+
+         IF FIRST.BILL THEN                                                       ; * NPR010411
+            READ TEST.EMAIL.REC FROM F.TEM.EMAIL.HIST,TEM.EMAIL.ID THEN           ; * NPR010411
+*              WRITE TEST.EMAIL.REC ON F.NP.TEST, TEM.EMAIL.ID : "*" : TIME()     ; * NPR010411
+            END                                                                   ; * NPR010411
+            FIRST.BILL = 0                                                        ; * NPR010411
+         END                                                                      ; * NPR010411
+
+         READ TEM.EMAIL.REC FROM F.TEM.EMAIL,TEM.EMAIL.ID ELSE TEM.EMAIL.REC=''
+         NVAL=DCOUNT(TEM.REC<1>,@VM)
+         FOR VAL=1 TO NVAL
+            ADD.LST=TEM.REC<1,VAL>
+            LOCATE(ADD.LST,TEM.EMAIL.REC,30;APOS) ELSE
+               APOS=DCOUNT(TEM.EMAIL.REC<30>,@VM)+1
+               FOR ATT=1 TO 35
+                  TEM.EMAIL.REC<ATT,APOS>=''
+               NEXT ATT
+               TEM.EMAIL.REC<30,APOS>=ADD.LST
+            END
+            IF MSR.AMT+0#0 THEN
+               NXTSVAL=DCOUNT(TEM.EMAIL.REC<1,APOS>,@SVM)+1
+               TEM.EMAIL.REC<1,APOS,NXTSVAL>=CARRIER.NAME
+               TEM.EMAIL.REC<2,APOS,NXTSVAL>=PRO.NO
+               TEM.EMAIL.REC<3,APOS,NXTSVAL>=BILL.DATE
+               TEM.EMAIL.REC<4,APOS,NXTSVAL>=FRT.COST
+               TEM.EMAIL.REC<5,APOS,NXTSVAL>=APRV.CARRIER.NAME
+               TEM.EMAIL.REC<6,APOS,NXTSVAL>=MSR.AMT
+               TEM.EMAIL.REC<7,APOS,NXTSVAL>=MSR.EXC.AMT
+               TEM.EMAIL.REC<8,APOS,NXTSVAL>=TEM.ID
+               TEM.EMAIL.REC<9,APOS,NXTSVAL>=APRV.CARRIER
+               TEM.EMAIL.REC<10,APOS,NXTSVAL>=PO.BOL
+               TEM.EMAIL.REC<11,APOS,NXTSVAL>=IOT
+               TEM.EMAIL.REC<12,APOS,NXTSVAL>=""
+               TEM.EMAIL.REC<13,APOS,NXTSVAL>=""
+               TEM.EMAIL.REC<14,APOS,NXTSVAL>=""
+               TEM.EMAIL.REC<15,APOS,NXTSVAL>=""
+               TEM.EMAIL.REC<16,APOS,NXTSVAL>=""
+               TEM.EMAIL.REC<17,APOS,NXTSVAL>=""
+               TEM.EMAIL.REC<18,APOS,NXTSVAL>=VC.REC<1>
+               TEM.EMAIL.REC<19,APOS,NXTSVAL>=VC.ID:'-':VC.REC<5>:', ':VC.REC<6>
+*               IF DIV.REC(16)='' THEN   ; * SBARBEE CACHE SYNTAX FIXES
+               IF DIV.REC<16>='' THEN   ; * SBARBEE CACHE SYNTAX FIXES
+                  BEGIN CASE
+                     CASE IOT='I'
+                        CITY=DEST.CITY
+                        ST=DEST.ST
+                     CASE IOT='O'
+                        CITY=ORIG.CITY
+                        ST=ORIG.ST
+                     CASE 1
+                        CITY=''
+                        ST=''
+                  END CASE
+                  TEM.EMAIL.REC<20,APOS,NXTSVAL>=CITY:', ':ST
+               END ELSE
+                  TEM.EMAIL.REC<20,APOS,NXTSVAL>=DIV.REC<16>:', ':DIV.REC<17>
+                  TEM.EMAIL.REC<23,APOS,NXTSVAL>=DIV.ID
+               END
+               TEM.EMAIL.REC<21,APOS,NXTSVAL>=BEG.DATE
+               TEM.EMAIL.REC<22,APOS,NXTSVAL>=END.DATE
+               TEM.EMAIL.REC<24,APOS,NXTSVAL>=ORIG.ZIP
+               TEM.EMAIL.REC<25,APOS,NXTSVAL>=ORIG.CITY
+               TEM.EMAIL.REC<26,APOS,NXTSVAL>=ORIG.ST
+               TEM.EMAIL.REC<27,APOS,NXTSVAL>=DEST.ZIP
+               TEM.EMAIL.REC<28,APOS,NXTSVAL>=DEST.CITY
+               TEM.EMAIL.REC<29,APOS,NXTSVAL>=DEST.ST
+            END
+            IF LCC.AMT+0#0 THEN
+               NXTSVAL=DCOUNT(TEM.EMAIL.REC<31,APOS>,@SVM)+1
+               TEM.EMAIL.REC<31,APOS,NXTSVAL>=TEM.ID
+               TEM.EMAIL.REC<32,APOS,NXTSVAL>=LCC.EXC.AMT
+               TEM.EMAIL.REC<33,APOS,NXTSVAL>=BEG.DATE
+               TEM.EMAIL.REC<34,APOS,NXTSVAL>=END.DATE
+               TEM.EMAIL.REC<35,APOS,NXTSVAL>=DIV.ID
+            END
+         NEXT VAL
+         WRITE TEM.EMAIL.REC ON F.TEM.EMAIL,TEM.EMAIL.ID
+         WRITE TEM.EMAIL.REC ON F.TEM.EMAIL.HIST,TEM.EMAIL.ID
+         DELETE F.TEM,TEM.ID
+SKIP.EMAIL:***
+      REPEAT
+EXIT.PROGRAM:***
+   END

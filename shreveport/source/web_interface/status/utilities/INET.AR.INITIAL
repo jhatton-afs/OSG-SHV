@@ -1,0 +1,189 @@
+      CALL GET.USER(USER)
+      IF USER='DAVID' THEN USER='OWEN'
+      IF USER='ROB' THEN USER='OWEN'
+*DFIF USER#'OWEN' THEN STOP
+      IF USER#'OLEDBAFS' THEN TESTING=1 ELSE TESTING=0
+      IF USER='OWEN' THEN OWEN=1 ELSE OWEN=0
+*TESTING = 0
+      IF TESTING THEN
+*  HEADING "'C'Test Mode'"
+      END
+* PREPARE AR FILES FOR ENTRY TO SQL TABLE
+*
+* AUTHOR: ROB GAUDET
+* DATE: APRIL 2, 2002
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE EXPRESS
+* WRITTEN CONSENT OF SAME.
+*
+
+      PROG.NAME=''
+      PROG.DESC='AR MOVE TO SQL'
+
+      OPEN 'AR.TRANS.1000.1' TO F.ART ELSE
+      END
+      IF OWEN THEN
+         OPEN 'BILLDATA.OWEN' TO F.BD ELSE ABORT
+         OPEN 'TEMP1' TO F.TEMP1 ELSE ABORT
+         CLEARFILE F.TEMP1
+         DA=''
+      END
+
+      METADATA = ""
+      METADATA<1,1> = "VARCHAR" ; METADATA<1,2> = "client_id" ; METADATA<1,3> = 0
+      METADATA<2,1> = "VARCHAR" ; METADATA<2,2> = "ar_id" ; METADATA<2,3> = 0
+      METADATA<3,1> = "VARCHAR" ; METADATA<3,2> = "trans_amount" ; METADATA<3,3> = 0
+      METADATA<4,1> = "VARCHAR" ; METADATA<4,2> = "trans_date" ; METADATA<4,3> = 0
+      METADATA<5,1> = "VARCHAR" ; METADATA<5,2> = "par_id" ; METADATA<5,3> = 0
+
+      IF TESTING THEN
+         CONVERT @AM TO ' ' IN METADATA
+      END ELSE
+         CONVERT @AM TO CHAR(30) IN METADATA
+      END
+      PRINT "%METADATA:":METADATA
+
+      AR.LIST = ""
+
+      STMT = 'SSELECT AR.TRANS.1000.1'
+      STMT:= ' WITH BALANCE GE "0" AND WITH SQL.FLAG = ""'
+      STMT:= ' AND WITH CLIENT.STATUS = "A"'
+      STMT:= ' AND WITH DESC # "VOID"'
+      STMT:= ' OR'
+      STMT:= ' WITH BALANCE = "0" AND WITH SQL.FLAG = "" AND WITH TR.DATE GE "':(DATE()-365)'D4/':'"'
+      STMT:= ' AND WITH CLIENT.STATUS = "A"'
+      STMT:= ' AND WITH DESC # "VOID"'
+
+* PRINT STMT
+* INPUT NUL
+*STMT='GET-LIST OWEN1'
+*DFSTMT="SELECT AR.TRANS.1000.1 'CR*50356'"
+      EXECUTE STMT CAPTURING OUTPUT
+* EXECUTE 'GET-LIST INET.AR' CAPTURING OUTPUT
+      NUMFILES = @SELECTED
+      IF NUMFILES = 0 THEN
+      END
+
+      ROW = ''
+      DONE=0
+      LOOP
+      UNTIL DONE=1 DO
+         READNEXT ART.ID ELSE DONE=1
+         DR.ARRAY=ART.ID
+         PARENT.CNTR=0
+         LOOP
+            PARENT.CNTR+=1
+            PART.ID=DR.ARRAY<1,PARENT.CNTR>
+         UNTIL PART.ID='' DO
+            READ DART FROM F.ART,PART.ID THEN
+*IS THIS THE DEBIT
+               FILE.TYPE = FIELD(PART.ID,"*",1)    ; *RETURNS FIRST TWO CHARACTERS
+               IF FILE.TYPE # "DR" THEN
+*IF NOT FIND THE DEBIT AND READ THE DR
+                  NUM.CHILDREN = DCOUNT(DART<10>,@VM)
+                  FOR X=1 TO NUM.CHILDREN
+                     PARENT.ID = DART<10,X>
+                     LOCATE PARENT.ID IN DR.ARRAY<1> SETTING POS ELSE
+                        DR.ARRAY<1,-1>=PARENT.ID
+                     END
+                  NEXT X
+                  GO NEXT.DR.ARRAY
+               END
+*** AT THIS POINT YOU HAVE AND HAVE READ THE DR RECORD
+*(IF I HAVE DONE IT BEFORE ... DONT ADD THE DR BUT STILL PROCESS THE OTHERS)
+*CYCLE THROUGH THE DR RECORD
+               SQL.FLAG=DART<32>
+               IF SQL.FLAG#'' THEN
+                  GO NEXT.DR.ARRAY
+               END ELSE
+                  SQL.UPDATE.DATE = DATE()
+                  ROW<1> = DART<1>[8,5]  ; * CLIENT ID
+                  ROW<2> = PART.ID       ; * TRANSACTION ID
+                  ROW<3> = DART<8>       ; * TRANSACTION AMOUNT
+                  ROW<4> = DART<4>'D4/'  ; * TRANSACTION DATE
+                  ROW<5> = PART.ID
+                  IF TESTING THEN
+                     IF OWEN THEN
+                        ROW=CHANGE(ROW,@AM,@VM)
+                        DA<-1>=ROW
+                     END ELSE
+                        CONVERT @AM TO ' ' IN ROW
+                     END
+                  END ELSE
+                     CONVERT @AM TO CHAR(30) IN ROW
+                  END
+                  PRINT ROW
+                  WRITEV SQL.UPDATE.DATE ON F.ART,PART.ID,32
+               END
+               IF OWEN THEN
+                  TEMP.ID=PART.ID:"*":PART.ID
+                  READV TEMP FROM F.TEMP1,TEMP.ID,1 THEN
+                     CALL ELINE(TEMP.ID:' has been written once already')
+                     TEMP+=1
+                  END ELSE
+                     TEMP=1
+                     WRITEV TEMP ON F.TEMP1,PART.ID,1
+                  END
+               END
+               NUM.CHILDREN = DCOUNT(DART<10>,@VM)
+               FOR X=1 TO NUM.CHILDREN
+                  ART.ID=DART<10,X>
+                  READ DARTC FROM F.ART,ART.ID THEN
+                     SQL.FLAG=DARTC<32>
+                     IF SQL.FLAG='' OR SQL.FLAG=DATE() THEN
+                        NUM.PARENTS = DCOUNT(DARTC<10>,@VM)
+                        FOR Y = 1 TO NUM.PARENTS
+                           PARENT=DARTC<10,Y>
+                           IF PARENT=PART.ID THEN
+                              ROW<1> = DARTC<1>[8,5]         ; * CLIENT ID
+                              ROW<2> = ART.ID      ; * TRANSACTION ID
+                              AMOUNT=0
+                              TIMES=DCOUNT(DARTC<11,Y>,@SVM)
+                              FOR Z = 1 TO TIMES
+                                 AMOUNT+=DARTC<11,Y,Z>
+                              NEXT Z
+                              ROW<3> = -AMOUNT     ; * TRANSACTION AMOUNT
+                              ROW<4> = DARTC<4>'D4/'         ; * TRANSACTION DATE
+                              ROW<5> = PART.ID
+                              IF TESTING THEN
+                                 IF OWEN THEN
+                                    ROW=CHANGE(ROW,@AM,@VM)
+                                    DA<-1>=ROW
+                                 END ELSE
+                                    CONVERT @AM TO ' ' IN ROW
+                                 END
+                              END ELSE
+                                 CONVERT @AM TO CHAR(30) IN ROW
+                              END
+                              PRINT ROW
+                           END ELSE
+                              LOCATE PARENT IN DR.ARRAY<1> SETTING POS ELSE
+                                 DR.ARRAY<1,-1>=PARENT
+                              END
+                           END
+                        NEXT Y
+                        SQL.UPDATE.DATE = DATE()
+                        WRITEV SQL.UPDATE.DATE ON F.ART,ART.ID,32
+                        IF OWEN THEN
+                           TEMP.ID=ART.ID:"*":PART.ID
+                           READV TEMP FROM F.TEMP1,TEMP.ID,1 THEN
+                              CALL ELINE(TEMP.ID:' has been written once already')
+                              TEMP+=1
+                           END ELSE TEMP=1
+                           WRITEV TEMP ON F.TEMP1,ART.ID,1
+                        END
+                     END
+                  END
+               NEXT X
+            END
+NEXT.DR.ARRAY: ***
+         REPEAT
+      REPEAT
+      IF OWEN THEN
+         DA=CHANGE(DA,@VM,CHAR(9))
+         WRITE DA ON F.BD,'ARDATA'
+         CRT @(0,23):"Wrote ARDATA on BILLDATA.OWEN"
+      END
+
+      STOP

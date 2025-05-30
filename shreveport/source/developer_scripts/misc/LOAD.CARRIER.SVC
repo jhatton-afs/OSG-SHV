@@ -1,0 +1,179 @@
+*************************************************************************
+* Program : LOAD.CARRIER.SVC
+*           Import BOL data from Robroy
+* Author  : James Barberousse
+* Date    : March 2002
+*
+* Copyright (c) 2002 by AFS Logistics, LLC. - All Rights Reserved
+*************************************************************************
+* Format of CARRIER.SVC Text file            Format of CARRIER.SVC
+* Tab delimited with 6 possible fields       ITEM ID = CARRIER*CLIENT*ORIGIN ZIP (OR ALL)
+* ----------------------------------------------------------------------
+* (1) AFS Carrier #                          REC< 1> Dest ZipCode (3 or 5/6) multivalued
+* (2) AFS Client # (or ALL)                  REC< 2> Direct/Indirect (D/I) multivalued
+* (3) Origin ZipCode (3 or 5/6)              REC< 3> Service Days multivalued
+* (4) Dest ZipCode   (3 or 5/6)
+* (5) Direct/Indirect (D/I)
+* (6) Service Days
+*************************************************************************
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+* Initialize general variables
+      PROMPT''
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='LOAD.CARRIER.SVC'
+      PROG.DESC='Import Carrier Service Data'
+      PACK.NAME='Freight Payment'
+      MASK.CHAR='-'
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'LOAD.CARRIER.SVC' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+
+* Write screen header
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+
+* Restrict program usage
+      VALID.USER=1
+      BEGIN CASE
+         CASE USER.NAME='OWEN'
+         CASE USER.NAME='MYRA'
+         CASE USER.NAME='DAVID'
+         CASE USER.NAME='MKERBOW'
+         CASE 1
+            VALID.USER=0
+      END CASE
+
+      IF NOT(VALID.USER) THEN
+         TEMP='**  This is a restricted access application  **'
+         CALL CENTER(TEMP,80)
+         CRT @(0,12):TEMP
+         GOTO THE.END
+      END
+
+100:***
+      LN='Are you ready to import Carrier service file? '
+      MASK='N-'
+      HELP='[Y]=Yes [N]=No [EX]=Exit'
+      CALL GEN.IN(0,5,LN:MASK,'',Q,0,2,'','',2,-2,5,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX' OR QI='N' OR QI=''
+            GOTO THE.END
+         CASE QI='Y'
+            NULL
+         CASE 1
+            GOTO 100
+      END CASE
+
+* Open other files
+      OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+         OPEN '','VOC' TO F.VOC ELSE
+            CALL ELINE('Unable to open VOC file - Call IS Department.')
+            GOTO THE.END
+         END
+         READ BILLDATA.REC FROM F.VOC,'BILLDATA' ELSE
+            CALL ELINE('Unable to open VOC BILLDATA.')
+            GOTO THE.END
+         END
+         BILLDATA.REC<2>:='\':USER.NAME
+         WRITE BILLDATA.REC ON F.VOC,'BILLDATA.':USER.NAME ELSE
+            CALL ELINE('Your user name ':USER.NAME:' is not in the BILLDATA folder - Call IS Department.')
+            GOTO THE.END
+         END
+         OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+            CALL ELINE('Unable to open BILLDATA.':USER.NAME:'.')
+            GOTO THE.END
+         END
+      END
+      OPEN '','CARRIER.SVC' TO F.CS ELSE
+         CALL ELINE('Unable to open CARRIER.SVC.')
+      END
+
+* Read in the existing Carrier Service text file
+      READ CS.IMPORT FROM F.BILLDATA,'CS.TXT' ELSE
+         CALL ELINE('CS.TXT does not exist.')
+         GOTO THE.END
+      END
+      CS.LAST.IMPORT=CS.IMPORT           ; * Save file for writing as "last"
+      CS.IMPORT=CHANGE(CS.IMPORT,CHAR(12),'')
+      CS.IMPORT=CHANGE(CS.IMPORT,CHAR(9),@VM)
+
+* Status lines
+      NATT=DCOUNT(CS.IMPORT,@AM)
+      CRT @(0,5):'Total items in import file = ':NATT:@(-4)
+      CRT @(0,7):'Total Items processed'
+      CRT @(0,8):'---------------------'
+
+* Set counters for processing
+      ALREADY.THERE=0
+      ALREADY.THERE.BOTH.MATCH=0
+      ALREADY.THERE.AMOUNTS.MATCH=0
+      ALREADY.THERE.DATES.MATCH=0
+      ALREADY.THERE.NEITHER.MATCH=0
+
+      ALREADY.THERE.NULL=0
+      NOT.THERE=0
+
+      RESULTS.ARRAY=''
+      ERROR.ARRAY=''
+      PERC=0
+      PREV.CLIENT.NUMBER=''
+
+* Prepare the file for processing
+      FOR ATT=1 TO NATT
+         CRT @(0,9):ATT'R#21'
+         CALL PROG.BAR(11,ATT,NATT,PERC)
+         CS.LINE=CS.IMPORT<ATT>
+         CS.CARRIER=CS.LINE<1,1>
+         CS.ORIG=CS.LINE<1,2>
+         CS.DEST=CS.LINE<1,3>
+         CS.DI=CS.LINE<1,4>
+         CS.DAYS=CS.LINE<1,5>
+
+         IF CS.CARRIER#'' AND CS.ORIG#'' THEN
+            CS.ID=CS.CARRIER:'*':CS.ORIG
+            READ CS.REC FROM F.CS,CS.ID ELSE CS.REC=''
+            CS.ORG=CS.REC
+            LOCATE CS.DEST IN CS.REC<1> BY 'AL' SETTING DPOS ELSE
+               FOR FLD=1 TO 3
+                  INS '' BEFORE CS.REC<FLD,DPOS>
+               NEXT FLD
+            END
+            CS.REC<1,DPOS>=CS.DEST
+            CS.REC<2,DPOS>=CS.DI
+            CS.REC<3,DPOS>=CS.DAYS
+            IF CS.REC#CS.ORG THEN
+               WRITE CS.REC ON F.CS,CS.ID
+            END
+         END
+      NEXT ATT
+
+* Update files
+      WRITE CS.LAST.IMPORT ON F.BILLDATA,'CS-LAST.TXT' THEN
+         WRITE CS.LAST.IMPORT ON F.BILLDATA,'CS-':TIMEDATE():'.TXT'
+         DELETE F.BILLDATA,'CS.TXT'      ; * Delete the original HK text file
+      END ELSE
+         CALL ELINE('Could not write RR-LAST.TXT. Not deleting CS.TXT. Call James.')
+      END
+
+* Screen output of results
+*      CRT @(0,12):'Items already existing in the BOL cross reference file:'
+*      CRT @(0,13):'   1 Same Order Numbers, Same Order Dates             (not changed) = ':ALREADY.THERE.BOTH.MATCH'R#8'
+*      CRT @(0,14):'   2 Same Order Numbers, Different Order Dates        (not changed) = ':ALREADY.THERE.AMOUNTS.MATCH'R#8'
+*      CRT @(0,15):'   3 Different Order Numbers, Same Order Dates        (not changed) = ':ALREADY.THERE.DATES.MATCH'R#8'
+*      CRT @(0,16):'   4 Different Order Numbers, Different Order Dates   (not changed) = ':ALREADY.THERE.NEITHER.MATCH'R#8'
+*      CRT @(0,17):'---- Total items already in the file                                = ':ALREADY.THERE'R#8'
+*
+*      CRT @(0,19):'   5 Zero or Null Order Number (occurs as 1-4 above)      (changed) = ':ALREADY.THERE.NULL'R#8'
+*      CRT @(0,20):'---- Total items not in the file                          (written) = ':NOT.THERE'R#8'
+
+*************************************************************************
+
+THE.END:***
+* End of program
+      CRT @(0,23):
+   END

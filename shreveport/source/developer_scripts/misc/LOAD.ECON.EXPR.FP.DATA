@@ -1,0 +1,980 @@
+*********************************************************************
+*********************************************************************
+INITIALIZE.VARIABLES:*
+      OTODAY=OCONV(DATE(),'D4/')
+      OBDAY=OCONV(DATE()-6,'D4/')
+      PROG.NAME='LOAD.LEAN.FP.DATA'
+      CEOL=@(-4)
+      CALL GET.USER.NEW(USER,CH.NUM)
+****      CALL CHANNEL(CH.NUM)
+      TB=CHAR(9)
+       GOSUB OPEN.FILES
+      	READV OP.FLG FROM F.OP,USER,38 ELSE
+         OP.FLG = "N"
+      END
+      IF OP.FLG # "Y" THEN
+         CALL ELINE('UNAUTHORIZED ACCESS')
+         STOP
+      END
+      RPT.SVC.PREFIX=CHAR(239):CHAR(187):CHAR(191)
+      BAD.CARRIER.HDR='Carrier#''L#10 ':'Name''L#35 ':'Status''L#6'
+     
+      PREV.TEST=''
+START.PREPROCESS.LOOP:*
+         FP.ID='REC_01015_04349_':FIELD(OTODAY,'/',3):FIELD(OTODAY,'/',1):FIELD(OTODAY,'/',2):'.TXT'
+         READ TEST FROM F.FP,FP.ID THEN
+            TEST.NVAL=DCOUNT(TEST,@AM)
+            IF TEST.NVAL<3 THEN
+               MVIN=''
+               SUBJ='Economy Express Data File Corrupt'
+               TEXT=USER:' attempted to import the Economy Express Data file '
+               TEXT<1,-1>='which appears to be corrupt '
+               TEXT<1,-1>='on ':DATE()'D2/':' ':OCONV(TIME(),'MTHS')
+               TEXT<1,-1>=' '
+               TEXT<1,-1>='Please review and advise when to continue.'
+               TEXT<1,-1>=' '
+               MVIN=''
+               MVIN<2,-1>='DFriend@afs.net'
+               MVIN<4>='AFS'
+               MVIN<5>=SUBJ
+               MVIN<6>=TEXT
+               CALL SENDMAIL(MVIN,MVOUT)
+               CALL ELINE('Economy Express Payment Data File is not available to import!')
+               ABORT
+            END
+            IF TEST#PREV.TEST THEN
+               CRT @(0,22):FP.ID:' File is being received...please wait...':CEOL:
+               PREV.TEST=TEST
+               SLEEP 5
+               CRT @(0,22):CEOL:
+               GO START.PREPROCESS.LOOP
+            END
+         END
+      BAD.CARRIER.LIST=''
+READ.PREPROCESS.RECORD:*
+         READ FP.REC FROM F.FP,FP.ID THEN
+            FP.ORG=FP.REC
+            FP.REC=CHANGE(FP.REC,CHAR(9),@VM)
+            IF FP.REC[1,3]=RPT.SVC.PREFIX THEN
+               LREC=LEN(FP.REC)
+               FP.REC=FP.REC[4,LREC]
+            END
+            IMP.NATT=DCOUNT(FP.REC,@AM)
+            IMP.PER=''
+            FOR IMP.ATT=1 TO IMP.NATT
+               CALL PROG.BAR(22,IMP.ATT,IMP.NATT,IMP.PER)
+               IF IMP.ATT=1 THEN GO NEXT.PRE.ATT
+               FP.LINE=TRIM(FP.REC<IMP.ATT>)
+               IF FP.LINE='' THEN GO NEXT.PRE.ATT
+               IF FP.LINE=' ' THEN GO NEXT.PRE.ATT
+               IMP.REC=FP.LINE
+               GOSUB DEFINE.IMPORT.FIELDS
+               GOSUB READ.CLIENT.RECORD
+               GOSUB READ.CARRIER.RECORD
+               IF CARRIER.REC<89>#'A' THEN
+                  IF BAD.CARRIER.LIST='' THEN
+                     BAD.CARRIER.LIST=BAD.CARRIER.HDR
+                  END
+                  BAD.CARRIER.HDR='Carrier#''L#10 ':'Name''L#35 ':'Status''L#6'
+                  BAD.CARRIER.DTL=CARRIER.ID'L#10 ':CARRIER.REC<1>'L#35 ':CARRIER.REC<89>'L#6'
+                  BAD.CARRIER.LIST<-1>=BAD.CARRIER.DTL
+               END
+NEXT.PRE.ATT:  *
+            NEXT IMP.ATT
+         END
+NEXT.PREPROCESS:*
+*DF      REPEAT
+      IF BAD.CARRIER.LIST#'' THEN
+         MVIN=''
+         SUBJ='Inactive Carrier(s) for Lean Heavy Freight Payment Import File'
+         TEXT=USER:' attempted to import the Lean Heavy Freight Payment file '
+         TEXT<1,-1>='that contain carrier(s) with an inactive status '
+         TEXT<1,-1>='on ':DATE()'D2/':' ':OCONV(TIME(),'MTHS')
+         TEXT<1,-1>=' '
+         TEXT<1,-1>='Please review and advise the mapped carrier number to use in order to correct.'
+         TEXT<1,-1>=' '
+         TEXT<1,-1>=CHANGE(BAD.CARRIER.LIST,@AM,@VM)
+         MVIN=''
+         MVIN<1,-1>='DFriend@afs.net'
+         MVIN<4>='AFS'
+         MVIN<5>=SUBJ
+         MVIN<6>=TEXT
+         CALL SENDMAIL(MVIN,MVOUT)
+         ABORT
+      END
+START.PROCESSING.LOOP:*
+READ.IMPORT.RECORD:*
+         READ FP.REC FROM F.FP,FP.ID THEN
+            FILE.DATE=FIELD(FP.ID,'-',1)
+            PROC.DATE=ICONV(FILE.DATE[5,2]:'-':FILE.DATE[7,2]:'-':FILE.DATE[1,4],'D')
+            FP.ORG=FP.REC
+            FP.REC=CHANGE(FP.REC,CHAR(9),@VM)
+            IF FP.REC[1,3]=RPT.SVC.PREFIX THEN
+               LREC=LEN(FP.REC)
+               FP.REC=FP.REC[4,LREC]
+            END
+            IMP.NATT=DCOUNT(FP.REC,@AM)
+            FP.REC<1,74>='AFSProID'
+            IMP.PER=''
+            FOR IMP.ATT=1 TO IMP.NATT
+               CALL PROG.BAR(22,IMP.ATT,IMP.NATT,IMP.PER)
+               IF IMP.ATT=1 THEN GO NEXT.IMP.ATT
+*DFCALL ELINE('PRESS BREAK - CHECK VARIABLES')
+               FP.LINE=TRIM(FP.REC<IMP.ATT>)
+               IF FP.LINE='' THEN GO NEXT.IMP.ATT
+               IF FP.LINE=' ' THEN GO NEXT.IMP.ATT
+               IMP.REC=FP.LINE
+               GOSUB DEFINE.IMPORT.FIELDS
+               GOSUB READ.CLIENT.RECORD
+               HIST.CLIENT=0
+               FP.CLIENT=1
+               GOSUB READ.CARRIER.RECORD
+               GOSUB CREATE.ADDITIONAL.FIELDS
+               GOSUB WRITE.FB.REC
+NEXT.IMP.ATT:  *
+            NEXT IMP.ATT
+            WRITE FP.ORG ON F.FP,'RAN_':FP.ID
+            FP.REC=CHANGE(FP.REC,@VM,CHAR(9))
+            DELETE F.FP,FP.ID
+         END
+NEXT.IMPORT:*
+*DF      REPEAT
+      STOP
+OPEN.FILES:*
+      OPEN '','BILLDATA.':USER TO F.FP ELSE
+         CALL OPEN.ABORT('BILLDATA',PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         CALL OPEN.ABORT('FB.BILLS.CRX',PROG.NAME)
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+         CALL OPEN.ABORT('ZIPS.CODES',PROG.NAME)
+      END
+      OPEN '','FED.INV.XREF' TO F.INV.XREF ELSE
+         CALL OPEN.ABORT("FED.INV.XREF",PROG.NAME)
+      END
+      OPEN '','EDI.CAR.ACNT.XREF' TO F.ECAX ELSE
+         CALL OPEN.ABORT("EDI.CAR.ACNT.XREF",PROG.NAME)
+      END
+      OPEN '','SCAC.XREF' TO F.SCAC ELSE
+         CALL OPEN.ABORT("SCAC.XREF",PROG.NAME)
+      END
+      OPEN '','OPERATOR' TO F.OP ELSE CALL OPEN.ABORT("OPERATOR",PROG.NAME)      ; * GRB01
+      RETURN
+
+DEFINE.IMPORT.FIELDS:*
+*DF      ImpSCAC=IMP.REC<1,1>
+*DF      ImpCarrierName=IMP.REC<1,2>
+*DF      ImpMode=IMP.REC<1,3>
+      ImpMode='Courier'
+      ImpInvoice_ProNo=IMP.REC<1,1>
+*DF      ImpDirection=IMP.REC<1,5>
+      ImpDirection='O'
+      ImpSenderName=IMP.REC<1,4>
+      ImpSenderZip=IMP.REC<1,5>
+      ImpSenderCity=IMP.REC<1,6>
+      ImpSenderState=IMP.REC<1,7>
+      IF ImpSenderState='MO' AND ImpSenderCity='KC' THEN ImpSenderCity='Kansas City'
+      IF ImpSenderState='KS' AND ImpSenderCity='KC' THEN ImpSenderCity='Kansas City'
+      ImpReceiverCity=IMP.REC<1,10>
+      ImpReceiverZip=IMP.REC<1,9>
+      ImpReceiverState=IMP.REC<1,11>
+      IF ImpReceiverState='MO' AND ImpReceiverCity='KC' THEN ImpReceiverCity='Kansas City'
+      IF ImpReceiverState='KS' AND ImpReceiverCity='KC' THEN ImpReceiverCity='Kansas City'
+      TEMP.NUM = IMP.REC<1,12>
+      TEMP.NUM = CHANGE(TEMP.NUM,',','')
+      TEMP.NUM = CHANGE(TEMP.NUM,'"','')
+      TEMP.NUM=TRIM(TEMP.NUM)
+      ImpBilledWeight=ICONV(TEMP.NUM,'MR0')
+      ImpReceiverName=IMP.REC<1,8>
+      IF OCONV(ImpReceiverName,'MCU')[1,8]='HILLYARD' THEN ImpDirection='I'
+*DF      TEMP.NUM = IMP.REC<1,15>
+*DF      TEMP.NUM = CHANGE(TEMP.NUM,',','')
+*DF      TEMP.NUM = CHANGE(TEMP.NUM,'"','')
+*DF      TEMP.NUM=TRIM(TEMP.NUM)
+*DF      ImpMileage=ICONV(TEMP.NUM,'MR0')
+      ImpShipDate=ICONV(IMP.REC<1,3>[1,10],'D')
+*DF      ImpDeliveryDate=ICONV(IMP.REC<1,17>,'D')
+*DF      ImpFinalDeliveryDate=ICONV(IMP.REC<1,18>,'D')
+*DF      ImpClass=IMP.REC<1,19>
+*DF      ImpReference=IMP.REC<1,20>
+*DF      ImpNumStops=IMP.REC<1,21>
+*DF      ImpFirstPickupDate=IMP.REC<1,22>
+*DF      ImpLoadStatus=IMP.REC<1,23>
+      ImpBOL_PONo=IMP.REC<1,1>
+      TEST.NUM=IMP.REC<1,16>
+      GOSUB CONVERT.NUMBER
+      ImpGrossCharge=ICONV(TEST.NUM,'MR2,')
+      TEST.NUM=IMP.REC<1,13>
+      GOSUB CONVERT.NUMBER
+      ImpFreight=ICONV(TEST.NUM,'MR2,')
+*DF      TEST.NUM=IMP.REC<1,27>
+*DF      GOSUB CONVERT.NUMBER
+*DF      ImpCalCom=ICONV(TEST.NUM,'MR2,')
+*DF      TEST.NUM=IMP.REC<1,28>
+*DF      GOSUB CONVERT.NUMBER
+*DF      ImpDelivery=ICONV(TEST.NUM,'MR2,')
+      TEST.NUM=IMP.REC<1,14>
+      GOSUB CONVERT.NUMBER
+      ImpFuel=ICONV(TEST.NUM,'MR2,')
+      TEST.NUM=IMP.REC<1,15>
+      GOSUB CONVERT.NUMBER
+      ImpLiftGate=ICONV(TEST.NUM,'MR2,')
+*DF      TEST.NUM=IMP.REC<1,31>
+*DF      GOSUB CONVERT.NUMBER
+*DF      ImpMarking=ICONV(TEST.NUM,'MR2,')
+*DF      TEST.NUM=IMP.REC<1,32>
+*DF      GOSUB CONVERT.NUMBER
+*DF      ImpMin=ICONV(TEST.NUM,'MR2,')
+*DF      TEST.NUM=IMP.REC<1,33>
+*DF      GOSUB CONVERT.NUMBER
+*DF      ImpReconsign=ICONV(TEST.NUM,'MR2,')
+*DF      TEST.NUM=IMP.REC<1,34>
+*DF      GOSUB CONVERT.NUMBER
+*DF      ImpRedelivery=ICONV(TEST.NUM,'MR2,')
+*DF      TEST.NUM=IMP.REC<1,35>
+*DF      GOSUB CONVERT.NUMBER
+*DF      ImpResidential=ICONV(TEST.NUM,'MR2,')
+*DF      TEST.NUM=IMP.REC<1,36>
+*DF      GOSUB CONVERT.NUMBER
+*DF      ImpWtCorrection=ICONV(TEST.NUM,'MR2,')
+*DF      TEST.NUM=IMP.REC<1,37>
+*DF      GOSUB CONVERT.NUMBER
+*DF      ImpInside=ICONV(TEST.NUM,'MR2,')
+*DF      TEST.NUM=IMP.REC<1,38>
+*DF      GOSUB CONVERT.NUMBER
+*DF      ImpCorrectedBOL=ICONV(TEST.NUM,'MR2,')
+*DF      TEST.NUM=IMP.REC<1,39>
+*DF      GOSUB CONVERT.NUMBER
+*DF      ImpDetention=ICONV(TEST.NUM,'MR2,')
+*DF      TEST.NUM=IMP.REC<1,40>
+*DF      GOSUB CONVERT.NUMBER
+*DF      ImpNYDelivery=ICONV(TEST.NUM,'MR2,')
+*DF      TEST.NUM=IMP.REC<1,41>
+*DF      GOSUB CONVERT.NUMBER
+*DF      ImpReturnedLoad=ICONV(TEST.NUM,'MR2,')
+*DF      TEST.NUM=IMP.REC<1,42>
+*DF      GOSUB CONVERT.NUMBER
+*DF      ImpCanadianProcessing=ICONV(TEST.NUM,'MR2,')
+      RETURN
+
+READ.CLIENT.RECORD:*
+      CLIENT.ID=FP.ID[5,5]
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE CLIENT.REC=''
+
+OPEN.CLIENT.FILES:*
+      OPEN '','FB.BILLS,':CLIENT.ID TO F.BILLS ELSE
+         CALL OPEN.ABORT('FB.BILLS,':CLIENT.ID,PROG.NAME)
+      END
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.HIST ELSE
+         CALL OPEN.ABORT('FB.BILLS.HIST,':CLIENT.ID,PROG.NAME)
+      END
+*      OPEN '','FB.PROC.DATE.XREF,':CLIENT.ID TO F.FPX ELSE            ; * SWB01
+*         CALL OPEN.ABORT('FB.PROC.DATE.XREF,':CLIENT.ID,PROG.NAME)    ; * SWB01
+*      END                                                             ; * SWB01
+      OPEN '','ZIP.DIV.XREF,':CLIENT.ID TO F.ZDX ELSE
+         CALL OPEN.ABORT('ZIP.DIV.XREF,':CLIENT.ID,PROG.NAME)
+      END
+      RETURN
+
+READ.CARRIER.RECORD:*
+*DF      CARRIER.SCAC=ImpSCAC
+*DF      READV CARRIER.ID FROM F.SCAC,ImpSCAC,1 ELSE CARRIER.ID=''
+*DF      IF CARRIER.ID='' AND ImpSCAC='SCLJ' THEN CARRIER.ID='27706'
+*DF      IF CARRIER.ID='' AND ImpSCAC='TNFK' THEN CARRIER.ID='23129'
+*DF      IF CARRIER.ID='' AND ImpSCAC='TQYL' THEN CARRIER.ID='16540'
+*DF      IF CARRIER.ID='' AND ImpSCAC='RSLS' THEN CARRIER.ID='11311'
+*DF      IF CARRIER.ID='' AND ImpSCAC='TMCD' THEN CARRIER.ID='04456'
+*DF      IF CARRIER.ID='' AND ImpSCAC='LGKK' THEN CARRIER.ID='30898'
+*DF      IF CARRIER.ID='' AND ImpSCAC='CHSL' THEN CARRIER.ID='10313'
+*DF      IF CARRIER.ID='' AND ImpSCAC='UPTS' THEN CARRIER.ID='00014'
+*DF      IF CARRIER.ID='' AND ImpSCAC='KHNN' THEN CARRIER.ID='31167'
+*DF      CARRIER.ID='04349'
+      CARRIER.ID=FP.ID[11,5]
+      IF CARRIER.ID#'' THEN
+         CARRIER.ID=CARRIER.ID'R%5'
+      END ELSE
+         CARRIER.ID=''
+      END
+      READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE CARRIER.REC=''
+      RETURN
+
+CREATE.ADDITIONAL.FIELDS:*
+      LCC.ARRAY=''
+      BILL.DATE=ImpShipDate
+      IN.OUT=ImpDirection[1,1]
+      ORIG.ZIP=ImpSenderZip
+      IF NUM(ORIG.ZIP) AND LEN(ORIG.ZIP)>5 THEN
+         ORIG.ZIP=ORIG.ZIP[1,5]
+      END
+      READV ORIG.COUNTRY.CD FROM F.ZIPS,ORIG.ZIP,3 ELSE ORIG.COUNTRY.CD=''
+      DEST.ZIP=ImpReceiverZip
+      IF NUM(DEST.ZIP) AND LEN(DEST.ZIP)>5 THEN
+         DEST.ZIP=DEST.ZIP[1,5]
+      END
+      READV DEST.COUNTRY.CD FROM F.ZIPS,DEST.ZIP,3 ELSE DEST.COUNTRY.CD=''
+      DIVISION=''
+*DFCALL ELINE('PRESS BREAK')
+      IF CLIENT.ID='01015' THEN
+         DIVISION='00025'
+         IF OCONV(ImpSenderName,'MCU')[1,8]='HILLYARD' AND ImpSenderZip='64501' THEN
+            DIVISION='00001'
+         END
+         IF OCONV(ImpSenderName,'MCU')[1,8]='HILLYARD' AND ImpSenderZip='64503' THEN
+            DIVISION='00001'
+         END
+         IF OCONV(ImpReceiverName,'MCU')[1,8]='HILLYARD' AND OCONV(ImpSenderName,'MCU')[1,8]#'HILLYARD' THEN
+            IF ImpReceiverZip='64501' THEN
+               DIVISION='00001'
+            END
+         END
+         IF OCONV(ImpReceiverName,'MCU')[1,8]='HILLYARD' AND OCONV(ImpSenderName,'MCU')[1,8]#'HILLYARD' THEN
+            IF ImpReceiverZip='64503' THEN
+               DIVISION='00001'
+            END
+         END
+         IF OCONV(ImpReceiverName,'MCU')[1,8]='HILLYARD' AND OCONV(ImpSenderName,'MCU')[1,8]#'HILLYARD' THEN
+            IF ImpReceiverZip='64502' THEN
+               DIVISION='00001'
+            END
+         END
+         IF OCONV(ImpSenderName,'MCU')[1,8]='HILLYARD' AND ImpSenderZip='64502' THEN
+            DIVISION='00001'
+         END
+      END
+      IF DIVISION='' THEN
+         BEGIN CASE
+            CASE IN.OUT='I'
+               READ ZDX.REC FROM F.ZDX,DEST.ZIP THEN
+                  DIVISION=ZDX.REC<1,1>
+               END
+               IF DIVISION='' THEN
+                  READ ZDX.REC FROM F.ZDX,ORIG.ZIP THEN
+                     DIVISION=ZDX.REC<1,1>
+                  END
+               END
+            CASE IN.OUT='O'
+               READ ZDX.REC FROM F.ZDX,ORIG.ZIP THEN
+                  DIVISION=ZDX.REC<1,1>
+               END
+               IF DIVISION='' THEN
+                  READ ZDX.REC FROM F.ZDX,DEST.ZIP THEN
+                     DIVISION=ZDX.REC<1,1>
+                  END
+               END
+            CASE IN.OUT='T'
+               READ ZDX.REC FROM F.ZDX,ORIG.ZIP THEN
+                  DIVISION=ZDX.REC<1,1>
+               END
+               IF DIVISION='' THEN
+                  READ ZDX.REC FROM F.ZDX,DEST.ZIP THEN
+                     DIVISION=ZDX.REC<1,1>
+                  END
+               END
+         END CASE
+         IF DIVISION='' THEN DIVISION='99999'
+      END
+*DF      IF CLIENT.ID='02451' THEN
+*DF         EXP.CODE='99999'
+*DF         IF IN.OUT='O' THEN EXP.CODE='282000.7575'
+*DF      END
+      WEIGHT=ImpBilledWeight
+      CARRIER.CHG=ImpGrossCharge
+      ACTUAL.CHG=ImpGrossCharge
+      VAR.ARR=''
+*df      VAR.ARR<2>=-ImpAuditSavings-ImpAFSAuditRebate
+*df      VAR.ARR<3>=-ImpCMSaving
+*df      VARIANCE=SUM(VAR.ARR<2>)+SUM(VAR.ARR<3>)
+      CHECK.AMT=''
+      CHECK.NUM=''
+      CHECK.DATE=''
+      BOL=ImpBOL_PONo
+      VC.ID=ImpReceiverName
+      ZIP.ARR=''
+      MILEAGE=0
+*DF      MILEAGE=ImpMileage
+      BEGIN CASE
+         CASE ImpMode='LTL' ; T.MODE.BY.WGT=1
+         CASE ImpMode='Rail' ; T.MODE.BY.WGT=2
+         CASE ImpMode='Courier' ; T.MODE.BY.WGT=4
+         CASE ImpMode='Truckload' ; T.MODE.BY.WGT=6
+         CASE ImpMode='Ocean' ; T.MODE.BY.WGT=8
+         CASE ImpMode='Misc' ; T.MODE.BY.WGT=11
+         CASE ImpMode='ReMail' ; T.MODE.BY.WGT=11
+         CASE ImpMode='Air Freight' ; T.MODE.BY.WGT=12
+         CASE ImpMode='Fleet' ; T.MODE.BY.WGT=15
+         CASE ImpMode='Intermodal' ; T.MODE.BY.WGT=18
+         CASE 1 ; T.MODE.BY.WGT=CARRIER.REC<44>
+      END CASE
+      MISROUTE.ARRAY=''
+      DISC.PERC=''
+      ORIG.STATE=ImpSenderState
+      DEST.STATE=ImpReceiverState
+      ORIG.CITY=OCONV(ImpSenderCity,'MCT')
+      DEST.CITY=OCONV(ImpReceiverCity,'MCT')
+      ZIP.ARR<1,1>=ORIG.ZIP
+      ZIP.ARR<2,1>=ORIG.CITY
+      ZIP.ARR<3,1>=ORIG.STATE
+      ZIP.ARR<1,2>=DEST.ZIP
+      ZIP.ARR<2,2>=DEST.CITY
+      ZIP.ARR<3,2>=DEST.STATE
+      DUE.DATE=''
+      E.DATE=ImpShipDate
+      DTAB=''
+*DF      DTAB<1>=EXP.CODE
+*DF      DTAB<3>=ACTUAL.CHG
+      BANK.ID=CLIENT.REC<81>
+      VERIFIED=''
+      BILL.STATUS='O'
+      INV.NUM=''
+      OVERRIDE.FIELD=''
+      OVERRIDE.OPERATOR=''
+      OVERRIDE.INFO=''
+      OVERRIDE.STATUS=''
+      FLAT.RATE=''
+      MIN.CHG=''
+      AIR.PIECES=''
+      DTL.CHRG.CODES=''
+      DTL.CHRG.AMTS=''
+      IF ImpFreight+0#0 THEN
+         DTL.CHRG.CODES<1,-1>='FRT'
+         DTL.CHRG.AMTS<1,-1>=ImpFreight
+      END
+*DF      IF ImpCalCom+0#0 THEN
+*DF         DTL.CHRG.CODES<1,-1>='CACS'
+*DF         DTL.CHRG.AMTS<1,-1>=ImpCalCom
+*DF      END
+*DF      IF ImpDelivery+0#0 THEN
+*DF         DTL.CHRG.CODES<1,-1>='HIGH'
+*DF         DTL.CHRG.AMTS<1,-1>=ImpDelivery
+*DF      END
+      IF ImpFuel+0#0 THEN
+         DTL.CHRG.CODES<1,-1>='FSC'
+         DTL.CHRG.AMTS<1,-1>=ImpFuel
+      END
+      IF ImpLiftGate+0#0 THEN
+         DTL.CHRG.CODES<1,-1>='L25'
+         DTL.CHRG.AMTS<1,-1>=ImpLiftGate
+      END
+*DF      IF ImpMarking+0#0 THEN
+*DF         DTL.CHRG.CODES<1,-1>='MT'
+*DF         DTL.CHRG.AMTS<1,-1>=ImpMarking
+*DF      END
+*DF      IF ImpMin+0#0 THEN
+*DF         DTL.CHRG.CODES<1,-1>='MIN'
+*DF         DTL.CHRG.AMTS<1,-1>=ImpMin
+*DF      END
+*DF      IF ImpReconsign+0#0 THEN
+*DF         DTL.CHRG.CODES<1,-1>='RCON'
+*DF         DTL.CHRG.AMTS<1,-1>=ImpReconsign
+*DF      END
+*DF      IF ImpRedelivery+0#0 THEN
+*DF         DTL.CHRG.CODES<1,-1>='RDEL'
+*DF         DTL.CHRG.AMTS<1,-1>=ImpRedelivery
+*DF      END
+*DF      IF ImpResidential+0#0 THEN
+*DF         DTL.CHRG.CODES<1,-1>='RES'
+*DF         DTL.CHRG.AMTS<1,-1>=ImpResidential
+*DF      END
+*DF      IF ImpWtCorrection+0#0 THEN
+*DF         DTL.CHRG.CODES<1,-1>='WI'
+*DF         DTL.CHRG.AMTS<1,-1>=ImpWtCorrection
+*DF      END
+*DF      IF ImpInside+0#0 THEN
+*DF         DTL.CHRG.CODES<1,-1>='ID'
+*DF         DTL.CHRG.AMTS<1,-1>=ImpInside
+*DF      END
+*DF      IF ImpCorrectedBOL+0#0 THEN
+*DF         DTL.CHRG.CODES<1,-1>='CBOL'
+*DF         DTL.CHRG.AMTS<1,-1>=ImpCorrectedBOL
+*DF      END
+*DF      IF ImpDetention+0#0 THEN
+*DF         DTL.CHRG.CODES<1,-1>='DET'
+*DF         DTL.CHRG.AMTS<1,-1>=ImpDetention
+*DF      END
+*DF      IF ImpNYDelivery+0#0 THEN
+*DF         DTL.CHRG.CODES<1,-1>='NYSC'
+*DF         DTL.CHRG.AMTS<1,-1>=ImpNYDelivery
+*DF      END
+*DF      IF ImpReturnedLoad+0#0 THEN
+*DF         DTL.CHRG.CODES<1,-1>='RGM'
+*DF         DTL.CHRG.AMTS<1,-1>=ImpReturnedLoad
+*DF      END
+*DF      IF ImpCanadianProcessing+0#0 THEN
+*DF         DTL.CHRG.CODES<1,-1>='CAN'
+*DF         DTL.CHRG.AMTS<1,-1>=ImpCanadianProcessing
+*DF      END
+      VERSION='0'
+      DUP.FLAG=0                         ; * JMK06
+      BD.FLAG=0
+      SLASH.FLAG=0                       ; * JMK06
+      SLASH.CNT=0                        ; * JMK06
+      REJECT.REASONS=''
+      PRO=ImpInvoice_ProNo
+      PRO=TRIM(PRO)
+      PRO=CHANGE(PRO,'RET','')
+      PRO=CHANGE(PRO,'R','')
+      PRO=CHANGE(PRO,'-2','')
+      PRO=TRIM(PRO)
+      BEGIN CASE
+         CASE CARRIER.ID='00017' AND INDEX(PRO,'-',1)=0
+            PRO=PRO[1,3]:'-':PRO[4,6]:'-':PRO[10,1]
+         CASE CARRIER.ID='00018'
+            PRO=PRO'R%11'
+         CASE CARRIER.ID='00050' AND LEN(PRO)<7
+            PRO=PRO'R%7'
+         CASE CARRIER.ID='00114' AND PRO[1,1]='D'
+            PRO=PRO[2,9]
+         CASE CARRIER.ID='00114' AND PRO[1,1]='I'
+            PRO=PRO[2,9]
+         CASE CARRIER.ID='00114' AND PRO[1,1]='M'
+            PRO=PRO[2,9]
+         CASE CARRIER.ID='00171' AND LEN(PRO)<9
+            PRO=PRO'R%9'
+         CASE CARRIER.ID='00124' AND LEN(PRO)<8
+            PRO=PRO'R%8'
+         CASE CARRIER.ID='00124' AND LEN(PRO)=9
+            PRO=PRO'R%10'
+         CASE CARRIER.ID='00212' AND LEN(PRO)<9
+            PRO=PRO'R%9'
+         CASE CARRIER.ID='00453' AND LEN(PRO)<11
+            PRO=PRO'R%11'
+         CASE CARRIER.ID='00601' AND LEN(PRO)=10
+            PRO=PRO[1,3]:'-':PRO[4,7]
+         CASE CARRIER.ID='00601' AND LEN(PRO)=11
+            PRO=PRO[1,3]:'-':PRO[4,7]:'-':PRO[11,1]
+         CASE CARRIER.ID='00787' AND LEN(PRO)<10
+            PRO=PRO'R%10'
+         CASE CARRIER.ID='00807' AND PRO MATCHES "2A5N"
+            NULL
+         CASE CARRIER.ID='00807' AND PRO MATCHES "1A6N"
+            NULL
+         CASE CARRIER.ID='00807' AND LEN(PRO)<8
+            PRO=PRO'R%9'
+         CASE CARRIER.ID='00979' AND LEN(PRO)<8
+            PRO=PRO'R%9'
+         CASE CARRIER.ID='01002'
+            PRO=PRO[1,3]:'-':PRO[4,7]
+         CASE CARRIER.ID='01050'
+            PRO=PRO[1,8]:'-':PRO[9,3]
+         CASE CARRIER.ID='02080'
+            PRO=PRO[1,8]:'-':PRO[9,2]
+         CASE CARRIER.ID='02100' AND LEN(PRO)=9
+            PRO=PRO[1,7]:'-':PRO[8,2]
+         CASE CARRIER.ID='02100' AND LEN(PRO)=7
+            PRO=PRO:'-00'
+         CASE CARRIER.ID='02653' AND INDEX(PRO,'-',1)=0
+            PRO=PRO[1,3]:'-':PRO[4,6]
+         CASE CARRIER.ID='02653'
+            NULL
+         CASE CARRIER.ID='02715' AND LEN(PRO)<7
+            PRO=PRO'R%7'
+         CASE CARRIER.ID='03022' AND LEN(PRO)=8
+            PRO=PRO[1,6]
+         CASE CARRIER.ID='03334' AND LEN(PRO)=10 AND PRO[9,2]='00'
+            PRO=PRO[1,8]:'-':PRO[9,2]
+         CASE CARRIER.ID='03937'
+            PRO=PRO[1,2]:'-':PRO[3,6]
+         CASE CARRIER.ID='04456' AND LEN(PRO)<7
+            PRO=PRO'R%8'
+         CASE CARRIER.ID='06291'
+            PRO=PRO[2,5]
+         CASE CARRIER.ID='10294'
+            PRO=PRO[1,7]
+         CASE CARRIER.ID='10313' AND LEN(PRO) < 7
+            PRO=PRO'R%7'
+         CASE CARRIER.ID='10753'
+            PRO=PRO[3,6]
+         CASE CARRIER.ID='11311' AND LEN(PRO)<6
+            PRO=PRO'R%7'
+         CASE CARRIER.ID='12564' AND LEN(PRO) = 8
+            PRO=PRO[1,6]:'-':PRO[7,1]:'-':PRO[8.1]
+         CASE CARRIER.ID='13002' AND PRO[1,2]='Te'
+            PRO='TE-':PRO[3,5]
+         CASE CARRIER.ID='13002' AND PRO[1,2]='TE'
+            PRO=PRO[1,2]:'-':PRO[3,5]
+         CASE CARRIER.ID='13002' AND PRO[1,1]='E'
+            PRO=PRO[1,1]:'-':PRO[2,4]
+         CASE CARRIER.ID='15179'
+            PRO=PRO[4,7]
+         CASE CARRIER.ID='16540' AND LEN(PRO)<6
+            PRO=PRO'R%6'
+         CASE CARRIER.ID='18129'
+            PRO=PRO[1,7]:'-00'
+         CASE CARRIER.ID='19982'
+            NEW.PRO=OCONV(PRO,'MCN')'R%10'
+            PRO=NEW.PRO[1,8]:'-':NEW.PRO[9,2]
+         CASE CARRIER.ID='21238'
+            PRO=PRO[1,5]
+         CASE CARRIER.ID='22041'
+            PRO=PRO[1,7]
+         CASE CARRIER.ID='26156' AND INDEX(PRO,'-',1)=0
+            PRO=PRO[1,5]:'-':PRO[6,2]
+         CASE CARRIER.ID='26309'
+            PRO=PRO[1,2]:'-':PRO[3,7]
+         CASE CARRIER.ID='26344'
+            PRO=PRO[1,6]:'-':PRO[7,2]:'-':PRO[9,1]
+         CASE CARRIER.ID='26731'
+            PRO=PRO[1,7]:'-':PRO[8,2]
+         CASE CARRIER.ID='26742'
+            PRO=PRO[1,6]:'-':PRO[7,2]
+         CASE CARRIER.ID='27020'
+            PRO=PRO[1,6]:'-':PRO[7,2]
+         CASE CARRIER.ID='27024'
+            PRO=PRO[1,3]:'-':PRO[4,8]
+         CASE CARRIER.ID='27706'
+            IF LEN(PRO) < 7 THEN 
+               PRO=PRO'R%7'
+            END
+            IF LEN(PRO) > 7 THEN
+               PRO=PRO[LEN(PRO)-6,7]
+            END
+         CASE CARRIER.ID='30898' AND LEN(PRO)<5
+            PRO=PRO'R%5'
+      END CASE
+      SERVICE.LEVEL=''
+      MISROUTE.AMOUNT=''
+      MISROUTE.CARRIER=''
+      CLASSES=''
+      WEIGHTS=''
+*DF      IF ImpClass#'' THEN
+*DF         CLASSES=ImpClass
+*DF         WEIGHTS=ImpBilledWeight
+*DF      END
+      ADDRESS.CORRECTION.CHARGE=''
+*DF      IF ImpAddCorrection+0#0 THEN
+*DF         ADDRESS.CORRECTION.CHARGE=ImpAddCorrection
+*DF      END
+      HANDLING.UNITS=''
+      FB.NOTE=''
+*df      EDI.PPR=ImpEntryType
+      EDI.PPR=''
+      RETURN
+
+WRITE.FB.REC:*
+      PRO.ID=CARRIER.ID:'*':PRO:'*':VERSION
+      IF BD.FLAG THEN
+         PRO.ID=CARRIER.ID:'*':PRO:'BD*':VERSION
+      END
+      IF SLASH.FLAG AND SLASH.CNT#"0" THEN         ; * JMK06
+         PRO.ID=CARRIER.ID:'*':PRO:'/':SLASH.CNT:'*':VERSION           ; * JMK06
+      END                                ; * JMK06
+      READ TEST.REC FROM F.HIST,PRO.ID ELSE TEST.REC=''
+      READ TEST.REC FROM F.CRX,PRO.ID ELSE TEST.REC=''
+      IF TEST.REC#'' AND HIST.CLIENT=1 THEN RETURN
+      IF TEST.REC#'' THEN                ; * JMK06
+*DF         IF ACTUAL.CHG+0="0" THEN        ; * JMK06
+*DF            VERSION+=1                   ; * JMK06
+*DF         END ELSE                        ; * JMK06
+            SLASH.FLAG=1                 ; * JMK06
+            SLASH.CNT+=1                 ; * JMK06
+*DF         END                             ; * JMK06
+         GO WRITE.FB.REC                 ; * JMK06
+      END                                ; * JMK06
+      T.DATE=DATE()
+      T.TIME=TIME()
+      USER='CLIENT-IMPORT'
+      PRO.REC = ''
+      PRO.REC<1> = BILL.DATE
+      PRO.REC<2> = IN.OUT
+      IF CARRIER.ID='00041' OR CARRIER.ID='12810' OR CARRIER.ID='03042' THEN     ; * United Parcel Service
+         PRO.REC<3>='99999'
+         PRO.REC<4>='99999'
+      END ELSE
+         PRO.REC<3>=ORIG.ZIP
+         PRO.REC<4>=DEST.ZIP
+      END
+*DF      PRO.REC<5> = EXP.CODE
+      PRO.REC<6> = WEIGHT
+      PRO.REC<7> = CARRIER.CHG
+      PRO.REC<8> = ACTUAL.CHG
+      PRO.REC<9> = DIVISION
+      PRO.REC<10> = 0-VAR.ARR<1>
+      PRO.REC<11> = 0-VAR.ARR<2>
+      PRO.REC<12> = 0-VAR.ARR<3>
+      PRO.REC<13> = CHECK.AMT
+      PRO.REC<14> = CHECK.NUM
+      PRO.REC<15> = CHECK.DATE
+*DF      PRO.REC<16> = ImpReference
+      PRO.REC<16> = BOL
+      PRO.REC<17> = OCONV(VC.ID,'MCT')
+      PRO.REC<18> = ZIP.ARR<1>
+      NUM.ZIPS = DCOUNT(PRO.REC<18>, @VM)
+      IF NUM.ZIPS > 1 THEN
+         DEL PRO.REC<18,NUM.ZIPS>
+         DEL PRO.REC<18,1>
+      END
+      PRO.REC<19> = MILEAGE
+      PRO.REC<20> = CARRIER.ID
+      PRO.REC<21> = T.MODE.BY.WGT
+      IF PRO.REC<21>#'1' AND PRO.REC<21>#'6' THEN PRO.REC<19>=''       ; * JMK162
+      IF PRO[LEN(PRO)-1,2]='AD' THEN PRO.REC<19>=''          ; * JMK162
+      IF PRO[LEN(PRO)-1,2]='BD' THEN PRO.REC<19>=''          ; * JMK162
+      PRO.REC<22> = MISROUTE.ARRAY<1>
+      PRO.REC<23> = MISROUTE.ARRAY<2>
+      PRO.REC<24> = DISC.PERC
+      IF CARRIER.ID='00041' OR CARRIER.ID='12810' OR CARRIER.ID='03042' THEN
+         PRO.REC<25>='ZZ'
+         PRO.REC<26>='ZZ'
+         PRO.REC<27>='UPS'
+         PRO.REC<28>='UPS'
+      END ELSE
+         IF CARRIER.ID='01075' THEN
+            IF ORIG.ZIP='99999' THEN
+               PRO.REC<25>='ZZ'
+               PRO.REC<27>='FedEx Ground'
+            END ELSE
+               PRO.REC<25>=ORIG.STATE
+               PRO.REC<27>=ORIG.CITY
+            END
+            IF DEST.ZIP='99999' THEN
+               PRO.REC<26>='ZZ'
+               PRO.REC<28>='FedEx Ground'
+            END ELSE
+               PRO.REC<26>=DEST.STATE
+               PRO.REC<28>=DEST.CITY
+            END
+         END ELSE
+            PRO.REC<25>=ORIG.STATE
+            PRO.REC<26>=DEST.STATE
+            PRO.REC<27>=ORIG.CITY
+            PRO.REC<28>=DEST.CITY
+         END
+      END
+      VAR.CODE = ''
+*DF      IF VARIANCE = 0 THEN VAR.ARR = ''
+      IF VAR.ARR<1>'R0' # 0 ! VAR.ARR<4>'R0' NE 0 THEN
+         VAR.CODE = VAR.CODE:'D'
+      END
+      IF VAR.ARR<2>'R0' # 0 ! VAR.ARR<5>'R0' NE 0 THEN
+         VAR.CODE = VAR.CODE:'O'
+      END
+      IF VAR.ARR<3>'R0' # 0 ! VAR.ARR<6>'R0' NE 0 THEN
+         VAR.CODE = VAR.CODE:'C'
+      END
+      PRO.REC<29> = VAR.CODE
+      PRO.REC<30> = E.DATE
+      PRO.REC<31> = DTAB<1>
+      PRO.REC<33> = DTAB<3>
+      PRO.REC<34> = 0-VAR.ARR<4>
+      PRO.REC<35> = 0-VAR.ARR<5>
+      PRO.REC<36> = 0-VAR.ARR<6>
+      IF HIST.CLIENT THEN
+         PRO.REC<37> = PROC.DATE
+      END
+      PRO.REC<38> = DUE.DATE
+      PRO.REC<39> = 'O'
+      PRO.REC<40> = BANK.ID
+      PRO.REC<45> = VERIFIED
+      PRO.REC<53> = USER
+      PRO.REC<54> = USER
+      IF EDI.PPR='EDI' THEN
+         PRO.REC<53>='EDI:':USER
+         PRO.REC<88>=CLIENT.ID:'*':PRO.ID
+      END
+      PRO.REC<68> = BILL.STATUS
+      FRT.ARRAY=''                       ; * JMK14
+      MIS.ARRAY=''                       ; * JMK14
+      DTL.OUT=''                         ; * JMK17
+      DTL.OUT<40>=DTL.CHRG.CODES         ; * JMK17
+      DTL.OUT<44>=DTL.CHRG.AMTS          ; * JMK17
+      GOSUB RECALC.FB.DETAILS            ; * JMK18
+      PRO.REC<94>=OCONV(INV.NUM,'MCU')
+      PRO.REC<96>=OVERRIDE.STATUS
+      PRO.REC<116>=OVERRIDE.FIELD
+      PRO.REC<117>=OVERRIDE.OPERATOR
+      PRO.REC<118>=OVERRIDE.INFO
+      PRO.REC<119>=FLAT.RATE
+      IF VERSION > 0 THEN PRO.REC<37>=''
+      PRO.REC<41,1> = VAR.ARR<7>
+      PRO.REC<41,2> = VAR.ARR<8>
+      PRO.REC<41,3> = VAR.ARR<9>
+      PRO.REC<46> = MIN.CHG
+      CALC = 0
+      PRO.REC<84,-1>=USER                ; * Update Each Time bill is Filed
+      PRO.REC<85,-1>=T.TIME              ; * Update Each Time bill is Filed   ;*NPR06
+      PRO.REC<86,-1>=DATE()              ; * Update Each Time bill is Filed
+      IF PRO.REC<53> = '' THEN PRO.REC<53> = USER
+      PRO.REC<55> = LEN(PRO.REC)-LEN(USER)
+      PRO.REC<59> = REJECT.REASONS<1>
+      PRO.REC<60> = REJECT.REASONS<2>
+      PRO.REC<61> = REJECT.REASONS<3>
+      PRO.REC<62> = REJECT.REASONS<4>
+      PRO.REC<65> = SERVICE.LEVEL
+      PRO.REC<63> = MISROUTE.AMOUNT
+      PRO.REC<69> = MISROUTE.CARRIER
+      PRO.REC<183> = BOL
+      PRO.REC<189>=MISROUTE.AMOUNT       ; * JMK126
+      PRO.REC<190>=MISROUTE.CARRIER      ; * JMK126
+      IF VERSION GT 0 THEN PRO.REC<39> = 'O'
+      PRO.REC<100>= VC.ID                ; * Item ID for Cust.Vend
+*DF      PRO.REC<74> = CLASSES
+*DF      PRO.REC<75> = WEIGHTS
+      MISC.CHG.POS=DCOUNT(CLASSES<1>,@VM)          ; * Find out how many
+      PRO.REC<120>=ZIP.ARR<1>            ; * MV Zips
+      PRO.REC<121>=ZIP.ARR<2>            ; * MV Cities
+      PRO.REC<122>=ZIP.ARR<3>            ; * MV States
+      PRO.REC<149>=ZIP.ARR<7>            ; * MV Miles JMK12
+      PRO.REC<123>=ADDRESS.CORRECTION.CHARGE       ; * For United Parcel Service
+      BEGIN CASE                         ; * NPR057
+         CASE CLIENT.ID='01510' OR CLIENT.ID='01909'         ; * NPR057
+            PRO.REC<239,1>= '800'        ; * NPR057
+         CASE CLIENT.ID='02171'
+            PRO.REC<239,1>= '1500'
+         CASE CLIENT.ID='02215'
+            PRO.REC<239,1>= '1200'
+*DF         CASE CLIENT.ID='02465'
+*DF            PRO.REC<239,1>= '2000'
+         CASE CLIENT.ID='05022'
+            PRO.REC<239,1>= '1500'
+         CASE CLIENT.ID='05124'          ; * DRF01
+            PRO.REC<239,1>= '2000'       ; * DRF01
+         CASE CLIENT.ID='05294'          ; * DRF02
+            IF T.MODE.BY.WGT=1 THEN      ; * DRF03
+               PRO.REC<239,1>= '300'     ; * DRF02
+            END ELSE                     ; * DRF03
+               PRO.REC<239,1>='0'        ; * DRF03
+            END                          ; * DRF03
+         CASE CLIENT.ID='02374'          ; * DRF04
+            IF T.MODE.BY.WGT=1 THEN      ; * DRF04
+               PRO.REC<239,1>= '1200'    ; * DRF04
+            END ELSE                     ; * DRF04
+               PRO.REC<239,1>='0'        ; * DRF04
+            END                          ; * DRF04
+         CASE 1                          ; * NPR057
+            PRO.REC<239,1>=LCC.ARRAY<5,1>*100      ; * NPR057   logistics comm % for LCC
+      END CASE                           ; * NPR057
+      IF DTL.CHRG.CODES #'' THEN         ; * JMK81  ; * NPR031
+         PRO.REC<151>=DTL.CHRG.CODES     ; * JMK12
+         PRO.REC<152>=DTL.CHRG.AMTS      ; * JMK12
+         FRT.ARRAY=''                    ; * JMK149
+         MIS.ARRAY=''                    ; * JMK149
+         GOSUB RECALC.FB.DETAILS         ; * JMK149
+      END                                ; * JMK81
+      IF FRT.ARRAY<1>='' THEN            ; * JMK81
+         IF DTL.CHRG.CODES#'' THEN       ; * JMK81
+            DTL.OUT<40>=DTL.CHRG.CODES   ; * JMK81
+            DTL.OUT<44>=DTL.CHRG.AMTS    ; * JMK81
+            GOSUB RECALC.FB.DETAILS      ; * JMK19
+         END                             ; * JMK81
+      END                                ; * JMK19
+      FOR ATT=1 TO 6                     ; * JMK14
+         PRO.REC<152+ATT>=FRT.ARRAY<ATT>           ; * JMK14
+         PRO.REC<158+ATT>=MIS.ARRAY<ATT>           ; * JMK14
+      NEXT ATT                           ; * JMK14
+      PRO.REC<202>=MISROUTE.ARRAY<3>     ; * JMK62
+      PRO.REC<213>=FB.NOTE               ; * JMK111
+      PRO.REC<217>=VAR.ARR<10>           ; * JMK154 - DISCOUNT CLASS
+      PRO.REC<217>=VAR.ARR<11>           ; * JMK154 - OVERCHARGE CLASS WILL REPLACE ANY DISCOUNT CLASS
+      PRO.REC<221>=''                    ; * JMK227
+      PRO.REC<224>=LCC.ARRAY<7>          ; * JMK159
+      PRO.REC<222>=ORIG.COUNTRY.CD
+      PRO.REC<223>=DEST.COUNTRY.CD
+      PRO.REC<235>=HANDLING.UNITS        ; * NPR35
+      WRITE PRO.REC ON F.HIST,PRO.ID
+      IF FP.CLIENT THEN
+         WRITE PRO.REC ON F.BILLS,PRO.ID
+      END
+      FP.REC<IMP.ATT,74>=PRO.ID
+*
+* Update Fedex invoice file
+*
+      IF VERSION=0 THEN
+         IF PRO.REC<94>#'' THEN
+            READ DINV.XREF FROM F.INV.XREF,PRO.REC<94> ELSE DINV.XREF=''
+            LOCATE PRO.ID IN DINV.XREF BY 'AR' SETTING INV.POS ELSE
+               INS PRO.ID BEFORE DINV.XREF<INV.POS>
+               WRITE DINV.XREF ON F.INV.XREF,PRO.REC<94>
+            END
+         END
+      END
+*
+* Update freight bill cross reference (skeletal) record
+*
+*     IF VERSION=0 THEN                 ; * JMK08
+      REC = ''
+      REC<1> = CLIENT.ID
+      REC<2> = BILL.DATE
+      REC<7> = PRO.REC<7>
+      REC<8> = PRO.REC<8>
+      REC<10> = PRO.REC<10>
+      REC<11> = PRO.REC<11>
+      REC<12> = PRO.REC<12>
+      REC<30> = PRO.REC<30>
+      REC<37> = PRO.REC<37>
+      REC<39> = PRO.REC<39>
+      REC<41> = PRO.REC<41>
+      REC<53> = PRO.REC<53>
+      REC<54> = PRO.REC<54>
+      REC<55> = PRO.REC<55>
+      REC<63> = PRO.REC<63>
+*     IF CLIENT.ID[1,2]='99' ELSE        ; * JMK08
+      WRITE REC ON F.CRX,PRO.ID
+*     END                                ; * JMK08
+*     END                                ; * JMK08
+      RETURN
+
+RECALC.FB.DETAILS:*
+      NVAL=DCOUNT(DTL.OUT<40>,@VM)       ; * JMK14
+      FOR VAL=1 TO NVAL                  ; * JMK14
+         TRAN.TYPE=DTL.OUT<40,VAL>       ; * JMK14
+         BEGIN CASE                      ; * JMK14
+            CASE TRAN.TYPE='FRT' OR TRAN.TYPE = 1 OR TRAN.TYPE = 2     ; * JMK14  ;* NPR031
+               NXT.VAL=DCOUNT(FRT.ARRAY<1>,@VM)+1  ; * JMK14
+               FOR ATT=1 TO 6            ; * JMK14
+                  FRT.ARRAY<ATT,NXT.VAL>=DTL.OUT<39+ATT,VAL>           ; * JMK14
+               NEXT ATT                  ; * JMK14
+            CASE TRAN.TYPE='MIN'         ; * JMK14
+               NXT.VAL=DCOUNT(FRT.ARRAY<1>,@VM)+1  ; * JMK14
+               FOR ATT=1 TO 6            ; * JMK14
+                  FRT.ARRAY<ATT,NXT.VAL>=DTL.OUT<39+ATT,VAL>           ; * JMK14
+               NEXT ATT                  ; * JMK14
+            CASE TRAN.TYPE='DEF'         ; * JMK14
+               NXT.VAL=DCOUNT(FRT.ARRAY<1>,@VM)+1  ; * JMK14
+               FOR ATT=1 TO 6            ; * JMK14
+                  FRT.ARRAY<ATT,NXT.VAL>=DTL.OUT<39+ATT,VAL>           ; * JMK14
+               NEXT ATT                  ; * JMK14
+            CASE TRAN.TYPE='BASE'        ; * JMK81
+               NXT.VAL=DCOUNT(FRT.ARRAY<1>,@VM)+1  ; * JMK81
+               FOR ATT=1 TO 6            ; * JMK81
+                  FRT.ARRAY<ATT,NXT.VAL>=DTL.OUT<39+ATT,VAL>           ; * JMK81
+               NEXT ATT                  ; * JMK81
+            CASE 1                       ; * JMK14
+               LOCATE(TRAN.TYPE,MIS.ARRAY,1;MPOS) THEN       ; * JMK14
+                  FOR ATT=5 TO 6         ; * JMK14
+                     IF NUM(DTL.OUT<39+ATT,VAL>) THEN        ; * JMK14
+                        MIS.ARRAY<ATT,MPOS>+=DTL.OUT<39+ATT,VAL>+0     ; * JMK14
+                     END                 ; * JMK14
+                  NEXT ATT               ; * JMK14
+               END ELSE                  ; * JMK14
+                  NXT.VAL=DCOUNT(MIS.ARRAY<1>,@VM)+1         ; * JMK14
+                  FOR ATT=1 TO 4         ; * JMK14
+                     MIS.ARRAY<ATT,NXT.VAL>=DTL.OUT<39+ATT,VAL>        ; * JMK14
+                  NEXT ATT               ; * JMK14
+                  FOR ATT=5 TO 6         ; * JMK14
+                     IF NUM(DTL.OUT<39+ATT,VAL>) THEN        ; * JMK14
+                        MIS.ARRAY<ATT,MPOS>+=DTL.OUT<39+ATT,VAL>+0     ; * JMK14
+                     END                 ; * JMK14
+                  NEXT ATT               ; * JMK14
+               END                       ; * JMK14
+         END CASE                        ; * JMK14
+      NEXT VAL                           ; * JMK14
+      RETURN
+
+CONVERT.NUMBER:*
+      TEST.NUM=CHANGE(TEST.NUM,'($','-')
+      TEST.NUM=CHANGE(TEST.NUM,')','')
+      TEST.NUM=CHANGE(TEST.NUM,'$','')
+      TEST.NUM=CHANGE(TEST.NUM,'"','')
+      TEST.NUM=CHANGE(TEST.NUM,',','')
+      RETURN
+   END

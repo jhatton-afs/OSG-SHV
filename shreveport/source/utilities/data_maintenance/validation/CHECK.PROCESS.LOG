@@ -1,0 +1,167 @@
+*******************************************************************************
+* PROGRAM NAME  : CHECK.PROCESS.LOG
+* PROGRAM DESC  : CHECK THE PROCESS LOG FOR ERRORS
+* PROGRAM DATE  : 12-20-2017
+* CREATED BY    : DAVID FRIEND
+*******************************************************************************
+* PROGRAM NOTES : WORK RECORD FORMAT
+*******************************************************************************
+* COPYRIGHT (c) : AFS, LLC <<CCYY>>, All Rights Reserved.
+*******************************************************************************
+* MAINTENANCE TIMELINE : DATE - PGMR INIT - PROGRAM REFERENCE
+*******************************************************************************
+* 020419 - DRF01 - Ticket ACCU-278 Added a second select to check for
+*                  clients that processed for today but do not have an
+*                  AR-BRIDGE item
+*
+*
+*******************************************************************************
+*
+* INITIALIZE VARIABLES
+*
+      GOSUB INIT.VARIABLES
+      CALL GET.USER.NEW(USER,CH.NUM)
+*
+* OPEN FILES
+*
+      GOSUB OPEN.FILES
+      CRT @(0,0):@(-1):
+*DF      IF USER='DAVID' THEN CALL ELINE('PRESS BREAK')
+*
+* START MAIN PROCESSING LOOP
+*
+*DF      BRDG.STMT='SSELECT AR.BRIDGE.LAST WITH PROC.DATE EQ "':OCONV(DATE,'D2/'):'"'
+      BRDG.STMT='SSELECT AR-BRIDGE '
+      CRT @(0,10):BRDG.STMT
+      EXECUTE BRDG.STMT RTNLIST BRDG.LIST CAPTURING BRDG.RESULTS
+      BRDG.TCNT=@SELECTED
+      BRDG.EOF=0
+      BRDG.CNT=0
+      BRDG.PER=''
+      PROC.LIST=''
+
+      WORK.ID=0
+      LOOP
+         READNEXT BRDG.ID FROM BRDG.LIST ELSE BRDG.EOF=1
+      UNTIL BRDG.EOF DO
+         BRDG.CNT+=1
+*DF         CALL PROG.BAR(18,BRDG.CNT,BRDG.TCNT,BRDG.PER)
+         READ BRDG.REC FROM F.AR.BRIDGE,BRDG.ID THEN
+*DF            CLIENT.ID=FIELD(BRDG.ID,'*',1)
+            CLIENT.ID=BRDG.ID
+            IF CLIENT.ID[6,5]='-TEST' THEN CLIENT.ID=CLIENT.ID[1,5]
+            PROC.DATE=BRDG.REC<4>
+            READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+               CLIENT.REC=''
+            END
+            GOSUB CHECK.PROCESS.LOG
+          END
+      REPEAT
+* DRF01 below
+      PROC.STMT='SSELECT PROCESS.LOG WITH PROC.DATE = "':OCONV(DATE(),'D2/'):'"  '
+*DF      PROC.STMT='SSELECT PROCESS.LOG WITH PROC.DATE GE "01/01/18"'
+      CRT @(0,10):PROC.STMT
+      EXECUTE PROC.STMT RTNLIST PROC.LIST CAPTURING PROC.RESULTS
+      PROC.TCNT=@SELECTED
+      PROC.EOF=0
+      PROC.CNT=0
+      PROC.PER=''
+*DF      PROC.LIST=''
+
+      WORK.ID=0
+      LOOP
+         READNEXT PROC.ID FROM PROC.LIST ELSE PROC.EOF=1
+      UNTIL PROC.EOF DO
+         PROC.CNT+=1
+*DF         CALL PROG.BAR(18,BRDG.CNT,BRDG.TCNT,BRDG.PER)
+         READ PROC.REC FROM F.PROCESS.LOG,PROC.ID THEN
+*DF            CLIENT.ID=FIELD(BRDG.ID,'*',1)
+            CLIENT.ID=FIELD(PROC.ID,'*',1)
+            IF CLIENT.ID[6,5]='-TEST' THEN CLIENT.ID=CLIENT.ID[1,5]
+            PROC.DATE=DATE()
+*DF            PROC.DATE=FIELD(PROC.ID,'*',2)
+            READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+               CLIENT.REC=''
+            END
+            GOSUB CHECK.PROCESS.LOG
+          END
+      REPEAT
+* DRF01 above
+* FINISH PROGRAM
+*
+      IF ERROR.FOUND THEN GOSUB SEND.MAIL
+      STOP
+
+*
+INIT.VARIABLES:*
+*
+      ERROR.FOUND=0
+      ERROR.ARRAY=''
+      PROG.NAME='CHECK.PROCESS.LOG'
+      CLIENT.ID=''
+      RETURN
+*
+OPEN.FILES:*
+*
+      OPEN '','AR-BRIDGE' TO F.AR.BRIDGE ELSE
+         CALL OPEN.ABORT('AR.BRIDGE',PROG.NAME)
+      END
+      OPEN '','AR.BRIDGE.LAST' TO F.AR.BRIDGE.LAST ELSE
+         CALL OPEN.ABORT('AR.BRIDGE.LAST',PROG.NAME)
+      END
+      OPEN '','PROCESS.LOG' TO F.PROCESS.LOG ELSE
+         CALL OPEN.ABORT('PROCESS.LOG',PROG.NAME)
+      END
+      OPEN '','BCTRL' TO F.BCTRL ELSE
+         CALL OPEN.ABORT('BCTRL',PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      RETURN
+CHECK.PROCESS.LOG:***
+      LOG.ID=CLIENT.ID:'*':PROC.DATE
+      READ DPROCESS.LOG FROM F.PROCESS.LOG,LOG.ID ELSE
+         ERROR.FOUND=1
+         ERROR.ARRAY<-1>=LOG.ID:' Not Found'
+         RETURN
+      END
+      NUM.OF.ITEMS=DCOUNT(DPROCESS.LOG<1>,@VM)
+      FOR ITEM = 1 TO NUM.OF.ITEMS
+         IF DPROCESS.LOG<1,ITEM>='Proc' AND DPROCESS.LOG<1,ITEM+1>='Proc' AND DPROCESS.LOG<2,ITEM>='Beg' AND DPROCESS.LOG<2,ITEM+1>='Beg' THEN
+            ERROR.FOUND=1
+            ERROR.ARRAY<-1>=LOG.ID:' Two process begin next to each other'
+         END
+      NEXT ITEM
+      IF DPROCESS.LOG<1,NUM.OF.ITEMS>#'Proc' OR DPROCESS.LOG<2,NUM.OF.ITEMS>#'End' THEN
+         ERROR.FOUND=1
+         ERROR.ARRAY<-1>=LOG.ID:' Does not end with a process end'
+      END
+      RETURN
+
+SEND.MAIL:****
+
+      EMAIL.OUT=''
+*DF      EMAIL.OUT<1,1>='Accounting@afs.net'
+*DF      EMAIL.OUT<1,1>='MMckay@afs.net'
+*DF      EMAIL.OUT<1,-1> = 'lcook@afs.net'
+      EMAIL.OUT<1,1>='DFriend@afs.net'
+      EMAIL.OUT<1,-1> = 'GBino@afs.net'
+      EMAIL.OUT<1,-1> = 'MMckay@afs.net'
+*DF      EMAIL.OUT<1,-1> = 'Kristy@afs.net'
+      EMAIL.OUT<3>=''
+      EMAIL.OUT<4>='FBBP_CHECK.PROCESS.LOG@afs.net'
+      EMAIL.OUT<5,1>='Possible error found in the process log file'
+      EMAIL.OUT<6,-1>=' '
+      NUM.OF.ERROR=DCOUNT(ERROR.ARRAY,@AM)
+      FOR ERROR.NUM = 1 TO NUM.OF.ERROR
+         EMAIL.OUT<6,-1>=ERROR.ARRAY<ERROR.NUM>
+      NEXT ERROR.NUM
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<7>=1
+      VOUT=''
+      CALL SENDMAIL(EMAIL.OUT,VOUT)
+      RETURN

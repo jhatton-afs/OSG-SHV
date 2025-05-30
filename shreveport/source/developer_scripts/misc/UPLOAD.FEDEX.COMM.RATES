@@ -1,0 +1,308 @@
+*
+* Expected layout of input file
+*
+*  ROW HEADER (Row 1 in file)    Sample Data  (Row 2 to last row)
+*  --------------------------    --------------------------------
+*  Orig FXF Dock                 ALT
+*  Origin Airport Code           ABE
+*  Orig Zip                      18017
+*  Dest FXF Dock                 AUS
+*  Dest Airport Code             AUS
+*  Dest Zip                      78681
+*  Absolute Min Chg              104.00
+*  1-499 lbs                      45.00  (Rate per 100 weight)
+*  500-2,999 lbs                  39.90  (Rate per 100 weight)
+*  3,000-4,999 lbs                36.10  (Rate per 100 weight)
+*  5,000-7,499 lbs                32.50  (Rate per 100 weight)
+*  7,500-19,999 lbs               30.25  (Rate per 100 weight)
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+CALL GET.USER(USER)
+
+PROMPT''
+PROG.NAME='UPLOAD.FEDEX.COMM.RATES'
+PROG.DESC='Upload Commodity Rates'
+PACK.NAME='Freight Billing'
+
+ UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'UPLOAD.FEDEX.COMM.RATES' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+ CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+CRT @(-1)
+
+CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+
+100 :
+*
+      CRT @(0,01):@(-3):
+      CRT @(0,02):STR("=",79)
+      CRT @(0,03):'Instructions for use BEFORE Continuing:'
+      CRT @(0,05):'Step  1 Open the Excel Spreadsheet supplied for uploading'
+      CRT @(0,07):'Step  2 Click on Save As button or CLICK File & CLICK Save As, '
+      CRT @(0,09):'Step  3 Ensure that you will save to your U:\':USER:'\ Drive)'
+      CRT @(0,11):"Step  4 Change Save as type... to ...  Text (Tab Delimited)(*.txt)"
+      CRT @(0,13):'Step  5 Name the file COMM_RATE_MMDDYY.txt (Example: COMM_RATE_081409.txt)'
+      CRT @(0,15):"        Ignore the 'Not Compatible' messages you receive and click OK, then YES"
+      CRT @(0,17):STR("=",79)
+
+      CRT @(0,19):'Enter file name      : '  
+      CRT @(0,20):'Enter Effective Date : '  
+
+      HELP='Enter the file name exactly as you named it in step 5  [EX]it'
+
+      CALL GEN.IN(0,19,'Enter file name      : ','',Q,0,30,'','',1,25,19,0,QI,HELP,0,23)
+
+      IF Q = "" OR Q = "EX" OR Q = "X" OR Q = "ex" OR Q = "x" THEN STOP
+*
+      INPUT.FILENAME = Q
+
+FILE.PNTR = "BILLDATA.":USER
+
+OPEN '',FILE.PNTR TO F.FEDEX.COMM.RATES ELSE
+   STOP 'CANT OPEN FEDEX.COMM.RATES'
+END
+
+READ COMM.REC FROM F.FEDEX.COMM.RATES  , INPUT.FILENAME ELSE
+   CALL ELINE("File ":INPUT.FILENAME:" not found")
+   GOTO 100
+END
+
+OPEN '','FB.COMMRATES.HDR' TO F.FB.COMMRATES.HDR ELSE STOP 'CANT OPEN FB.COMMRATES.HDR'
+
+OPEN '','FB.COMMRATES.DTL' TO F.FB.COMMRATES.DTL ELSE STOP 'CANT OPEN FB.COMMRATES.DTL'
+
+OPEN '','ZIPS.CODES' TO F.ZIPS ELSE ERRORS = 'CANT OPEN ZIPS.CODES' ; RETURN
+
+EFF.DATE = ""
+
+GET.EFF.DATE :
+
+      IF EFF.DATE = "" THEN
+         MASK = EFF.DATE
+      END ELSE
+         MASK = EFF.DATE 'D2/'
+      END
+
+      BACK.FLAG=0
+
+      HELP = "Enter the Effective Date for these rates. [T]=Today [X]=Back [EX]=Exit"
+
+      CALL GEN.IN(25,20,MASK,'DATE',Q,0,8,'','',2,25,20,0,QI,HELP,0,23)
+
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE EFF.DATE NE "" & QI = ''
+            Q = EFF.DATE
+         CASE QI = 'T'
+            Q = DATE()
+         CASE QI = 'X'
+            CRT @(25,20):@(-4):
+            BACK.FLAG=1
+            GOTO 100
+         CASE QI = 'EX'
+            STOP
+         CASE NOT( NUM(Q) )
+            CALL ELINE("Invalid date selection")
+            GOTO GET.EFF.DATE
+      END CASE
+
+      EFF.DATE = Q
+      CRT @(25,20):EFF.DATE'D2/' "R#8"
+
+O.EFF.DATE = EFF.DATE'D2/'
+I.EFF.DATE = ICONV(O.EFF.DATE,"D2/")
+
+ID.CARRIER = "00212"   ;* Hard coded for now - May be others in future
+
+*O.EFF.DATE = "01/01/09"
+*I.EFF.DATE = ICONV(O.EFF.DATE,"D2/")
+
+ID.HDR = ID.CARRIER
+READ HDR.REC FROM F.FB.COMMRATES.HDR, ID.HDR ELSE HDR.REC = ''
+
+IF HDR.REC NE "" THEN
+   N.DTS = DCOUNT(HDR.REC<1>,@VM)
+
+   LAST.DATE = HDR.REC<1,N.DTS>
+   IF I.EFF.DATE LT LAST.DATE THEN
+      ERR.MSG = "Cannot load rates for effective date most recent date of ":OCONV(HDR.REC<4,N.DTS>,"D2/")
+      CALL ELINE (ERR.MSG)
+      GOTO GET.EFF.DATE
+   END
+   IF I.EFF.DATE EQ LAST.DATE THEN
+      ERR.MSG = "These rates appear to have been uploaded by ":HDR.REC<6,N.DTS>:" on ":OCONV(HDR.REC<4,N.DTS>,"D2/")
+      CALL ELINE (ERR.MSG)
+      GOTO GET.EFF.DATE
+   END
+   
+   HDR.REC<2,N.DTS> = I.EFF.DATE - 1
+   HDR.REC<3,N.DTS> = "DISABLED"
+
+   HDR.XSTR = HDR.REC<2>:@VM
+   HDR.REC<1,-1> = I.EFF.DATE
+   HDR.REC<2>    = HDR.XSTR
+   HDR.REC<3,-1> = "ENABLED"
+   HDR.REC<4,-1> = DATE()
+   HDR.REC<5,-1> = TIME()
+   HDR.REC<6,-1> = USER
+END ELSE
+   HDR.REC = I.EFF.DATE
+   HDR.REC<2> = ""            ;* Open ended
+   HDR.REC<3> = "ENABLED"     ;* ENABLED
+   HDR.REC<4> = DATE()
+   HDR.REC<5> = TIME()
+   HDR.REC<6> = USER
+END
+
+WRITE HDR.REC ON F.FB.COMMRATES.HDR, ID.HDR
+
+IF USER = "NPRATT" THEN
+   CRT @(0,22):"Clear out files Y/N ":; INPUT RESP
+   IF RESP NE "N" THEN
+      EXECUTE \CLEAR-FILE DATA FB.COMMRATES.DTL\
+   END
+END
+
+*
+CONVERT CHAR(9) TO @VM IN COMM.REC
+
+N.ATTR = DCOUNT(COMM.REC,@AM)
+
+ST.ROW = 1
+HDR.FND = 0
+
+LOOP
+UNTIL HDR.FND DO
+  HLINE = COMM.REC<ST.ROW>
+  ST.ROW += 1
+  IF INDEX(HLINE,'lbs',1) THEN HDR.FND = 1
+REPEAT
+
+WEIGHT.ARRAY = ""   ; WGT.CNT = 1
+N.VALS = DCOUNT(HLINE,@VM)
+FOR VV = 1 TO N.VALS
+   W.STR = TRIM(HLINE<1,VV>)
+   IF INDEX(W.STR,'lbs',1) THEN
+      W.END.WEIGHT = FIELD(W.STR," ",1)     ;* Sample string expected is 500-2,999 lbs
+      W.END.WEIGHT = FIELD(W.END.WEIGHT,"-",2) 
+      CONVERT \,\ TO \\ IN  W.END.WEIGHT    
+      WEIGHT.ARRAY<WGT.CNT> = W.END.WEIGHT
+      WGT.CNT += 1
+   END
+NEXT VV
+
+N.WHTGS = DCOUNT(WEIGHT.ARRAY,@AM)
+WEIGHT.STRING = WEIGHT.ARRAY
+CONVERT @AM TO @SVM IN WEIGHT.STRING
+
+FIRST.DET.LINE = 1
+
+FOR II = ST.ROW TO N.ATTR
+   WLINE = TRIM(COMM.REC<II>)
+   ORIG.FXF.DOCK   = TRIM(WLINE<1,1>)
+   ORIG.AIRPORT.CD = TRIM(WLINE<1,2>)
+   ORIG.ZIP        = TRIM(WLINE<1,3>)
+   ORIG.ZIP        = ORIG.ZIP "R%5"
+
+   READ OZIP.REC FROM F.ZIPS , ORIG.ZIP ELSE
+      CALL ELINE("Row ":II: " Invalid Origination ZIP ":ORIG.ZIP:"  encountered RETURN to skip ")
+      GOTO SKIPIT
+   END
+
+   DEST.FXF.DOCK   = TRIM(WLINE<1,4>)
+   DEST.AIRPORT.CD = TRIM(WLINE<1,5>)
+   DEST.ZIP        = TRIM(WLINE<1,6>)
+   DEST.ZIP        = DEST.ZIP "R%5"
+
+   READ DZIP.REC FROM F.ZIPS , DEST.ZIP ELSE
+      CALL ELINE("Row ":II: " Invalid Destination ZIP ":DEST.ZIP:"  encountered RETURN to skip ")
+      GOTO SKIPIT
+   END
+
+   IF FIRST.DET.LINE THEN
+      FIRST.DET.LINE = 0
+      DATA.ERROR = 0      
+   END
+
+   ABS.MIN.CHARGE  = TRIM(WLINE<1,7>)
+   CONVERT '.' TO '' IN ABS.MIN.CHARGE
+
+   W.RATE.ARRAY = ""
+
+   FOR JJ = 1 TO N.WHTGS
+     W.RATE = TRIM(WLINE<1,JJ+7>)
+     CONVERT '.' TO '' IN W.RATE
+     W.RATE.ARRAY<1,1,JJ> = W.RATE
+   NEXT JJ
+
+   ID.DTL = ID.CARRIER:"*":I.EFF.DATE:"*":ORIG.ZIP:"*":DEST.ZIP
+
+   READ DTL.REC FROM F.FB.COMMRATES.DTL, ID.DTL THEN
+      LOCATE ORIG.AIRPORT.CD IN DTL.REC<1> BY 'AR' SETTING OPOS THEN
+      END ELSE
+         DTL.REC<1> = WEIGHT.STRING
+
+         OLD.RATE.ARRAY     = DTL.REC<2>
+         OLD.ABS.MIN.CHARGE = DTL.REC<3>
+
+         GOSUB GET.HIGHEST.RATES
+
+         IF SAME.RATES THEN
+            NULL
+         END ELSE
+            DTL.REC<2> = NEW.RATE.ARRAY
+            DTL.REC<10> = "1"   ;* Highest rates selected from rate sets available
+         END
+
+         IF ABS.MIN.CHARGE GT OLD.ABS.MIN.CHARGE THEN    ;* For multi Airports with same Orig and Dest Zips used highest Absolute Minimum charge
+            DTL.REC<3> = ABS.MIN.CHARGE
+         END
+
+         DTL.REC<4,-1> = ORIG.AIRPORT.CD
+         DTL.REC<5,-1> = DEST.AIRPORT.CD
+         DTL.REC<6,-1> = W.RATE.ARRAY
+         DTL.REC<7,-1> = ABS.MIN.CHARGE
+         DTL.REC<8,-1> = ORIG.FXF.DOCK
+         DTL.REC<9,-1> = DEST.FXF.DOCK
+      END
+   END ELSE
+      DTL.REC = ""
+      DTL.REC<1> = WEIGHT.STRING
+      DTL.REC<2> = W.RATE.ARRAY
+      DTL.REC<3> = ABS.MIN.CHARGE
+      DTL.REC<4> = ORIG.AIRPORT.CD
+      DTL.REC<5> = DEST.AIRPORT.CD
+      DTL.REC<6> = W.RATE.ARRAY
+      DTL.REC<7> = ABS.MIN.CHARGE
+      DTL.REC<8> = ORIG.FXF.DOCK
+      DTL.REC<9> = DEST.FXF.DOCK
+   END
+
+   WRITE DTL.REC ON F.FB.COMMRATES.DTL, ID.DTL
+
+SKIPIT :
+
+NEXT II
+
+STOP
+
+GET.HIGHEST.RATES :
+*
+***** If more than one Airport have the same Origination and Destination zip choose the highest rate from either airport
+*
+SAME.RATES = 1
+N.RT = DCOUNT(W.RATE.ARRAY,@SVM)
+
+NEW.RATE.ARRAY = OLD.RATE.ARRAY
+
+FOR RTX = 1 TO N.RT
+   W.PREV.RATE  = OLD.RATE.ARRAY<1,1,RTX>
+   THIS.RATE    = W.RATE.ARRAY<1,1,RTX>
+   IF THIS.RATE GT W.PREV.RATE THEN
+      NEW.RATE.ARRAY<1,1,RTX> = THIS.RATE
+      SAME.RATES = 0
+   END ELSE
+      NEW.RATE.ARRAY<1,1,RTX> = W.PREV.RATE
+   END
+NEXT RTX
+*
+RETURN

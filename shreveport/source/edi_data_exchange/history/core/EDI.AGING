@@ -1,0 +1,215 @@
+***********************************************************************
+* Program name : EDI.AGING
+* Author       : Greg Bino
+* Date written : 11-18-2021
+* Library      : FBBP
+* COPYRIGHT (C) 2019 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* generate EDI bills by client count report
+*
+* Last updated by afs (AFSLOGISTICS\gbino) at 08:19:25 on 01/26/2022.
+*
+* Start modification history
+* 012622 : NKH01 : ACCU-1605 Modified email addresses
+* End modification history
+*
+************************************************************************
+*
+* Initialize variables
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE UNIVERSE.INCLUDE UDO.H
+
+      STATUS = 0
+      TOT.CNT = 0
+      TAB = ","
+      FILE.DATE = DATE()
+      CNT=0
+      FILE.DATE = OCONV(FILE.DATE,"D4-")
+      RESP.CNT=1
+      RESP = ''
+      VOUT=''
+      TIME.LINE=''
+      ST.TIME = TIME()
+      TIME.LINE<1,1,1>=TIME()            ; * start time
+
+      PROMPT ''
+      PROG.NAME='EDI.AGING'
+      CALL GET.USER.NEW(USER,CH.NUM)
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'EDI.AGING' ; UPL.VOUT = ''
+      ***    CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT2("CLIENTS",PROG.NAME)
+         RETURN
+      END
+      OPEN '','BCTRL' TO F.BCTRL ELSE
+         CALL OPEN.ABORT2("BCTRL",PROG.NAME)
+         RETURN
+      END
+      OPEN '','EDI.WORK' TO F.WORK ELSE
+         CALL OPEN.ABORT2("EDI.WORK",PROG.NAME)
+         RETURN
+      END
+      OPEN '','OPERATOR' TO F.OP ELSE CALL OPEN.ABORT("OPERATOR",PROG.NAME)
+      READV OP.FLG FROM F.OP,USER,78 ELSE
+         OP.FLG = "N"
+      END
+      OP.FLG = "Y"
+      IF OP.FLG # "Y" THEN
+         CALL ELINE("You are not setup to run this report... ")
+         STOP
+      END
+      FILE.ID2 = 'EDI.PENDING.CNT.XLS'
+      OPENSEQ "GRB",FILE.ID2 TO FILE.OUT ELSE CREATE FILE.OUT
+         ELSE ABORT
+      WEOFSEQ FILE.OUT
+      EXECUTE "CLEAR.FILE DATA EDI.WORK"
+      GOSUB BUILD.HEADER
+
+      CRT @(-1)
+      CRT @(5,2):"EDI PENDING COUNT REPORT"
+      CMD ='SSELECT EDI.BILLS WITH 118 = ""'
+      ****    CMD = "GET-LIST GB"
+      EXECUTE CMD CAPTURING STUFF RETURNING JUNK
+      EOJ=0
+      LOOP
+         READNEXT ID ELSE EOJ = 1
+      UNTIL EOJ DO
+         CNT+=1
+         IF NOT(REM(CNT,100)) THEN
+            CRT@(10,10):CNT
+         END
+         RESP.CNT=1
+         RESP = ''
+         VOUT=''
+         CLIENT.ID = FIELD(ID,"*",1)"R%5"
+         CARRIER.ID = FIELD(ID,"*",2)"R%5"
+         IF CARRIER.ID = "01075" OR CARRIER.ID = "00015" OR CARRIER.ID = "00365" THEN CONTINUE
+         IF CLIENT.ID = "01377" OR CLIENT.ID = "00344" THEN CONTINUE
+         IF CLIENT.ID = "00000" THEN CONTINUE
+         IF CLIENT.ID[1,1] = "9" THEN CONTINUE
+         READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE CLIENT.REC = "NOF"
+         IF CLIENT.REC<30> = "I" THEN CONTINUE
+         CLIENT.NAME = CLIENT.REC<2>
+         PAR = INDEX(CLIENT.NAME,"*",1)
+         IF PAR GT 0 THEN CONTINUE
+         PROC.DAY = CLIENT.REC<151>
+
+         READ EDI.DAT FROM F.WORK,CLIENT.ID THEN
+            EDI.DAT<3> = EDI.DAT<3> + 1
+            WRITE EDI.DAT ON F.WORK,CLIENT.ID
+         END ELSE
+            EDI.DAT = ""
+            EDI.DAT<1> = CLIENT.NAME
+            EDI.DAT<2> = PROC.DAY
+            EDI.DAT<3> = 1
+            WRITE EDI.DAT ON F.WORK,CLIENT.ID
+         END
+      REPEAT
+      ***    DEBUG
+      GOSUB BUILD.DETAIL
+      TIME.LINE<1,1,1>=TIME()            ; * finish time
+********************************************************
+9999: * THE END
+*********************************************************
+      DATALINE = "":CHAR(9):"":CHAR(9):"":CHAR(9):TOT.CNT
+      WRITESEQ DATALINE TO FILE.OUT THEN NULL
+      CLOSESEQ FILE.OUT
+      **  DEBUG
+      GOSUB SEND.EMAIL
+      RETURN
+
+******************************************************
+BUILD.DETAIL:
+******************************************************
+      EOJ=0
+      CMD = 'SSELECT EDI.WORK BY PROC.DAY BY CLIENT'
+      EXECUTE CMD CAPTURING STUFF RETURNING JUNK
+      LOOP
+         READNEXT ID ELSE EOJ =1
+      UNTIL EOJ DO
+         READ DAT FROM F.WORK,ID THEN
+            CLIENT.NAME = DAT<1>
+            PROC.DAY = DAT<2>
+            EDI.CNT = DAT<3>
+
+            NEW.LINE =''
+            NEW.LINE<1> = ID
+            NEW.LINE<2> = CLIENT.NAME
+            BEGIN CASE
+               CASE PROC.DAY = 0
+                  PROC.DAY = "SUNDAY"
+               CASE PROC.DAY = 1
+                  PROC.DAY = "MONDAY"
+               CASE PROC.DAY = 2
+                  PROC.DAY = "TUESDAY"
+               CASE PROC.DAY = 3
+                  PROC.DAY = "WEDNESDAY"
+               CASE PROC.DAY = 4
+                  PROC.DAY = "THURSDAY"
+               CASE PROC.DAY = 5
+                  PROC.DAY = "FRIDAY"
+               CASE PROC.DAY = 6
+                  PROC.DAY = "SATURDAY"
+
+            END CASE
+            NEW.LINE<3> = PROC.DAY
+            NEW.LINE<4> = EDI.CNT
+
+            DATALINE = NEW.LINE<1>:CHAR(9):NEW.LINE<2>:CHAR(9):NEW.LINE<3>:CHAR(9):NEW.LINE<4>
+            WRITESEQ DATALINE TO FILE.OUT THEN NULL
+            TOT.CNT = TOT.CNT + EDI.CNT
+         END
+      REPEAT
+
+      RETURN
+**********************************************
+BUILD.HEADER:
+**********************************************
+      HDR2 ='CLIENT':TAB:"CLIENT NAME":TAB:"PROC DAY":TAB:"COUNT"
+      HDR1='EDI Pending Count for ':FILE.DATE
+      NULL = ""
+      CONVERT TAB TO CHAR(9) IN HDR1
+      WRITESEQ HDR1 TO FILE.OUT THEN NULL
+
+      CONVERT TAB TO CHAR(9) IN HDR2
+      WRITESEQ HDR2 ON FILE.OUT THEN NULL
+      RETURN
+**********************************************
+SEND.EMAIL:
+**********************************************
+      PDFVIN =''
+      IF USER = "NMEDDAUGH" THEN
+         **     DEBUG
+         PDFVIN<1> = 'nmeddaugh@afs.net'
+      END ELSE
+         PDFVIN<1> = 'mary@afs.net'
+         PDFVIN<1,-1> = 'LCOOK@afs.net'
+         PDFVIN<1,-1> = 'CDUNGAN@afs.net'
+         PDFVIN<1,-1> = 'crivers@afs.net'
+*         PDFVIN<1,-1> = 'cacarter@afs.net'     ; * NKH01
+         PDFVIN<1,-1> = 'lnjohnson@afs.net'     ; * NKH01
+         READV UMAIL FROM F.BCTRL,USER,20 ELSE UMAIL = ""
+         IF UMAIL # "" THEN
+            PDFVIN<1,-1> = UMAIL
+         END
+         PDFVIN<2> = 'nmeddaugh@afs.net'
+      END
+      PDFVIN<4> = 'reports@afs.net'
+      PDFVIN<5> = 'EDI Pending Counts Report'
+      BODY = ''
+      BODY<1,-1> = ' '
+      BODY<1,-1> = 'Here is the EDI Pending Count report for ':FILE.DATE
+      BODY<1,-1> = ' '
+      BODY<1,-1> = ' '
+      BODY<1,-1> = ' '
+      PDFVIN<6> = BODY
+      PDFVIN<11> = ''
+      FILE.ID2 = 'EDI.PENDING.CNT.XLS'
+      PDFVIN<11,-1> = 'e:\Ardent\accounts\afs\GRB\':FILE.ID2
+      BODY<1,-1> = 'Note : ':FILE.ID2
+      PDFVOUT=''
+      CALL SENDMAIL(PDFVIN,PDFVOUT)
+      RETURN
+   END

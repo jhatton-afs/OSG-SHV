@@ -1,0 +1,202 @@
+*-----------------------
+* MODIFICATIONS
+* 05/09/06 : JCW01 : CHANGES TO @SELECTED, CLEARSELECT, AND STMT<X>
+*-----------------------
+* ADD FB.PAY TO THE LIST...
+      CRT @(-1):
+      OPEN 'CLIENTS' TO F.CLIENTS ELSE ABORT
+
+
+      OPEN 'FB.BILLS.CRX' TO F.BILLS.CRX ELSE ABORT
+      OPEN 'CLIENT.CARRIER.XREF' TO F.CLI.CAR.XREF ELSE ABORT
+      OPEN 'DICT','FB.BILLS.HIST' TO D.F.HIST ELSE ABORT
+      OPEN 'DICT','FB.BILLS' TO D.F.BILLS ELSE ABORT
+      OPEN 'BILLDATA.DAVID' TO F.BD ELSE ABORT
+      CALL GET.USER(USER)
+      TESTING=0
+      PER.1=1
+      PER.2=1
+
+     CARRIER.ID='01522'
+************************************************************************
+* Old Pro format goes Here
+OLD.PRO.FORMAT="9N"
+
+** DON'T FORGET TO GO DOWN & MODIFY NEW.PRO ~LINE 311
+************************************************************************
+      VIN=OLD.PRO.FORMAT
+      CALL MASK(VIN,VOUT)
+      MASK=VOUT<1>
+      MASK.LEN=LEN(MASK)
+      ERROR.ARRAY=''
+      DICT=''
+      DICT<1>='S'
+      DICT<2>=0
+      DICT<3>='Pattern'
+      DICT<8>='G1*1':@VM:'T1,':MASK.LEN:@VM:'P(':OLD.PRO.FORMAT:')'
+      DICT<9>='L'
+      DICT<10>=20
+      DICT<22>='Used to Find Pro Patterns'
+      WRITE DICT ON D.F.HIST,'PRO.PATTERN'
+      WRITE DICT ON D.F.BILLS,'PRO.PATTERN'
+      TEXT='Selecting Clients.'
+      CALL CENTER(TEXT,80)
+      CRT @(0,10):TEXT
+*
+      STMT= "SELECT VOC 'FB.BILLS.HIST' *A7"
+*DFSTMT="SELECT CLIENTS '01457'"
+      PRINT STMT
+      EXECUTE STMT RTNLIST CLIENT.LIST CAPTURING OUTPUT
+      ITEMS = @SELECTED
+*     IF NOT( @SELECTED ) THEN ; * JCW01
+      IF @SELECTED < 1 THEN    ; * JCW01
+         CALL ELINE('ERROR - No clients on file.')
+         STOP
+      END
+      COUNTER.1=0
+      PER=0
+      LOOP
+         READNEXT CLIENT.ID FROM CLIENT.LIST ELSE CLIENT.ID='DONE'
+      UNTIL CLIENT.ID='DONE' DO
+         COUNTER.1=COUNTER.1+1
+         IF CLIENT.ID='FB.BILLS.HIST' THEN GO SKIP.CLIENT
+*       Check to see if the carrier has been used for this client... if not then skip it...
+         READ DXREF FROM F.CLI.CAR.XREF,CLIENT.ID THEN
+            LOCATE CARRIER.ID IN DXREF SETTING POS ELSE GO SKIP.CLIENT
+         END
+         IF CLIENT.ID[1,2]='99' THEN GO SKIP.CLIENT
+         READV CLIENT.NAME FROM F.CLIENTS,CLIENT.ID,2 ELSE
+            CLIENT.NAME='*** Not On File ***'
+         END
+         CRT @(0,16):CLIENT.ID:" ":CLIENT.NAME:" - Now selecting freight bills":@(-4):
+         CALL PROG.BAR(18,COUNTER.1,ITEMS,PER.1)
+         EDI=0
+         OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS.HIST THEN
+            OPEN '','FB.BILLS,':CLIENT.ID TO F.BILLS ELSE
+*           CALL ELINE('CANNOT OPEN FB.BILLS,':CLIENT.ID:' Skipping Client')
+               GO SKIP.CLIENT
+            END
+*****************************************************************************
+            STMT='SELECT FB.BILLS.HIST,':CLIENT.ID
+            TIMES=DCOUNT(CARRIER.ID,@AM)
+            STMT:=' WITH CARRIER# = '
+            FOR X = 1 TO TIMES
+               STMT:='"':CARRIER.ID<X>:'"'
+            NEXT X
+*         STMT:=' WITH CARRIER# = "':CARRIER.ID:'"'
+            STMT:=' AND WITH PRO.PATTERN'
+            PRINT @(0,10):STMT
+            EXECUTE STMT RTNLIST BILLS.LIST CAPTURING OUTPUT
+            NUM.BILLS = @SELECTED
+*         IF SYSTEM(11) ELSE GO SKIP.CLIENT ; * No Bills
+            CRT @(0,16):CLIENT.ID:" ":CLIENT.NAME:" - Now processing ":NUM.BILLS:" Freight Bills":@(-4):
+            COUNTER.2=0
+            LOOP
+               DONE=0
+               READNEXT PRO.ID FROM BILLS.LIST ELSE DONE=1
+            UNTIL DONE=1 DO
+               PRO=FIELD(PRO.ID,"*",2)
+
+
+*******************************************************************************************
+* Strip out AD, BD, and / to get at "Base Pro Number"
+*******************************************************************************************
+
+               RAW.PRO=PRO
+
+               BD.POS=INDEX(RAW.PRO,'BD',1)
+               IF BD.POS THEN
+                  RAW.PRO=RAW.PRO[1,BD.POS-1]
+               END
+
+               AD.POS=INDEX(RAW.PRO,'AD',1)
+               IF AD.POS THEN
+                  RAW.PRO=RAW.PRO[1,AD.POS-1]
+               END
+
+               SLASH.POS=INDEX(RAW.PRO,'/',1)
+               IF SLASH.POS THEN
+                  RAW.PRO=RAW.PRO[1,SLASH.POS-1]
+               END
+
+               IF RAW.PRO MATCHES OLD.PRO.FORMAT ELSE GOTO SKIP.BILL
+
+*******************************************************************************************
+*
+*******************************************************************************************
+
+
+
+************************************************************************
+* New Pro format goes Here
+*           NEW.PRO="0":PRO[1,1]:"0":PRO[3,5]:"00":PRO[9,999] ;  * "1N'-'5N'-'1N" ; * 00164 Arrow Trucking, from 1N-5N-1N to 11N
+NEW.PRO=PRO[1,8]
+
+* Will this program work with the new Multi-Level EDI History???
+
+
+* Dont forget to end with a 999 for AD, ADAD, BD, BDBD, etc....
+*CALL ELINE('Owen Press Break')
+************************************************************************
+               NEW.ID=CARRIER.ID:"*":NEW.PRO:"*":FIELD(PRO.ID,"*",3)
+               NEW.EDI.ID=CLIENT.ID:"*":NEW.ID
+               COUNTER.2=COUNTER.2+1
+               IF NUM.BILLS>0 THEN CALL PROG.BAR(20,COUNTER.2,NUM.BILLS,PER.2)
+************************************************************************
+               LOOKPRO=PRO
+               LOOP UNTIL INDEX(LOOKPRO[LEN(LOOKPRO)-1,2],'AD',1)=0 DO
+                  LOOKPRO=LOOKPRO[1,LEN(LOOKPRO)-2]
+               REPEAT
+               LOOP UNTIL INDEX(LOOKPRO[LEN(LOOKPRO)-1,2],'BD',1)=0 DO
+                  LOOKPRO=LOOKPRO[1,LEN(LOOKPRO)-2]
+               REPEAT
+               LOOP UNTIL NOT(LOOKPRO[LEN(LOOKPRO)-1,2] MATCHES "0X'/'1N") DO
+                  LOOKPRO=LOOKPRO[1,LEN(LOOKPRO)-2]
+               REPEAT
+************************************************************************
+*           IF NOT(PRO[1,MASK.LEN] MATCHES OLD.PRO.FORMAT) THEN GO SKIP.BILL
+
+               IF PRO.ID=NEW.ID THEN GO SKIP.BILL  ; * Nothing to do
+               IF TESTING THEN ; *OWEN
+                  CRT @(0,23):"Found One! ",PRO.ID,NEW.ID:@(-4):
+                  INPUT NUL:
+               END
+               CRT @(0,22):COUNTER.2'R%4':'  ':PRO.ID:"    ":NEW.ID:@(-4):
+               NEW.ON.FILE=0
+               READV NUL FROM F.BILLS,NEW.ID,1 THEN NEW.ON.FILE=1
+               READV NUL FROM F.BILLS.HIST,NEW.ID,1 THEN NEW.ON.FILE=1
+               READV NUL FROM F.BILLS.CRX,NEW.ID,1 THEN NEW.ON.FILE=1
+               IF NEW.ON.FILE=1 THEN
+*             CALL ELINE('ERROR Cannot Change Bill ':PRO.ID:' Client ':CLIENT.ID:' Already on File')
+                  ERROR=CLIENT.ID:@VM:PRO.ID:@VM:NEW.ID:@VM:'Already on File!'
+                  ERROR.TEXT=CHANGE(ERROR,@VM,' ')
+                  IF TESTING THEN
+                     CALL ELINE(ERROR.TEXT)
+                  END ELSE
+                     CRT @(0,23):ERROR.TEXT:
+                  END
+                  ERROR.ARRAY<-1>=ERROR
+                  GO SKIP.BILL
+               END
+SKIP.BILL:***
+            REPEAT
+         END
+SKIP.CLIENT:***
+      REPEAT
+      IF ERROR.ARRAY#'' THEN
+         ERROR.ARRAY=CHANGE(ERROR.ARRAY,@VM,CHAR(9))
+         ERROR.ID='CHANGE_PRO_ERRORS-':CARRIER.ID:'.XLS'
+TRY.AGAIN:***
+         WRITE ERROR.ARRAY ON F.BD,ERROR.ID ELSE
+            CALL ELINE('Close your Spreadseet ':ERROR.ID)
+            GO TRY.AGAIN
+         END
+         CRT @(0,23)
+         FOR X = 1 TO 5
+            CRT
+         NEXT X
+         CRT "Errors Written to BILLDATA.DAVID ":ERROR.ID
+         CRT
+         CRT "Press [Enter] to Acknowledge: ":
+         INPUT NUL
+      END

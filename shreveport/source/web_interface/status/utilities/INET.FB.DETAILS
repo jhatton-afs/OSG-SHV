@@ -1,0 +1,1277 @@
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: TAMI SEAGO
+* DATE: SEPTEMBER 6, 2000
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE EXPRESS
+* WRITTEN CONSENT OF SAME.
+*
+* 111004 - JMK01 - ADD SCHEDULED PROCESSING DATE
+* 111104 - JMK02 - CORRECT CHECK CLEARING STATUS
+* 061906 - JCW01 - USE EDI.BILLS.HIST,CLIENT.ID
+* 091106 - JCW02 - USE NEW FB.CHECKS FILES
+* 111306 - JMK03 - HANDLE OLD VENDOR NAME INSTEAD OF VENDOR ID
+* 040408 - NPR00 - CHANGES TO ALLOW TRUCKLOAD INVOICES TO BE PRINTED
+* 082709 - NPR01 - T091091 - Added option to overide Pro Format based on Client/Carrier combination if it exists
+* 100914 - JMK04 - SysAid#12653 - Freight bill status
+****************************************************************
+* Initialize variables
+****************************************************************
+      $INCLUDE FILE.DEFS INC_CLIENTS
+      
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CRT "%ERROR:CANNOT OPEN FILE CLIENTS"
+         STOP
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CRT "%ERROR:CANNOT OPEN FILE CARRIERS"
+         STOP
+      END
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         CRT "%ERROR:CANNOT OPEN FB.BILLS.CRX"
+         STOP
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CRT "%ERROR:CANNOT OPEN FB.TABLES"
+         STOP
+      END
+*     OPEN '','INET.PROS' TO F.PROS ELSE ; * JMK04
+*        CRT "%ERROR:CANNOT OPEN FB.PROS"          ; * JMK04
+*        STOP                            ; * JMK04
+*     END                                ; * JMK04
+      
+*     OPEN '','FB.CHECKS' TO F.CHECKS ELSE  ; * JCW02
+*        CRT "%ERROR:CANNOT OPEN FB.CHECKS" ; * JCW02
+*        STOP                               ; * JCW02
+*     END                                   ; * JCW02
+      
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+         CRT "%ERROR:CANNOT OPEN FB.TRANSPORT"
+         STOP
+      END
+      
+*     OPEN '','EDI.BILLS.HIST' TO F.EDI.HIST ELSE ; * JCW01
+*        CRT "%ERROR:CANNOT OPEN EDI.BILLS.HIST"  ; * JCW01
+*        STOP                                     ; * JCW01
+*     END                                         ; * JCW01
+      
+      OPEN '','EDI.ELEMENTS' TO F.EDI.ELEMENTS ELSE
+         CRT "%ERROR:CANNOT OPEN EDI.ELEMENTS"
+         STOP
+      END
+
+      OPEN '','FB.PRO.FORMAT' TO F.PRO.FORMAT ELSE   ; *NPR01
+         CALL OPEN.ABORT("FB.PRO.FORMAT",PROG.NAME)  ; *NPR01
+      END                                            ; *NPR01
+
+***Added 5/7/3 -- Kevin Messenger
+      READ DLI.CODES FROM F.TABLES,'LI.CODES' ELSE DLI.CODES=''
+**--KM
+      
+      READ REJECT.CODES FROM F.TABLES,'REJECT.CODES' ELSE REJECT.CODES=''
+      READ LI.CODES FROM F.TABLES,'LI.CODES' ELSE LI.CODES=''
+      READ TABLE150 FROM F.EDI.ELEMENTS,'150*3040' ELSE TABLE150=''
+      READ TABLE122 FROM F.EDI.ELEMENTS,'122*3040' ELSE TABLE122=''
+      READ DMETHOD FROM F.TABLES,'SHP*EDI' ELSE DMETHOD=''
+      READ DEXCEPT FROM F.TABLES,'DELIVERY.EXCEPTION.CODES' ELSE DEXCEPT=''
+      READ DDISASTER FROM F.TABLES,'DISASTER.EXCEPTION.CODES' ELSE DDISASTER=''
+      NA='(Not Available)'
+      
+      
+      INPUT CARRIER
+      
+      READ CARRIER.REC FROM F.CARRIERS,CARRIER ELSE
+         CRT "%ERROR:CARRIER #": CARRIER: " DOES NOT EXIST"
+         STOP
+      END
+      
+      
+      INPUT PRONUMS
+      PRONUMS=OCONV(PRONUMS,'MCU')       ; * Force all Caps
+*     INPUT USER.NAME
+      
+      INPUT USER.NAME
+      INPUT USER.PWD
+      INPUT USER.TYPE
+      INPUT USER.ID
+      
+*     Client user.
+      CALL GET.USER(USER)
+      CALL CHANNEL(CH.NUM)
+      UPL.VIN = 'FBBP'
+      UPL.VIN<2> = 'INET.FB.DETAILS'
+      UPL.VIN<3> = USER
+      UPL.VIN<4> = CH.NUM
+      UPL.VOUT = ''     ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+
+      DUE.DT.FLG=''                      ; * JMK01
+      CLIENT.DOW=''                      ; * JMK01
+      IF USER.TYPE='CLIENT' THEN
+         CLIENT.USER=1
+         CLIENT.USER.ID=USER.ID
+* *  READV CLIENT.USER.NAME FROM F.CLIENTS,CLIENT.USER.ID,2 ELSE CLIENT.USER.NAME=CLIENT.USER.ID:' Not on File'
+         READ DCLIENTS FROM F.CLIENTS,CLIENT.USER.ID ELSE
+            DCLIENTS=''
+            DCLIENTS<2>=CLIENT.USER.ID:' is Not on File!'
+         END
+         CLIENT.USER.NAME=DCLIENTS<2>
+         BANK.CODE=DCLIENTS<81>
+         IF BANK.CODE='V' OR BANK.CODE='N' THEN VOUCHER=1 ELSE VOUCHER=0
+         CLIENT.DOW=DCLIENTS<151>        ; * JMK01
+         DUE.DT.FLG=DCLIENTS<186>        ; * JMK01
+         OPEN '','VEND.CUST,':CLIENT.USER.ID TO F.VC ELSE
+            CRT "%ERROR:CANNOT OPEN VEND.CUST,":CLIENT
+            STOP
+         END
+
+*NPR01 Start changes - Replace Pro Formatting for Client with Client/Carrier specific formatting
+         ID.PRO.FORMAT = CLIENT.USER.ID:"*":CARRIER  ; PRO.FORMAT.REC = ''
+         READ PRO.FORMAT.REC FROM F.PRO.FORMAT, ID.PRO.FORMAT THEN
+            CARRIER.REC<47> = PRO.FORMAT.REC<1>  ;* PRO.FORMAT
+            CARRIER.REC<51> = PRO.FORMAT.REC<2>  ;* MASK.ACTIVE
+            CARRIER.REC<52> = PRO.FORMAT.REC<3>  ;* CHECK.DIG.ACTIVE
+            CARRIER.REC<53> = PRO.FORMAT.REC<4>  ;* CHECK.DIG.POS
+            CARRIER.REC<54> = PRO.FORMAT.REC<5>  ;* SEED.BEG.POS
+            CARRIER.REC<55> = PRO.FORMAT.REC<6>  ;* SEED.END.POS
+            CARRIER.REC<56> = PRO.FORMAT.REC<7>  ;* METHOD.STR
+            CARRIER.REC<57> = PRO.FORMAT.REC<8>  ;* OLD.BEG.POS
+            CARRIER.REC<58> = PRO.FORMAT.REC<9>  ;* OLD.END.POS
+         END
+*NPR01 End changes
+
+      END ELSE
+*      Not a client user.
+         CLIENT.USER=0
+         CLIENT.USER.ID=''
+         CLIENT.USER.NAME=''
+         DCLIENTS=''                     ; * JMK03
+         VOUCHER=0
+      END
+      
+      OPEN '','INET.FBSTATUS.ACTIVITY' TO F.ACTIVITY ELSE
+         CRT "%ERROR:COULD NOT OPEN ACTIVITY"
+         STOP
+      END
+      
+      ACTIVITY.ID = USER.TYPE:'*':USER.ID:'*':USER.NAME:'*':USER.PWD:'*':DATE():'*':TIME()
+      ACTIVITY.REC = PRONUMS
+      ACTIVITY.REC<2>=CARRIER            ; * Owen Added 11-22-02
+      
+      WRITE ACTIVITY.REC ON F.ACTIVITY,ACTIVITY.ID
+      
+      METADATA = ""
+      METADATA<1,1> = "VARCHAR" ; METADATA<1,2> = "Results" ; METADATA<1,3> = 0
+      CONVERT @AM TO CHAR(30) IN METADATA
+      CRT "%METADATA:":METADATA
+      NUM.PROS = DCOUNT(PRONUMS,@VM)
+      RESULTS = ''
+      FOR X = 1 TO NUM.PROS
+         STATUS=''
+         FOUND = 1
+         PRO.ID = TRIM(PRONUMS<1,X>)
+         ADATE = DATE()
+         TEMP.PRO.ID = CARRIER:'*':PRO.ID:"*0"
+*        TEMP2.PRO.ID = CARRIER:'*':PRO.ID:"*0*":ADATE       ; * JMK04
+         TEMP = ""
+*        WRITE TEMP ON F.PROS,TEMP2.PRO.ID         ; * JMK04
+         IF PRO.ID = "" THEN GO SKIP.PRO
+         PRO.DESC = PRO.ID
+***CALL GET.USER(CURRENT.USER)
+***IF CURRENT.USER='OWEN' THEN CALL ELINE('GOING TO READ FROM FC')
+         READ DUMMY FROM F.CRX,TEMP.PRO.ID THEN
+FOUND.DUMMY: ***
+            PRO.REC = DUMMY
+            FOUND.PRO=FIELD(TEMP.PRO.ID,"*",2)
+            PRO.REC<1>=DUMMY<2>          ; * Correct the Position of the Date
+            PRO.REC<2>=''                ; * Correct the I/O Flag (Not on CRX File)
+            CLIENT=DUMMY<1>
+            IF CLIENT.USER THEN
+               IF CLIENT#CLIENT.USER.ID THEN
+*              This bill doesn't belong to this client
+                  STATUS = 'Pro # ':PRO.ID:': Was not on file for ':CLIENT.USER.NAME
+                  FOUND=0
+                  GO PRINT.STATUS
+               END
+            END
+* Assign the Data to PRO.REC then try to read the REAL File
+            OPEN 'FB.BILLS.HIST,':CLIENT TO F.HIST ELSE
+               FOUND = 0
+            END
+            READ PRO.REC FROM F.HIST,TEMP.PRO.ID ELSE FOUND = 0
+            
+         END ELSE
+********************************************************************
+*** Look for "Old" Style Pro Numbers
+            IF INDEX(PRO.ID,'-',1) OR PRO.ID[1,1]='0' OR INDEX(PRO.ID,'.',1) THEN
+               CHK.PRO=PRO.ID
+               CHK.PRO=CHANGE(CHK.PRO,'-','')
+               CHK.PRO=CHANGE(CHK.PRO,'.','')
+               POS.CNTR=0
+               LOOP POS.CNTR+=1 ; UNTIL CHK.PRO[1,1]#'0' DO
+                  CHK.PRO=CHK.PRO[2,999]
+               REPEAT
+               TEMP.PRO.ID = CARRIER:'*':CHK.PRO:'*0'
+               READ DUMMY FROM F.CRX,TEMP.PRO.ID THEN
+                  PRO.ID=CHK.PRO         ; * Look like you entered the "Old" number
+                  PRO.DESC=CHK.PRO
+                  GO FOUND.DUMMY         ; * Skip "Pro Format" Routine
+               END
+            END
+********************************************************************
+            FOUND = 0
+         END
+         IF FOUND THEN
+            MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT ELSE CLIENT.REC(1) = ''
+            CLIENT.USER.NAME=CLIENT.REC(2)
+            POS = X
+            GOSUB GET.DETAILS
+         END ELSE
+            TEMP.PRO.ID = CHANGE(PRO.ID,'-','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,'.','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,'*','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,',','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,'(','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,')','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,'_','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,'+','')
+            TEMP.PRO.ID = CHANGE(TEMP.PRO.ID,'/','')
+            GOSUB FORCE.CHECK.PROS
+            IF FOUND=0 THEN
+               STATUS = 'Pro # ':PRO.ID:': '
+               STATUS = STATUS:'  Freight Bill not on file.  Please verify that you entered'
+               STATUS = STATUS:' the Pro number exactly as it appears on your invoice including'
+               STATUS = STATUS:' dashes and excluding spaces.  If this is correct then, please'
+               STATUS = STATUS:' submit a copy of your bill(s) with POD(Proof of Delivery) and'
+               STATUS = STATUS:' BOL(Bill of Lading) to AFS Logistics, LLC'
+            END
+         END
+PRINT.STATUS: ***
+         IF STATUS # '' THEN
+            STATUS = CHANGE(STATUS,'..','.')
+            CRT STATUS
+*
+*NPR00 Start of test code - may be removed
+*
+   TREC = ""
+   N.CHARS = LEN(STATUS)
+   ST.POS = 1
+   CNT = 0
+   FOR N = 1 TO N.CHARS
+      CNT += 1
+      W.CHAR = STATUS[N,1]
+      IF W.CHAR = ">" THEN
+         W.STRING = STATUS[ST.POS,CNT]
+*       CRT W.STRING
+         TREC<-1> = W.STRING
+         ST.POS = ST.POS + CNT
+         CNT = 0
+      END
+   NEXT N
+*
+   WRITE TREC ON F.ACTIVITY, "TEST2"
+*
+*NPR00 End of test code
+*
+         END
+         IF FOUND THEN
+            GOSUB CHECK.AD.BD
+            GOSUB CHECK.SLASH
+         END
+         
+SKIP.PRO: 
+      NEXT X
+      
+      RETURN
+      
+FORCE.CHECK.PROS: ***
+      
+      PRO.FORMAT = CARRIER.REC<47>
+      PROS=''
+      IF PRO.FORMAT<1,1>='' ELSE
+         VIN = PRO.FORMAT
+         VIN<2> = CARRIER.REC<51>
+         VIN<3> = TEMP.PRO.ID
+         CALL FORMAT.PROS(VIN,VOUT)
+         PROS = VOUT<3>
+      END
+      NUM.T.PROS = DCOUNT(PROS,@VM)
+      PRONUMSTATUS= ''
+      FORMATPRONUM = ''
+      FOUND = 0
+      FOR Y = 1 TO NUM.T.PROS
+         T.FOUND = 1
+         PRO.DESC = PROS<1,Y>
+         TEMP.PRO.ID = CARRIER:'*':PROS<1,Y>:"*0"
+         READ DUMMY FROM F.CRX,TEMP.PRO.ID THEN
+            PRO.REC = DUMMY
+            PRO.REC<1>=DUMMY<2>          ; * Correct the Position of the Date
+            PRO.REC<2>=''                ; * Correct the I/O Flag (Not on CRX File)
+            CLIENT=DUMMY<1>
+            IF CLIENT.USER THEN
+               IF CLIENT#CLIENT.USER.ID THEN
+*              This bill doesn't belong to this client
+                  STATUS = 'Pro # ':PRO.ID:': Was not on file for ':CLIENT.USER.NAME
+                  FOUND=0
+                  RETURN TO PRINT.STATUS
+               END
+            END
+* Assign the Data to PRO.REC then try to read the REAL File
+            OPEN 'FB.BILLS.HIST,':CLIENT TO F.HIST ELSE
+               T.FOUND = 0
+            END
+            READ PRO.REC FROM F.HIST,TEMP.PRO.ID ELSE FOUND = 0
+         END ELSE
+            T.FOUND = 0
+         END
+         IF T.FOUND THEN
+            MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT ELSE CLIENT.REC(1) = ''
+            FOUND = 1
+            POS = Y
+            GOSUB GET.DETAILS
+            FOUND.PRO = PROS<1,Y>
+         END
+      NEXT Y
+      RETURN
+      
+CHECK.AD.BD: ****
+      
+*    TEMP.PRO = FIELD(FOUND.PRO,"*",2)
+      TEMP.PRO = FOUND.PRO
+      AD.BD.PROS = ''
+      AD.BD.PROS<1,-1> = TEMP.PRO:'AD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'ADAD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'ADADAD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'ADADADAD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'BD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'BDBD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'BDBDBD'
+      AD.BD.PROS<1,-1> = TEMP.PRO:'BDBDBDBD'
+      NUM.AD.BD = DCOUNT(AD.BD.PROS,@VM)
+      FOR Z = 1 TO NUM.AD.BD
+         STATUS = ''
+         T.FOUND = 1
+         PRO.DESC = AD.BD.PROS<1,Z>
+         TEMP.PRO.ID = CARRIER:'*':AD.BD.PROS<1,Z>:"*0"
+         READ DUMMY FROM F.CRX,TEMP.PRO.ID THEN
+            PRO.REC = DUMMY
+            PRO.REC<1>=DUMMY<2>          ; * Correct the Position of the Date
+            PRO.REC<2>=''                ; * Correct the I/O Flag (Not on CRX File)
+            CLIENT=DUMMY<1>
+            IF CLIENT.USER THEN
+               IF CLIENT#CLIENT.USER.ID THEN
+*              This bill doesn't belong to this client
+                  STATUS = 'Pro # ':AD.BD.PROS<1,Z>:': Was not on file for ':CLIENT.USER.NAME
+                  FOUND=0
+                  RETURN TO PRINT.STATUS
+               END
+            END
+* Assign the Data to PRO.REC then try to read the REAL File
+            OPEN 'FB.BILLS.HIST,':CLIENT TO F.HIST ELSE
+               T.FOUND = 0
+            END
+            READ PRO.REC FROM F.HIST,TEMP.PRO.ID ELSE FOUND = 0
+         END ELSE
+            T.FOUND = 0
+         END
+         IF T.FOUND THEN
+            MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT ELSE CLIENT.REC(1) = ''
+            FOUND = 1
+            POS = X
+            GOSUB GET.DETAILS
+         END
+         IF STATUS # '' THEN
+            STATUS = CHANGE(STATUS,'..','.')
+            CRT STATUS
+         END
+      NEXT Z
+      RETURN
+      
+GET.DETAILS: 
+*
+* NOW CHECK FOR EDI RECORD
+      EDI.REC=''
+      EDI.ID = PRO.REC<88>                                             ; * JCW01
+*     IF PRO.REC<88>#'' THEN                                           ; * JCW01
+      IF EDI.ID # '' THEN                                              ; * JCW01
+         CALL PARSE.EDI.ID(EDI.ID, CLIENT.ID, EDI.HIST.ID)             ; * JCW01
+*        OPEN 'EDI.BILLS.HIST',CLIENT.ID TO F.EDI.HIST THEN            ; * JCW01 ; * JMK03
+         OPEN '','EDI.BILLS.HIST,':CLIENT.ID TO F.EDI.HIST THEN        ; * JCW01 ; * JMK03
+*          READ EDI.REC FROM F.EDI.HIST,EDI.ID ELSE EDI.REC=''         ; * JCW01
+           READ EDI.REC FROM F.EDI.HIST, EDI.HIST.ID ELSE EDI.REC = '' ; * JCW01
+         END ELSE                                                      ; * JCW01
+           EDI.REC = ''                                                ; * JCW01
+         END                                                           ; * JCW01
+      END
+* DEFINE INVOICE DATA ELEMENTS
+      BILL.DT=PRO.REC<1>
+      IOT=PRO.REC<2>
+      VC.ID=PRO.REC<17>
+      IF VC.ID#'' AND VC.ID MATCHES '5N' THEN ; * JMK03
+         READ VC.REC FROM F.VC,VC.ID ELSE VC.REC=''
+      END ELSE ; * JMK03
+         VC.REC=VC.ID ; * JMK03
+      END ; * JMK03
+      TRAN.CODE=PRO.REC<21>
+      READ TRAN.REC FROM F.TRANSPORT,TRAN.CODE ELSE TRAN.REC=''
+      TRAN.DESC=TRAN.REC<1>
+      TRAN.MODE='LTL'
+      BEGIN CASE
+         CASE CARRIER='08767' ; * Pegasus is treated like LTL even though they are setup as 12
+            TRAN.MODE='LTL'
+         CASE TRAN.CODE=2 OR TRAN.CODE=15 OR TRAN.CODE=12
+            TRAN.MODE='PARCEL'
+         CASE TRAN.CODE=6
+*            TRAN.MODE='TL'
+* IF PRO.ID = "141772" THEN TRAN.MODE = "LTL" ;*NPR00
+            TRAN.MODE = "LTL"
+      END CASE
+      INV.NUM=NA
+      IF PRO.REC<94>#'' THEN
+         INV.NUM=PRO.REC<94>
+      END
+      INV.DT=NA
+      PRO.NUM=FIELD(TEMP.PRO.ID,'*',2)
+      OZIP=PRO.REC<3>
+      DZIP=PRO.REC<4>
+      PONUM=NA
+      BOL=NA
+      IF PRO.REC<16>#'' THEN BOL=PRO.REC<16>
+      IF EDI.REC#'' THEN
+         IF INV.NUM='' THEN
+            INV.NUM=EDI.REC<1>
+         END
+         INV.DT=EDI.REC<77>
+         PRO.NUM=FIELD(EDI.ID,'*',3)
+      END
+* DEFINE CARRIER DATA ELEMENTS
+      CARRIER.NAME=CARRIER.REC<1,1>
+      CARRIER.NAME2=CARRIER.REC<1,2>
+      CARRIER.ADDR=CARRIER.REC<2,1>
+      CARRIER.ADDR2=CARRIER.REC<2,2>
+      CARRIER.CITY=CARRIER.REC<3>
+      CARRIER.STATE=CARRIER.REC<4>
+      CARRIER.ZIP=CARRIER.REC<5>
+      CARRIER.COUNTRY=CARRIER.REC<7>
+* DEFINE SHIPPER DATA ELEMENTS
+      SHIPPER.NAME=NA
+      SHIPPER.NAME2=''
+      SHIPPER.ADDR=''
+      SHIPPER.ADDR2=''
+      SHIPPER.CITY=''
+      SHIPPER.STATE=''
+      SHIPPER.ZIP=''
+      SHIPPER.COUNTRY=''
+      SHIPPER.ACCOUNT=''
+      IF IOT='O' OR IOT='T' THEN
+         SHIPPER.NAME=DCLIENTS<2,1>
+         SHIPPER.NAME2=DCLIENTS<2,2>
+         SHIPPER.ADDR=DCLIENTS<3,1>
+         SHIPPER.ADDR2=DCLIENTS<3,2>
+         SHIPPER.CITY=DCLIENTS<4>
+         SHIPPER.STATE=DCLIENTS<5>
+         SHIPPER.ZIP=DCLIENTS<6>
+         SHIPPER.COUNTRY=''
+         SHIPPER.ACCOUNT=''
+      END ELSE
+         IF VC.REC#'' THEN
+            SHIPPER.NAME=VC.REC<1,1>
+            SHIPPER.NAME2=VC.REC<1,2>
+            SHIPPER.ADDR=VC.REC<3,1>
+            SHIPPER.ADDR2=VC.REC<3,2>
+            SHIPPER.CITY=VC.REC<5>
+            SHIPPER.STATE=VC.REC<6>
+            SHIPPER.ZIP=VC.REC<7>
+         END
+      END
+      IF EDI.REC#'' THEN
+         SHIPPER.NAME=EDI.REC<19>
+         SHIPPER.NAME2=EDI.REC<20>
+         SHIPPER.ADDR=EDI.REC<21>
+         SHIPPER.ADDR2=EDI.REC<22>
+         SHIPPER.CITY=EDI.REC<23>
+         SHIPPER.STATE=EDI.REC<24>
+         SHIPPER.ZIP=EDI.REC<25>
+*        IF FIELD(SHIPPER.ZIP,'-',2)=''
+         SHIPPER.COUNTRY=EDI.REC<26>
+         SHIPPER.ACCOUNT='Account #: ':NA
+         IF EDI.REC<27>#'' THEN
+            SHIPPER.ACCOUNT='Account #: ':EDI.REC<27>
+         END
+      END
+* DEFINE CONSIGNEE DATA ELEMENTS
+      CONSIGNEE.NAME=NA
+      CONSIGNEE.NAME2=''
+      CONSIGNEE.ADDR=''
+      CONSIGNEE.ADDR2=''
+      CONSIGNEE.CITY=''
+      CONSIGNEE.STATE=''
+      CONSIGNEE.ZIP=''
+      CONSIGNEE.COUNTRY=''
+      CONSIGNEE.ACCOUNT=''
+      IF IOT='I' THEN
+         CONSIGNEE.NAME=DCLIENTS<2,1>
+         CONSIGNEE.NAME2=DCLIENTS<2,2>
+         CONSIGNEE.ADDR=DCLIENTS<3,1>
+         CONSIGNEE.ADDR2=DCLIENTS<3,2>
+         CONSIGNEE.CITY=DCLIENTS<4>
+         CONSIGNEE.STATE=DCLIENTS<5>
+         CONSIGNEE.ZIP=DCLIENTS<6>
+      END ELSE
+         IF VC.REC#'' THEN
+            CONSIGNEE.NAME=VC.REC<1,1>
+            CONSIGNEE.NAME2=VC.REC<1,2>
+            CONSIGNEE.ADDR=VC.REC<3,1>
+            CONSIGNEE.ADDR2=VC.REC<3,2>
+            CONSIGNEE.CITY=VC.REC<5>
+            CONSIGNEE.STATE=VC.REC<6>
+            CONSIGNEE.ZIP=VC.REC<7>
+         END
+      END
+      IF EDI.REC#'' THEN
+         CONSIGNEE.NAME=EDI.REC<28>
+         CONSIGNEE.NAME2=EDI.REC<29>
+         CONSIGNEE.ADDR=EDI.REC<30>
+         CONSIGNEE.ADDR2=EDI.REC<31>
+         CONSIGNEE.CITY=EDI.REC<32>
+         CONSIGNEE.STATE=EDI.REC<33>
+         CONSIGNEE.ZIP=EDI.REC<34>
+         CONSIGNEE.COUNTRY=EDI.REC<35>
+         CONSIGNEE.ACCOUNT='Account #: ':NA
+         IF EDI.REC<36>#'' THEN
+            CONSIGNEE.ACCOUNT='Account #: ':EDI.REC<36>
+         END
+      END
+* DEFINE BILLTO DATA ELEMENTS
+      BILLTO.NAME=DCLIENTS<2,1>
+      BILLTO.NAME2=DCLIENTS<2,2>
+      BILLTO.ADDR=DCLIENTS<3,1>
+      BILLTO.ADDR2=DCLIENTS<3,2>
+      BILLTO.CITY=DCLIENTS<4>
+      BILLTO.STATE=DCLIENTS<5>
+      BILLTO.ZIP=DCLIENTS<6>
+      BILLTO.COUNTRY=''
+      BILLTO.ACCOUNT=''
+      IF EDI.REC#'' THEN
+         BILLTO.NAME=EDI.REC<10>
+         BILLTO.NAME2=EDI.REC<11>
+         BILLTO.ADDR=EDI.REC<12>
+         BILLTO.ADDR2=EDI.REC<13>
+         BILLTO.CITY=EDI.REC<14>
+         BILLTO.STATE=EDI.REC<15>
+         BILLTO.ZIP=EDI.REC<16>
+         BILLTO.COUNTRY=EDI.REC<17>
+         BILLTO.ACCOUNT='Account #: ':NA
+         IF EDI.REC<18>#'' THEN
+            BILLTO.ACCOUNT='Account #: ':EDI.REC<18>
+         END
+      END
+* DEFINE PICKUP DATA ELEMENTS
+      PICKUP.DT='Pickup Date : '
+      IF PRO.REC<1>='' THEN
+         PICKUP.DT:=' ':NA
+      END ELSE
+         PICKUP.DT:=PRO.REC<1>'D2/'
+      END
+      PICKUP.CODE='Del Sch Code: '
+*     IF PRO.REC<91>='' THEN
+      PICKUP.CODE:=' ':NA
+*     END ELSE
+*        PICKUP.CODE:=PRO.REC<91>'L#2'
+*     END
+      IF EDI.REC#'' THEN
+         PICKUP.DT='Pickup Date : '
+         IF EDI.REC<39>='' THEN
+            PICKUP.DT:=' ':NA
+         END ELSE
+            PICKUP.DT:=EDI.REC<39>'D2/'
+         END
+         PICKUP.CODE='Del Sch Code: '
+         IF EDI.REC<91>='' THEN
+            PICKUP.CODE:=' ':NA
+         END ELSE
+            PICKUP.CODE:=EDI.REC<91>'L#2'
+         END
+      END
+* DEFINE DELIVERY DATA ELEMENTS
+      DELV.DT='Delivery Date/Time : '
+*     IF PRO.REC<XX>='' THEN
+      DELV.DT:=NA:' '
+*     END ELSE
+*        DELV.DT:=PRO.REC<XX>'D2/':' '
+*     END
+*     IF PRO.REC<XX>='' THEN
+      DELV.DT:=NA
+*     END ELSE
+*        DELV.DT:=OCONV(PRO.REC<XX>,'MTH')
+*     END
+      DELV.SIGN='Recipient Signature: '
+*     IF PRO.REC<XX>='' THEN
+      DELV.SIGN:=NA
+*     END ELSE
+*        DELV.SIGN:=PRO.REC<XX>
+*     END
+      EVENT.DESC=''
+      EVENT.DT=''
+      EVENT.STATUS=''
+      EVENT.DISASTER=''
+      IF EDI.REC#'' THEN
+         DELV.DT='Delivery Date/Time : '
+         IF EDI.REC<41>='' THEN
+            DELV.DT:=NA:' '
+         END ELSE
+            DELV.DT:=EDI.REC<41>'D2/':' '
+         END
+         IF EDI.REC<42>='' THEN
+            DELV.DT:=NA
+         END ELSE
+            DELV.DT:=OCONV(EDI.REC<42>,'MTH')
+         END
+         DELV.SIGN='Recipient Signature: '
+         IF EDI.REC<43>='' THEN
+            DELV.SIGN:=NA
+         END ELSE
+            DELV.SIGN:=EDI.REC<43>
+         END
+         EVENT.DESC=''
+         EVENT.DT=''
+         EVENT.STATUS=''
+         EVENT.DISASTER=''
+         IF EDI.REC<45>#'' OR EDI.REC<46>#'' OR EDI.REC<47>#'' OR EDI.REC<89>#'' THEN
+*
+* EVENT DESCRIPTION
+*
+            EVENT.DESC='Event Description: '
+            IF EDI.REC<45>='' THEN
+               EVENT.DESC:='(Event description not available from EDI)'
+            END ELSE
+               EVENT.DESC:=EDI.REC<45>'L#25'
+            END
+*
+* EVENT DATE & TIME
+*
+            EVENT.DT='Event Date/Time  : '
+            IF EDI.REC<46>='' THEN
+               EVENT.DT:=NA:' '
+            END ELSE
+               EVENT.DT:=(EDI.REC<46>'D2/')'L#8':' '
+            END
+            IF EDI.REC<47>='' THEN
+               EVENT.DT:=NA
+            END ELSE
+               EVENT.DT:=OCONV(EDI.REC<47>,'MTH')'L#8'
+            END
+*
+* EVENT STAT
+*
+            IF EDI.REC<89>#'' THEN
+               EVENT.STATUS = 'Event Status Code: ':EDI.REC<89>'L#3':' - '
+               LOCATE EDI.REC<89> IN DEXCEPT<1> SETTING POS THEN
+                  EVENT.STATUS:=DEXCEPT<3,POS>'L#28'
+               END ELSE
+                  EVENT.STATUS:='(Unkown Status)'
+               END
+            END
+*
+* DISASTER CODE
+*
+            IF EDI.REC<92>#'' THEN
+               EVENT.DISASTER= 'Disaster Code: ':EDI.REC<92>:' - '
+               LOCATE EDI.REC<92> IN DDISASTER<1> SETTING POS THEN
+                  EVENT.DISASTER:= DDISASTER<3,POS>
+               END ELSE
+                  EVENT.DISASTER= '(Unkown Delay/Disater Code)'
+               END
+            END
+         END
+      END
+* DEFINE SERVICE DATA ELEMENTS
+      SVC.DESC='Service Req Code: ':NA
+      IF EDI.REC#'' THEN
+         SVC.DESC=''
+         IF EDI.REC<90>#'' THEN
+            SVC.DESC= 'Service Req Code: ':EDI.REC<90>:' - '
+            LOCATE EDI.REC<90> IN DMETHOD<1> SETTING POS THEN
+               IF EDI.REC<134>='I' THEN
+                  BEGIN CASE
+                     CASE EDI.REC<90>='ON'
+                        SVC.DESC:='FedEx International Priority'
+                     CASE EDI.REC<90>='AE'
+                        SVC.DESC:='FedEx International Economy'
+                     CASE EDI.REC<90>='NM'
+                        SVC.DESC:='FedEx International First'
+                     CASE EDI.REC<90>='NH'
+                        SVC.DESC:='FedEx International Priority Freight'
+                  END CASE
+               END ELSE
+                  SVC.DESC:=DMETHOD<2,POS>
+               END
+            END ELSE
+               SVC.DESC:='Unkown Request'
+            END
+         END
+      END
+* DEFINE MISC DATA ELEMENTS
+      TERMS='Terms: ':NA
+      CUSTREF=''
+      IF PRO.REC<16>#'' THEN CUSTREF='Cust Ref:':PRO.REC<16>
+      IF EDI.REC#'' THEN
+         TERMS= 'Terms: ':EDI.REC<72>'L#2'
+         CUSTREF=''
+         IF EDI.REC<9>#'' THEN CUSTREF='Cust Ref:':EDI.REC<9>
+      END
+* DEFINE CHARGE DATA ELEMENTS
+*
+      GOSUB BUILD.XML.HEADER
+      RETURN
+      
+BUILD.XML.HEADER: *
+      BEGIN CASE
+         CASE TRAN.MODE='LTL'
+            STATUS:='<?xml version="1.0" encoding="ISO-8859-1" ?> '
+         CASE TRAN.MODE='PARCEL'
+            STATUS:='<?xml version="1.0" encoding="ISO-8859-1" ?> '
+         CASE 1
+            CRT "%ERROR:TRANSACTION TYPE ":TRAN.DESC:" UNDER CONSTRUCTION"
+            STOP
+      END CASE
+      GOSUB BUILD.INVOICE.NODE
+      RETURN
+BUILD.INVOICE.NODE: *
+      STATUS:='<invoice>'
+      IF INV.NUM#'' THEN
+         BEGIN CASE
+            CASE TRAN.MODE='PARCEL'
+               STATUS:='<invoiceNumber>':INV.NUM:'</invoiceNumber>'
+         END CASE
+      END
+      IF TRAN.MODE='PARCEL' THEN
+         IF INV.DT#'' THEN
+            STATUS:='<invoiceDate>':INV.DT 'D2/':'</invoiceDate>'
+         END
+      END
+      IF TRAN.MODE='LTL' THEN
+         STATUS:='<invoiceDate>':BILL.DT 'D2/':'</invoiceDate>'
+      END
+      IF PRO.NUM#'' THEN
+         BEGIN CASE
+            CASE TRAN.MODE='LTL'
+               STATUS:='<freightbillNumber>':PRO.NUM:'</freightbillNumber>'
+            CASE TRAN.MODE='PARCEL'
+               STATUS:='<airbillNumber>':PRO.NUM:'</airbillNumber>'
+         END CASE
+      END
+      IF TRAN.MODE='LTL' THEN
+         IF OZIP#'' THEN
+            BEGIN CASE
+               CASE TRAN.MODE='LTL'
+                  STATUS:='<originZip>':OZIP:'</originZip>'
+            END CASE
+         END
+         IF DZIP#'' THEN
+            BEGIN CASE
+               CASE TRAN.MODE='LTL'
+                  STATUS:='<destinationZip>':DZIP:'</destinationZip>'
+            END CASE
+         END
+         IF PONUM#'' THEN
+            BEGIN CASE
+               CASE TRAN.MODE='LTL'
+                  STATUS:='<poNumber>':PONUM:'</poNumber>'
+            END CASE
+         END
+         IF BOL#'' THEN
+            BEGIN CASE
+               CASE TRAN.MODE='LTL'
+                  STATUS:='<bolNumber>':BOL:'</bolNumber>'
+            END CASE
+         END
+         IF TERMS#'' THEN
+            STATUS:='<terms>':TERMS:'</terms>'
+         END
+      END
+      GOSUB BUILD.CARRIER.NODE
+      GOSUB BUILD.SHIPPER.NODE
+      GOSUB BUILD.CONSIGNEE.NODE
+      GOSUB BUILD.BILLTO.NODE
+      GOSUB BUILD.PICKUP.NODE
+      GOSUB BUILD.DELIVERY.NODE
+      GOSUB BUILD.SERVICE.NODE
+      GOSUB BUILD.MISC.NODE
+      GOSUB BUILD.CHARGE.NODE
+      STATUS:='</invoice>'
+      RETURN
+BUILD.CARRIER.NODE: *
+      STATUS:='<carrierAddress>'
+      IF CARRIER.NAME#'' THEN
+         STATUS:='<name>':CARRIER.NAME:'</name>'
+      END
+      IF CARRIER.NAME2#'' THEN
+         STATUS:='<name2>':CARRIER.NAME2:'</name2>'
+      END
+      IF CARRIER.ADDR#'' THEN
+         STATUS:='<address>':CARRIER.ADDR:'</address>'
+      END
+      IF CARRIER.ADDR2#'' THEN
+         STATUS:='<address2>':CARRIER.ADDR2:'</address2>'
+      END
+      IF CARRIER.CITY#'' THEN
+         STATUS:='<city>':CARRIER.CITY:'</city>'
+      END
+      IF CARRIER.STATE#'' THEN
+         STATUS:='<state>':CARRIER.STATE:'</state>'
+      END
+      IF CARRIER.ZIP#'' THEN
+         STATUS:='<zip>':CARRIER.ZIP:'</zip>'
+      END
+      IF CARRIER.COUNTRY#'' THEN
+         STATUS:='<country>':CARRIER.COUNTRY:'</country>'
+      END
+      STATUS:='</carrierAddress>'
+      RETURN
+BUILD.SHIPPER.NODE: *
+      STATUS:='<shipper>'
+      IF SHIPPER.NAME#'' THEN
+         STATUS:='<name>':SHIPPER.NAME:'</name>'
+      END
+      IF SHIPPER.NAME2#'' THEN
+         STATUS:='<name2>':SHIPPER.NAME2:'</name2>'
+      END
+      IF SHIPPER.ADDR#'' THEN
+         STATUS:='<address>':SHIPPER.ADDR:'</address>'
+      END
+      IF SHIPPER.ADDR2#'' THEN
+         STATUS:='<address2>':SHIPPER.ADDR2:'</address2>'
+      END
+      IF SHIPPER.CITY#'' THEN
+         STATUS:='<city>':SHIPPER.CITY:'</city>'
+      END
+      IF SHIPPER.STATE#'' THEN
+         STATUS:='<state>':SHIPPER.STATE:'</state>'
+      END
+      IF SHIPPER.ZIP#'' THEN
+         STATUS:='<zip>':SHIPPER.ZIP:'</zip>'
+      END
+      IF SHIPPER.COUNTRY#'' THEN
+         STATUS:='<country>':SHIPPER.COUNTRY:'</country>'
+      END
+      IF SHIPPER.ACCOUNT#'' THEN
+         STATUS:='<account>':SHIPPER.ACCOUNT:'</account>'
+      END
+      STATUS:='</shipper>'
+      RETURN
+BUILD.CONSIGNEE.NODE: *
+      STATUS:='<consignee>'
+      IF CONSIGNEE.NAME#'' THEN
+         STATUS:='<name>':CONSIGNEE.NAME:'</name>'
+      END
+      IF CONSIGNEE.NAME2#'' THEN
+         STATUS:='<name2>':CONSIGNEE.NAME2:'</name2>'
+      END
+      IF CONSIGNEE.ADDR#'' THEN
+         STATUS:='<address>':CONSIGNEE.ADDR:'</address>'
+      END
+      IF CONSIGNEE.ADDR2#'' THEN
+         STATUS:='<address2>':CONSIGNEE.ADDR2:'</address2>'
+      END
+      IF CONSIGNEE.CITY#'' THEN
+         STATUS:='<city>':CONSIGNEE.CITY:'</city>'
+      END
+      IF CONSIGNEE.STATE#'' THEN
+         STATUS:='<state>':CONSIGNEE.STATE:'</state>'
+      END
+      IF CONSIGNEE.ZIP#'' THEN
+         STATUS:='<zip>':CONSIGNEE.ZIP:'</zip>'
+      END
+      IF CONSIGNEE.COUNTRY#'' THEN
+         STATUS:='<country>':CONSIGNEE.COUNTRY:'</country>'
+      END
+      IF CONSIGNEE.ACCOUNT#'' THEN
+         STATUS:='<account>':CONSIGNEE.ACCOUNT:'</account>'
+      END
+      STATUS:='</consignee>'
+      RETURN
+BUILD.BILLTO.NODE: *
+      STATUS:='<billto>'
+      IF BILLTO.NAME#'' THEN
+         STATUS:='<name>':BILLTO.NAME:'</name>'
+      END
+      IF BILLTO.NAME2#'' THEN
+         STATUS:='<name2>':BILLTO.NAME2:'</name2>'
+      END
+      IF BILLTO.ADDR#'' THEN
+         STATUS:='<address>':BILLTO.ADDR:'</address>'
+      END
+      IF BILLTO.ADDR2#'' THEN
+         STATUS:='<address2>':BILLTO.ADDR2:'</address2>'
+      END
+      IF BILLTO.CITY#'' THEN
+         STATUS:='<city>':BILLTO.CITY:'</city>'
+      END
+      IF BILLTO.STATE#'' THEN
+         STATUS:='<state>':BILLTO.STATE:'</state>'
+      END
+      IF BILLTO.ZIP#'' THEN
+         STATUS:='<zip>':BILLTO.ZIP:'</zip>'
+      END
+      IF BILLTO.COUNTRY#'' THEN
+         STATUS:='<country>':BILLTO.COUNTRY:'</country>'
+      END
+      IF BILLTO.ACCOUNT#'' THEN
+         STATUS:='<account>':BILLTO.ACCOUNT:'</account>'
+      END
+      STATUS:='</billto>'
+      RETURN
+BUILD.PICKUP.NODE: *
+      IF TRAN.MODE='PARCEL' THEN
+         STATUS:='<pickupDetails>'
+         IF PICKUP.DT#'' THEN
+            STATUS:='<pickupDate>':PICKUP.DT 'D2/':'</pickupDate>'
+         END
+         IF PICKUP.CODE#'' THEN
+            STATUS:='<scheduleCode>':PICKUP.CODE:'</scheduleCode>'
+         END
+         STATUS:='</pickupDetails>'
+      END
+      RETURN
+BUILD.DELIVERY.NODE: *
+      IF TRAN.MODE='PARCEL' THEN
+         STATUS:='<deliveryDetails>'
+         IF DELV.DT#'' THEN
+            STATUS:='<deliveryDate>':DELV.DT 'D2/':'</deliveryDate>'
+         END
+         IF DELV.SIGN#'' THEN
+            STATUS:='<recipientSignature>':DELV.SIGN:'</recipientSignature>'
+         END
+         IF EVENT.DESC#'' THEN
+            STATUS:='<eventDescription>':EVENT.DESC:'</eventDescription>'
+         END
+         IF EVENT.DT#'' THEN
+            STATUS:='<eventDate>':EVENT.DT 'D2/':'</eventDate>'
+         END
+         IF EVENT.STATUS#'' THEN
+            STATUS:='<eventStatus>':EVENT.STATUS:'</eventStatus>'
+         END
+         IF EVENT.DISASTER#'' THEN
+            STATUS:='<eventDisaster>':EVENT.DISASTER:'</eventDisaster>'
+         END
+         STATUS:='</deliveryDetails>'
+      END
+      RETURN
+BUILD.SERVICE.NODE: *
+      IF TRAN.MODE='PARCEL' THEN
+         STATUS:='<services>'
+         IF SVC.DESC#'' THEN
+            STATUS:='<service>':SVC.DESC:'</service>'
+         END
+         STATUS:='</services>'
+      END
+      RETURN
+BUILD.MISC.NODE: *
+      IF TRAN.MODE='PARCEL' THEN
+         STATUS:='<misc>'
+         IF TERMS#'' THEN
+            STATUS:='<terms>':TERMS:'</terms>'
+         END
+         IF CUSTREF#'' THEN
+            STATUS:='<refNumber>':CUSTREF:'</refNumber>'
+         END
+         STATUS:='</misc>'
+      END
+      RETURN
+BUILD.CHARGE.NODE: *
+*
+*NPR00
+*
+* Set Up Column headers
+*
+*IF PRO.ID = "141772" OR PRO.ID = "1307964416" THEN
+   STATUS:='<ChargeColHeading>'
+   IF TRAN.CODE # '6' THEN
+      STATUS:='<ChargeColHead1>':"Pcs":'</ChargeColHead1>'
+   END ELSE
+      STATUS:='<ChargeColHead1>':"":'</ChargeColHead1>'
+   END
+   STATUS:='<ChargeColHead2>':"Description":'</ChargeColHead2>'
+   IF TRAN.CODE # '6' THEN
+      STATUS:='<ChargeColHead3>':"Class":'</ChargeColHead3>'
+   END ELSE
+      STATUS:='<ChargeColHead3>':"Miles":'</ChargeColHead3>'
+   END
+   STATUS:='<ChargeColHead4>':"Rate":'</ChargeColHead4>'
+   STATUS:='<ChargeColHead5>':"Weight (lbs)":'</ChargeColHead5>'
+   STATUS:='<ChargeColHead6>':"Charges":'</ChargeColHead6>'
+   STATUS:='</ChargeColHeading>'
+*END
+*
+*NPR00
+*
+      STATUS:='<chargeDetails>'
+      IF EDI.REC#'' THEN
+         BEGIN CASE
+            CASE TRAN.MODE='PARCEL'
+               NUM.OF.ITEMS=DCOUNT(EDI.REC<65>,@VM)
+               NUM.OF.CHARGES=DCOUNT(EDI.REC<64>,@VM)
+               TOT.CHARGE=0
+               TOT.WEIGHT=0
+               IF NUM.OF.CHARGES > NUM.OF.ITEMS THEN NUM.OF.ITEMS=NUM.OF.CHARGES
+               COUNTER=0
+               FOR X = 1 TO NUM.OF.ITEMS
+                  STATUS:='<description>'
+                  SUB.OF.ITEMS=DCOUNT(EDI.REC<65,X>,@SVM)
+                  SUB.OF.CHARGES=DCOUNT(EDI.REC<64,X>,@SVM)
+                  IF SUB.OF.CHARGES > SUB.OF.ITEMS THEN SUB.OF.ITEMS=SUB.OF.CHARGES
+                  FOR I = 1 TO SUB.OF.ITEMS
+                     COUNTER=COUNTER+1
+                     CODE = EDI.REC<65,X,I>
+                     IF CODE#'' THEN
+*
+* CHECK TABLE 150
+*
+                        LOCATE EDI.REC<65,X,I> IN TABLE150<1> SETTING POS THEN
+                           DESC=TABLE150<2,POS>
+                        END ELSE
+                           DESC='** Unknown Charge **'
+                        END
+                     END ELSE
+*
+* CHECK TABLE 122
+*
+                        CODE = EDI.REC<94,X,I>
+                        LOCATE EDI.REC<94,X,I> IN TABLE122<1> SETTING POS THEN
+                           DESC=TABLE122<2,POS>
+                        END ELSE
+                           DESC='** Unknown Charge **'
+                        END
+                     END
+                     STATUS:='<code>':CODE:'</code>'
+                     STATUS:='<name>':DESC:'</name>'
+                     STATUS:='<dimension>'
+                     FOR Y = 48 TO 49
+                        STATUS:= EDI.REC<Y,X,I>
+                        IF EDI.REC<Y,X,I>#'' THEN
+                           STATUS:=' x '
+                        END ELSE
+                           STATUS:='   '
+                        END
+                     NEXT Y
+                     STATUS:=EDI.REC<50,X,I>
+                     STATUS:='</dimension>'
+                     IF EDI.REC<60,X,I>='K' THEN
+                        WEIGHT=EDI.REC<58,X,I>/.45359
+                        WEIGHT=WEIGHT'R0'
+                        IF WEIGHT=0 THEN WEIGHT=1
+                     END ELSE
+                        WEIGHT=EDI.REC<58,X,I>
+                     END
+                     STATUS:='<chargedWeight>':WEIGHT:'</chargedWeight>'
+                     TOT.WEIGHT+=EDI.REC<58,X,I>
+                     CHARGE=EDI.REC<64,X,I>
+                     STATUS:='<charge>':CHARGE'MR26,':'</charge>'
+                     TOT.CHARGE+= CHARGE
+                  NEXT I
+                  IF EDI.REC<60,1>='K' THEN
+                     TOT.WEIGHT=TOT.WEIGHT/.45359
+                     TOT.WEIGHT=TOT.WEIGHT'R0'
+                     IF TOT.WEIGHT=0 THEN TOT.WEIGHT=1
+                  END
+                  STATUS:='</description>'
+               NEXT X
+               STATUS:='<totalWeight>':TOT.WEIGHT:'</totalWeight>'
+               STATUS:='<totalCharges>':TOT.CHARGE'MR26,':'</totalCharges>'
+            CASE TRAN.MODE='LTL'
+               NUM.OF.ITEMS=DCOUNT(EDI.REC<101>,@VM)
+               BLOCK.TEXT=''
+               TOT.PCS=0
+               TOT.WEIGHT=0
+               TOT.CHARGE=0
+               LINE = 1
+               
+               FOR ITEM = 1 TO NUM.OF.ITEMS
+                  STATUS:='<description>'
+                  PIECES=EDI.REC<103,ITEM>         ; * PCS
+                  STATUS:='<pieces>':PIECES:'</pieces>'
+                  TOT.PCS=TOT.PCS+EDI.REC<103,ITEM>
+*
+* DESCRIPTION MUST BE DONE LAST.
+*
+                  STATUS:='<name>':TRIM(EDI.REC<101,ITEM>,' ','L'):' ':EDI.REC<111,ITEM>:'</name>'   ; * DESCRIPTION
+*
+* Does this bill have modified values or not
+*
+                  IF EDI.REC<112>='' THEN
+                     STATUS:='<weight>':EDI.REC<102,ITEM>'MR,':'</weight>'       ; * WEIGHT
+                     IF TRIM(OCONV(EDI.REC<101,ITEM>,'MCU'))[1,10]='NET WEIGHT' THEN TOT.WEIGHT=0
+**********************************************************************
+*                                                                    *
+*  Do not incude as weight or deficit weight to the total weight     *
+*                                                                    *
+**********************************************************************
+                     IF OCONV(EDI.REC<101,ITEM>,'MCU')=SPACE(31):'AS WEIGHT' OR OCONV(EDI.REC<101,ITEM>,'MCU')='AS WEIGHT' OR OCONV(EDI.REC<101,ITEM>,'MCU')='DEFICIT WGHT' OR OCONV(EDI.REC<101,ITEM>,'MCU')='DEFICIT WEIGHT' OR OCONV(EDI.REC<101,ITEM>,'MCU')[9,14]='DEFICIT WEIGHT' OR OCONV(EDI.REC<101,ITEM>,'MCU')='RATED WITH DEFICIT WT OF' OR OCONV(EDI.REC<101,ITEM>,'MCU')=SPACE(28):'BILL AS --->' OR TRIM(OCONV(EDI.REC<101,ITEM>,'MCU'))='BILLED AS WEIGHT' OR TRIM(OCONV(EDI.REC<101,ITEM>,'MCU'))='BILLED (AS) WEIGHT' OR OCONV(EDI.REC<101,ITEM>,'MCU')[1,18]='RATED AS WEIGHT OF' OR OCONV(EDI.REC<101,ITEM>,'MCU')='RATED WITH DEFICIT WEIGHT' ELSE
+                        TOT.WEIGHT=TOT.WEIGHT+EDI.REC<102,ITEM>
+                     END
+*NPR00
+*IF PRO.ID = "141772" AND TRAN.CODE = 6 THEN
+                     IF TRAN.CODE = 6 THEN
+                        IF ITEM = 1 THEN
+                           MILES = EDI.REC<141,ITEM>   ;* Check if this is always a single value ?? - NPR00
+                           W.RATE = (EDI.REC<106,ITEM> / MILES) * 10
+                           STATUS:='<class>':MILES:" Miles":'</class>'    ; * Miles
+                           STATUS:='<rate>':W.RATE 'R37':'</rate>'        ; * RATE
+                        END
+                     END ELSE    ;*NPR00
+                        STATUS:='<class>':EDI.REC<110,ITEM>:'</class>'    ; * CLASS
+                        W.RATE = EDI.REC<104,ITEM>
+                        STATUS:='<class>':EDI.REC<113,ITEM>:'</class>'    ; * CLASS
+                        STATUS:='<rate>':W.RATE 'R37':'</rate>'    ; * RATE
+                     END         ;*NPR00
+                  END ELSE
+                     STATUS:='<weight>':EDI.REC<112,ITEM>'MR,':'</weight>'       ; * WEIGHT
+                     IF TRIM(OCONV(EDI.REC<101,ITEM>,'MCU'))[1,10]='NET WEIGHT' THEN TOT.WEIGHT=0
+**********************************************************************
+*                                                                    *
+*  Do not incude as weight or deficit weight to the total weight     *
+*                                                                    *
+**********************************************************************
+                     IF OCONV(EDI.REC<101,ITEM>,'MCU')=SPACE(31):'AS WEIGHT' OR OCONV(EDI.REC<101,ITEM>,'MCU')='AS WEIGHT' OR OCONV(EDI.REC<101,ITEM>,'MCU')='DEFICIT WGHT' OR OCONV(EDI.REC<101,ITEM>,'MCU')='DEFICIT WEIGHT' OR OCONV(EDI.REC<101,ITEM>,'MCU')[9,14]='DEFICIT WEIGHT' OR OCONV(EDI.REC<101,ITEM>,'MCU')='RATED WITH DEFICIT WT OF' OR OCONV(EDI.REC<101,ITEM>,'MCU')=SPACE(28):'BILL AS --->' OR TRIM(OCONV(EDI.REC<101,ITEM>,'MCU'))='BILLED AS WEIGHT' OR TRIM(OCONV(EDI.REC<101,ITEM>,'MCU'))='BILLED (AS) WEIGHT' OR OCONV(EDI.REC<101,ITEM>,'MCU')[1,18]='RATED AS WEIGHT OF' OR OCONV(EDI.REC<101,ITEM>,'MCU')='RATED WITH DEFICIT WEIGHT' ELSE
+                        TOT.WEIGHT=TOT.WEIGHT+EDI.REC<112,ITEM>
+                     END
+*NPR00
+*                     IF PRO.ID = "141772" AND TRAN.CODE = 6 THEN
+                     IF TRAN.CODE = 6 THEN
+                        IF ITEM = 1 THEN
+                           MILES = EDI.REC<141,ITEM>   ;* Check if this is always a single value ?? - NPR00
+                           W.RATE = (EDI.REC<106,ITEM> / MILES) * 10
+                           STATUS:='<class>':MILES:" Miles":'</class>'    ; * Miles
+                           STATUS:='<rate>':W.RATE 'R37':'</rate>'    ; * RATE
+                        END
+                     END ELSE    ;*NPR00
+                        W.RATE = EDI.REC<104,ITEM>
+                        STATUS:='<class>':EDI.REC<113,ITEM>:'</class>'    ; * CLASS
+                        STATUS:='<rate>':W.RATE 'R37':'</rate>'    ; * RATE
+                     END         ;*NPR00
+                  END
+*NPR00                  
+
+                  STATUS:='<charge>':EDI.REC<106,ITEM>'R26,':'</charge>'         ; * CHARGES
+                  TOT.CHARGE=TOT.CHARGE+EDI.REC<106,ITEM>
+                  STATUS:='</description>'
+               NEXT
+               STATUS:='<totalPieces>':TOT.PCS:'</totalPieces>'
+               STATUS:='<totalWeight>':TOT.WEIGHT:'</totalWeight>'
+               STATUS:='<totalCharges>':TOT.CHARGE'MR26,':'</totalCharges>'
+         END CASE
+      END ELSE
+         NUM.OF.ITEMS=DCOUNT(PRO.REC<151>,@VM)
+         NUM.OF.CHARGES=DCOUNT(PRO.REC<152>,@VM)
+         TOT.CHARGE=PRO.REC<8>
+         TOT.WEIGHT=PRO.REC<6>
+         IF NUM.OF.CHARGES > NUM.OF.ITEMS THEN NUM.OF.ITEMS=NUM.OF.CHARGES
+         IF SUM(PRO.REC<152>)#PRO.REC<8> THEN NUM.OF.CHARGES=0
+         IF NUM.OF.CHARGES=0 THEN
+            STATUS:='<description>'
+            BEGIN CASE
+               CASE TRAN.MODE='PARCEL'
+                  CODE='NA'
+                  DESC='(Not Available)'
+                  STATUS:='<code>':CODE:'</code>'
+                  STATUS:='<name>':DESC:'</name>'
+               CASE TRAN.MODE='LTL'
+                  CODE='NA'
+                  DESC='(Not Available)'
+                  STATUS:='<hm>':CODE:'</hm>'
+                  STATUS:='<name>':DESC:'</name>'
+            END CASE
+            STATUS:='</description>'
+         END ELSE
+            FOR X = 1 TO NUM.OF.ITEMS
+               STATUS:='<description>'
+               BEGIN CASE
+                  CASE TRAN.MODE='PARCEL'
+                     CODE=PRO.REC<151,X>
+                     DESC='** Unknown Charge **'
+                     IF CODE#'' THEN
+                        LOCATE CODE IN LI.CODES<1> SETTING POS THEN
+                           DESC=LI.CODES<2,POS>
+                        END ELSE
+                           DESC='** Unknown Charge **'
+                        END
+                     END
+                     CHARGE=PRO.REC<152,X>
+                     STATUS:='<code>':CODE:'</code>'
+                     STATUS:='<name>':DESC:'</name>'
+*                    STATUS:='<chargedWeight>':WEIGHT:'</chargedWeight>'
+                     STATUS:='<charge>':CHARGE'MR26,':'</charge>'
+                  CASE TRAN.MODE='LTL'
+                     CODE=PRO.REC<151,X>
+                     DESC='** Unknown Charge **'
+                     IF CODE#'' THEN
+                        LOCATE CODE IN LI.CODES<1> SETTING POS THEN
+                           DESC=LI.CODES<2,POS>
+                        END ELSE
+                           DESC='** Unknown Charge **'
+                        END
+                     END
+                     CHARGE=PRO.REC<152,X>
+                     STATUS:='<hm>':CODE:'</hm>'
+                     STATUS:='<name>':DESC:'</name>'
+*                    STATUS:='<weight>':WEIGHT:'</weight>'
+                     STATUS:='<charge>':CHARGE'MR26,':'</charge>'
+               END CASE
+               STATUS:='</description>'
+            NEXT X
+         END
+         STATUS:='<totalWeight>':TOT.WEIGHT:'</totalWeight>'
+         STATUS:='<totalCharges>':TOT.CHARGE'MR26,':'</totalCharges>'
+      END
+      STATUS:='</chargeDetails>'
+      RETURN
+      
+CHECK.SLASH: ****
+** Added 5/8/3 -- Kevin Messenger
+      TEMP.PRO = FOUND.PRO
+      SLASH.PROS = ''
+      FOR K = 1 TO 10
+         SLASH.PROS = TEMP.PRO:'/':K
+         STATUS = ''
+         T.FOUND = 1
+         PRO.DESC = SLASH.PROS
+         TEMP.PRO.ID = CARRIER:'*':SLASH.PROS:"*0"
+         READ DUMMY FROM F.CRX,TEMP.PRO.ID THEN
+            PRO.REC = DUMMY
+            PRO.REC<1>=DUMMY<2>          ; * Correct the Position of the Date
+            PRO.REC<2>=''                ; * Correct the I/O Flag (Not on CRX File)
+            CLIENT=DUMMY<1>
+            IF CLIENT.USER THEN
+               IF CLIENT#CLIENT.USER.ID THEN GO SKIP.STEP
+*This bill doesn't belong to this client
+*                   STATUS = 'Pro # ':SLASH.PROS:': Was not on file for ':CLIENT.USER.NAME
+*                   FOUND=0
+*                   RETURN TO PRINT.STATUS
+*                END
+            END
+*Assign the Data to PRO.REC then try to read the REAL File
+            OPEN 'FB.BILLS.HIST,':CLIENT TO F.HIST ELSE
+               T.FOUND = 0
+            END
+            READ PRO.REC FROM F.HIST,TEMP.PRO.ID ELSE FOUND = 0
+         END ELSE
+            T.FOUND = 0
+         END
+         IF T.FOUND THEN
+            MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT ELSE CLIENT.REC(1) = ''
+            FOUND = 1
+            POS = X
+            GOSUB GET.DETAILS
+         END
+         IF STATUS # '' THEN
+            STATUS = CHANGE(STATUS,'..','.')
+            CRT STATUS
+         END
+         
+SKIP.STEP: ***
+      NEXT K
+      RETURN
+**KM

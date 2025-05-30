@@ -1,0 +1,1993 @@
+      $OPTIONS HEADER.EJECT
+      $OPTIONS EXEC.EQ.PERF
+      $OPTIONS INFO.ABORT
+      ERRMSG=''
+* PROGRAM FB.6.7.1
+* PROGRAM TO ENTER OR DISPLAY COMMISSION RATES FOR SALESMAN PER SALES CODE.
+*
+* FREIGHT BILLING PACKAGE
+*
+* APRIL 2009  BY N PRATT
+* 031715 - DRF01 - SysAid 16042 - Gave CBULGER the same access as JDARNELL
+*
+      PROMPT''
+      PROG.NAME='FB.6.7.1'
+      PROG.DESC = "Salesman Commission Maintenance"
+      PACK.NAME='FREIGHT BILLING'
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.6.7.1' ; UPL.VOUT = ''                                      ;* NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+
+      CALL GET.USER(USER.NAME)
+
+      GROUPS = "CC":@VM:"LG":@VM:"MS":@VM:"OC":@VM:"PB"
+      GROUPS<2> = "Carrier Charges":@VM:"Logistics":@VM:"Miscellaneous":@VM:"Overcharges":@VM:"Fees"
+
+      TESTING = 0
+
+*IF USER.NAME EQ "NPRATT" THEN                                      ;* ZZ
+      TESTING = 1                                                      ;* ZZ
+      IF TESTING THEN CALL ELINE("NOTE!  Using test data files")
+*    CALL ELINE("Temporarily unavailable - Under Construction")     ;* ZZ
+*    STOP                                                           ;* ZZ
+*END                                                                ;* ZZ
+
+      BEGIN CASE
+*
+* Authorized users
+*
+         CASE USER.NAME = 'DAVID'
+         CASE USER.NAME = 'OWEN'
+         CASE USER.NAME = 'NPRATT'
+         CASE USER.NAME = 'DEBBIE'
+         CASE USER.NAME = 'KAREN'
+         CASE USER.NAME = 'MKERBOW'
+         CASE USER.NAME = 'PBASS'
+         CASE USER.NAME = 'JDARNELL'
+         CASE USER.NAME = 'CBULGER'     ; * DRF01
+*
+* Restrict everyone else
+*
+         CASE 1
+            SUBJ="Unauthorized Program Access by ":USER.NAME
+            TEXT=''
+            TEXT<1,-1>=USER.NAME:' ':DATE()'D2/':' ':OCONV(TIME(),'MTHS'):' ':PROG.NAME
+            TEXT<1,-1>='User ':USER.NAME:' tried to access ':PROG.DESC
+            TEXT<1,-1>="(This user's name was not included in the program to allow access)"
+            MVIN=''
+*          MVIN<1>='Owen@afs.net':@VM:'SMatthews@afs.net'
+******            MVIN<1> = "npratt@afs.net"
+            MVIN<2>=''
+            MVIN<4>='AFS'
+            MVIN<5>=SUBJ
+            MVIN<6>=TEXT
+            CALL SENDMAIL(MVIN,MVOUT)
+
+            CALL FB.PRINT.CENT(1,80,12,'Restricted Access Application...')
+            CALL FB.PRINT.CENT(1,80,14,'Access Denied! Contact the IS Help Desk for Access')
+            CALL ELINE('')
+            STOP
+      END CASE
+*
+* Open files
+*
+      IF NOT(TESTING) THEN
+         OPEN '','FB.SLSMAN.COMM' TO F.SLSMAN.COMM ELSE CALL OPEN.ABORT('FB.SLSMAN.COMM',PROG.NAME)
+         OPEN '','FB.COMM.INDEX2' TO F.COMM.INDEX2 ELSE CALL OPEN.ABORT('FB.COMM.INDEX2',PROG.NAME)
+      END ELSE
+         OPEN '','FB.SLSMAN.COMM.TEST' TO F.SLSMAN.COMM ELSE CALL OPEN.ABORT('FB.SLSMAN.COMM',PROG.NAME)
+         OPEN '','FB.COMM.INDEX2.TEST' TO F.COMM.INDEX2 ELSE CALL OPEN.ABORT('FB.COMM.INDEX2',PROG.NAME)
+      END
+
+**      OPEN '','FB.COMM.INDEX3' TO F.COMM.INDEX3 ELSE CALL OPEN.ABORT('FB.COMM.INDEX3',PROG.NAME)  ;* No longer used
+
+      OPEN '','AR.SLSMAN.1000.1' TO F.SLSMAN ELSE CALL OPEN.ABORT('AR.SLSMAN.1000.1',PROG.NAME)
+      OPEN '','AR.SALES.CODE.1000.1' TO F.SALES.CODE ELSE CALL OPEN.ABORT('AR.SALES.CODE.1000.1',PROG.NAME)
+*
+* Select and display available freight types
+*
+*
+100 * Start Entry for screen 1
+*
+
+      GOSUB INIT.VARS
+      GOSUB SETUP.SCREEN1
+
+110 * Enter Initial Salesman
+
+      GOSUB 1100
+
+120 * Enter Servicing Salesman
+
+      GOSUB 1200
+      IF RET.FLAG = 'BACK' THEN GOTO 110
+
+*
+160 * Start Entry for screen 2 - Selection Agreement Date Range from a list
+
+      GOSUB SETUP.SCREEN2
+      GOSUB DISPLAY.DATA2
+
+      DTS.SELECT1 = 1
+
+170 * Select Agreement Date range to work with
+
+      HELP="Line # of Agr. Date range to work with. [A]dd a range [X]=Back [EX]=Exit."
+      CALL GEN.IN(0,22,"Enter line number please. ###",'',Q,0,3,'','',0,-3,22,0,QI,HELP,0,23)
+      QI = OCONV(QI,"MCU")
+
+      DT.CNT = 1
+      DT.ERR = ''
+      AGREE.BEGIN.DT = ''
+      AGREE.END.DT = ''
+      RET.FLAG = ''
+
+      BEGIN CASE
+         CASE QI=' '
+            CALL ELINE("Invalid Response")
+         CASE QI='EX'
+            GOTO EXIT.HERE
+         CASE QI='X'
+            DT.CNT = 1
+            DT.ERR = ''
+            AGREE.BEGIN.DT = ''
+            AGREE.END.DT = ''
+            COMM.SLSMAN.ID      = ""
+            ID.SLSMAN.COMM      = ""
+            COMM.SLSMAN.NAME = ""
+            GOSUB SETUP.SCREEN1
+            GOSUB DISPLAY.DATA1
+            GOTO 120
+         CASE QI='A'
+            LAST.AGREE.BEGIN.DT = COMM.INDX.REC2<1,1>
+            LAST.AGREE.END.DT   = COMM.INDX.REC2<2,1>
+            IF LAST.AGREE.END.DT = '' AND LAST.AGREE.BEGIN.DT NE '' THEN
+               CALL ELINE("Close date range before adding a new date range")
+               DT.ERR = 1
+               GOTO 170
+            END
+            NO.DTS = DCOUNT(COMM.INDX.REC2<1>,@VM)
+            DTS.SELECT1 = NO.DTS + 1
+
+            GOSUB 2400 ;* Enter Agreement Date ranges
+
+            IF RET.FLAG = '' THEN
+               GOSUB CHECK.AGREEMENT.DATES
+               IF DT.ERR THEN
+                  AGREE.BEGIN.DT = '' ; AGREE.END.DT = ''
+                  CRT @(DT.COL,DT.ROW):SPACE(8)
+                  CRT @(DT.COL+10,DT.ROW):SPACE(8)
+                  X = DCOUNT(COMM.INDX.REC2<1>,@VM)
+                  FOR I=X TO 1 STEP -1
+                     BD = COMM.INDX.REC2<1,I>
+                     ED = COMM.INDX.REC2<2,I>
+                     IF BD = '' AND ED = '' THEN
+                        COMM.INDX.REC2=DELETE(COMM.INDX.REC2,1,I)
+                        COMM.INDX.REC2=DELETE(COMM.INDX.REC2,2,I)
+                     END
+                  NEXT X
+                  GOTO 170
+               END
+            END
+            IF RET.FLAG = 'BACK' THEN
+               COMM.SLSMAN.ID      = ""
+               ID.SLSMAN.COMM      = ""
+               COMM.SLSMAN.NAME = ""
+               DT.CNT = 1  ;*????
+               DT.ERR = ''
+               AGREE.BEGIN.DT = ''
+               AGREE.END.DT = ''
+               GOSUB SETUP.SCREEN1
+               GOSUB DISPLAY.DATA1
+               GOTO 120
+            END
+            IF AGREE.END.DT = '' AND AGREE.BEGIN.DT = '' THEN
+               CALL ELINE("FROM Date may not be blank")
+               DT.ERR = 1
+               GOTO 170
+            END
+            IF DT.ERR THEN GOTO 170
+         CASE QI NE ''
+            MAX.DTS = DCOUNT(COMM.INDX.REC2<1>,@VM)
+            IF Q GE 1 AND Q LE MAX.DTS+1 THEN
+               DTS.SELECT1 = Q
+               AGREE.BEGIN.DT = COMM.INDX.REC2<1,DTS.SELECT1>
+               AGREE.END.DT   = COMM.INDX.REC2<2,DTS.SELECT1>
+               GOSUB 2400 ;* Enter Agreement Date ranges
+               IF RET.FLAG = 'BACK' THEN
+                  COMM.SLSMAN.ID      = ""
+                  ID.SLSMAN.COMM      = ""
+                  COMM.SLSMAN.NAME = ""
+                  GOSUB SETUP.SCREEN1
+                  GOSUB DISPLAY.DATA1
+                  GOTO 120
+               END
+               IF DT.ERR THEN GOTO 170
+            END ELSE
+               CALL ELINE("Invalid Response")
+               GOTO 170
+            END
+
+         CASE 1
+            CALL ELINE("Invalid Response")
+            GOTO 170
+      END CASE
+
+*%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+*DEBUG
+      T.BEGIN.DT = COMM.INDX.REC2<1,1>
+      T.END.DT   = COMM.INDX.REC2<2,1>
+      IF T.BEGIN.DT = '' AND T.END.DT = '' THEN
+         CALL ELINE("Both dates may not be Null")
+         GOTO 170
+      END
+
+      PREV.BEGIN.DT = T.BEGIN.DT
+      PREV.END.DT = T.END.DT
+      N.DC = DCOUNT(COMM.INDX.REC2<1>,@VM)
+
+      IF N.DC GE 3 THEN
+         FOR IC = 2 TO N.DC-1
+            T.BEGIN.DT = COMM.INDX.REC2<1,IC>
+            T.END.DT   = COMM.INDX.REC2<2,IC>
+            IF T.BEGIN.DT = '' AND T.END.DT = '' THEN
+               CALL ELINE("Both dates may not be Null")
+               GOTO 170
+            END
+            PREV.BEGIN.DT = T.BEGIN.DT
+            PREV.END.DT = T.END.DT
+         NEXT IC
+      END
+*
+      T.BEGIN.DT = COMM.INDX.REC2<1,N.DC>
+      IF T.BEGIN.DT NE '' AND PREV.END.DT = '' THEN
+         IF N.DC GT 1 THEN
+            CALL ELINE("Close prior date range before opening a new one")
+            CRT @(DT.COL,DT.ROW):SPACE(8)
+            GOTO 170
+         END
+      END
+*%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+      IF DT.ERR THEN GOTO 170
+
+
+180 * Enter Commission Salesman
+
+      GOSUB SETUP.SCREEN3
+      GOSUB DISPLAY.DATA3
+
+      IF COMM.INDX.REC2<3,DTS.SELECT1,1> = "" THEN
+         GOSUB 1400
+         IF RET.FLAG = 'BACK' THEN
+            GOSUB SETUP.SCREEN2
+            GOSUB DISPLAY.DATA2
+            GOTO 160
+         END
+      END
+
+190 * Select Commission salesman to work with
+
+      CS.SELECT = '1'  ; *  ????? npnpnp
+
+      HELP="Select Line # of Commision Salesman. [X]=Back [EX]=Exit."
+      CALL GEN.IN(0,22,"Enter line number please. ###",'',Q,0,3,'','',0,-3,22,0,QI,HELP,0,23)
+      QI = OCONV(QI,"MCU")
+
+      BEGIN CASE
+         CASE QI=' '
+            CALL ELINE("Invalid Response")
+         CASE QI='EX'
+            GOTO EXIT.HERE
+         CASE QI='X'
+            RET.FLAG = 'BACK'
+            GOSUB SETUP.SCREEN2
+            GOSUB DISPLAY.DATA2
+            GOTO 160
+         CASE ALPHA(QI)
+            IF QI = "ALL" THEN
+               COMM.SLSMAN.ID = 'ALL'
+            END ELSE
+               CALL SOUNDEX.DISPLAY(QI,'AR.SLSMAN.1000.1','AR.SLSMAN.1000.1,SDX.NAME','1',QX)
+               QI=QX<1,1>'R%5'
+               COMM.SLSMAN.ID = QI
+               READ COMM.SLSM.REC FROM F.SLSMAN,COMM.SLSMAN.ID THEN
+                  COMM.SLSMAN.NAME =INIT.SLSMAN.ID:' ':COMM.SLSM.REC<1>'L#20'
+               END ELSE
+                  CALL ELINE('Salesman number ':COMM.SLSMAN.ID:' is not on file.')
+                  GOTO 1100
+               END
+               GOSUB SETUP.SCREEN2
+               GOSUB DISPLAY.DATA3
+            END
+         CASE QI NE ''
+            MAX.CS = DCOUNT(COMM.INDX.REC2<3,DTS.SELECT1>,@SVM)
+            IF Q GE 1 AND Q LE MAX.CS + 1 THEN
+               CS.SELECT = Q
+               GOSUB 1400
+               IF CS.SELECT = 1 AND RET.FLAG = 'BACK' THEN
+                  GOSUB SETUP.SCREEN2
+                  GOSUB DISPLAY.DATA2
+                  GOTO 160
+               END
+            END ELSE
+               CALL ELINE("Invalid Response")
+               GOTO 190
+            END
+         CASE 1
+            CALL ELINE("Invalid Response")
+            GOTO 190
+      END CASE
+
+*??      COMM.SLSMAN.ID   = COMM.INDX.REC2<3,DTS.SELECT1,CS.SELECT>
+
+      ID.SLSMAN.COMM = INIT.SLSMAN.ID:"*":SERVC.SLSMAN.ID:"*":AGREE.BEGIN.DT:"*":COMM.SLSMAN.ID
+      READ SLS.COMM.REC FROM F.SLSMAN.COMM, ID.SLSMAN.COMM ELSE SLS.COMM.REC = ""
+
+      COMM.SLSMAN.NAME = ''
+
+      IF COMM.SLSMAN.ID = 'ALL' THEN
+         COMM.SLSMAN.NAME = 'ALL'
+      END ELSE
+         READV COMM.SLSMAN.NAME FROM F.SLSMAN, COMM.SLSMAN.ID, 1 ELSE COMM.SLSMAN.NAME = ''
+      END
+
+      COMM.SLSMAN.NAME = COMM.SLSMAN.ID:" ":COMM.SLSMAN.NAME
+
+*
+200 * Start Entry for screen 4 - Selection Date Range from a list
+
+      GOSUB SETUP.SCREEN4
+      GOSUB DISPLAY.DATA4
+
+      DTS.SELECT = 1
+
+290 * Select Date range to work with
+
+      HELP="Select Line # of Date range to work with. [A]dd a range [X]=Back [EX]=Exit."
+      CALL GEN.IN(0,22,"Enter line number please. ###",'',Q,0,3,'','',0,-3,22,0,QI,HELP,0,23)
+      QI = OCONV(QI,"MCU")
+      DTS.SELECT = ''
+      DT.ERR = ''
+      BEGIN.DT = ''
+      END.DT = ''
+      RET.FLAG = ''
+
+      BEGIN CASE
+         CASE QI=' '
+            CALL ELINE("Invalid Response")
+         CASE QI='EX'
+            GOTO EXIT.HERE
+         CASE QI='X'
+            COMM.SLSMAN.ID      = ""
+            ID.SLSMAN.COMM      = ""
+            COMM.SLSMAN.NAME = ""
+            GOSUB SETUP.SCREEN1
+            GOSUB DISPLAY.DATA1
+            GOTO 180
+         CASE QI='A'
+            LAST.BEGIN.DT = SLS.COMM.REC<1,1>
+            LAST.END.DT   = SLS.COMM.REC<2,1>
+            IF LAST.END.DT = '' AND LAST.BEGIN.DT NE '' THEN
+               CALL ELINE("Close last effective date range before adding a new date range")
+               DT.ERR = 1
+               GOTO 290
+            END
+            NO.DTS = DCOUNT(SLS.COMM.REC<1>,@VM)
+            DTS.SELECT = NO.DTS + 1
+
+            GOSUB 2100 ;* Enter Effective Date ranges
+
+            IF RET.FLAG = '' THEN
+               GOSUB CHECK.EFFECTIVE.DATES
+               IF DT.ERR THEN
+                  BEGIN.DT = '' ; END.DT = ''
+                  CRT @(DT.COL,DT.ROW):SPACE(8)
+                  CRT @(DT.COL+10,DT.ROW):SPACE(8)
+                  SLS.COMM.REC<1,DTS.SELECT> = BEGIN.DT
+                  SLS.COMM.REC<2,DTS.SELECT> = END.DT
+                  X = DCOUNT(SLS.COMM.REC<1>,@VM)
+                  FOR I=X TO 1 STEP -1
+                     BD = SLS.COMM.REC<1,I>
+                     ED = SLS.COMM.REC<2,I>
+                     IF BD = '' AND ED = '' THEN
+                        SLS.COMM.REC=DELETE(SLS.COMM.REC,1,I)
+                        SLS.COMM.REC=DELETE(SLS.COMM.REC,2,I)
+                        SLS.COMM.REC=DELETE(SLS.COMM.REC,3,I)
+                     END
+                  NEXT X
+                  GOTO 290
+               END
+            END
+            IF RET.FLAG = 'BACK' THEN
+               COMM.SLSMAN.ID      = ""
+               ID.SLSMAN.COMM      = ""
+               COMM.SLSMAN.NAME = ""
+               GOSUB SETUP.SCREEN1
+               GOSUB DISPLAY.DATA1
+               GOTO 180
+            END
+            IF END.DT = '' AND BEGIN.DT = '' THEN
+               CALL ELINE("FROM Date may not be blank")
+               DT.ERR = 1
+               GOTO 290
+            END
+            IF DT.ERR THEN GOTO 290
+         CASE QI NE ''
+            MAX.DTS = DCOUNT(SLS.COMM.REC<1>,@VM)
+            IF Q GE 1 AND Q LE MAX.DTS+1 THEN
+               DTS.SELECT = Q
+               BEGIN.DT = SLS.COMM.REC<1,DTS.SELECT>
+               END.DT   = SLS.COMM.REC<2,DTS.SELECT>
+               GOSUB 2100 ;* Enter Effective Date ranges
+               IF DT.ERR THEN GOTO 290
+            END ELSE
+               CALL ELINE("Invalid Response")
+               GOTO 290
+            END
+
+         CASE 1
+            CALL ELINE("Invalid Response")
+            GOTO 290
+      END CASE
+
+*%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+*DEBUG
+      T.BEGIN.DT = SLS.COMM.REC<1,1>
+      T.END.DT   = SLS.COMM.REC<2,1>
+      IF T.BEGIN.DT = '' AND T.END.DT = '' THEN
+         CALL ELINE("Both dates may not be Null")
+         GOTO 290
+      END
+
+      PREV.BEGIN.DT = T.BEGIN.DT
+      PREV.END.DT = T.END.DT
+      N.DC = DCOUNT(SLS.COMM.REC<1>,@VM)
+
+      IF N.DC GE 3 THEN
+         FOR IC = 2 TO N.DC-1
+            T.BEGIN.DT = SLS.COMM.REC<1,IC>
+            T.END.DT   = SLS.COMM.REC<2,IC>
+            IF T.BEGIN.DT = '' AND T.END.DT = '' THEN
+               CALL ELINE("Both dates may not be Null")
+               GOTO 290
+            END
+            PREV.BEGIN.DT = T.BEGIN.DT
+            PREV.END.DT = T.END.DT
+         NEXT IC
+      END
+*
+      T.BEGIN.DT = SLS.COMM.REC<1,N.DC>
+      IF T.BEGIN.DT NE '' AND PREV.END.DT = '' THEN
+         IF N.DC GT 1 THEN
+            CALL ELINE("Close prior date range before opening a new one")
+            CRT @(DT.COL,DT.ROW):SPACE(8)
+            GOTO 290
+         END
+      END
+
+      GOSUB BUILD.DETAIL.ARRAY   ;* NPR090810
+
+*%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+      IF DT.ERR THEN GOTO 290
+
+300 * Start Entry for screen 5
+
+*IF USER.NAME = "NPRATT" THEN
+*   CRT @(0,22):"SC5 DISP.REC<4> ":DISP.REC<4> :
+*   INPUT ZZ
+*END
+
+      PG.CNT = 1
+
+      GOSUB SETUP.SCREEN5
+      IF DISP.REC = '' THEN           ;* NPR090810
+         GOSUB BUILD.DETAIL.ARRAY
+      END                             ;* NPR090810
+      GOSUB DISPLAY.DATA5
+
+      IF RET.FLAG = 'BACK' THEN
+         BEGIN.DT = ''
+         END.DT   = ''
+         GOSUB SETUP.SCREEN4
+         GOSUB DISPLAY.DATA4
+         GOTO 200
+      END
+*
+* Choose line number
+
+      IF DISP.REC = "" THEN
+         SEL = 1
+         NEW.ITEM = 1
+         GOSUB ENTER.SLSCODE.DETAIL
+         GOSUB 9000
+      END
+*
+310
+
+      RET.FLAG = ''
+
+      HELP = "Enter number to edit. [P]rev [T]op [CR]=Next [U]pdate [X]=Back [EX]it"
+
+      CALL GEN.IN(0,22,"Enter line number please. ###",'',Q,0,3,'','',0,-3,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+
+      BEGIN CASE
+         CASE QI=''
+            PG.CNT=PG.CNT+1
+            IF PG.CNT GT LAST.PG THEN
+               CALL ELINE('No more pages')
+               PG.CNT=PG.CNT-1
+               GOTO 310
+            END
+            GOSUB 9000
+         CASE QI='P'
+            PG.CNT=PG.CNT-1
+            IF PG.CNT=0 THEN PG.CNT=1
+            GOSUB 9000
+         CASE QI='T'
+            PG.CNT=1
+            GOSUB 9000
+         CASE QI='LP'
+            PG.CNT=LAST.PG
+            GOSUB 9000
+         CASE QI='EX'
+            GOTO EXIT.HERE
+         CASE QI='X'
+            RET.FLAG = 'BACK'
+            BEGIN.DT = ''
+            END.DT = ''
+*NPR090810      COMM.SLSMAN.ID      = ""
+*NPR090810      ID.SLSMAN.COMM      = ""
+*NPR090810      COMM.SLSMAN.NAME = ""
+            GOSUB SETUP.SCREEN4
+            GOSUB DISPLAY.DATA4
+*IF USER.NAME = "NPRATT" THEN
+*   CRT @(0,22):"X FROM 310 DISP.REC<4> ":DISP.REC<4> :
+*   CRT @(0,22):"X FROM 310 INDEX2.REC<3> " : INDEX2.REC<3>
+*   INPUT ZZ
+*END
+            GOTO 200
+         CASE NUM(QI)
+            SEL=QI
+            IF SEL LT START ! SEL GT STOP+1 THEN
+               CALL ELINE('Invalid selection.')
+               GOTO 310
+            END
+            GOSUB 8000
+            GOSUB 9000
+         CASE QI='U'
+            X=DCOUNT(DISP.REC<1>,CHAR(253))
+            FOR I=X TO 1 STEP -1
+               IF DISP.REC<1,I>='' THEN
+                  DISP.REC=DELETE(DISP.REC,1,I)
+                  DISP.REC=DELETE(DISP.REC,2,I)
+                  DISP.REC=DELETE(DISP.REC,3,I)
+                  DISP.REC=DELETE(DISP.REC,4,I)
+               END
+            NEXT I
+*
+*** Update FB.COMM.INDEX2 file
+*
+
+            ID.INDEX2 = INIT.SLSMAN.ID:'*':SERVC.SLSMAN.ID
+            READ INDEX2.REC FROM F.COMM.INDEX2, ID.INDEX2 ELSE INDEX2.REC = ""
+
+            LOCATE AGREE.BEGIN.DT IN INDEX2.REC<1> BY "AR" SETTING ADT.POS THEN
+               INDEX2.REC<2,ADT.POS> = AGREE.END.DT  ;* Close date range if neccessary
+               COMM.SLSMAN.STR = INDEX2.REC<3,ADT.POS>
+               CONVERT @SVM TO @VM IN COMM.SLSMAN.STR
+               LOCATE COMM.SLSMAN.ID IN COMM.SLSMAN.STR<1> BY "AR" SETTING CSM.POS THEN
+                  NULL
+               END ELSE
+                  COMM.SLSMAN.STR<1,CSM.POS> = COMM.SLSMAN.ID
+               END
+               CONVERT @VM TO @SVM IN COMM.SLSMAN.STR
+               INDEX2.REC<3,ADT.POS> = COMM.SLSMAN.STR
+            END ELSE
+               INDEX2.REC = INSERT(INDEX2.REC,1,ADT.POS,0,AGREE.BEGIN.DT)
+               INDEX2.REC = INSERT(INDEX2.REC,2,ADT.POS,0,AGREE.END.DT)
+               COMM.SLSMAN.STR = INDEX2.REC<3,ADT.POS>
+               CONVERT @SVM TO @VM IN COMM.SLSMAN.STR
+               LOCATE COMM.SLSMAN.ID IN COMM.SLSMAN.STR<1> BY "AR" SETTING CSM.POS THEN
+                  NULL
+               END ELSE
+                  COMM.SLSMAN.STR<1,CSM.POS> = COMM.SLSMAN.ID
+               END
+               CONVERT @VM TO @SVM IN COMM.SLSMAN.STR
+               INDEX2.REC = INSERT(INDEX2.REC,3,ADT.POS,0,COMM.SLSMAN.STR)
+            END
+
+            WRITE INDEX2.REC ON F.COMM.INDEX2, ID.INDEX2
+*
+*** Update FB.SLSMAN.COMM file
+*
+            ID.SLSMAN.COMM = INIT.SLSMAN.ID:'*':SERVC.SLSMAN.ID:"*":AGREE.BEGIN.DT:"*":COMM.SLSMAN.ID
+            READ COMM.REC FROM F.SLSMAN.COMM, ID.SLSMAN.COMM ELSE COMM.REC = ""
+
+            LOCATE BEGIN.DT IN COMM.REC<1> BY "AR" SETTING EDT.POS THEN
+               COMM.REC<2,EDT.POS> = END.DT  ;* Close date range if neccessary
+            END ELSE
+               COMM.REC = INSERT(COMM.REC,1,EDT.POS,0,BEGIN.DT)
+               COMM.REC = INSERT(COMM.REC,2,EDT.POS,0,END.DT)
+            END
+
+            N.SLS.CODES = DCOUNT(DISP.REC<1>,CHAR(253))
+
+*NPR090810      IF  N.SLS.CODES LE "0" THEN
+            COMM.REC<3,EDT.POS> = ''                 ;* NPR090810
+            COMM.REC<4,EDT.POS> = ''                 ;* NPR090810
+*NPR090810       END
+
+            FOR I.SLS.CODE = 1 TO N.SLS.CODES
+               T.SLS.CODE = DISP.REC<1,I.SLS.CODE>
+               T.RATE = DISP.REC<4,I.SLS.CODE>
+               IF T.SLS.CODE NE '' THEN
+                  SC.POS = I.SLS.CODE
+                  COMM.REC<3,EDT.POS,SC.POS> = T.SLS.CODE
+                  COMM.REC<4,EDT.POS,SC.POS> = T.RATE
+               END
+            NEXT I.SLS.CODE
+
+            WRITE COMM.REC ON F.SLSMAN.COMM, ID.SLSMAN.COMM
+
+            GOTO 100
+      END CASE
+
+      GOTO 310
+*
+*------------------------------------------------------------------------
+* INTERNAL SUBROUTINES
+*------------------------------------------------------------------------
+
+1100:* Enter Initial Salesman
+
+      RET.FLAG = ''
+
+      MASK=INIT.SLSMAN.NAME:STR(MASK.CHAR,30-LEN(INIT.SLSMAN.NAME))
+
+*      HELP='Enter Initial salesman number or name. [L]ist [X]=Back'
+
+      HELP='Enter Initial salesman number or name. [ALL]  [EX]=Exit'
+      CALL GEN.IN(25,03,MASK,'',Q,0,31,'','',0,25,03,0,QI,HELP,0,23)
+
+      QI=OCONV(QI,'MCU')
+      IF QI = '' THEN QI = INIT.SLSMAN.ID.HOLD
+
+      BEGIN CASE
+         CASE QI = 'EX' OR QI='X'
+            GOTO EXIT.HERE
+         CASE QI = 'ALL'
+            INIT.SLSMAN.ID = QI
+            INIT.SLSMAN.NAME=QI
+         CASE NUM(QI)
+            QI=QI'R%5'
+            READ INIT.SLSM.REC FROM F.SLSMAN,QI THEN
+               INIT.SLSMAN.ID = QI
+               INIT.SLSMAN.NAME=INIT.SLSMAN.ID:' ':INIT.SLSM.REC<1>'L#20'
+            END ELSE
+               CALL ELINE('Salesman number ':QI:' is not on file.')
+               GOTO 1100
+            END
+         CASE ALPHA(QI)
+            IF QI = "ALL" THEN
+               NULL
+            END ELSE
+               CALL SOUNDEX.DISPLAY(QI,'AR.SLSMAN.1000.1','AR.SLSMAN.1000.1,SDX.NAME','1',QX)
+               QI=QX<1,1>'R%5'
+               READ INIT.SLSM.REC FROM F.SLSMAN,QI THEN
+                  INIT.SLSMAN.ID = QI
+                  INIT.SLSMAN.NAME=INIT.SLSMAN.ID:' ':INIT.SLSM.REC<1>'L#20'
+               END ELSE
+                  CALL ELINE('Salesman number ':QI:' is not on file.')
+                  GOTO 1100
+               END
+               GOSUB SETUP.SCREEN1
+               GOSUB DISPLAY.DATA1
+            END
+         CASE 1
+            CALL ELINE("Invalid Response")
+            GOTO 1100
+      END CASE
+
+      INIT.SLSMAN.ID.HOLD = INIT.SLSMAN.ID
+
+      CRT @(25,03):INIT.SLSMAN.NAME
+
+      RETURN
+
+1200:* Enter Servicing Salesman
+
+      RET.FLAG = ''
+
+      MASK=SERVC.SLSMAN.NAME:STR(MASK.CHAR,30-LEN(SERVC.SLSMAN.NAME))
+
+*      HELP='Enter Servicing salesman number or name. [L]ist [X]=Back'
+      HELP='Enter Servicing salesman number or name. [ALL] [X]=Back [EX]=Exit'
+      CALL GEN.IN(25,04,MASK,'',Q,0,31,'','',0,25,04,0,QI,HELP,0,23)
+
+      QI=OCONV(QI,'MCU')
+      IF QI = '' THEN QI = SERVC.SLSMAN.ID.HOLD
+
+      BEGIN CASE
+         CASE QI='X'
+            SERVC.SLSMAN.ID = SERVC.SLSMAN.ID.HOLD
+            CRT @(25,04):@(-4)
+            RET.FLAG = 'BACK'
+         CASE QI = 'EX'
+            GOTO EXIT.HERE
+         CASE QI = 'ALL'
+            SERVC.SLSMAN.ID = QI
+            SERVC.SLSMAN.NAME=QI
+         CASE NUM(QI)
+            QI=QI'R%5'
+            READ SERVC.SLSM.REC FROM F.SLSMAN,QI THEN
+               SERVC.SLSMAN.ID = QI
+               SERVC.SLSMAN.NAME=SERVC.SLSMAN.ID:' ':SERVC.SLSM.REC<1>'L#20'
+            END ELSE
+               CALL ELINE('Salesman number ':QI:' is not on file.')
+               GOTO 1200
+            END
+         CASE ALPHA(QI)
+            IF QI = "ALL" THEN
+               NULL
+            END ELSE
+               CALL SOUNDEX.DISPLAY(QI,'AR.SLSMAN.1000.1','AR.SLSMAN.1000.1,SDX.NAME','1',QX)
+               QI=QX<1,1>'R%5'
+               READ SERVC.SLSM.REC FROM F.SLSMAN,QI THEN
+                  SERVC.SLSMAN.ID = QI
+                  SERVC.SLSMAN.NAME=SERVC.SLSMAN.ID:' ':SERVC.SLSM.REC<1>'L#20'
+               END ELSE
+                  CALL ELINE('Salesman number ':QI:' is not on file.')
+                  GOTO 1200
+               END
+               GOSUB SETUP.SCREEN1
+               GOSUB DISPLAY.DATA1
+            END
+         CASE 1
+            CALL ELINE("Invalid Response")
+            GOTO 1200
+      END CASE
+
+      CRT @(25,04):SERVC.SLSMAN.NAME
+*
+      ID.INDEX2 = INIT.SLSMAN.ID:'*':SERVC.SLSMAN.ID
+      READ COMM.INDX.REC2 FROM F.COMM.INDEX2, ID.INDEX2 ELSE COMM.INDX.REC2 = ""
+
+      SERVC.SLSMAN.ID.HOLD = SERVC.SLSMAN.ID
+
+      GOSUB DISPLAY.DATA1
+
+      RETURN
+
+
+1400:* Enter Commission Salesman
+
+      RET.FLAG = ''
+      CS.CNT = 1
+
+      IF COMM.INDX.REC2<3,CS.CNT,1> = "" THEN
+         CS.CNT = 1
+         FOR II = 1 TO 24
+            IF INT(CS.CNT/13) = 0 THEN
+               CS.ROW = CS.CNT+9
+               CS.COL = 6
+            END ELSE
+               CS.ROW = CS.CNT-3
+               CS.COL = 48
+            END
+            RET.FLAG = ''
+            GOSUB 1450
+            IF RET.FLAG = 'BACK' THEN
+*               LOOP
+*               WHILE CS.CNT GT 1 OR RET.FLAG = 'BACK' DO
+*                  GOSUB 1450
+*               REPEAT
+               RETURN
+            END
+            IF RET.FLAG = 'DONE' THEN
+               II = 24 ;* Done Entering Commissionable Salesman
+            END ELSE
+               CS.CNT += 1
+            END
+         NEXT II
+      END ELSE
+         CS.CNT = CS.SELECT
+         IF INT(CS.CNT/13) = 0 THEN
+            CS.ROW = CS.CNT+9
+            CS.COL = 6
+         END ELSE
+            CS.ROW = CS.CNT-3
+            CS.COL = 48
+         END
+         GOSUB 1450
+      END
+
+      RETURN
+
+1450:* Enter Commission Salesman
+
+      COMM.SLSMAN.ID = COMM.INDX.REC2<3,DTS.SELECT1,CS.CNT>
+      COMM.SLSMAN.NAME = ''
+
+      RET.FLAG = ''
+
+      IF COMM.SLSMAN.ID NE '' THEN
+*         READV COMM.SLSMAN.NAME FROM F.SLSMAN, COMM.SLSMAN.ID, 1 ELSE COMM.SLSMAN.NAME = ''
+         IF COMM.SLSMAN.ID = 'ALL' THEN
+            COMM.SLSMAN.NAME = 'ALL'
+         END ELSE
+            READV COMM.SLSMAN.NAME FROM F.SLSMAN, COMM.SLSMAN.ID, 1 ELSE COMM.SLSMAN.NAME = ''
+         END
+         COMM.SLSMAN.NAME = COMM.SLSMAN.ID:"  ":COMM.SLSMAN.NAME
+      END
+      MASK=COMM.SLSMAN.NAME:STR(MASK.CHAR,30-LEN(COMM.SLSMAN.NAME))
+      COMM.SLSMAN.NAME.HOLD = MASK
+
+      HELP='Enter Commission salesman # or name. CR to Select [X] Back [EX]=Exit'
+      CALL GEN.IN(CS.COL,CS.ROW,MASK,'',Q,0,31,'','',0,CS.COL,CS.ROW,0,QI,HELP,0,23)
+
+      QI=OCONV(QI,'MCU')
+
+      BEGIN CASE
+         CASE QI = 'ALL'
+            COMM.SLSMAN.ID = QI
+            COMM.SLSMAN.NAME=QI
+         CASE QI = ''
+            IF COMM.SLSMAN.ID NE '' THEN
+               QI = COMM.SLSMAN.ID
+            END ELSE
+               RET.FLAG = 'DONE'
+               RETURN
+            END
+         CASE QI='X'
+            RET.FLAG = 'BACK'
+            CS.SELECT = CS.CNT
+            IF CS.CNT = 1 THEN
+               GOSUB SETUP.SCREEN1
+               GOSUB DISPLAY.DATA1
+            END ELSE
+               CS.CNT = CS.CNT -1
+               CRT @(CS.COL,CS.ROW):COMM.SLSMAN.NAME.HOLD : SPACE(30-LEN(COMM.SLSMAN.NAME.HOLD))
+               CS.ROW = CS.ROW -1
+               GOTO 1450
+            END
+         CASE QI = 'EX'
+            GOTO EXIT.HERE
+         CASE QI=''
+            IF COMM.SLSMAN.ID NE '' THEN
+               QI = COMM.SLSMAN.ID
+            END ELSE
+               IF TRIM(COMM.SLSMAN.NAME) EQ '' THEN
+                  RET.FLAG = "DONE"
+               END
+            END
+         CASE NUM(QI)
+            QI=QI'R%5'
+            COMM.SLSMAN.ID = QI
+            LOCATE COMM.SLSMAN.ID IN COMM.INDX.REC2<3,DTS.SELECT1> SETTING DMY THEN
+               CALL ELINE('Salesman number ':QI:' Has already been entered.')
+               GOTO 1450
+            END
+            READ COMM.SLSM.REC FROM F.SLSMAN,COMM.SLSMAN.ID THEN
+               COMM.SLSMAN.NAME=COMM.SLSMAN.ID:' ':COMM.SLSM.REC<1>'L#20'
+            END ELSE
+               CALL ELINE('Salesman number ':QI:' is not on file.')
+               GOTO 1450
+            END
+         CASE ALPHA(QI)
+            IF QI = 'ALL' THEN
+               COMM.SLSMAN.ID = QI
+               COMM.SLSMAN.NAME=QI
+            END ELSE
+               CALL SOUNDEX.DISPLAY(QI,'AR.SLSMAN.1000.1','AR.SLSMAN.1000.1,SDX.NAME','1',QX)
+               QI=QX<1,1>'R%5'
+               READ COMM.SLSM.REC FROM F.SLSMAN,QI THEN
+                  COMM.SLSMAN.ID = QI
+                  COMM.SLSMAN.NAME=COMM.SLSMAN.ID:' ':COMM.SLSM.REC<1>'L#20'
+                  COMM.INDX.REC2<3,DTS.SELECT1,CS.CNT> = COMM.SLSMAN.ID
+               END ELSE
+                  CALL ELINE('Salesman number ':QI:' is not on file.')
+                  GOTO 1450
+               END
+               GOSUB SETUP.SCREEN1
+               GOSUB DISPLAY.DATA1
+               CS.CNT = DCOUNT(COMM.INDX.REC2<3,DTS.SELECT1>,@SVM)
+               IF INT(CS.CNT/13) = 0 THEN
+                  CS.ROW = CS.CNT+9
+                  CS.COL = 6
+               END ELSE
+                  CS.ROW = CS.CNT-3
+                  CS.COL = 48
+               END
+            END
+         CASE 1
+            CALL ELINE("Invalid Response")
+            GOTO 1450
+      END CASE
+
+      COMM.SLSMAN.NAME = ''
+      IF COMM.SLSMAN.ID NE '' THEN
+         COMM.INDX.REC2<3,DTS.SELECT1,CS.CNT> = COMM.SLSMAN.ID
+         COMM.SLSMAN.ID   = COMM.INDX.REC2<3,DTS.SELECT1,CS.CNT>
+*         READV COMM.SLSMAN.NAME FROM F.SLSMAN, COMM.SLSMAN.ID, 1 ELSE COMM.SLSMAN.NAME = ''
+         IF COMM.SLSMAN.ID = 'ALL' THEN
+            COMM.SLSMAN.NAME = 'ALL'
+         END ELSE
+            READV COMM.SLSMAN.NAME FROM F.SLSMAN, COMM.SLSMAN.ID, 1 ELSE COMM.SLSMAN.NAME = ''
+         END
+         COMM.SLSMAN.NAME = COMM.SLSMAN.ID:" ":COMM.SLSMAN.NAME "L#20"
+      END
+
+      CRT @(CS.COL,CS.ROW):COMM.SLSMAN.NAME  :
+
+      RETURN
+
+2100:* Enter Effective Date ranges
+
+      RET.FLAG = ''
+      DT.CNT = 1
+
+      IF SLS.COMM.REC<1,DTS.SELECT> = "" AND DTS.SELECT = '' THEN
+         DT.CNT = 1
+         FOR II = 1 TO 22
+            IF INT(DT.CNT/12) = 0 THEN
+               DT.ROW = DT.CNT+10
+               DT.COL = 6
+            END ELSE
+               DT.ROW = DT.CNT-1
+               DT.COL = 46
+            END
+            RET.FLAG = ''
+            GOSUB 2150
+*            GOSUB 2200
+            IF RET.FLAG = 'BACK' THEN
+               IF DT.CNT = 1 THEN
+                  RETURN
+               END ELSE
+                  DT.CNT  = DT.CNT - 1
+               END
+            END ELSE
+            END
+            IF RET.FLAG = 'DONE' THEN
+               II = 22 ;* Done Entering Dates
+               CONTINUE  ;* Skip Prompt for End date - Hopefully
+            END ELSE
+               DT.CNT += 1
+            END
+            GOSUB 2200
+            IF RET.FLAG = 'BACK' THEN
+               IF DT.CNT = 1 THEN
+                  RETURN
+               END ELSE
+                  DT.CNT  = DT.CNT - 1
+               END
+            END ELSE
+            END
+         NEXT II
+      END
+
+*      IF SLS.COMM.REC<1,DTS.SELECT> NE "" OR DTS.SELECT NE '' THEN
+      IF DTS.SELECT NE '' THEN
+*         DTS.SELECT = DCOUNT(SLS.COMM.REC<1>,@VM)
+         DT.CNT = DTS.SELECT
+         IF INT(DT.CNT/12) = 0 THEN
+            DT.ROW = DT.CNT+10
+            DT.COL = 6
+         END ELSE
+            DT.ROW = DT.CNT-1
+            DT.COL = 46
+         END
+         RET.FLAG = ''
+         GOSUB 2150
+         IF RET.FLAG = 'BACK' THEN RETURN
+         GOSUB 2200
+         IF RET.FLAG = 'BACK' THEN RETURN
+      END
+
+      RETURN
+
+2150:* Enter Begin Effective Date.
+
+      HELP='Enter Effective Date FROM. [cr]=Accept'
+      MASK = SLS.COMM.REC<1,DTS.SELECT> 'D2/'
+      N.DTS = DCOUNT(SLS.COMM.REC<1>,@VM)
+
+      CALL GEN.IN(DT.COL,DT.ROW,MASK,'DATE',Q,0,8,'','',0,DT.COL,DT.ROW,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+
+      BEGIN CASE
+         CASE QI=' '
+            CALL ELINE("Invalid Response")
+         CASE QI='EX'
+            GOTO EXIT.HERE
+         CASE QI='X'
+            RET.FLAG = 'BACK'
+            CRT @(DT.COL,DT.ROW) : SPACE(8)
+            RETURN
+         CASE QI NE ''
+            BEGIN.DT=Q
+            LOCATE BEGIN.DT IN SLS.COMM.REC<1> BY "AR" SETTING DT.POS THEN
+               NULL
+            END ELSE
+               DT.POS = DT.CNT
+            END
+            SLS.COMM.REC<1,DT.POS> = BEGIN.DT
+         CASE QI = ''
+            W.BEGIN.DT = SLS.COMM.REC<1,DT.CNT>
+            W.END.DT   = SLS.COMM.REC<2,DT.CNT>
+            IF W.BEGIN.DT = '' THEN
+               IF W.END.DT = '' THEN
+                  RET.FLAG = 'DONE'
+                  RETURN
+               END
+            END
+            BEGIN.DT = W.BEGIN.DT
+         CASE 1
+            CALL ELINE("Invalid Response")
+            GOTO 2100
+      END CASE
+
+      CRT @(DT.COL,DT.ROW):BEGIN.DT'D2/'
+
+      RETURN
+
+2200:* Enter End Effective Date.
+
+      HELP='Enter Effective Date TO. [space]=Clear [cr]=Accept'
+
+      W.BEGIN.DT = SLS.COMM.REC<1,DT.CNT>
+      LOCATE W.BEGIN.DT IN SLS.COMM.REC<1> BY "AR" SETTING BDT.POS THEN
+         END.DT = SLS.COMM.REC<2,BDT.POS>
+         W.END.DT   = END.DT
+         MASK= END.DT 'D2/'
+      END ELSE
+         END.DT = ''
+         MASK=''
+      END
+
+      CALL GEN.IN(DT.COL+10,DT.ROW,MASK,'DATE',Q,0,8,'','',0,DT.COL+10,DT.ROW,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+
+      BEGIN CASE
+         CASE QI=' '
+            END.DT =''
+            CRT @(DT.COL+10,DT.ROW):SPACE(8)
+            RETURN
+         CASE QI='EX'
+            GOTO EXIT.HERE
+         CASE QI='X'
+            RET.FLAG = 'BACK'
+            CRT @(DT.COL+10,DT.ROW) : SPACE(8)
+            RETURN
+         CASE QI = ''
+            END.DT=W.END.DT
+            GOSUB CHECK.EFFECTIVE.DATES
+            IF DT.ERR THEN
+               IF BEGIN.DT NE '' THEN CRT @(DT.COL,DT.ROW):BEGIN.DT 'D2/'
+               IF SLS.COMM.REC<2,BDT.POS> NE "" THEN D.END.DT = SLS.COMM.REC<2,BDT.POS> ELSE D.END.DT = SPACE(8)
+               CRT @(DT.COL+10,DT.ROW) : D.END.DT 'D2/'
+               GOTO 2200
+            END
+            SLS.COMM.REC<2,BDT.POS> = END.DT
+         CASE QI NE ''
+            END.DT=Q
+            GOSUB CHECK.EFFECTIVE.DATES
+            IF DT.ERR THEN
+               IF BEGIN.DT NE '' THEN CRT @(DT.COL,DT.ROW):BEGIN.DT'D2/'
+               IF SLS.COMM.REC<2,BDT.POS> NE "" THEN D.END.DT = SLS.COMM.REC<2,BDT.POS> ELSE D.END.DT = SPACE(8)
+               CRT @(DT.COL+10,DT.ROW) : D.END.DT 'D2/'
+               GOTO 2200
+            END
+            SLS.COMM.REC<2,BDT.POS> = END.DT
+         CASE 1
+            CALL ELINE("Invalid Response")
+            GOTO 2200
+      END CASE
+      CRT @(DT.COL+10,DT.ROW):END.DT'D2/'
+      RETURN
+
+*&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+
+2400:* Enter Agreement Date ranges
+
+      RET.FLAG = ''
+      DT.CNT = 1
+
+      IF COMM.INDX.REC2<1,DTS.SELECT1> = "" AND DTS.SELECT1 = '' THEN
+         DT.CNT = 1
+         FOR II = 1 TO 22
+            IF INT(DT.CNT/12) = 0 THEN
+               DT.ROW = DT.CNT+10
+               DT.COL = 6
+            END ELSE
+               DT.ROW = DT.CNT-1
+               DT.COL = 46
+            END
+            RET.FLAG = ''
+            GOSUB 2450
+            IF RET.FLAG = 'BACK' THEN
+               IF DT.CNT = 1 THEN
+                  RETURN
+               END ELSE
+                  DT.CNT  = DT.CNT - 1
+               END
+            END ELSE
+            END
+            IF RET.FLAG = 'DONE' THEN
+               II = 22 ;* Done Entering Dates
+               CONTINUE  ;* Skip Prompt for End date - Hopefully
+            END ELSE
+               DT.CNT += 1
+            END
+            GOSUB 2500
+            IF RET.FLAG = 'BACK' THEN
+               IF DT.CNT = 1 THEN
+                  RETURN
+               END ELSE
+                  DT.CNT  = DT.CNT - 1
+               END
+            END ELSE
+            END
+         NEXT II
+      END
+
+      IF DTS.SELECT1 NE '' THEN
+         DT.CNT = DTS.SELECT1
+         IF INT(DT.CNT/12) = 0 THEN
+            DT.ROW = DT.CNT+10
+            DT.COL = 6
+         END ELSE
+            DT.ROW = DT.CNT-1
+            DT.COL = 46
+         END
+         RET.FLAG = ''
+         GOSUB 2450
+         IF RET.FLAG = 'BACK' THEN RETURN
+         GOSUB 2500
+         IF RET.FLAG = 'BACK' THEN RETURN
+      END
+
+      RETURN
+
+2450:* Enter Agreement Commencement Date.
+
+      HELP='Enter Agreement Commencement Date. [cr]=Accept'
+*      MASK=''
+      MASK = COMM.INDX.REC2<1,DTS.SELECT1> 'D2/'
+      N.DTS = DCOUNT(COMM.INDX.REC2<1>,@VM)
+
+      CALL GEN.IN(DT.COL,DT.ROW,MASK,'DATE',Q,0,8,'','',0,DT.COL,DT.ROW,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+
+      BEGIN CASE
+         CASE QI=' '
+            CALL ELINE("Invalid Response")
+         CASE QI='EX'
+            GOTO EXIT.HERE
+         CASE QI='X'
+            RET.FLAG = 'BACK'
+            CRT @(DT.COL,DT.ROW) : SPACE(8)
+            RETURN
+         CASE QI NE ''
+            AGREE.BEGIN.DT=Q
+            LOCATE AGREE.BEGIN.DT IN COMM.INDX.REC2<1> BY "AR" SETTING DT.POS THEN
+               NULL
+            END ELSE
+               DT.POS = DT.CNT
+            END
+            COMM.INDX.REC2<1,DT.POS> = AGREE.BEGIN.DT
+         CASE QI = ''
+            W.AGREE.BEGIN.DT = COMM.INDX.REC2<1,DT.CNT>
+            W.AGREE.END.DT   = COMM.INDX.REC2<2,DT.CNT>
+            IF W.AGREE.BEGIN.DT = '' THEN
+               IF W.AGREE.END.DT = '' THEN
+                  RET.FLAG = 'DONE'
+                  RETURN
+               END
+            END
+            AGREE.BEGIN.DT = W.AGREE.BEGIN.DT
+         CASE 1
+            CALL ELINE("Invalid Response")
+            GOTO 2450
+      END CASE
+
+      CRT @(DT.COL,DT.ROW):AGREE.BEGIN.DT'D2/'
+
+      RETURN
+
+2500:* Enter Agreement Termination Date.
+
+      HELP='Enter Agreement Termination Date. [space]=Clear [cr]=Accept'
+
+      W.AGREE.BEGIN.DT = COMM.INDX.REC2<1,DT.CNT>
+      LOCATE W.AGREE.BEGIN.DT IN COMM.INDX.REC2<1> BY "AR" SETTING BDT.POS THEN
+         AGREE.END.DT = COMM.INDX.REC2<2,BDT.POS>
+         MASK= AGREE.END.DT 'D2/'
+      END ELSE
+         AGREE.END.DT = ''
+         MASK=''
+      END
+
+      CALL GEN.IN(DT.COL+10,DT.ROW,MASK,'DATE',Q,0,8,'','',0,DT.COL+10,DT.ROW,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+
+      BEGIN CASE
+         CASE QI=' '
+            AGREE.END.DT =''
+            CRT @(DT.COL+10,DT.ROW):SPACE(8)
+            RETURN
+         CASE QI='EX'
+            GOTO EXIT.HERE
+         CASE QI='X'
+            RET.FLAG = 'BACK'
+            CRT @(DT.COL+10,DT.ROW) : SPACE(8)
+            RETURN
+         CASE QI = ''
+            AGREE.END.DT=Q
+            GOSUB CHECK.AGREEMENT.DATES
+            IF DT.ERR THEN
+               IF AGREE.BEGIN.DT NE '' THEN CRT @(DT.COL,DT.ROW):AGREE.BEGIN.DT 'D2/'
+               IF COMM.INDX.REC2<2,BDT.POS> NE "" THEN D.AGREE.END.DT = COMM.INDX.REC2<2,BDT.POS> ELSE D.AGREE.END.DT = SPACE(8)
+               CRT @(DT.COL+10,DT.ROW) : D.AGREE.END.DT 'D2/'
+*CALL ELINE("DT CHK1")
+               GOTO 2500
+            END
+            COMM.INDX.REC2<2,BDT.POS> = AGREE.END.DT
+         CASE QI NE ''
+            AGREE.END.DT=Q
+            GOSUB CHECK.AGREEMENT.DATES
+            IF DT.ERR THEN
+               IF AGREE.BEGIN.DT NE '' THEN CRT @(DT.COL,DT.ROW):AGREE.BEGIN.DT'D2/'
+               IF COMM.INDX.REC2<2,BDT.POS> NE "" THEN D.AGREE.END.DT = COMM.INDX.REC2<2,BDT.POS> ELSE D.AGREE.END.DT = SPACE(8)
+               CRT @(DT.COL+10,DT.ROW) : D.AGREE.END.DT 'D2/'
+*CALL ELINE("DT CHK 2")
+               GOTO 2500
+            END
+            COMM.INDX.REC2<2,BDT.POS> = AGREE.END.DT
+         CASE 1
+            CALL ELINE("Invalid Response")
+            GOTO 2500
+      END CASE
+      CRT @(DT.COL+10,DT.ROW):AGREE.END.DT'D2/'
+
+      RETURN
+*&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+*
+      ENTER.SLSCODE.DETAIL :
+*
+
+      GOSUB 8000
+
+      IF RET.FLAG = 'BACK' THEN RETURN
+
+      IF W.SLS.CODE = '' THEN
+         NULL
+      END ELSE
+         SEL += 1
+         GOTO ENTER.SLSCODE.DETAIL
+      END
+*
+      RETURN
+*
+* Edit code
+*
+8000
+
+      ROW=8+REM(SEL,13)
+      IF ROW=8 THEN ROW=21
+
+
+      W.SLS.CODE = DISP.REC<1,SEL>
+      W.SLS.CODE.GROUP = DISP.REC<2,SEL>
+      W.SLS.CODE.DESC = DISP.REC<3,SEL>
+*
+      SLS.CODE.HOLD = W.SLS.CODE
+
+8010  HELP="Enter Sales Code. 'ALL' ''=Accept. 'D'=Delete. 'EX'=Exit."
+*
+      CALL GEN.IN(4,ROW,W.SLS.CODE'R#5','',Q,0,5,'R','',0,4,ROW,0,QI,HELP,0,23)
+      QI = OCONV(QI,"MCU")
+
+      IF QI = 'EX' THEN
+         GOTO EXIT.HERE
+      END
+
+      IF QI = 'X' THEN
+         IF SEL = 1 THEN
+            RET.FLAG = 'BACK'
+            RETURN
+         END ELSE
+            IF SEL GT 1 THEN SEL = SEL - 1                     ;* NPR090810
+            CRT @(04,ROW):SLS.CODE.HOLD "R#4"
+            GOTO 8000
+         END
+      END
+
+      IF NUM(QI) AND QI GT "999" THEN
+         CALL ELINE("This is a Scott Traffic code and is to be handled the same as the AFS equivalent")
+         GOTO 8010
+      END
+
+      IF QI='D' THEN
+         DISP.REC=DELETE(DISP.REC,1,SEL)
+         DISP.REC=DELETE(DISP.REC,2,SEL)
+         DISP.REC=DELETE(DISP.REC,3,SEL)
+         DISP.REC=DELETE(DISP.REC,4,SEL)
+         GOSUB 9000
+*** IF USER.NAME = "NPRATT" THEN DEBUG
+         RETURN
+      END
+
+      W.SLS.CODE=Q
+
+      IF QI='' THEN
+         IF NEW.ITEM THEN
+            NEW.ITEM = 0
+            GOTO 8999
+         END
+         Q = SLS.CODE.HOLD
+         QI = SLS.CODE.HOLD
+      END ELSE
+         ERROR = "0"
+*
+         N.SLS.CODES = DCOUNT(DISP.REC<1>,CHAR(253))
+         FOR II = 1 TO N.SLS.CODES
+            T.SLS.CODE = DISP.REC<1,II>
+            IF T.SLS.CODE = W.SLS.CODE THEN
+               IF II NE SEL THEN ERROR = "1" ; CONTINUE
+            END
+         NEXT II
+         IF ERROR THEN
+            CALL ELINE("This SLS.CODE already exists in the list")
+            GOTO 8010
+         END
+      END
+
+      IF QI = 'ALL' THEN
+         SLS.CODE = 'ALL'
+         SLS.CODE.GROUP = 'ALL'
+         SLS.CODE.DESC = 'ALL CODES'
+         GOTO 8005
+      END
+
+      SLS.CODE = Q
+
+      GR.DESC = ''
+      READ SLS.CODE.REC FROM F.SALES.CODE, SLS.CODE ELSE
+         ERRMSG = "Sales code ":SLS.CODE:" Not found RETURN/ENTER to try again"
+         LOCATE SLS.CODE IN GROUPS<1> SETTING GPOS THEN
+            GR.CODE = GROUPS<1,GPOS>
+            GR.DESC = GROUPS<2,GPOS>
+         END
+         IF GR.DESC = '' THEN
+            CALL ELINE("Code ":SLS.CODE:"   Not found RETURN/ENTER to try again")
+            GOTO 8010
+         END
+      END
+
+      IF GR.DESC = '' THEN
+         SLS.CODE.GROUP  = SLS.CODE.REC<8>
+         SLS.CODE.DESC   = SLS.CODE.REC<10>
+         SLS.CODE.STATUS = SLS.CODE.REC<18>
+         IF SLS.CODE.STATUS NE "A" THEN
+            CALL ELINE("Code ":SLS.CODE:" Appears to be Inactive?")
+            GOTO 8010
+         END
+      END ELSE
+         SLS.CODE.GROUP = SLS.CODE
+         SLS.CODE.DESC = GR.DESC
+      END
+
+*      CRT @(10,ROW):SLS.CODE "R#5"
+*      CRT @(16,ROW):" ":SLS.CODE.DESC "L#50"
+8005
+      CRT @(04,ROW):SLS.CODE "R#4"
+      CRT @(09,ROW):SLS.CODE.GROUP "R#5"
+      CRT @(15,ROW):SLS.CODE.DESC[1,50] "L#50"
+
+
+8020  HELP="Enter Rate. ''=Accept. 'D'=Delete. 'EX'=Exit."
+
+      W.RATE = DISP.REC<4,SEL>
+      RATE.HOLD = W.RATE
+      W.DISP.RATE = OCONV(W.RATE,"MR2")                                          ;* NPR090810
+      CRT @(74,ROW):SPACE(6)                                                     ;* NPR090810
+*
+* NPR090810      CALL GEN.IN(74,ROW,W.RATE'R#5','',Q,0,5,'R',0,0,74,ROW,0,QI,HELP,0,23)
+
+*** CALL GEN.IN(30,5,MASK,'AMT2',Q,0,12,'','',2,30,5,0,QI,HELP,0,23)
+
+      CALL GEN.IN(74,ROW,W.DISP.RATE,'AMT2',Q,0,6,'R','',0,74,ROW,0,QI,HELP,0,23)  ;* NPR090810
+      QI = OCONV(QI,'MCU')                                                         ;* NPR090810
+
+      IF QI=  'EX' THEN
+         GOTO EXIT.HERE
+      END
+
+      IF QI = 'X' THEN
+         SEL = SEL - 1
+         CRT @(74,ROW):OCONV(RATE.HOLD,"MR2") "R#6"
+         GOTO 8000
+      END
+
+      IF QI='' THEN
+         W.RATE = RATE.HOLD
+      END ELSE
+* NPR090810         W.RATE = ICONV(Q,"MR2")
+         W.RATE = Q 'R0'
+      END
+
+      CRT @(74,ROW):OCONV(W.RATE,"MR2") "R#6"
+*
+      DISP.REC<1,SEL>=SLS.CODE
+      DISP.REC<2,SEL>=SLS.CODE.GROUP
+      DISP.REC<3,SEL>=SLS.CODE.DESC
+      DISP.REC<4,SEL>=W.RATE
+
+*IF USER.NAME = "NPRATT" THEN
+*   CRT @(0,22):"END 8000  DISP.REC<4> ":DISP.REC<4> :
+*   INPUT ZZ
+*END
+
+8999
+
+*      IF SEL GE 13 THEN PG.CNT += 1
+*     GOSUB 9000
+      IF REM(SEL,13) = 0 THEN
+         PG.CNT += 1
+         GOSUB 9000
+      END
+
+      RETURN
+*
+* Display array
+*
+9000
+*
+      CRT @(0,9):@(-3)
+
+      START=(PG.CNT*13)-12
+      IF START GT 999 THEN
+         START=1
+         PG.CNT=1
+      END
+      STOP=START+12
+
+      FOR I=START TO STOP STEP 1
+         SROW=8+REM(I,13)
+         IF SROW=8 THEN SROW=21
+         CRT @(0,SROW):I "R#3"
+      NEXT I
+
+      MAX.LINES = DCOUNT(DISP.REC<1>,CHAR(253))
+
+      IF MAX.LINES = '' OR MAX.LINES = 0 THEN MAX.LINES = 1
+
+      IF STOP GT MAX.LINES THEN STOP = MAX.LINES
+      FOR I=START TO STOP STEP 1
+         ROW=8+REM(I,13)
+         IF ROW=8 THEN ROW=21
+         W.ID.SLS.CODE = DISP.REC<1,I>
+         W.SLS.CODE.GROUP = DISP.REC<2,I>
+         W.SLS.CODE.DESC = DISP.REC<3,I>
+         W.RATE = DISP.REC<4,I>
+         CRT @(0,ROW):I "R#3"
+         CRT @(04,ROW):W.ID.SLS.CODE "R#4"
+         CRT @(09,ROW):W.SLS.CODE.GROUP "R#5"
+         CRT @(15,ROW):W.SLS.CODE.DESC[1,50] "L#50"
+         CRT @(74,ROW):OCONV(W.RATE,"MR2") "R#6"
+      NEXT I
+
+      LAST.PG = INT(MAX.LINES/12)+1
+
+*IF USER.NAME = "NPRATT" THEN
+*   CRT @(0,22):"END 9000  DISP.REC<4> ":DISP.REC<4> :
+*   INPUT ZZ
+*END
+
+      RETURN
+
+*
+      SETUP.SCREEN1 :
+*
+      CRT @(-1)
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+      SCREEN1 =  @(0,3):"   Initial Salesman    : "
+      SCREEN1 := @(0,4):"   Servicing Salesman  : "
+      SCREEN1 := @(0,5):STR("-",80)
+      SCREEN1 := @(73,5):"SCREEN1"
+
+      CRT SCREEN1
+
+*
+      RETURN
+*
+      DISPLAY.DATA1 :
+*
+
+      DATA1 =  ""
+      DATA1 := @(25,03):INIT.SLSMAN.NAME
+      DATA1 := @(25,04):SERVC.SLSMAN.NAME
+
+
+*
+      CRT DATA1
+
+*CALL ELINE("")
+*
+      RETURN
+
+*
+      SETUP.SCREEN2 :
+*
+      CRT @(-1)
+
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+      SCREEN2 =  @(0,3):"   Initial Salesman    : "
+      SCREEN2 := @(0,4):"   Servicing Salesman  : "
+      SCREEN2 := @(0,6):STR("-",80)
+      SCREEN2 := @(73,6):"SCREEN2"
+      SCREEN2 := @(0,7):"   Agreement Signed"
+      SCREEN2 := @(0,8):"   ----------------"
+      SCREEN2 := @(0 , 9):"LN#   From      To"
+      SCREEN2 := @(40, 9):"LN#   From      To"
+      SCREEN2 := @(0 ,10):"---   ----      --"
+      SCREEN2 := @(40,10):"---   ----      --"
+
+      FOR II = 1 TO 22
+         IF INT(II/12) = 0 THEN
+            CS.ROW = II+10
+            CS.COL = 0
+         END ELSE
+            CS.ROW = II-1
+            CS.COL = 40
+         END
+         SCREEN2 := @(CS.COL,CS.ROW):II "R#3"
+      NEXT II
+
+      CRT SCREEN2
+*
+      RETURN
+*
+      DISPLAY.DATA2 :
+*
+      DATA2 = ''
+      DATA2 := @(25,03):INIT.SLSMAN.NAME
+      DATA2 := @(25,04):SERVC.SLSMAN.NAME
+
+      FOR DT = 1 TO 22
+         AGW.DT.FROM = COMM.INDX.REC2<1,DT>
+         AGW.DT.TO   = COMM.INDX.REC2<2,DT>
+         IF AGW.DT.FROM NE '' THEN
+            IF INT(DT/12) = 0 THEN
+               CS.ROW = DT+10
+               CS.COL = 6
+            END ELSE
+               CS.ROW = DT-1
+               CS.COL = 46
+            END
+
+            DATA2 := @(CS.COL,CS.ROW) : OCONV(AGW.DT.FROM,"D2/") : "  "
+            DATA2 := OCONV(AGW.DT.TO,"D2/")
+         END
+      NEXT DT
+
+      CRT DATA2
+*CRT @(0,22):" AFTER DATA2 ":;INPUT QQ
+*
+      RETURN
+
+*
+      SETUP.SCREEN3 :
+*
+      CRT @(-1)
+
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+      SCREEN3 = @(0,3):"   Initial Salesman    : "
+      SCREEN3 := @(0,4):"   Servicing Salesman  : "
+      SCREEN3 := @(0,6):"   Commission Salesman : "
+*SCREEN3 := @(0,7):"   -------------------   "
+
+      SCREEN3 := @(0,7):STR("-",80)
+      SCREEN3 := @(73,7):"SCREEN3"
+
+      SCREEN3 := @(52,3):"Agreement DT From : "
+      SCREEN3 := @(52,4):"Agreement DT To   : "
+*SCREEN3 := @(52,3):"Agreement DT Effective DT"
+
+      SCREEN3 := @(0,8):"LN#   Code.  Name                         LN#   Code.  Name"
+      SCREEN3 := @(0,9):"---   -----  -------------------------    ---   -----  ------------------------*"
+
+      FOR II = 1 TO 24
+         IF INT(II/13) = 0 THEN
+            CS.ROW = II+9
+            CS.COL = 0
+         END ELSE
+            CS.ROW = II-3
+            CS.COL = 42
+         END
+         SCREEN3 := @(CS.COL,CS.ROW):II "R#3"
+      NEXT II
+
+      CRT SCREEN3
+*
+      RETURN
+*
+      DISPLAY.DATA3 :
+*
+
+      CRT @(25,03):INIT.SLSMAN.NAME
+      CRT @(25,04):SERVC.SLSMAN.NAME
+*CRT @(25,05):COMM.SLSMAN.NAME
+      CRT @(72,03):AGREE.BEGIN.DT'D2/'
+      IF AGREE.END.DT = '' THEN
+         CRT @(76,04):"OPEN"
+      END ELSE
+         CRT @(72,04):AGREE.END.DT'D2/'
+      END
+
+      DATA3 = ''
+
+      FOR DS = 1 TO 24
+         COMM.SLSMAN.ID = COMM.INDX.REC2<3,DTS.SELECT1,DS>
+         IF COMM.SLSMAN.ID NE '' THEN
+            IF INT(DS/13) = 0 THEN
+               CS.ROW = DS+9
+               CS.COL = 0
+            END ELSE
+               CS.ROW = DS-3
+               CS.COL = 42
+            END
+            COMM.SLSMAN.ID = COMM.INDX.REC2<3,DTS.SELECT1,DS>
+            IF COMM.SLSMAN.ID = 'ALL' THEN
+               COMM.SLSMAN.NAME = 'ALL'
+            END ELSE
+               READV COMM.SLSMAN.NAME FROM F.SLSMAN, COMM.SLSMAN.ID, 1 ELSE COMM.SLSMAN.NAME = ''
+            END
+            COMM.SLSMAN.NAME = COMM.SLSMAN.ID:"  ":COMM.SLSMAN.NAME "L#20"
+            DATA3  := @(CS.COL,CS.ROW):DS "R#3" :SPACE(3):COMM.SLSMAN.NAME
+         END
+      NEXT DS
+
+      CRT DATA3
+*
+      RETURN
+*
+      SETUP.SCREEN4 :
+*
+      CRT @(-1)
+
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+      SCREEN4 =  @(0,3):"   Initial Salesman    : "
+      SCREEN4 := @(0,4):"   Servicing Salesman  : "
+      SCREEN4 := @(0,5):"   Commission Salesman : "
+      SCREEN4 := @(0,6):STR("-",80)
+      SCREEN4 := @(73,6):"SCREEN4"
+      SCREEN4 := @(52,3):"Agreement DT From : "
+      SCREEN4 := @(52,4):"Agreement DT To   : "
+*SCREEN4 := @(52,3):"Agreement DT Effective DT"
+
+*SCREEN4 := @(0,7):"   Effective Dates"
+*SCREEN4 := @(0,8):"   ---------------"
+
+      SCREEN4 := @(0,7):"   Paid on Invoice Created"
+      SCREEN4 := @(0,8):"   -----------------------"
+      SCREEN4 := @(0 , 9):"LN#   From      To"
+      SCREEN4 := @(40, 9):"LN#   From      To"
+      SCREEN4 := @(0 ,10):"---   ----      --"
+      SCREEN4 := @(40,10):"---   ----      --"
+
+      FOR II = 1 TO 22
+         IF INT(II/12) = 0 THEN
+            CS.ROW = II+10
+            CS.COL = 0
+         END ELSE
+            CS.ROW = II-1
+            CS.COL = 40
+         END
+         SCREEN4 := @(CS.COL,CS.ROW):II "R#3"
+      NEXT II
+
+      CRT SCREEN4
+*
+      RETURN
+*
+      DISPLAY.DATA4 :
+*
+
+      CRT @(25,03):INIT.SLSMAN.NAME
+      CRT @(25,04):SERVC.SLSMAN.NAME
+      CRT @(25,05):COMM.SLSMAN.NAME
+      CRT @(72,03):AGREE.BEGIN.DT'D2/'
+      IF AGREE.END.DT = '' THEN
+         CRT @(76,04):"OPEN"
+      END ELSE
+         CRT @(72,04):AGREE.END.DT'D2/'
+      END
+
+      DATA4 = ''
+      FOR DT = 1 TO 22
+         W.DT.FROM = SLS.COMM.REC<1,DT>
+         W.DT.TO   = SLS.COMM.REC<2,DT>
+         IF W.DT.FROM NE '' THEN
+            IF INT(DT/12) = 0 THEN
+               CS.ROW = DT+10
+               CS.COL = 6
+            END ELSE
+               CS.ROW = DT-1
+               CS.COL = 46
+            END
+
+            DATA4 := @(CS.COL,CS.ROW) : OCONV(W.DT.FROM,"D2/") : "  "
+            DATA4 := OCONV(W.DT.TO,"D2/")
+         END
+      NEXT DT
+
+      CRT DATA4
+
+*
+      RETURN
+
+      SETUP.SCREEN5 :
+*
+      CRT @(-1)
+
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+      SCREEN5 = @(0,3):"   Initial Salesman    : "
+      SCREEN5 := @(0,4):"   Servicing Salesman  : "
+      SCREEN5 :=  @(0,5):"   Commission Salesman : "
+      SCREEN5 := @(0,6):STR("-",80)
+      SCREEN5 := @(73,6):"SCREEN5"
+      SCREEN5 := @(52,3):"Agreement DT From : "
+      SCREEN5 := @(52,4):"Agreement DT To   : "
+      SCREEN5 := @(0,7):" LN Code Group Description  [Date Inv. created          thru         ]    Rate %"
+      SCREEN5 := @(0,8):"--- ---- ----- ---------------------------------------------------------- ------"
+
+      FOR SS = 9 TO 21
+         SC.LN = SS-8
+         CRT @(0,SS) : SC.LN "R#3"
+      NEXT SS
+
+      CRT SCREEN5
+*
+      RETURN
+*
+      DISPLAY.DATA5 :
+*
+      CRT @(25,03):INIT.SLSMAN.NAME
+      CRT @(25,04):SERVC.SLSMAN.NAME
+      CRT @(25,05):COMM.SLSMAN.NAME
+      CRT @(72,03):AGREE.BEGIN.DT'D2/'
+      IF AGREE.END.DT = '' THEN
+         CRT @(76,04):"OPEN"
+      END ELSE
+         CRT @(72,04):AGREE.END.DT'D2/'
+      END
+
+      CRT @(47,07):BEGIN.DT'D2/'
+      IF END.DT = '' THEN
+         CRT @(61,07):"OPEN"
+      END ELSE
+         CRT @(61,07):END.DT'D2/'
+      END
+
+      GOSUB 9000
+
+*
+      RETURN
+*
+      BUILD.DETAIL.ARRAY :
+*
+      DISP.REC = ''
+
+      LOCATE BEGIN.DT IN SLS.COMM.REC<1> BY "AR" SETTING BDT.POS THEN
+         SLS.CODES = SLS.COMM.REC<3,BDT.POS>
+         N.SC = DCOUNT(SLS.CODES,@SVM)
+*
+         FOR II = 1 TO N.SC
+            ID.SLS.CODE = SLS.CODES<1,1,II>
+            FND.CODE = 0
+            READ SLS.CODE.REC FROM F.SALES.CODE, ID.SLS.CODE THEN
+               W.SLS.CODE = ID.SLS.CODE
+               W.SLS.CODE.DESC = SLS.CODE.REC<10>
+               W.SLS.GROUP     = SLS.CODE.REC<8>
+               FND.CODE = 1
+            END
+
+            GR.DESC = ''
+            LOCATE ID.SLS.CODE IN GROUPS<1> SETTING GPOS THEN
+               W.SLS.CODE = ID.SLS.CODE
+               W.SLS.CODE.DESC = GROUPS<2,GPOS>
+               W.SLS.GROUP     = W.SLS.CODE
+               FND.CODE = 1
+            END
+            IF ID.SLS.CODE = 'ALL' THEN
+               W.SLS.CODE = ID.SLS.CODE
+               W.SLS.CODE.DESC = 'ALL'
+               W.SLS.GROUP     = 'ALL'
+               FND.CODE = 1
+            END
+            IF FND.CODE THEN
+               DISP.REC<1,-1> = W.SLS.CODE
+               DISP.REC<2,-1> = W.SLS.GROUP
+               DISP.REC<3,-1> = W.SLS.CODE.DESC
+               DISP.REC<4,-1> = SLS.COMM.REC<4,BDT.POS,II>
+            END
+         NEXT II
+      END
+
+*
+      RETURN
+*
+      INIT.VARS :
+*
+      MASK.CHAR = ''
+      DISP.REC = ''
+      MODE.CNT = 0
+      KEY.SUFFIX = ''
+
+      SLS.COMM.REC = ''
+
+      PG.CNT = 1
+
+
+      COMM.SLSMAN.ID  = ""
+      INIT.SLSMAN.ID  = ""
+      SERVC.SLSMAN.ID = ""
+
+      INIT.SLSMAN.ID.HOLD  = ""
+      SERVC.SLSMAN.ID.HOLD = ""
+
+      COMM.SLSMAN.NAME   = ""
+      INIT.SLSMAN.NAME   = ""
+      SERVC.SLSMAN.NAME  = ""
+
+      BEGIN.DT = ""
+      END.DT   = ""
+
+      LAST.BEGIN.DT = ""
+      LAST.END.DT   = ""
+
+      AGREE.BEGIN.DT = ""
+      AGREE.END.DT   = ""
+
+      LAST.AGREE.END.DT = ""
+      LAST.AGREE.BEGIN.DT = ""
+
+      NEW.ITEM = 0
+
+      COMM.INDX.REC2 = ""
+
+      DATE.ARRAY  = ""
+
+      RETURN
+
+POP.UP.LIST.OF.SALESMEN:***
+
+      SALESMAN.CODE=''
+      IF SALESMAN.LIST='' THEN
+         EXECUTE 'SSELECT AR.SLSMAN.1000.1 BY NAME' CAPTURING OUTPUT
+         NUM.SALESMAN=@SELECTED
+*        IF NUM.SALESMAN=0 THEN
+         IF NUM.SALESMAN < 1 THEN
+            CALL ELINE('No salesmen on file.')
+            SELECTION='NO DATA'
+            RETURN
+         END
+         DONE=0
+         LOOP
+            READNEXT SALESMAN.ID ELSE DONE=1
+         UNTIL DONE=1
+            READ SLSM.REC FROM F.SLSMAN,SALESMAN.ID THEN
+               SALESMAN.LIST<-1>=SPACE(11):SALESMAN.ID'R%5':SPACE(10):SLSM.REC<1>'L#50'
+            END
+         REPEAT
+         FOR X=1 TO NUM.SALESMAN
+            SALESMAN.LIST<X>:=SPACE(79-LEN(SALESMAN.LIST<X>))
+         NEXT X
+         HEADING=' Salesman Number          Salesman Name'
+         HEADING:=SPACE(79-LEN(HEADING))
+      END
+      SELECTION=''
+      CRT @(0,23):'Select Principle Salesman for this account.':@(-4):
+      CALL POP.UP.LIST(SALESMAN.LIST,HEADING,7,16,SELECTION)
+      IF SELECTION#'E' THEN              ; * Exited POP.UP.LIST with no choice
+         SALESMAN.CODE=TRIM(SALESMAN.LIST<SELECTION>[12,5])
+      END
+      RETURN
+*
+      CHECK.EFFECTIVE.DATES :
+*
+      DT.ERR = ''
+      NEW.BEGIN.DT = BEGIN.DT
+      NEW.END.DT   = END.DT
+
+      IF NEW.END.DT NE "" THEN
+         IF NEW.END.DT LT NEW.BEGIN.DT THEN
+            CALL ELINE("To date may not be before From date")
+            DT.ERR = 1
+         END
+      END
+
+      TDTS = DCOUNT(SLS.COMM.REC<1>,@VM)
+
+      IF NEW.BEGIN.DT GT LAST.BEGIN.DT AND NEW.END.DT GT LAST.END.DT THEN
+         IF NEW.BEGIN.DT GT LAST.END.DT THEN
+            NULL
+         END ELSE
+            CALL ELINE("New FROM date must be after latest effective TO date")
+            DT.ERR = 1
+         END
+      END ELSE
+         IF NEW.BEGIN.DT LE LAST.BEGIN.DT THEN
+            CALL ELINE("New FROM date is less than OR equal to the oldest effective FROM date")
+            DT.ERR = 1
+         END
+         IF NEW.END.DT NE "" THEN
+            IF NEW.END.DT LE LAST.END.DT THEN
+               CALL ELINE("New TO date is less than OR equal to the oldest effective TO date")
+               DT.ERR = 1
+            END
+         END
+      END
+
+      IF NEW.BEGIN.DT LT AGREE.BEGIN.DT THEN
+         CALL ELINE("New FROM date must be after Agreement FROM date - ":OCONV(AGREE.BEGIN.DT,'D2/'))
+         DT.ERR = 1
+      END
+
+      IF NEW.END.DT GT AGREE.END.DT AND AGREE.END.DT NE '' THEN
+         CALL ELINE("New TO date must be before Agreement TO date - ":OCONV(AGREE.END.DT,'D2/'))
+         DT.ERR = 1
+      END
+
+*
+      RETURN
+*
+      CHECK.AGREEMENT.DATES :
+*
+      DT.ERR = ''
+      NEW.AGREE.BEGIN.DT = AGREE.BEGIN.DT
+      NEW.AGREE.END.DT   = AGREE.END.DT
+
+      IF NEW.AGREE.END.DT NE "" THEN
+         IF NEW.AGREE.END.DT LT NEW.AGREE.BEGIN.DT THEN
+            CALL ELINE("To date may not be before From date")
+            DT.ERR = 1
+         END
+      END
+
+      TDTS = DCOUNT(COMM.INDX.REC2<1>,@VM)
+
+      IF NEW.AGREE.BEGIN.DT GT LAST.AGREE.BEGIN.DT AND NEW.AGREE.END.DT GT LAST.AGREE.END.DT THEN
+         IF NEW.AGREE.BEGIN.DT GT LAST.AGREE.END.DT THEN
+            NULL
+         END ELSE
+            CALL ELINE("New FROM date must be after latest agreement TO date")
+            DT.ERR = 1
+         END
+      END ELSE
+         IF NEW.AGREE.BEGIN.DT LE LAST.AGREE.BEGIN.DT THEN
+            CALL ELINE("New FROM date is less than OR equal to the oldest agreement FROM date")
+            DT.ERR = 1
+         END
+         IF NEW.AGREE.END.DT NE "" THEN
+            IF NEW.AGREE.END.DT LE LAST.AGREE.END.DT THEN
+               CALL ELINE("New TO date is less than OR equal to the oldest agreement TO date")
+               DT.ERR = 1
+            END
+         END
+      END
+*
+      RETURN
+*
+      EXIT.HERE :
+*
+      STOP

@@ -1,0 +1,207 @@
+***********************************************************************
+* Analyze bills acted upon by auditors
+* Copyright (c) AFS Logistics, LLC., 2002
+*
+* AUTHOR : Owen Holman
+* Date   : January 2002
+***********************************************************************
+*************************************************************************
+!
+* Include the ODBC definitions
+!
+$INCLUDE UNIVERSE.INCLUDE ODBC.H
+
+      form = "T##########"
+      dash = "----------"
+      Expect = ""
+      NULL=""
+      EOL=CHAR(13):CHAR(10)
+      TOT.DIV=0
+      TOT.CV=0
+
+      MODE='B'
+      ACTION='A'
+      CALL GET.USER(USER)
+      IF USER#'GBINO' THEN STOP
+
+      GOSUB SETUP.SQL
+
+      STMT='SSELECT AR.SLSMAN.1000.1'
+      EXECUTE STMT RTNLIST SLSREP.LIST CAPTURING RESULTS
+      NUM.SLSREPS=@SELECTED
+      OPEN '','AR.SLSMAN.1000.1' TO F.SLSREP ELSE ABORT 201,'AR.SLSMAN.1000.1'
+      CRT @(0,0):@(-1):@(0,3):TIMEDATE():' Processing Clients...'
+
+      SLSREP.EOF=0
+      SLSREP.CNT=0
+      LOOP
+         READNEXT SLSREP.ID FROM SLSREP.LIST ELSE SLSREP.EOF=1
+      UNTIL SLSREP.EOF DO
+         SLSREP.CNT+=1
+*        SLSREP.PCT=ICONV(SLSREP.CNT/NUM.SLSREPS*100,'MR2')
+         CALL PROG.BAR(7,SLSREP.CNT,NUM.SLSREPS,1)
+         READ SLSREP.REC FROM F.SLSREP,SLSREP.ID THEN
+
+* DEFINE FIELDS TO UPDATE FROM SLSREP.REC HERE
+
+            SQL.SLSREP.ID = SLSREP.ID+0    ; * SLSREP NUMBER
+            SQL.SLSREP.NAME = SLSREP.REC<1>[1,50]  ; * NAME
+
+            Fn = "SQLExecute"
+            STATUS = SQLExecute(STMTENV)
+            GOSUB CKSTMTENV
+
+         END
+      REPEAT
+
+
+THE.END:***
+*     End of program
+*
+* Now just clean up the environment and leave
+*
+      Fn = "SQLFreeStmt"
+      STATUS = SQLFreeStmt(STMTENV, SQL.DROP)
+      GOSUB CKSTMTENV
+
+      Fn = "SQLDisconnect"
+      STATUS = SQLDisconnect(CONENV)
+      GOSUB CKCONENV
+
+      Fn = "SQLFreeConnect"
+      STATUS = SQLFreeConnect(CONENV)
+      GOSUB CKCONENV
+
+      Fn = "SQLFreeEnv"
+      STATUS = SQLFreeEnv(DBCENV)
+      IF STATUS <> SQL.SUCCESS THEN STOPM "Failed to release ODBC environment"
+
+      MVIN=''
+      MVIN<1>='MKerbow@afs.net'
+      MVIN<1,-1>='PDalton@afs.net'
+      MVIN<1,-1>='RKosik@afs.net'
+      MVIN<4>='AFS'
+      MVIN<5>='SQL Slsrep Load has finished!'
+      MVIN<6>='Check the &PH& file for the results.'
+      MVIN<7>=1
+*     CALL SENDMAIL.NEW(MVIN,MVOUT)
+      STOP
+
+SETUP.SQL:*
+!
+* Create an ODBC environment & a connection environment. Use the
+* SSQLSetConnectOption to specify the Operating system user ID and
+* password.
+
+      STATUS = SQLAllocEnv(DBCENV)
+      IF STATUS <> SQL.SUCCESS THEN STOP "Failed to allocate an ODBC environment"
+
+      STATUS = SQLAllocConnect(DBCENV,CONENV)
+      IF STATUS <> SQL.SUCCESS THEN STOP "Failed to allocate a CONNECT environment"
+
+*
+* Gather the data source name, userid and password for the server O/S and
+* information for the DBMS at the server. The DBMS info is often also
+* a user name and password, but not in all cases.
+*
+*     SOURCE='DEVSQL'
+*     UID="pick"
+*     PWD="pick"
+      SOURCE='PRODODS'
+      UID="uv_sql"
+      PWD="4@gAbreg"
+*
+* Establish a session to the specified data source
+*
+      PRINT "Connecting to data source: ": SOURCE
+      Fn = "SQLConnect"
+      STATUS = SQLConnect(CONENV,SOURCE,UID,PWD)
+      GOSUB CKCONENV
+*
+* Now allocate an SQL statement environment
+* to be used for executing SQL statements
+*
+      Fn = "SQLAllocStmt"
+      STATUS = SQLAllocStmt(CONENV,STMTENV)
+      GOSUB CKCONENV
+
+*
+* Note that we are using parameter markers in the SQL statement to facilitate
+* loading multiple rows of data efficiently
+*
+      OPT.STR = STR(' ?,',2)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_UpdSalesRep (":OPT.STR:")}"  ; * 2 PLACEHOLDERS
+
+      ROWNUM = 0
+      Fn = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*     STATUS = SQLSETPARAM(STMTENV, COL, SQL.B.BASIC, SQL.DATA.TYPE, PREC, SCALE, VAR.NAME) ; GOSUB CKSTMTENV
+*
+      STATUS = SQLSETPARAM(STMTENV, 1, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.SLSREP.ID) ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(STMTENV, 2, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.SLSREP.NAME) ; GOSUB CKSTMTENV
+
+      Fn = "SQLPrepare"
+      STATUS = SQLPrepare(STMTENV, INST1)
+      GOSUB CKSTMTENV
+
+      RETURN
+
+CKCONENV:
+
+      COUNT = -1
+      IF STATUS EQ -2 THEN CRT "INVALID CONNECTION HANDLE" ; RETURN TO THE.END
+      IF STATUS NE 0
+      THEN
+201:     *
+         ST = SQLERROR(-1,CONENV,-1,STATE,NATCODE,ERRTXT)
+         IF ST <> SQL.NO.DATA.FOUND
+         THEN
+            COUNT = 1
+            IF Expect NE 0 AND STATE = Expect AND ST <> SQL.NO.DATA.FOUND
+            THEN
+               CRT "Allowed error of ":STATE:" returned for func ":Fn
+               GOTO 299
+            END
+            ELSE
+               CRT "Status for ":Fn:" call is: ":STATUS
+               CRT "SQLSTATE,NATCOD are:" : STATE:"  ":NATCODE
+               CRT "Error text is"
+               CRT "    " : ERRTXT
+            END
+            IF ST = SQL.SUCCESS THEN GOTO 201
+         END
+         IF STATUS = -1 AND COUNT = 1 THEN CRT "EXITING CKCONENV" ; RETURN TO THE.END
+      END
+299:  *
+      RETURN
+
+CKSTMTENV:
+      IF STATUS EQ -2 THEN CRT "INVALID STATEMENT HANDLE" ; RETURN TO THE.END
+
+      IF STATUS EQ 100 THEN RETURN
+      IF STATUS NE 0
+      THEN
+301:     *
+         ST = SQLERROR(-1,-1,STMTENV,STATE,NATCODE,ERRTXT)
+         IF ST <> SQL.NO.DATA.FOUND
+         THEN
+            COUNT = 1
+            IF Expect NE 0 AND STATE = Expect AND ST <> SQL.NO.DATA.FOUND
+            THEN
+               CRT "Allowed error of ":STATE:" returned for func ":Fn
+               GOTO 399
+            END
+            ELSE
+               CRT "Status for ":Fn:" call is: ":STATUS
+               CRT "SQLSTATE,NATCOD are:" : STATE:"  ":NATCODE
+               CRT "Error text is"
+               CRT "    " : ERRTXT
+            END
+            IF ST = 0 THEN GOTO 301
+         END
+         IF STATUS = -1 AND COUNT = 1 THEN CRT "EXITING CKSTMTENV" ; RETURN TO THE.END
+      END
+399:  *
+      RETURN

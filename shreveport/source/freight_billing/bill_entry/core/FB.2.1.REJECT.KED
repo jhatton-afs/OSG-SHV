@@ -1,0 +1,2862 @@
+  SUBROUTINE FB.2.1.REJECT(VIN, VOUT, REJECT.REASONS, MAILING.ADDR)
+*****************************************************************************
+* Program name : FB.2.1.REJECT.KED
+* Author       : Jim T. Row
+* Date written : 
+* Library      : FBBP
+* COPYRIGHT (C) 2015 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* Payment Rejection Editor Screen
+*
+* Last updated by AFS (nmedduagh) at 14:57:18 on 02/04/2020.
+*
+* Start modification history
+* 041305 - JMK01 - ADJUST LETTER HEADING FOR ADDRESS
+* 101405 - JMK02 - ADD PITTSBURGH MAILING ADDRESS
+* 101606 - JMK03 - REMOVE CURSOR SAVE PRINTER COMMAND
+* 102006 - JMK04 - T200610200011 ENABLE REJECT CODE 27 AND CHANGE DARLENE TO WAYNE
+* 032307 - JMK05 - C200703220003 /  3/23/07 / Updating misroute letters and debit memos
+* 111108 - JMK06 - Adjust Pro Format Validation for multiple pro formats
+* 071211 - JMK07 - T110802 - Carrier Letter from ProComm ; remove "Logistics LLC" - should be AFS only.
+* 021612 - SWB01 - Proj 97 - Modify to utilize new 'Never Pay' and
+*                            Active/Inactive flags
+* 061812 - JMK08 - Change default 'Never Pay'/'Eventually Pay' from 'Y' to 'N'
+* 032014 - DRF01 - SysAid#4430 Requires an amount greater than zero to
+*                  be entered on rejected bills (BD were reported as
+*                  not requiring an amount)
+* 011416 - GRB01 - SysAid ticket 18327 change space down from 9 inchec to 8
+* 091416 - GRB02 - SysAid ticket 27058 change print option to default to no
+* 020420 - NKH01 - ACCU-760 Only display active reject codes
+* End modification history
+*
+******************************************************************************
+*
+* PARAMETERS:
+*    VIN<1> = Access Mode ("V" OR "E") View/Edit
+*    VIN<2> = CARRIER.ID
+*    VIN<3> = CLIENT.ID
+*    VIN<4> = PRO.ID
+*    VIN<5> = REJECT.FLAG
+*    VIN<6> = BILL.DATES
+*    VIN<7> = ACTUAL.CHGS
+*    VIN<8> = REJ.TYPES
+*    VIN<9> = PROCESSED DATE or NULL IF NOT PROCESSED
+*    VIN<10> = EDI Link    ; * SWB01 - Didn't add parameter, just added here
+*    VIN<11> = The REJECTION.ALTERED flag from FB.2.1.NW   ; * SWB01
+*
+* RETURNS:
+*    VOUT<1> = EXIT.KEY
+*    VOUT<2> = VERIFY.FLAG
+*    VOUT<3> = CHANGED
+*    VOUT<4> = MPRO.ID      ;* (MV) PRO.NUM,     PRO.NUM,     PRO.NUM,
+*    VOUT<5> = REJECT.FLAG
+*    VOUT<6> = BILL.DATES   ;* (MV) BILL.DATE,   BILL.DATE,   BILL.DATE,
+*    VOUT<7> = ACTUAL.CHGS  ;* (MV) ACTUAL.CHG,  ACTUAL.CHG,  ACTUAL.CHG,
+*    VOUT<8> = REJ.TYPES    ;* (MV) REJ.TYPE,    REJ.TYPE,    REJ.TYPE,
+*    VOUT<9> =              ;* <Y> If payit for a never pay
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_CLIENTS
+*
+* Equates
+*
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+      EQU RESTRICT.ACCESS TO FALSE
+      EQU DISABLE.PAYIT TO FALSE
+*     EQU REV.ON TO CHAR(14)
+*     EQU REV.OFF TO CHAR(15)
+      EQU PAGE.SIZE TO 14
+      EQU REJ.PAGE.SIZE TO 14
+      EQU REJECT.CODES.NAME TO 'REJECT.CODES'      ; * Record name
+      EQU MESSAGE.FLAG TO '!!'
+      EQU BREAK.CHAR TO '~'
+      EQU E.MSG TO 'PAY EVENTUALLY'
+      EQU N.MSG TO 'NEVER PAY     '
+      EQU A.MSG TO 'AUDIT REVIEW  '
+
+      TERM.TYPE=SYSTEM(7)
+      IF TERM.TYPE='REGENT60' THEN
+         REV.ON=CHAR(14)
+         REV.OFF=CHAR(15)
+      END ELSE
+         REV.ON=@(-13)
+         REV.OFF=@(-14)
+      END
+*
+* Process passed values
+*
+      ACCESS.MODE = VIN<1>
+      CARRIER.ID = VIN<2>
+      CLIENT.ID = VIN<3>
+      VERIFY.FLAG = OCONV(VIN<5>,'MCU')
+
+      MPRO.ID = VIN<4>                   ; * NOTE: THESE ARE SUB VALUES ON ATR 1!!
+      BILL.DATES = VIN<6>                ; * NOTE: THESE ARE SUB VALUES ON ATR 1!!
+      CARRIER.CHGS = VIN<7>              ; * NOTE: THESE ARE SUB VALUES ON ATR 1!!
+      REJ.TYPES = VIN<8>                 ; * NOTE: THESE ARE SUB VALUES ON ATR 1!!
+      PROC.DATE = VIN<9>                 ; * NOTE: THESE ARE SUB VALUES ON ATR 1!!
+      EDI.LINK = VIN<10>
+      REJECTION.ALTERED = VIN<11>        ; * SWB01
+
+* Change old Reject Bills to Eventually Pay
+
+*   IF REJ.TYPES<1,1>='' THEN REJ.TYPES<1,1>='E'
+      PRO.ID = MPRO.ID<1>
+*
+* STATIC Disabled Rejection Entries
+*
+
+      T.MAILING.ADDR = ''
+*
+* Store orginal values for "Changed" checking...
+*
+      NEW.REJECT.REASONS = REJECT.REASONS
+      NEW.MAILING.ADDR = MAILING.ADDR
+      NEW.VERIFY.FLAG = VERIFY.FLAG
+      NEW.BILL.DATES = BILL.DATES
+      NEW.CARRIER.CHGS = CARRIER.CHGS
+      NEW.REJ.TYPES = REJ.TYPES
+      IN.REJECT=1
+      NO.EXIT=0
+      CHANGED = 0
+      MAX.NUM=''
+*
+* Initialize GENERAL APPLICATION variables
+*
+      BAD.ADDRESS.STRING=''
+      BAD.ADDRESS.STRING<1>='Incorrect Billing Address. Bills Should be Mailed to:'
+      BAD.ADDRESS.STRING<2>='[BLANK]'
+
+      BAD.ADDRESS.STRING<4>='c/o AFS, LLC'         ; * JMK07
+      BAD.ADDRESS.STRING<5>='P.O. BOX 18170'
+      BAD.ADDRESS.STRING<6>='Shreveport, LA 71138-1170'
+      PROMPT''
+   
+      CALL GET.USER.NEW(USER.NAME,CH.NUM)
+      PROG.NAME='FB.2.1.REJECT'
+      PROG.DESC='Bill Payment Rejection'
+      PACK.NAME='USER :':USER.NAME       ; * Might want to change this.
+     CO.NAME='AFS Logistics, LLC'       ; * JMK07
+
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.2.1.REJECT.KED' ; UPL.VOUT = ''        ; * NPR_UPL 04/23/2010
+      UPL.VIN<3>=USER.NAME
+      UPL.VIN<4>=CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      DEBUG.MSG = ''
+      MAT CLIENT.REC = ''
+      NEED.TO.PRINT = FALSE
+      IF REJ.TYPES='N-NEW' THEN
+         NEED.TO.PRINT='TRUE'
+         REJ.TYPES='N'
+      END
+      NUM.PROS = 1 ; 
+      
+      
+      WIDTH = 80
+      CTR = INT(WIDTH/2)
+      REVON = REV.ON
+      REVOFF = REV.OFF
+      SELECTED = ''
+      SHOW.USERS = FALSE
+      REJ.HELP.LINE = 1
+      REJ.HELP=''
+      REJ.HELP<1> = "REJC: ##-Select Rejection Numb [-] or [B]ack 1 Page[+] or [F]orward 1 Page [>]"
+      REJ.HELP<2> = "REJC: [T]op Page [L]ast Page [X]-Back [EX]it Program and lose changes      [>]"
+      EDIT.HELP.LINE = 1
+      EDIT.HELP=''
+      IF ACCESS.MODE # 'V' THEN
+         PREFIX='EDIT: '
+         EDIT.HELP<-1> = "EDIT: [E]nter Msg [A]dd Code [R]emve Rej [S]how Details [H]ide Details     [>]"
+         EDIT.HELP<-1> = "EDIT: [REJECTIT]-Reject Payment [PAYIT]-Approve Payment [M]-Add More Pro#s [>]"
+         EDIT.HELP<-1> = "EDIT: [ADDRESS]-View/Change the address information                        [>]"
+         EDIT.HELP<-1> = "EDIT: [PROS]-View/Change the listing of Pro Numbers on this reject letter  [>]"
+      END ELSE
+         PREFIX='VIEW: '
+      END
+      EDIT.HELP<-1> = PREFIX:"[T]op Page [L]ast Page [-] or [B]ack 1 Page [+] or [F]orward 1 Page  [>]"
+      EDIT.HELP<-1> = PREFIX:"[P]rint Bill Reasons  [HELP] Display [ENTER]-Accept Changes          [>]"
+      EDIT.HELP<-1> = PREFIX:"[X]-Back to Entry/Loose Changes [EX]it Program/Loose Changes         [>]"
+      NUM.EDIT.HLP.LINES = DCOUNT(EDIT.HELP,@AM)
+
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN 'DICT','CLIENTS' TO F.DICT.CLIENTS ELSE
+         CALL OPEN.ABORT("DICT CLIENTS",PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN 'DICT','CARRIERS' TO F.DICT ELSE
+         CALL OPEN.ABORT("DICT CARRIERS",PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      OPEN '','BCTRL' TO F.BCTRL ELSE    ; * JMK02
+         CALL OPEN.ABORT('BCTRL',PROG.NAME)        ; * JMK02
+      END                                ; * JMK02
+      READ REJECT.CODES FROM F.TABLES,REJECT.CODES.NAME ELSE
+         CALL ELINE('FB.2.1.REJECT: Could not load ':REJECT.CODES.NAME:' from FB.TABLES.')
+         STOP
+      END
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.HIST ELSE
+         CALL ELINE("FB.2.1.REJECT: Cannot open FB.BILLS.HIST for client ":CLIENT.ID)
+         STOP
+      END
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         CALL ELINE("FB.2.1.REJECT: Cannot open FB.BILLS.CRX")
+         STOP
+      END
+
+      MAIL.ADD='P.O. Box 18170'          ; * JMK02
+      MAIL.CSZ='Shreveport, LA 71138-1170'         ; * JMK02
+      READ BCTRL.REC FROM F.BCTRL,USER.NAME THEN   ; * JMK02
+         LOC.ID=BCTRL.REC<23>            ; * JMK02
+         IF LOC.ID='00045' THEN          ; * JMK02
+            MAIL.ADD='P.O. Box 4448'     ; * JMK02
+            MAIL.CSZ='Pittsburgh, PA 15205-4448'   ; * JMK02
+            BAD.ADDRESS.STRING<5>='P.O. Box 4448'  ; * JMK02
+            BAD.ADDRESS.STRING<6>='Pittsburgh, PA 15205-4448'          ; * JMK02
+         END                             ; * JMK02
+      END                                ; * JMK02
+      GOSUB LOAD.CARRIER.DESC
+      GOSUB LOAD.CLIENT.DESC
+      IF NEW.MAILING.ADDR<1> = '' THEN
+         NEW.MAILING.ADDR<1>=CARRIER.NAME
+         NEW.MAILING.ADDR<2>=CARRIER.ADDR
+         NEW.MAILING.ADDR<3>=CARRIER.CITY:', ':CARRIER.STATE:' ':CARRIER.ZIP
+         ADDRESS.NEW = TRUE
+      END ELSE
+         ADDRESS.NEW = FALSE
+      END
+*
+* Check for address Problems
+*
+      IF NEW.MAILING.ADDR<2,2>#'' AND NEW.MAILING.ADDR<4>='' THEN
+         NEW.MAILING.ADDR<4> = NEW.MAILING.ADDR<3>
+         NEW.MAILING.ADDR<3> = NEW.MAILING.ADDR<2,2>
+         NEW.MAILING.ADDR<2> = NEW.MAILING.ADDR<2,1>
+      END
+      NEW.MAILING.ADDR=CHANGE(NEW.MAILING.ADDR,@VM,' ')
+      NUM.REJ.CODES = DCOUNT(REJECT.CODES<1>, @VM)
+      REJ.PAGE = 1
+      GOSUB SETUP.REJ.LIST.DSP
+*
+      GOSUB SETUP.LIST.DSP
+
+*    IF ACCESS.MODE # 'V' AND PROC.DATE<1>='' THEN
+      IF ACCESS.MODE # 'V' THEN
+         IF NEW.VERIFY.FLAG='' OR NEW.REJ.TYPES='' OR (NEW.REJ.TYPES='A' AND BCTRL.REC<14>='A') THEN
+            GOSUB MODIFY.REJ.BILL.LIST
+            IF REJ.BACK THEN
+               EXIT.KEY='X'
+               GOTO EXIT.POINT
+            END
+         END
+      END
+******************************************************************
+MAIN.START:
+******************************************************************
+* Initialize variables
+
+      GOSUB DSP.EDIT.SCN                 ; * Draw screen layout...
+      EXIT.KEY = ''                      ; * Key use to exit "X" or "EX"
+      PAGE = 1                           ; * Current Page Number
+*
+* DO NOT REMOVE THESE LINES OF CODE OR YOU WILL FUCK OVER THE
+* FREIGHT BILL ENTRY!  If these lines must be removed, make sure
+* that ONLY rejection codes and messages are changed, not bill dates,
+* amounts, NEVER PAY/EVENTUALLY PAY, or Rejection Status is altered!
+*
+      IF PROC.DATE<1> AND ACCESS.MODE#'V' THEN
+*
+* Trap invalid parameters!  You can not EDIT a processed bill. Change
+* access type to VIEW only.
+*
+         ACCESS.MODE='V'
+         CALL ELINE('NOTICE: Can not MODIFY this bill! It was processed on ':PROC.DATE<1>'D2/')
+      END
+UD.1:
+*
+* Display current position
+*
+      GOSUB UPDATE.DISPLAY
+UD.2:
+      MASK = '########'
+      HELP = EDIT.HELP<EDIT.HELP.LINE>[1,77]
+      CRT @(0,22):'Option :':@(-4):
+      CALL GEN.IN(8,22,MASK,'',Q,0,15,'','',2,8,22,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'    ; *  Exit Program
+            STOP
+         CASE QI='X'     ; *  Exit Program
+            EXIT.KEY='X'
+            GOSUB CHECK.NEVER.PAYS       ; * Check for NEVER PAYS and no reject reasons.
+         CASE QI=''               ; *  Exit Program
+            IF IN.REJECT THEN
+               CALL ELINE("USER INPUT REQUIRED!")
+               IN.REJECT=0
+               NO.EXIT=1
+            END ELSE
+               IF IN.REJECT ELSE
+                  EXIT.KEY = ' '
+                  GOSUB CHECK.NEVER.PAYS           ; * Check for NEVER PAYS and no reject reasons.
+                  IF EXIT.KEY AND NUM.LINES > 0 AND NEED.TO.PRINT THEN
+             
+             
+                     YN.MSG = 'Do you wish to print a Send Back Sheet before exiting?'
+                   ****  YN.MASK = 'Y '    ; * GRB02
+                   YN.MASK = 'N '     ; * GRB02
+                     GOSUB ASK.Y.OR.N
+                     IF YN.ANSWER = 'X' THEN EXIT.KEY=''
+                     IF YN.ANSWER = 'Y' THEN
+                        GOSUB PRINT.LETTER
+                        GOSUB BUILD.TXT.FILE
+                     END
+                  END
+               END
+            END
+         CASE QI='>' OR QI='.'    ; *  Next Help Line
+            IF EDIT.HELP.LINE >=NUM.EDIT.HLP.LINES THEN
+               EDIT.HELP.LINE =1
+            END ELSE
+               EDIT.HELP.LINE+=1
+            END
+            GOTO UD.2
+         CASE QI='<' OR QI=','    ; * Prior Help Line
+            IF EDIT.HELP.LINE =1 THEN
+               EDIT.HELP.LINE =NUM.EDIT.HLP.LINES
+            END ELSE
+               EDIT.HELP.LINE-=1
+            END
+            GOTO UD.2
+         CASE QI='T' OR QI='TOP'         ; * Top Page
+            IF NUM.LINES > 0 THEN
+               PAGE = 1
+            END ELSE
+               CALL ELINE('Top of document.')
+               GOTO UD.2
+            END
+         CASE QI='L' OR QI='LAST'        ; * Last Page
+            IF NUM.LINES > 0 THEN
+               PAGE=INT(NUM.LINES/PAGE.SIZE)
+               IF REM(NUM.LINES,PAGE.SIZE) THEN PAGE+=1
+            END ELSE
+               CALL ELINE('Bottom of document.')
+               GOTO UD.2
+            END
+         CASE QI='B' OR QI='-'    ; * Go Back 1 Page
+            IF PAGE > 1 THEN
+               PAGE-=1
+            END ELSE
+               CALL ELINE('*** Top ***')
+               GOTO UD.2
+            END
+         CASE QI='F' OR QI='+'     ; * Go forward 1 Page
+            IF NUM.LINES>PAGE*PAGE.SIZE THEN
+               PAGE+=1
+            END ELSE
+               CALL ELINE('*** Bottom ***')
+               GOTO UD.2
+            END
+         CASE QI='?' OR QI='HELP'     ; * Help - List all Commands
+            CALL FB.DRAW.BOX(0,2,80,20,' ',' ')
+            CRT @(19, 4):'HELP SCREEN - List of Commands'
+
+            CRT @(3, 6):'B  - Go Back 1 Page                F  - Go Forward 1 Page'
+            CRT @(3, 7):'-  - Go Back 1 Page                +  - Go Forward 1 Page'
+            CRT @(3, 8):'T  - Goto Top of Table (TOP)       L  - Goto Last Page '
+            CRT @(3, 9):'>  - Next Help Line                <  - Prior Help Line'
+            CRT @(3,13):'X  - Exit - Lose Changes           EX - Exit program'
+            IF ACCESS.MODE # 'V' THEN
+               CRT @(3,10):'A  - Add Rejection Code            R  - Remove Selected Lines'
+               CRT @(3,11):'E  - Enter a Rejection Message     ## - Selects a Line to Remove'
+               CRT @(3,14):"M  - Add More Pro#'s to this rejection"
+               CRT @(3,15):'REVON    - Turn On Reverse Display REVOFF   - Turn Off Reverse Display'
+               CRT @(3,16):'SHOWUSER - Display User Info       HIDEUSER - Hide User Info'
+               CRT @(3,18):'REJECTIT - Marks a bill REJECTED   PAYIT    - Clears bill Rejection Status'
+            END
+            CRT @(38,17):'ADDRESS  - Enter/Edit Mailing Address'
+            CRT @( 3,19):'HELP     - This help screen        P        - Prints Send Back Letter'
+            CALL ELINE('Viewing HELP Screen.')
+            GOSUB DSP.EDIT.SCN
+
+         CASE QI = 'DEBUG'
+*
+* INTERNAL DEBUG STUFF - For Debugging help...
+*
+            CALL FB.DRAW.BOX(0,4,80,17,' ','')
+            CRT @(19, 6):'DEBUG SCREEN'
+
+            PRINT 'NUM.CODES       = ':NUM.CODES
+            PRINT STR('-',70):@(-4)
+            PRINT 'NUM.MSGS        = ':NUM.MSGS
+            PRINT STR('-',70):@(-4)
+            PRINT '1   = ':1
+            PRINT STR('-',70):@(-4)
+            PRINT '3   = ':3
+            PRINT STR('-',70):@(-4)
+            PRINT 'NEW.REJECT.REASONS<1> = ':NEW.REJECT.REASONS<1>
+            PRINT STR('-',70):@(-4)
+            PRINT 'NEW.REJECT.REASONS<2> = ':NEW.REJECT.REASONS<2>
+            PRINT STR('-',70):@(-4)
+            PRINT 'NEW.REJECT.REASONS<3> = ':NEW.REJECT.REASONS<3>
+            PRINT STR('-',70):@(-4)
+            PRINT 'NEW.REJECT.REASONS<4> = ':NEW.REJECT.REASONS<4>
+            PRINT STR('-',70):@(-4)
+            PRINT 'REJ.DSP.LIST<1> = ':REJ.DSP.LIST<1>
+            PRINT STR('-',70):@(-4)
+            PRINT 'REJ.DSP.LIST<2> = ':REJ.DSP.LIST<2>
+            PRINT STR('-',70):@(-4)
+            PRINT 'REJ.DSP.LIST<3> = ':REJ.DSP.LIST<3>
+            PRINT STR('-',70):@(-4)
+            PRINT 'REJ.DSP.LIST<4> = ':REJ.DSP.LIST<4>
+            PRINT STR('-',70):@(-4)
+            PRINT ' X  DSP.LIST<1,X>  DSP.LIST<2,X>  DSP.LIST<4,X>  DSP.LIST<5,X>  DSP.LIST<3,X>'
+            FOR X=1 TO NUM.LINES
+               STR.OUT = ''
+               STR.OUT = X'R#2':' ':DSP.LIST<1,X>'R#2':' ':DSP.LIST<2,X>'R#2':' ':DSP.LIST<4,X>'R#2':DSP.LIST<5,X>'R#2':' ':DSP.LIST<3,X>
+               PRINT STR.OUT
+            NEXT X
+            PRINT STR('-',70):@(-4)
+            PRINT
+            CALL ELINE('Viewing DEBUG Screen.')
+            GOSUB DSP.EDIT.SCN
+         CASE QI='PRINT' OR QI='P'       ; * Print Letter to printer
+            IF NUM.LINES > 0 THEN
+               YN.MSG = 'Are you ready to print the REJECT LETTER to your CURRENT PRINTER?'
+               YN.MASK = 'Y '
+               GOSUB ASK.Y.OR.N
+               IF YN.ANSWER = 'Y' THEN
+                  GOSUB PRINT.LETTER
+                  DEBUG
+                  GOSUB BUILD.TXT.FILE
+                  GOSUB DSP.EDIT.SCN
+               END
+            END ELSE
+               CALL ELINE('Nothing to print! Unable to print.')
+               GOTO UD.2
+            END
+
+         
+         CASE QI='SHOWUSER' OR QI='S'    ; * Show user info  
+            SHOW.USERS = TRUE
+            GOSUB SETUP.LIST.DSP
+            IF PAGE > NUM.PAGES THEN PAGE = NUM.PAGES
+         CASE QI='HIDEUSER' OR QI='H'    ; * Hide user info 
+            SHOW.USERS = FALSE
+            GOSUB SETUP.LIST.DSP
+            IF PAGE > NUM.PAGES THEN PAGE = NUM.PAGES
+         CASE QI='ADDRESS'      ; * Enter/Select Address Information 
+            GOSUB SELECT.ADDRESS
+            GOSUB DSP.EDIT.SCN
+         CASE QI='REVON'        ; * Turn Reverse ON
+            IF REVON = '' THEN
+               REVON = REV.ON
+               REVOFF = REV.OFF
+               CALL ELINE("Reverse Screen Highlighting is now ON!")
+            END ELSE
+               CALL ELINE("*** Reverse Screen Highlighting is already ON.")
+            END
+            GOTO UD.1
+         CASE QI='REVOFF'        ; * Turn Reverse OFF
+            IF REVON # '' THEN
+               REVON = ''
+               REVOFF = ''
+               CALL ELINE("Reverse Screen Highlighting is now OFF")
+            END ELSE
+               CALL ELINE("*** Reverse Screen Highlighting is already OFF.")
+            END
+            GOTO UD.1
+         CASE ACCESS.MODE ='V'
+            CALL ELINE('VIEW MODE:  Invalid Entry.')
+            GOTO UD.2
+*
+*
+*      START OF THE "EDIT" COMMANDS
+*
+*
+         CASE PROC.DATE<1>               ; * Don't allow editing of processed bills...
+            GOTO UD.2
+         CASE QI='A'        ; *  Add rejection code/line
+            GOSUB ADD.REJECTION.CODE
+            GOSUB DSP.EDIT.SCN
+         CASE QI='E'                 ; *  Enter A rejection message
+            GOSUB ADD.REJECTION.MSG
+            GOSUB DSP.EDIT.SCN
+         CASE QI='M'                 ; *  Add/Edit Multiple  Pro#s, Amts, Bill Dates, & Rej Types
+            IF VERIFY.FLAG='V' THEN
+               CALL ELINE('This bill is VERIFIED. You can not MODIFY a VERIFIED bill!')
+               GOTO UD.2
+            END
+            GOSUB MODIFY.REJ.BILL.LIST
+            GOSUB DSP.EDIT.SCN
+         CASE QI='PAYIT'
+* Check to see if we have multiple pros.
+* If we have Multiple Pros, then do not allow
+* the PAYIT option.
+*
+            IF DCOUNT(NEW.REJ.TYPES<1>,@VM) > 1 THEN
+               CALL ELINE('You have MULTIPLE PROS for this reject.  You can not mark multiple pros PAYABLE.')
+            END ELSE
+               IF DISABLE.PAYIT THEN
+                  CALL ELINE("You must delete this bill and rekey it to authorize it for payment.")
+               END ELSE
+                  BEGIN CASE
+                     CASE NEW.REJ.TYPES<1,1>='N'
+                        CALL ELINE("You cannot approve a never pay bill. Give to David to correct")
+                     CASE NEW.VERIFY.FLAG='R'
+                        NEW.VERIFY.FLAG=''
+                        NEW.REJ.TYPES<1,1>='E'     ; * Mark as eventually (tracking)
+                        VOUT<9>='Y'
+                        GOSUB DSP.EDIT.SCN         ; * Draw screen layout...
+                     CASE NEW.VERIFY.FLAG='V'
+                        CALL ELINE("Can not mark bill payable! The Bill is marked as verified!")
+                     CASE NEW.VERIFY.FLAG=''
+                        CALL ELINE("Can not mark bill payable! The Bill is NOT marked as payment rejected!")
+                  END CASE
+               END
+            END
+         CASE QI='REJECTIT'
+*
+* Make a bill NON payable
+*
+* Do not allow a bill with NO rejection reasons to be marked REJECT PAY,
+* we will later automaticly remove the NEVER PAY, if no rejection reasons
+* have been added before exiting.
+*
+            IF NUM.LINES THEN
+               BEGIN CASE
+                  CASE NEW.VERIFY.FLAG=''
+                     NEW.VERIFY.FLAG='R'
+                     GOSUB DSP.EDIT.SCN  ; * Draw screen layout...
+                  CASE NEW.VERIFY.FLAG='V'
+                     CALL ELINE('WARNING! THIS BILL IS ALREADY VERIFIED!')
+                     YN.MSG = 'Mark this VERIFIED bill as REJECTED? '
+                     YN.MASK = 'N '
+                     GOSUB ASK.Y.OR.N
+                     IF YN.ANSWER = 'Y' THEN
+                        NEW.VERIFY.FLAG='R'
+                        CALL ELINE('The bill is now rejected! You will have to REVERIFY the bill!')
+                     END
+                  CASE NEW.VERIFY.FLAG='R'
+                     CALL ELINE("Can not mark bill REJECTED! The Bill is ALREADY payment rejected!")
+               END CASE
+            END ELSE
+               CALL ELINE("Can not mark bill REJECTED! This bill does not have any rejection reasons!")
+            END
+         CASE QI='R'
+            IF NUM.REASONS = 0 THEN
+               CALL ELINE('Error!  There are no rejection reasons to remove.')
+               GOTO UD.2
+            END
+            IF PROC.DATE<1> THEN
+               CALL ELINE('WARNING! THIS BILL IS ALREADY PROCESSED!')
+               YN.MSG = 'Are you sure you wish to remove the reject reasons? '
+               YN.MASK = 'N '
+               GOSUB ASK.Y.OR.N
+               IF YN.ANSWER # 'Y' THEN GOTO UD.2
+            END
+*
+* Remove rejection code/line
+*
+            LOCATE TRUE IN SELECTED SETTING CHANGES.MADE THEN
+*
+* Verify choice with user
+*
+               FOR T.X = 1 TO NUM.LINES
+                  IF SELECTED<T.X> THEN
+*
+* This screen line was selected
+* Now find the screen line in the Display List
+*
+                     LOCATE T.X IN DSP.LIST<1> SETTING WHERE THEN
+*
+* Was this a "free form" entered message?
+*
+                        CODE = DSP.LIST<2,WHERE>
+                        WHERE = DSP.LIST<5,WHERE>
+                        IF CODE = MESSAGE.FLAG THEN
+                           NEW.REJECT.REASONS<3,WHERE>='DELETE ME'
+                        END ELSE
+                           NEW.REJECT.REASONS<1,WHERE>='DELETE ME'
+                        END
+                     END
+                  END
+               NEXT
+*
+* Remove marked Reject Reasons
+*
+               LOOP
+                  LOCATE 'DELETE ME' IN NEW.REJECT.REASONS<1> SETTING WHERE THEN
+                     FOUND.ONE=TRUE
+                     DEL NEW.REJECT.REASONS<1,WHERE>
+                     DEL NEW.REJECT.REASONS<2,WHERE>
+                  END ELSE
+                     FOUND.ONE=FALSE
+                  END
+               WHILE (FOUND.ONE)
+               REPEAT
+               LOOP
+                  LOCATE 'DELETE ME' IN NEW.REJECT.REASONS<3> SETTING WHERE THEN
+                     FOUND.ONE=TRUE
+                     DEL NEW.REJECT.REASONS<3,WHERE>
+                     DEL NEW.REJECT.REASONS<4,WHERE>
+                  END ELSE
+                     FOUND.ONE=FALSE
+                  END
+               WHILE (FOUND.ONE)
+               REPEAT
+
+
+               CUR.REJ.TYPE = NEW.REJ.TYPES<1, 1>  ; * SWB01
+               IF CUR.REJ.TYPE = 'E' THEN          ; * SWB01
+
+                  OTHER.REJ.TYPE = 'N'   ; * SWB01
+               END ELSE                  ; * SWB01
+                  OTHER.REJ.TYPE = 'E'   ; * SWB01
+               END                       ; * SWB01
+               YN.MSG = 'Rejection Type is ':CUR.REJ.TYPE:'. Do you want to change it to ':OTHER.REJ.TYPE:'? '           ; * SWB01
+
+               YN.MASK = 'N'             ; * SWB01 ; * JMK08
+               GOSUB ASK.Y.OR.N          ; * SWB01
+               IF YN.ANSWER = 'X' THEN EXIT.KEY=''           ; * SWB01
+               IF YN.ANSWER = 'Y' THEN   ; * SWB01
+                  NEW.REJ.TYPES<1, 1> = OTHER.REJ.TYPE       ; * SWB01
+               END                       ; * SWB01
+
+               GOSUB SETUP.LIST.DSP
+               IF PAGE > NUM.PAGES THEN PAGE = 1
+               IF NUM.LINES=0 THEN
+                  NEW.VERIFY.FLAG = ''
+                  GOSUB DSP.EDIT.SCN
+               END
+            END ELSE
+               CALL ELINE('You must first select which reason to remove.')
+            END
+            SELECTED = ''
+         CASE QI # '' AND NUM(QI)
+            IF NUM.REASONS = 0 THEN
+               CALL ELINE('Error!  There are no rejection reasons to select.')
+               GOTO UD.2
+            END
+            NUM.SEL = QI
+            IF NUM.SEL > 0 AND NUM.SEL <= NUM.REASONS THEN
+               LOCATE NUM.SEL IN DSP.LIST<1> SETTING WHERE THEN
+                  SELECTED<NUM.SEL> = NOT(SELECTED<NUM.SEL>)
+                  PAGE = DSP.LIST<4,WHERE>
+                  GOTO UD.1
+               END
+            END ELSE
+               CALL ELINE('Entry # "':NUM.SEL:'" is not a valid choice! Select an entry from 1 - ':NUM.REASONS)
+               GOTO UD.2
+            END
+         CASE QI='##'
+            CALL ELINE("To select an item, Type the item's number at the Option prompt.")
+            GOTO UD.2
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO UD.2
+      END CASE
+      IF NOT (EXIT.KEY) THEN GOTO UD.1
+      IF NO.EXIT ELSE CRT @(-1):
+******************************************************************
+EXIT.POINT:
+******************************************************************
+      EXIT.KEY=TRIM(EXIT.KEY)
+      IF NO.EXIT THEN
+         NO.EXIT=0
+         GO UD.1
+      END
+      VOUT<1>=EXIT.KEY
+      CHANGED=0
+
+      IF ACCESS.MODE # 'V' THEN
+         IF EXIT.KEY = '' THEN
+            GOSUB CHECK.FOR.CHANGE
+*If changes were made in this screen during this session in the Freight
+*Bill, preserve the CHANGES flag in this program which is the
+*REJECTIONS.ALTERED flag in FB.2.1.NW so that the user can repeatedly
+*come back in this screen from the Update prompt in FB.2.1.NW without
+*losing the changes.
+            IF NOT(CHANGED) AND REJECTION.ALTERED THEN CHANGED = REJECTION.ALTERED         ; * SWB01
+*
+* Return our new values
+*
+            REJECT.REASONS = NEW.REJECT.REASONS
+            MAILING.ADDR = NEW.MAILING.ADDR
+            VERIFY.FLAG = NEW.VERIFY.FLAG
+         END
+      END
+      VOUT<2> = VERIFY.FLAG
+      VOUT<3> = CHANGED
+      VOUT<4> = MPRO.ID<1>               ; * PRO
+      VOUT<6> = NEW.BILL.DATES<1>
+      VOUT<7> = NEW.CARRIER.CHGS<1>
+      VOUT<8> = NEW.REJ.TYPES<1>
+
+      RETURN
+*****************************************************************************
+SELECT.ADDRESS:
+*****************************************************************************
+      IN.REJECT=0
+*
+* Initialize Variables
+*
+      CALL FB.DRAW.BOX(0,2,80,20,' ','+=+|+=+|')
+      CALL FB.DRAW.BOX(0,2,80, 3,' ','+=+|+=+|')
+      CALL FB.PRINT.CENT(0,78,3,"SEND-BACK SHEET MAILING ADDRESS")
+      T.MAILING.ADDR = NEW.MAILING.ADDR
+      CHANGES.MADE = FALSE
+
+SA.REDRAW:
+      IN.REJECT=0
+      GOSUB SELECT.ADDRESS.REDRAW
+
+SA.REDRAW.1:
+      IN.REJECT=0
+      CRT @(0,22):'OPTION:':@(-4)
+      MASK = ' '
+      IF ACCESS.MODE ='V' THEN
+         HELP = "OPTIONS: 'X'-Back 'EX'-Exit"
+      END ELSE
+         HELP = "'1'-Client Address '2'-Carrier Address 'M'-Manual Entry ''-Continue 'EX'-Exit"
+      END
+      CALL GEN.IN(8,22,MASK,'',Q,0,4,'','',2,8,22,0,QI,HELP,0,23)
+      QI = TRIM(OCONV(QI,'MCU'))
+      BEGIN CASE
+         CASE QI='X' or QI=''
+
+         CASE QI='EX'
+            EXIT.KEY='EX'
+         CASE ACCESS.MODE = 'V'
+            CALL ELINE("VIEW ONLY MODE: Invalid Option.  Valid Options [X]-Back [EX]-Exit Program")
+            GOTO SA.REDRAW.1
+         CASE QI='1'
+            T.MAILING.ADDR=''
+            T.MAILING.ADDR<1>=CLIENT.NAME
+            T.MAILING.ADDR<2>=CLIENT.ADDR
+            T.MAILING.ADDR<3>=CLIENT.CITY:', ':CLIENT.STATE:' ':CLIENT.ZIP
+            CHANGES.MADE = TRUE
+         CASE QI='2'
+            T.MAILING.ADDR=''
+            T.MAILING.ADDR<1>=CARRIER.NAME
+            T.MAILING.ADDR<2>=CARRIER.ADDR
+            T.MAILING.ADDR<3>=CARRIER.CITY:', ':CARRIER.STATE:' ':CARRIER.ZIP
+            CHANGES.MADE = TRUE
+         CASE QI='M'
+SA.0:
+            IN.REJECT=0
+            DONE = FALSE
+            LINE=1
+            MASK = '#'
+            HELP = "ENTRY OPTIONS: ''-Finished [B]-Back up one line [C]-Clear [X]-Exit"
+            CRT @(0,22):'Enter the address for the Send-Back sheet.':@(-4):
+            LOOP
+            UNTIL (DONE)
+               MASK=T.MAILING.ADDR<LINE>
+               CALL GEN.IN(5,15+LINE,MASK,'',Q,0,73,'','',2,5,15+LINE,0,QI,HELP,0,23)
+               QI = OCONV(QI,'MCU')
+               IF QI='' THEN Q=MASK
+               BEGIN CASE
+                  CASE QI='B'
+                     IF LINE>1 THEN LINE-=1
+                  CASE QI='C'
+                     CHANGES.MADE = TRUE
+                     YN.MSG = 'Clear the current address? '
+                     YN.MASK = 'Y '
+                     GOSUB ASK.Y.OR.N
+                     IF YN.ANSWER = 'Y' THEN
+                        T.MAILING.ADDR=''
+                        GOSUB SELECT.ADDRESS.REDRAW
+                     END
+                  CASE QI='X' OR Q=''
+                     DONE=TRUE
+                  CASE 1
+                     CHANGES.MADE = TRUE
+                     T.MAILING.ADDR<LINE>=TRIM(Q)
+                     CRT @( 5,15+LINE):T.MAILING.ADDR<LINE>'L#73':
+                     CRT @(79,15+LINE):'|':
+                     IF LINE<4 THEN
+                        LINE+=1
+                     END ELSE
+                        DONE=TRUE
+                     END
+               END CASE
+            REPEAT
+
+         CASE 1
+            CALL ELINE("Invalid Option, Please try again.")
+            GOTO SA.REDRAW.1
+      END CASE
+*
+* Check address
+*
+      T.MAILING.ADDR<2> = CHANGE(T.MAILING.ADDR<2>,@VM,@AM)
+*
+* Use the new Address?
+*
+      IF CHANGES.MADE AND EXIT.KEY = '' THEN
+         GOSUB SELECT.ADDRESS.REDRAW
+         IF DCOUNT(T.MAILING.ADDR,@AM) > 0 THEN
+            YN.MSG = 'Use the entered address ?'
+            YN.MASK = 'Y '
+            GOSUB ASK.Y.OR.N
+            IF YN.ANSWER # 'Y' THEN GOTO SA.REDRAW
+            NEW.MAILING.ADDR = T.MAILING.ADDR
+            NEED.TO.PRINT = TRUE
+         END ELSE
+            CALL ELINE('The address is BLANK - Please select an address.')
+            GOTO SELECT.ADDRESS
+         END
+      END
+      ADDRESS.NEW = FALSE
+
+      RETURN
+*****************************************************************************
+CHECK.NEVER.PAYS:  ;* Check for NEVER PAYS and no reject reasons.
+*****************************************************************************
+      LOCATE 'N' IN NEW.REJ.TYPES<1> SETTING WHERE THEN
+         IF NUM.LINES=0 THEN
+            CALL ELINE("NOTICE! Exiting without any reject reasons will REMOVE the NEVER PAY!")
+            YN.MSG = 'Do you still wish to EXIT ?'
+            YN.MASK = 'N '
+            GOSUB ASK.Y.OR.N
+            IF YN.ANSWER = 'Y' THEN
+               NEW.REJ.TYPES<1>=CHANGE(NEW.REJ.TYPES<1>, 'N', 'E')
+            END ELSE
+               EXIT.KEY=''
+            END
+         END
+      END
+      LOCATE 'E' IN NEW.REJ.TYPES<1> SETTING WHERE THEN
+         IF NOT (EXIT.KEY=' ') ELSE
+            IF NUM.LINES=0 THEN
+               CALL ELINE("USER INPUT REQUIRED!")
+               IN.REJECT=1
+               NO.EXIT=1
+            END
+         END
+      END
+      RETURN
+*****************************************************************************
+SELECT.ADDRESS.REDRAW:
+*****************************************************************************
+      IN.REJECT=0
+      IF ACCESS.MODE = 'E' THEN
+         CRT @(2, 6):'1) ':CLIENT.NAME
+         CRT @(2, 7):'   ':CLIENT.ADDR
+         CRT @(2, 8):'   ':CLIENT.CITY:', ':CLIENT.STATE:' ':CLIENT.ZIP
+         T=CARRIER.NAME
+         T<2>=CARRIER.ADDR
+         T<3>=CARRIER.CITY:', ':CARRIER.STATE:' ':CARRIER.ZIP
+* Bump everything down one if CARRIER.ADDR is 2 lines (multi valued)
+         T<2>=CHANGE(T<2>,@VM,@AM)
+         CRT @(2,10):'2) ':T<1>
+         CRT @(2,11):'   ':T<2>
+         CRT @(2,12):'   ':T<3>
+         CRT @(2,13):'   ':T<4>
+      END ELSE
+         CALL FB.PRINT.CENT(0,78, 8,'The current mailing address is-as follows:')
+         CALL FB.PRINT.CENT(0,78,10,'(You are unable to change the address in VIEW mode)')
+      END
+      CRT @(1,14):STR('-',78):
+      CALL FB.PRINT.CENT(0,78,14,"[ CURRENT ADDRESS ]")
+      CRT @(2,16):'>  ':T.MAILING.ADDR<1>:@(-4) ; CRT @(79,16):'|':
+      CRT @(2,17):'>  ':T.MAILING.ADDR<2>:@(-4) ; CRT @(79,17):'|':
+      CRT @(2,18):'>  ':T.MAILING.ADDR<3>:@(-4) ; CRT @(79,18):'|':
+      CRT @(2,19):'>  ':T.MAILING.ADDR<4>:@(-4) ; CRT @(79,19):'|':
+      RETURN
+
+*****************************************************************************
+ADD.REJECTION.MSG:
+*****************************************************************************
+      IN.REJECT=0
+*
+* Initialize Variables
+*
+      CALL FB.DRAW.BOX(0,7,80,11,' ','+=+|+=+|')
+      CALL FB.DRAW.BOX(0,7,80,5,' ','+=+|+=+|')
+      CALL FB.PRINT.CENT(0,78,8,"R E M A R K S   E N T R Y")
+      CRT @(1,9):STR('-',78):
+      USER.STRING = 'USER:':USER.NAME    ; * Str will be used later.
+      DATE.STRING = 'DATE:':DATE()'D2/'  ; * Str will be used later..
+      CRT @(3,10):USER.STRING
+      CRT @(77-LEN(DATE.STRING),10):DATE.STRING
+      LINE=1
+      STRING=''
+ARM.0:
+      IN.REJECT=0
+      MASK = '#'
+      HELP = "ENTRY OPTIONS: ''-Finished [B]-Back up one line [C]-Clear [X]-Exit"
+      CRT @(0,22):'Enter a message to be attached to the bill.  Enter OPTIONS on a blank line.':@(-4):
+      DONE = FALSE
+      LOOP
+      UNTIL (DONE)
+         CRT @(1,11+LINE):
+         CALL GEN.IN(1,11+LINE,MASK,'',Q,0,78,'','',2,1,11+LINE,0,QI,HELP,0,23)
+         QI = OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='B'
+               IF LINE>1 THEN LINE-=1
+            CASE QI='C'
+               YN.MSG = 'Clear the current message?'
+               YN.MASK = 'Y '
+               GOSUB ASK.Y.OR.N
+               IF YN.ANSWER = 'Y' THEN GOTO ADD.REJECTION.MSG
+            CASE QI='X' OR QI=''
+               DONE=TRUE
+            CASE 1                       ; * QI # ''
+               STRING<LINE>=TRIM(Q)
+               CRT @(1,11+LINE):STRING<LINE>'L#78':
+               IF LINE<5 THEN
+                  LINE+=1
+               END ELSE
+                  DONE=TRUE
+               END
+         END CASE
+      REPEAT
+ARM.1:
+      IN.REJECT=0
+      IF DCOUNT(STRING,@AM) > 0 THEN
+         YN.MSG = 'Add the entered message to the bill?'
+         YN.MASK = 'Y '
+         GOSUB ASK.Y.OR.N
+         IF YN.ANSWER = 'N' THEN GOTO ARM.EXIT
+         IF YN.ANSWER = 'X' THEN GOTO ARM.0
+         STR.OUT=''
+         FOR X = 1 TO LINE
+            IF STRING<X> # '' THEN STR.OUT:= STRING<X>:' '
+         NEXT
+         POS = DCOUNT(NEW.REJECT.REASONS<3>,@VM)+1
+         NEW.REJECT.REASONS<3,POS>=STR.OUT
+         NEW.REJECT.REASONS<4,POS,1>=USER.NAME
+         NEW.REJECT.REASONS<4,POS,2>=DATE()
+         GOSUB SETUP.LIST.DSP
+         NEED.TO.PRINT = TRUE
+         CUR.REJ.TYPE = NEW.REJ.TYPES<1, 1>        ; * SWB01
+         IF CUR.REJ.TYPE = 'E' THEN      ; * SWB01
+            OTHER.REJ.TYPE = 'N'         ; * SWB01
+         END ELSE                        ; * SWB01
+            OTHER.REJ.TYPE = 'E'         ; * SWB01
+         END                             ; * SWB01
+         YN.MSG = 'Rejection Type is ':CUR.REJ.TYPE:'. Do you want to change it to ':OTHER.REJ.TYPE:'? '       ; * SWB01
+
+         YN.MASK = 'N'                   ; * SWB01 ; * JMK08
+         GOSUB ASK.Y.OR.N                ; * SWB01
+         IF YN.ANSWER = 'X' THEN EXIT.KEY=''       ; * SWB01
+         IF YN.ANSWER = 'Y' THEN         ; * SWB01
+            NEW.REJ.TYPES<1, 1> = OTHER.REJ.TYPE   ; * SWB01
+         END                             ; * SWB01
+         IF NEW.VERIFY.FLAG#'R' THEN
+            CALL ELINE('NOTICE!  This bill has been marked "PAYMENT REJECTED"!')
+            NEW.VERIFY.FLAG = 'R'
+         END
+         IF ADDRESS.NEW THEN
+            GOSUB SELECT.ADDRESS
+         END
+      END ELSE
+         YN.MSG = 'The message is BLANK - Do you wish to try again to enter a message?'
+         YN.MASK = 'Y '
+         GOSUB ASK.Y.OR.N
+         IF YN.ANSWER # 'N' THEN GOTO ARM.0
+      END
+
+ARM.EXIT:
+
+      CALL FB.DRAW.BOX(0,7,80,11,' ','')
+      RETURN
+*****************************************************************************
+UPDATE.DISPLAY: 
+*****************************************************************************
+      IN.REJECT=0
+      IF NUM.LINES = 0 THEN
+         CALL FB.DRAW.BOX(0,7,80,PAGE.SIZE,' ','')
+         CALL FB.PRINT.CENT(0,78,10,'Bill "':PRO.ID:'"')
+         CALL FB.PRINT.CENT(0,78,11,'does not have any rejection codes.')
+
+         LOCATE 'N' IN NEW.REJ.TYPES<1> SETTING WHERE ELSE WHERE = 0
+         IF WHERE THEN
+            CALL FB.PRINT.CENT(0,78,13,'** This bill has been marked NEVER PAY **':CHAR(7))
+            CALL FB.PRINT.CENT(0,78,15,'You MUST add rejection reasons or it will be')
+            CALL FB.PRINT.CENT(0,78,16,'be changed from NEVER PAY to PAY EVENTUALLY.')
+         END
+         RETURN
+      END
+      CRT @(1,6):STR('-',78):
+      STR.OUT = '(Page ':PAGE'R#1':' of ':NUM.PAGES:')'
+      CRT @(78-LEN(STR.OUT),6):STR.OUT
+      DATE.TIME = OCONV(DATE(),"D2/"):"-":OCONV(TIME(),"MTH")
+      CRT @(78-LEN(DATE.TIME),2):DATE.TIME
+      Y = 0
+      LINE = (PAGE-1)*PAGE.SIZE+1
+      LOOP
+      UNTIL (Y=>PAGE.SIZE)
+         BEGIN CASE
+            CASE LINE > NUM.LINES
+*
+* Print nothing - (Actually clears line)
+*
+               DESC=''
+
+            CASE TRIM(DSP.LIST<1,LINE>) # ''
+*
+* Is this line a continuation of the prior?
+*
+               IF SELECTED<DSP.LIST<1,LINE>> THEN
+                  DESC = REVON:'*'
+               END ELSE
+                  DESC = REVOFF:' '
+               END
+               IF TRIM(DSP.LIST<2,LINE>) # '' THEN
+                  DESC:= DSP.LIST<1,LINE>'R#2':') '          ; * No
+               END ELSE
+                  DESC:= '    '          ; * Yes
+               END
+               DESC:= DSP.LIST<3,LINE>'L#74':REVOFF
+               LINE+=1
+            CASE 1
+               DESC=''
+               LINE+=1
+         END CASE
+         Y+=1                            ; * Inc Y screen position
+         CRT @(0,6+Y):DESC:@(-4)         ; * Draw screen line
+      REPEAT
+
+      RETURN
+*****************************************************************************
+* SETUP.LIST.DSP
+*
+* Y = SCREEN HORIZONTAL LINE
+* DSP.LIST<1,Y> - Screen displayable line number
+*                 A NULL Line Number indictates that is a wrapped text
+*                 line of the previous screen line (Y-1)
+* DSP.LIST<2,Y> - Actual REJECTION CODE to store into NEW.REJECT.REASONS
+* DSP.LIST<3,Y> - Text to display
+*                 A NULL text to display means that this line will not
+*                 fit at the bottom of the screen.
+* DSP.LIST<4,Y> - The computed page number which this line is displayed
+*                 on.
+* DSP.LIST<5,Y> - The position of the line/code in NEW.REJECT.REASONS
+*
+*****************************************************************************
+SETUP.LIST.DSP:
+******************************************************************
+      IN.REJECT=0
+      LINE = 1
+      Y=1
+      PAGE.SIZES=''
+      STRING=''
+      DSP.LIST=''
+      DSP.LIST<1>=''
+      DSP.LIST<2>=''
+      DSP.LIST<3>=''
+      DSP.LIST<4>=''
+      NUM.CODES = DCOUNT(NEW.REJECT.REASONS<1>, @VM)         ; * Count Reject Codes
+      NUM.MSGS = DCOUNT(NEW.REJECT.REASONS<3>, @VM)          ; * Count Free Form Msgs
+      NUM.REASONS = NUM.CODES+NUM.MSGS
+*
+* This first portion will break the rejection messages into the width
+* of the window.  This section calls the 'routine' WORD.BREAK.STRING, it
+* takes a string in STR.IN and searches for a SPACE from the maximum
+* width of the window string and goes back one char searching for a space
+* to break the line on.
+*
+      BAD.ADDRESS.COUNT=0
+      BAD.ADDRESS.STRING<3>=CLIENT.NAME
+      LOOP
+      UNTIL (LINE>NUM.CODES)
+         IF STRING='' THEN
+            CODE.NUM = NEW.REJECT.REASONS<1, LINE>
+            IF SHOW.USERS THEN
+               USER.STR = NEW.REJECT.REASONS<2, LINE,1>
+               DATE.STR = NEW.REJECT.REASONS<2, LINE,2>'D2/'
+               INFO.STR = '~(USER:':USER.STR:'  DATE:':DATE.STR:')'
+            END ELSE
+               INFO.STR = ''
+            END
+            LOCATE CODE.NUM IN REJECT.CODES<1> SETTING WHERE THEN
+               STRING= REJECT.CODES<2,WHERE>:INFO.STR
+            END ELSE
+               STRING = 'COULD NOT FIND CODE "':CODE.NUM:'" IN REJECT.CODES! - Call programming!'
+            END
+            DSP.LIST<2,Y>=CODE.NUM
+            DSP.LIST<5,Y>=LINE
+         END
+         IF CODE.NUM='AU50' THEN
+            BAD.ADDRESS.COUNT+=1
+            DSP.LIST<1,Y>=LINE
+            DSP.LIST<3,Y>=BAD.ADDRESS.STRING<BAD.ADDRESS.COUNT>
+            IF BAD.ADDRESS.COUNT>=6 THEN
+               LINE+=1
+               STRING=''
+               CODE.NUM=''
+            END
+            Y+=1
+         END ELSE
+            STR.IN = STRING
+            STR.BREAK = 74
+            GOSUB WORD.BREAK.STRING
+            DSP.LIST<1,Y>=LINE
+            DSP.LIST<3,Y>=STR.DONE'L#74'
+            STRING = STR.OUT
+            IF STRING = '' THEN LINE+=1
+            Y+=1
+         END
+      REPEAT
+      MSG.NUM=1
+      STRING=''
+      LOOP
+      UNTIL (MSG.NUM>NUM.MSGS)
+         IF STRING='' THEN
+            IF SHOW.USERS THEN
+               USER.STR = NEW.REJECT.REASONS<4,MSG.NUM,1>
+               DATE.STR = NEW.REJECT.REASONS<4,MSG.NUM,2>'D2/'
+               INFO.STR = '~(USER:':USER.STR:'  DATE:':DATE.STR:')'
+            END ELSE
+               INFO.STR = ''
+            END
+            STRING = NEW.REJECT.REASONS<3, MSG.NUM>:INFO.STR
+            DSP.LIST<2,Y>=MESSAGE.FLAG
+            DSP.LIST<5,Y>=MSG.NUM
+         END
+         STR.IN = STRING
+         STR.BREAK = 74
+         GOSUB WORD.BREAK.STRING
+         DSP.LIST<1,Y>=LINE
+         DSP.LIST<3,Y>=STR.DONE'L#74'
+         STRING = STR.OUT
+
+         IF STRING = '' THEN LINE+=1 ; MSG.NUM+=1
+         Y+=1
+      REPEAT
+*
+* This second section will insert blank lines into DSP.LIST
+* according to page size of the REJECTION WINDOW. (SEE PAGE.SIZE)
+*
+      DONE=FALSE
+      PAGE.PTR = PAGE.SIZE
+      COUNT=0
+      DSP.LIST.SIZE = DCOUNT(DSP.LIST<1>, @VM)
+      LOOP
+      UNTIL (DONE)
+         IF PAGE.PTR+1 > DSP.LIST.SIZE THEN
+            DONE=TRUE
+         END ELSE
+            IF DSP.LIST<2,PAGE.PTR+1> = '' THEN
+               PAGE.PTR-=1
+               COUNT+=1
+            END ELSE
+               FOR X=1 TO COUNT
+                  INS ' ' BEFORE DSP.LIST<1,PAGE.PTR+1>
+                  INS ' ' BEFORE DSP.LIST<2,PAGE.PTR+1>
+                  INS ' ' BEFORE DSP.LIST<3,PAGE.PTR+1>
+                  INS ' ' BEFORE DSP.LIST<5,PAGE.PTR+1>
+               NEXT
+               PAGE.PTR+=COUNT+PAGE.SIZE
+               DSP.LIST.SIZE+=COUNT
+               COUNT=0
+            END
+         END
+         IF DSP.LIST<3,PAGE.PTR> = '' THEN DONE=TRUE
+      REPEAT
+*
+* This third portion will add which page number the code and message will
+* be on.  This will used for quick access to a page number for page
+* jumping when highlighting code lines.
+*
+      NUM.LINES=DCOUNT(DSP.LIST<1>,@VM)
+      NUM.PAGES=INT(NUM.LINES/PAGE.SIZE)
+      IF REM(NUM.LINES, PAGE.SIZE) THEN NUM.PAGES+=1
+      T.PAGE.NUM=1
+      FOR X=1 TO NUM.LINES
+         COUNT +=1
+         DSP.LIST<4,X>=T.PAGE.NUM
+         IF COUNT = PAGE.SIZE THEN
+            T.PAGE.NUM+=1
+            COUNT = 0
+         END
+      NEXT X
+
+      RETURN
+*****************************************************************************
+ADD.REJECTION.CODE:
+*****************************************************************************
+      IN.REJECT=0
+      CODE.NUM = ''
+      CODE.MSG = ''
+      REJ.PAGE = 1
+      REJ.SELECTED=''
+      GOSUB DSP.REJ.LIST.HDR
+ARC.0:
+      IN.REJECT=0
+      GOSUB DSP.REJ.LIST
+ARC.1:
+      IN.REJECT=0
+      MASK = '####'
+      HELP = REJ.HELP<REJ.HELP.LINE>
+      CRT @(0,22):'REJECTION OPTION :':@(-4):
+      Q=''
+      CALL GEN.IN(19,22,MASK,'',Q,0,10,'','',2,19,22,0,QI,HELP,0,23)
+      QI = OCONV(TRIM(QI),'MCU')
+      BEGIN CASE
+         CASE QI='>' OR QI='.'    ;*  Next Help Line
+            IF REJ.HELP.LINE >=2 THEN
+               REJ.HELP.LINE =1
+            END ELSE
+               REJ.HELP.LINE+=1
+            END
+            GOTO ARC.1
+         CASE QI='<' OR QI=','    ;*  Prior Help Line
+            IF REJ.HELP.LINE =1 THEN
+               REJ.HELP.LINE =3
+            END ELSE
+               REJ.HELP.LINE-=1
+            END
+            GOTO ARC.1
+         CASE QI='T' OR QI='TOP'         ; * Top Page
+            IF REJ.PAGE > 1 THEN
+               REJ.PAGE = 1
+               GOTO ARC.0
+            END ELSE
+               CALL ELINE('*** Top ***')
+               GOTO ARC.1
+            END
+
+         CASE QI='L' OR QI='LAST'        ; * Last Page
+            IF REJ.PAGE < NUM.REJ.PAGES THEN
+               REJ.PAGE = NUM.REJ.PAGES
+               GOTO ARC.0
+            END ELSE
+               CALL ELINE('*** Bottom ***')
+               GOTO ARC.1
+            END
+         CASE QI='B' OR QI='-'    ; * Go Back 1 Page
+            IF REJ.PAGE > 1 THEN
+               REJ.PAGE-=1
+               GOTO ARC.0
+            END ELSE
+               CALL ELINE('*** Top ***')
+               GOTO ARC.1
+            END
+         CASE QI='F' OR QI='+'  ; * Go forward 1 Page
+            IF REJ.PAGE < NUM.REJ.PAGES THEN
+               REJ.PAGE+=1
+               GOTO ARC.0
+            END ELSE
+               CALL ELINE('*** Bottom ***')
+               GOTO ARC.1
+            END
+         CASE QI='REVON'        ; * Turn Reverse ON
+            IF REVON = '' THEN
+               REVON = REV.ON
+               REVOFF = REV.OFF
+               CALL ELINE("Reverse Screen Highlighting is now ON!")
+            END ELSE
+               CALL ELINE("*** Reverse Screen Highlighting is already ON.")
+            END
+            GOTO ARC.0
+         CASE QI='REVOFF'         ; * Turn Reverse OFF
+            IF REVON # '' THEN
+               REVON = ''
+               REVOFF = ''
+               CALL ELINE("Reverse Screen Highlighting is now OFF")
+            END ELSE
+               CALL ELINE("*** Reverse Screen Highlighting is already OFF.")
+            END
+            GOTO ARC.0
+         CASE QI='EX'
+            EXIT.KEY = 'EX'
+            RETURN
+         CASE NUM(QI) AND QI # ''
+            IF QI>0 AND QI<=NUM.REJ.CODES THEN
+               NUM.SEL = QI
+
+               IF REJECT.CODES<4, NUM.SEL> # 'A' THEN        ; * SWB01
+
+                  CALL ELINE('SORRY, ':NUM.SEL:' is Inactive - See Mary McKay.')           ; * SWB01
+                  GOTO ARC.0
+               END
+               LOCATE NUM.SEL IN REJ.DSP.LIST<1> SETTING WHERE THEN
+                  REJ.SELECTED<NUM.SEL>=NOT(REJ.SELECTED<NUM.SEL>)
+                  REJ.PAGE = REJ.DSP.LIST<4,WHERE>
+                  GOTO ARC.0
+               END
+            END ELSE
+               CALL ELINE('Entry number is out-of-range! Select an entry from 1 - ':NUM.REJ.CODES)
+               GOTO ARC.1
+            END
+         CASE QI='?' OR QI='HELP' OR QI='H'    ; * Help - List all Commands
+            CALL FB.DRAW.BOX(0,2,80,20,' ','+=+|+=+|')
+            CRT @(19, 4):'HELP SCREEN - List of Commands'
+            CRT @(3, 6):'B     - Go Back 1 Page                F   - Go Forward 1 Page'
+            CRT @(3, 7):'-     - Go Back 1 Page                +   - Go Forward 1 Page'
+            CRT @(3, 8):'T     - Goto Top of Table (TOP)       L   - Goto Last Page '
+            CRT @(3, 9):'>     - Next Help Line                <   - Prior Help Line'
+            CRT @(3,10):'##    - Selects a Rejection Reason'
+            CRT @(3,12):'REVON - Turn On Reverse Dsp        REVOFF - Turn Off Reverse Dsp'
+            CRT @(3,13):'X     - Go back                    EX     - Exit program'
+            CRT @(3,15):'Select the rejection reasons by entering the numbers on the left of the'
+            CRT @(3,16):'screen.  To UNSELECT a rejection reason already selected, Enter the number '
+            CRT @(3,17):'again.  Enter "X" to return back with the selected rejection reasons.'
+            CALL ELINE('Viewing ADD REJECTION HELP Screen.')
+            GOSUB DSP.REJ.LIST.HDR
+            GOTO ARC.0
+         CASE QI='' OR QI='X'
+            LOCATE TRUE IN REJ.SELECTED SETTING CHANGES.MADE THEN
+*
+* Verify choice with user
+*
+*Set a temporary variable to what the Rejection Type (i.e. 'E' or 'N')
+*so that if it doesn't get set in the loop below, it will be preserved
+*for reassignment later in this section
+               LAST.REJ.TYPE = NEW.REJ.TYPES<1, 1>           ; * SWB01
+               POS = DCOUNT(NEW.REJECT.REASONS<1>,@VM)
+               FOR T.X = 1 TO NUM.REJ.CODES
+*
+* Did we select this Rejection Reason?
+*
+                  IF REJ.SELECTED<T.X> THEN
+*
+* Determine the Code Used for this Reason.
+*
+                     REJ.CODE = REJECT.CODES<1,T.X>
+*
+* Is this Reason Code already in the list?
+* If not, Add it.
+*
+                     LOCATE REJ.CODE IN NEW.REJECT.REASONS<1> SETTING WHERE ELSE
+                        POS+=1
+                        NEW.REJECT.REASONS<1,POS>=REJ.CODE
+                        NEW.REJECT.REASONS<2,POS,1>=USER.NAME
+                        NEW.REJECT.REASONS<2,POS,2>=DATE()
+                        LAST.REJ.TYPE = REJECT.CODES<6, T.X>           ; * SWB01
+                     END
+                  END
+               NEXT
+               NEED.TO.PRINT = TRUE
+               GOSUB SETUP.LIST.DSP
+               IF NEW.VERIFY.FLAG # 'R' THEN
+                  CALL ELINE('NOTICE!  The bill has been marked "PAYMENT REJECTED".')
+                  NEW.VERIFY.FLAG = 'R'
+               END
+*NEW.REJ.TYPES is, theoretically, multi-value. However, previous mods
+*have made it effectively single-value. In accordance with existing
+*code in the 'CASE QI='PAYIT' at approximately line 602,  I am treating
+*the first (and presumably only) value as the Rejection Type of
+*record....the only one that matters.
+               IF LAST.REJ.TYPE # NEW.REJ.TYPES<1, 1> THEN   ; * SWB01
+                  NEW.REJ.TYPES<1, 1> = LAST.REJ.TYPE        ; * SWB01
+               END                       ; * SWB01
+               IF ADDRESS.NEW THEN
+                  GOSUB SELECT.ADDRESS
+               END
+
+
+            END
+         CASE QI='##'
+            CALL ELINE("To select an item, Type the item's number at the Option prompt.")
+            GOTO ARC.1
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO ARC.1
+      END CASE
+
+      RETURN
+*****************************************************************************
+DSP.REJ.LIST.HDR:
+*****************************************************************************
+      IN.REJECT=0
+*
+* Initialize Variables
+*
+      CALL FB.DRAW.BOX(0,2,80,20,' ','+=+|+=+|')
+      CALL FB.DRAW.BOX(0,2,80,3,' ','+=+|+=+|')
+      CALL FB.PRINT.CENT(0,78,3,"A V A I L A B L E   R E J E C T I O N   R E A S O N S ")
+
+      CRT @(2,5):'###| A  P  Rejection Reason'     ; * SWB01
+
+      RETURN
+*****************************************************************************
+DSP.REJ.LIST:
+*****************************************************************************
+      IN.REJECT=0
+      STR.OUT = '(Page ':REJ.PAGE'R#1':' of ':NUM.REJ.PAGES:')'
+      CRT @(78-LEN(STR.OUT),5):STR.OUT
+      CRT @(1,6):STR('-',78):
+
+      Y = 1
+      LINE = (REJ.PAGE-1)*REJ.PAGE.SIZE+1
+
+      LOOP
+      UNTIL (Y>REJ.PAGE.SIZE)
+         BEGIN CASE
+            CASE LINE > NUM.REJ.DSP.LINES
+*
+* Print nothing - (Actually clears line)
+*
+               DESC= '    | ':SPACE(72)
+
+            CASE 1
+*
+* Check for Current Line to see if it is selected already
+*
+               IF TRIM(REJ.DSP.LIST<1,LINE>) # '' THEN 
+                  IF REJ.SELECTED<REJ.DSP.LIST<1,LINE>> THEN
+                     DESC=REVON:'*'
+                  END ELSE
+                     DESC=REVOFF:' '
+                  END
+*
+* Is this line a continuation of the prior?
+*
+                  IF TRIM(REJ.DSP.LIST<2,LINE>) # '' THEN
+                     LINE.NUM = REJ.DSP.LIST<1,LINE>         ; * No
+                     ACTIVE.FLAG = REJ.DSP.LIST<5,LINE>      ; * SWB01
+                     PAY.FLAG = REJ.DSP.LIST<6,LINE>         ; * SWB01
+                  END ELSE
+                     LINE.NUM = ''       ; * Yes
+                     ACTIVE.FLAG = ''    ; * SWB01
+                     PAY.FLAG = ''       ; * SWB01
+                  END
+                  DESC:= LINE.NUM'R#3':'| ':ACTIVE.FLAG 'L#1':SPACE(2):PAY.FLAG 'L#1':SPACE(2):REJ.DSP.LIST<3,LINE>'L#66':REVOFF   ; * SWB01
+               END ELSE
+                  DESC= '    | ':SPACE(72)
+               END
+               LINE+=1
+         END CASE
+
+         CRT @(1,6+Y):DESC               ; * Draw screen line
+         Y+=1                            ; * Inc Y screen position
+      REPEAT
+
+      IN.REJECT=1
+      RETURN
+*****************************************************************************
+* SETUP.REJ.LIST.DSP
+*
+* Y = SCREEN HORIZONTAL LINE
+* REJ.DSP.LIST<1,Y> - Screen displayable line number
+*                     A NULL Line Number indictates that is a wrapped text
+*                     line of the previous screen line (Y-1)
+* REJ.DSP.LIST<2,Y> - Actual REJECTION CODE to store into NEW.REJECT.REASONS
+* REJ.DSP.LIST<3,Y> - Text to display
+*                     A NULL text to display means that this line will not
+*                     fit at the bottom of the screen.
+* REJ.DSP.LIST<4,Y> - The computed page number which this line is displayed
+* REJ.DSP.LIST<5,Y> - The 'A'ctive and 'I'nactive flag
+* REJ.DSP.LIST<6,Y> - The 'E'ventually Pay and the 'N'ever Pay flag
+*                     on.
+*****************************************************************************
+SETUP.REJ.LIST.DSP:
+******************************************************************
+      IN.REJECT=0
+      CODE.NUM = 1
+      Y=1
+      REJ.PAGE.SIZES=''
+      STRING=''
+      REJ.DSP.LIST=''
+*
+* This first portion will break the rejection messages into the width
+* of the window.  This section calls the 'routine' WORD.BREAK.STRING, it   ; * SWB01
+* takes a string in STR.IN and searches for a SPACE from the maximum   ; * SWB01
+* width of the window string and goes back one char searching for a space
+* to break the line on.
+*
+      LOOP
+      UNTIL (CODE.NUM>NUM.REJ.CODES)
+         IF STRING='' THEN
+            STRING = REJECT.CODES<2,CODE.NUM>
+            REJ.DSP.LIST<2,Y>=REJECT.CODES<1,CODE.NUM>
+         END
+         STR.IN = STRING
+
+         STR.BREAK = 66                  ; * SWB01
+         GOSUB WORD.BREAK.STRING
+         IF REJECT.CODES<4,CODE.NUM> = 'A' THEN         ; * NKH01
+            REJ.DSP.LIST<1,Y>=CODE.NUM
+   
+            REJ.DSP.LIST<3,Y>=STR.DONE'L#66'          ; * SWB01
+*            STRING = STR.OUT    ; * NKH01
+            REJ.DSP.LIST<5,Y>=REJECT.CODES<4,CODE.NUM>          ; * SWB01  ; * The Active/Inactive flag
+            REJ.DSP.LIST<6,Y>=REJECT.CODES<6,CODE.NUM>          ; * SWB01  ; * The Eventually Pay/Never Pay flag
+            Y+=1           ; * NKH01
+         END               ; * NKH01
+         STRING = STR.OUT  ; * NKH01
+         IF STRING = '' THEN CODE.NUM+=1         
+*         Y+=1    ; * NKH01
+      REPEAT
+*
+* This second section will insert blank lines into REJ.DSP.LIST
+* according to page size of the REJECTION WINDOW. (SEE REJ.PAGE.SIZE)
+*
+      DONE=FALSE
+      PAGE.PTR = REJ.PAGE.SIZE
+      COUNT=0
+      LOOP
+      UNTIL (DONE)
+         IF REJ.DSP.LIST<2,PAGE.PTR+1> = '' THEN
+            PAGE.PTR-=1
+            COUNT+=1
+         END ELSE
+            FOR X=1 TO COUNT
+               INS ' ' BEFORE REJ.DSP.LIST<1,PAGE.PTR+1>
+               INS ' ' BEFORE REJ.DSP.LIST<2,PAGE.PTR+1>
+               INS ' ' BEFORE REJ.DSP.LIST<3,PAGE.PTR+1>
+            NEXT
+            PAGE.PTR+=COUNT+REJ.PAGE.SIZE
+            COUNT=0
+         END
+         IF REJ.DSP.LIST<3,PAGE.PTR> = '' THEN DONE=TRUE
+      REPEAT
+*
+* This third portion will add which page number the code and message will
+* be on.  This will used for quick access to a page number for page
+* jumping when highlighting code lines.
+*
+      T.PAGE.NUM=1
+      NUM.REJ.DSP.LINES=DCOUNT(REJ.DSP.LIST<1>,@VM)
+      NUM.REJ.PAGES = INT(NUM.REJ.DSP.LINES/REJ.PAGE.SIZE)
+      IF REM(NUM.REJ.DSP.LINES,REJ.PAGE.SIZE) THEN NUM.REJ.PAGES+=1
+      FOR X=1 TO NUM.REJ.DSP.LINES
+         COUNT +=1
+         REJ.DSP.LIST<4,X>=T.PAGE.NUM
+         IF COUNT = REJ.PAGE.SIZE THEN
+            T.PAGE.NUM+=1
+            COUNT = 0
+         END
+      NEXT X
+
+      RETURN
+*****************************************************************************
+* WORD.BREAK.STRING
+*
+*  PASSED VALUES:
+*       STR.IN      - String to search for a space
+*       STR.BREAK   - Character position to look for a space at.
+*
+*  RETURNED VALUES:
+*       STR.IN         - The orginal string untouched
+*       STR.BREAK      - The position which the string was broken at
+*       ORG.STR.BREAK  - The orginal passed string break position
+*       STR.DONE       - The portion of the string that was extracted.
+*       STR.OUT        - The remaining portion of the string. This string
+*                        also has preceeding spaces removed.
+*
+*****************************************************************************
+WORD.BREAK.STRING:
+******************************************************************
+      IN.REJECT=0
+      STR.LEN = LEN(STR.IN)
+      ORG.STR.BREAK = STR.BREAK
+      DONE=FALSE
+*
+* Do we have a BREAK.CHAR already in the string?
+*
+      POS=INDEX(STR.IN, '~', 1)
+      BEGIN CASE
+*
+* Nope.. We could not find one.
+*
+         CASE POS=''
+
+*
+* First Character is the Break Char... Just trim it out..
+*
+         CASE POS=1
+            STR.IN=STR.IN[2,9999]
+            STR.LEN=LEN(STR.IN)
+*
+* Yes..We found one.  Is it within range?
+*
+         CASE POS >0 AND POS < STR.BREAK
+*
+* Yes.. Init our String Out (STR.DONE), Set the return break
+* position (STR.BREAK) and mark as DONE (DONE=TRUE).
+*
+            STR.BREAK = POS
+            STR.DONE = STR.IN[1,POS-1]
+            DONE=TRUE
+      END CASE
+
+*
+* Did we find the break character?
+*
+      IF NOT(DONE) THEN
+*
+* Nope,
+*
+* Is the passed string already short enough?
+*
+         IF STR.LEN < STR.BREAK THEN
+*
+* Yes.. Init STR.DONE
+*
+            STR.DONE = STR.IN
+         END ELSE
+*
+* No.. We need to break it. Break on spaces.
+*
+            LOOP
+            UNTIL (DONE)
+               IF (STR.IN[STR.BREAK,1]=' ') THEN
+                  STR.DONE=STR.IN[1,STR.BREAK-1]   ; * Don't include the space
+                  DONE = TRUE
+               END ELSE
+*
+* Have not found a space yet.. Back-up 1 character and
+* check it.
+*
+                  STR.BREAK-=1
+*
+* Have we failed to find a Space?
+*
+                  IF STR.BREAK < 3 THEN
+*
+* Yes.. Truncate string at the orginal max len.
+*
+                     STR.DONE=STR.IN[1,ORG.STR.BREAK]
+                     DONE = TRUE
+                  END
+               END
+            REPEAT
+         END
+      END
+*
+* Init our returning string of the remaining unused portion of the
+* orginal string.
+*
+      STR.OUT = STR.IN[STR.BREAK+1,999]
+
+*
+* Remove the PRECEEDING SPACES on the remaining portion of the string.
+*
+      DONE=FALSE
+      LOOP
+      UNTIL (DONE)
+         IF (STR.OUT[1,1] # ' ' OR LEN(STR.OUT)=0) THEN
+            DONE=TRUE
+         END ELSE
+            STR.OUT=STR.OUT[2,999]
+         END
+      REPEAT
+      RETURN
+
+*****************************************************************************
+ASK.Y.OR.N:***
+****************************************************************************
+      YN.ANSWER = ''
+      LOOP
+      UNTIL YN.ANSWER DO
+      HELP = CHAR(7):"Entry Options: [Y]-Yes [N]-No [X]-Back"
+      CRT @(0,22):YN.MSG:@(-4)
+      MASK = YN.MASK'L#1'
+      Q=''
+      CALL GEN.IN(LEN(YN.MSG)+1,22,MASK,'',Q,0,1,'','',2,LEN(YN.MSG)+1,22,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN QI=MASK
+      BEGIN CASE
+         CASE QI = '1'
+            QI='Y'
+         CASE QI = '0'
+            QI='N'
+         CASE QI = 'Y'
+         CASE QI = 'N'
+         CASE QI = 'X'
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            **GOTO Y.OR.N
+            CONTINUE
+      END CASE
+      
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+      YN.ANSWER = QI
+REPEAT
+      RETURN
+
+*****************************************************************************
+INIT.SCREEN:***
+******************************************************************
+
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('-',79) ; 
+      CRT @( 0,21):STR('-',79) ; 
+
+      RETURN
+*****************************************************************************
+* Display Edit Screen
+*****************************************************************************
+DSP.EDIT.SCN:***
+      IN.REJECT=0
+      GOSUB INIT.SCREEN
+      CRT @(0,3):'CLIENT  : ':CLIENT.ID'R#5': ', ':CLIENT.NAME:' (':CLIENT.CITY:', ':CLIENT.STATE:')':
+      CRT @(0,4):'CARRIER : ':CARRIER.ID'R#5':', ':CARRIER.NAME:' (':CARRIER.CITY:', ':CARRIER.STATE:')':
+      CRT @(0,5):'PRO.NUM : ':PRO.ID
+
+      BEGIN CASE
+         CASE NEW.VERIFY.FLAG = 'R'
+            T='Payment Rejected'
+         CASE NEW.VERIFY.FLAG = 'V'
+            T='Bill Verified'
+         CASE NEW.VERIFY.FLAG = ''
+            T='Payment Approved'
+         CASE 1
+            T='ERROR-Call IT':CHAR(7):CHAR(7):CHAR(7):CHAR(7)
+      END CASE
+
+      BEGIN CASE
+         CASE DCOUNT(NEW.REJ.TYPES<1>,@VM) > 1
+            T:='-MULTIPLE REJS'
+         CASE NEW.REJ.TYPES<1,1>='N'
+            T:='-':TRIM(N.MSG)
+         CASE NEW.REJ.TYPES<1,1>='A'
+            T:='-':TRIM(A.MSG)
+         CASE NEW.REJ.TYPES<1,1>='E' OR (NEW.REJ.TYPES<1,1>='' AND NEW.VERIFY.FLAG#'R')
+            T:='-':TRIM(E.MSG)
+         CASE 1
+            T:='-ERROR-Call IT':CHAR(7):CHAR(7):CHAR(7):CHAR(7)
+      END CASE
+      CRT @(38,5):'STAT:(':T:')'
+
+      CRT @(0,6):STR('-',79) ; 
+
+      RETURN
+*****************************************************************************
+* SETUP.PRINT.LIST
+*
+* Y = SCREEN HORIZONTAL LINE
+* PRINT.LIST<1,Y> - Screen displayable line number
+*                 A NULL Line Number indictates that is a wrapped text
+*                 line of the previous screen line (Y-1)
+* PRINT.LIST<2,Y> - Actual REJECTION CODE to store into NEW.REJECT.REASONS
+* PRINT.LIST<3,Y> - Text to display
+*                 A NULL text to display means that this line will not
+*                 fit at the bottom of the screen.
+* PRINT.LIST<4,Y> - The computed page number which this line is displayed
+*                 on.
+* PRINT.LIST<5,Y> - The position of the line/code in NEW.REJECT.REASONS
+*
+*****************************************************************************
+SETUP.PRINT.LIST:
+******************************************************************
+      IN.REJECT=0
+      LINE = 1
+      LINE.NO = 1
+      Y=1
+      PAGE.SIZES=''
+      STRING=''
+      PRINT.LIST=''
+      PRINT.LIST<1>=''
+      PRINT.LIST<2>=''
+      PRINT.LIST<3>=''
+      PRINT.LIST<4>=''
+      NUM.CODES = DCOUNT(NEW.REJECT.REASONS<1>, @VM)         ; * Count Reject Codes
+      NUM.MSGS = DCOUNT(NEW.REJECT.REASONS<3>, @VM)          ; * Count Free Form Msgs
+      NUM.REASONS = NUM.CODES+NUM.MSGS
+*
+* This first portion will break the rejection messages into the width
+* of the window.  This section calls the 'routine' WORD.BREAK.STRING, it
+* takes a string in STR.IN and searches for a SPACE from the maximum
+* width of the window string and goes back one char searching for a space
+* to break the line on.
+*
+      BAD.ADDRESS.COUNT=0
+      LOOP
+      UNTIL (LINE>NUM.CODES)
+         IF STRING='' THEN
+            CODE.NUM = NEW.REJECT.REASONS<1, LINE>
+            LOCATE CODE.NUM IN REJECT.CODES<1> SETTING WHERE THEN
+               STRING = REJECT.CODES<2,WHERE>:' ':NEW.REJECT.REASONS<2,LINE,1>:' ':NEW.REJECT.REASONS<2,LINE,2>'D2/'
+            END
+            PRINT.LIST<2,Y>=CODE.NUM
+         END
+         IF CODE.NUM='AU50' THEN
+            BAD.ADDRESS.COUNT+=1
+            PRINT.LIST<1,Y>=LINE.NO
+            PRINT.LIST<3,Y>=BAD.ADDRESS.STRING<BAD.ADDRESS.COUNT>
+            IF BAD.ADDRESS.COUNT>=6 THEN
+               LINE+=1
+               STRING=''
+               LINE.NO+=1
+            END
+            Y+=1
+         END ELSE
+
+            IF USER.NAME='KEITH' THEN CRT @(0,23):"STOP NOW ": ; INPUT NUL
+            IF PRINT.LIST<2,Y>#'AU39' AND PRINT.LIST<2,Y>#'AU69' AND PRINT.LIST<2,Y>#'AU72' AND PRINT.LIST<2,Y>#'AU80' AND PRINT.LIST<2,Y>#'AU86' AND PRINT.LIST<2,Y>#'AU96' AND PRINT.LIST<2,Y>#'AU97' AND PRINT.LIST<2,Y>#'AU98' AND PRINT.LIST<2,Y>#'AU101' AND PRINT.LIST<2,Y>#'AU102' AND PRINT.LIST<2,Y>#'AU104' AND PRINT.LIST<2,Y>#'AU116' AND PRINT.LIST<2,Y>#'AU120' AND PRINT.LIST<2,Y>#'AU121' AND OCONV(STRING[1,3],'MCU')#'REM' THEN
+               STR.IN = STRING
+               STR.BREAK = 65
+               GOSUB WORD.BREAK.STRING
+               PRINT.LIST<1,Y>=LINE.NO
+               PRINT.LIST<3,Y>=STR.DONE
+               STRING = STR.OUT
+               IF STRING = '' THEN
+                  LINE+=1
+                  LINE.NO+=1
+               END
+               Y+=1
+            END ELSE
+               LINE+=1
+               STRING=''
+            END
+         END
+      REPEAT
+
+      MSG.NUM=1
+      MSG.NO=1
+      STRING=''
+      LOOP
+      UNTIL (MSG.NUM>NUM.MSGS)
+         IF STRING='' THEN
+            STRING = NEW.REJECT.REASONS<3, MSG.NUM>:' ':NEW.REJECT.REASONS<4,MSG.NUM,1>:' ':NEW.REJECT.REASONS<4,MSG.NUM,2>'D2/'
+            STRING.TEST = STRING
+            PRINT.LIST<2,Y>=MESSAGE.FLAG
+         END
+         IF OCONV(STRING.TEST[1,3],'MCU')#'REM' THEN
+            STR.IN=STRING
+            STR.BREAK = 65
+            GOSUB WORD.BREAK.STRING
+            PRINT.LIST<1,Y>=MSG.NO
+            PRINT.LIST<3,Y>=STR.DONE
+            STRING = STR.OUT
+            IF STRING = '' THEN
+               MSG.NUM+=1
+               MSG.NO+=1
+            END
+            Y+=1
+         END ELSE
+            MSG.NUM+=1
+            STRING=''
+         END
+      REPEAT
+*
+* This second section will insert blank lines into PRINT.LIST
+* according to page size of the REJECTION WINDOW. (SEE PAGE.SIZE)
+*
+      DONE = FALSE
+      PAGE.PTR = PAGE.SIZE
+      COUNT = 0
+      PRINT.LIST.SIZE = DCOUNT(PRINT.LIST<1>, @VM)
+      LOOP
+      UNTIL (DONE)
+         IF PAGE.PTR+1 > PRINT.LIST.SIZE THEN
+            DONE=TRUE
+         END ELSE
+            IF PRINT.LIST<2,PAGE.PTR+1> = '' THEN
+               PAGE.PTR-=1
+               COUNT+=1
+            END ELSE
+               FOR X=1 TO COUNT
+                  INS ' ' BEFORE PRINT.LIST<1,PAGE.PTR+1>
+                  INS ' ' BEFORE PRINT.LIST<2,PAGE.PTR+1>
+                  INS ' ' BEFORE PRINT.LIST<3,PAGE.PTR+1>
+               NEXT
+               PAGE.PTR+=COUNT+PAGE.SIZE
+               PRINT.LIST.SIZE+=COUNT
+               COUNT=0
+            END
+         END
+         IF PRINT.LIST<3,PAGE.PTR> = '' THEN DONE=TRUE
+      REPEAT
+*
+* This third portion will add which page number the code and message will
+* be on.  This will used for quick access to a page number for page
+* jumping when highlighting code lines.
+*
+      NUM.LINES=DCOUNT(PRINT.LIST<1>,@VM)
+      NUM.PAGES=INT(NUM.LINES/PAGE.SIZE)
+      IF REM(NUM.LINES, PAGE.SIZE) THEN NUM.PAGES+=1
+      T.PAGE.NUM=1
+      FOR X=1 TO NUM.LINES
+         COUNT +=1
+         PRINT.LIST<4,X>=T.PAGE.NUM
+         IF COUNT = PAGE.SIZE THEN
+            T.PAGE.NUM+=1
+            COUNT = 0
+         END
+      NEXT X
+
+      RETURN
+
+*****************************************************************************
+PRINT.LETTER:
+******************************************************************
+      IN.REJECT=0
+      GOSUB SETUP.PRINT.LIST
+      NEED.TO.PRINT = FALSE
+      ESC=CHAR(27)
+      COPIES = 1
+*     EXECUTE 'SP-ASSIGN F15,':COPIES ; * Default to IBM 4039-16L+ Laser
+*     STMT="SETPTR ,,,0,0,,AT IBM, BRIEF"
+*     STMT="SP-ASSIGN F15"
+*     EXECUTE STMT, OUT>OUTPUT
+      PRINTER ON
+      X = 25
+      Y = 10
+      CALL GET.AFS.LOGO.IMG(X,Y,LOGO)
+      LASER = ''
+      LASER<1>= 0                        ; * Portrait
+      LASER<2>= 7                        ; * Lines per inch
+      LASER<3>= 71                       ; * Page length
+      LASER<4>= 14                       ; * Characters per inch
+      LASER<5>= 0
+      LASER<6>= 0
+      LASER<7>= 1
+      LASER<8>= 0
+      ESC=CHAR(27)                       ; * JMK01
+      BOLD.ON=ESC:'(s3B'                 ; * JMK01
+      BOLD.OFF=ESC:'(s0B'                ; * JMK01
+      UL.ON=ESC:'&d0D'                   ; * JMK01
+      UL.OFF=ESC:'&d@'                   ; * JMK01
+      LRG.FONT = ESC:"(s8h"              ; * Set pitch ; * JMK01
+      MED.FONT = ESC:"(s12h"             ; * Set pitch ; * JMK01
+      SMALL.FONT = ESC:"(s14h"           ; * Set pitch ; * JMK01
+      LASER<4> = 12                      ; * Set pitch ; * JMK01
+      MARGIN = 5
+      HED=''
+      HED:=ESC:"&l":LASER<1>:"O"         ; * Set portrait
+      HED:=ESC:"&l":LASER<2>:"D"         ; * Lines per inch
+      HED:=ESC:"&l":LASER<3>:"F"         ; * Page length
+      HED:=ESC:"(s":LASER<4>:"h"         ; * Set pitch
+      HED:=LASER<5>:"p"                  ; * Proportional printing
+      HED:=LASER<6>:"s"                  ; * Italics off
+      HED:="0T"                          ; * Line Printer Font
+
+      HED:=ESC:"&a":MARGIN:"L"
+
+      HED:=ESC:'*c10G'                   ; * Grayscale Fill
+      HED:=LOGO
+
+      HED:=SMALL.FONT:BOLD.ON            ; * JMK01
+      HED:=ESC:'*p':X+(1.45*300):'x':Y+(.10*300):'Y'         ; * JMK01
+      * LINE 1
+      HED:='________________________________________________________________________________________'          ; * JMK01
+      * LINE 2
+      HED:=ESC:'*p':X+(1.45*300):'x':Y+(.29*300):'Y'         ; * Position Cursor; * JMK01
+      HED:='Corporate Headquarters: 670 Emberwood Drive - Shreveport, LA 71106 - 318-798-2111'  ; * JMK01
+     * LINE 3
+      HED:=ESC:'*p':X+(1.45*300):'x':Y+(.48*300):'Y'         ; * JMK01
+      HED:='Mailing Address: P.O. Box 18170 - Shreveport, LA 71138 - Fax 318-797-3628'     ; * JMK01
+      * LINE 4
+      HED:=ESC:'*p':X+(1.45*300):'x':Y+(.67*300):'Y'         ; * JMK01
+
+      HED:='Internet: ':UL.ON:'WWW.AFS.NET':UL.OFF           ; * JMK01; * JMK05
+      * LINE 5
+      HED:=ESC:'*p':X+(1.45*300):'x':Y+(.78*300):'Y'         ; * JMK01
+      HED:='________________________________________________________________________________________'          ; * JMK01
+      * LINE 6
+      HED:=ESC:'*p0x':Y+(1.25*300):'Y'   ; * 300 dpi
+      LASER<4>= 10                       ; * Characters per inch
+      HED:= ESC:"(s":LASER<4>:"h"        ; * Set pitch
+      HED:=MED.FONT:BOLD.OFF             ; * JMK01
+      PRINT HED
+      PRINT
+      PRINT
+      PRINT
+      PRINT NEW.MAILING.ADDR<1>
+      PRINT NEW.MAILING.ADDR<2>
+      PRINT NEW.MAILING.ADDR<3>
+      PRINT NEW.MAILING.ADDR<4>
+      PRINT
+      PRINT
+      PRINT 'RE: Client     : ':CLIENT.NAME
+      PRINT '    Carrier    : ':CARRIER.NAME
+      PRINT
+      * LINE 7 THRU 19          + 12
+      TX = DCOUNT(MPRO.ID<1>,@VM)
+      T1='    Pro Number      Amount     Date  '
+      T2=' ----------------  --------- --------'
+
+
+      PRINT T1
+      PRINT T2                    ;* + 2
+* LINE 20 THRU 21
+
+      ROW2 = 0
+      ROW1 = TX-ROW2
+      * add value of MPRO.ID<1> VM to line cnt
+      FOR X = 1 TO ROW1
+         STR = ' ':MPRO.ID<1,X>'L#16'
+         STR:= NEW.CARRIER.CHGS<1,X>'R26,#11'
+         STR:= ' ':NEW.BILL.DATES<1,X>'D2/'
+         STR:= ' ':NEW.REJ.TYPES<1,X>
+         IF EDI.LINK#'' THEN
+            STR:=' - EDI'
+         END
+
+         PRINT STR
+         * NOT SURE HOW MANY LINES ;* + TX value
+      NEXT
+      PRINT                       ;* + 1
+      
+      STMT = 'The above '
+      IF TX > 1 THEN STMT:=TX:' '
+      STMT:= 'freight bill'
+      IF TX > 1 THEN BILLS='s' ELSE BILLS=''
+      STMT:= BILLS:' can not be processed for payment until the'
+      PRINT STMT          ;* + 1
+      
+      STMT = 'following reason'
+      IF NUM.CODES+NUM.MSGS > 1 THEN STMT:='s have' ELSE STMT:=' has'
+      STMT:=' been satisfied.  Please provide the necessary'
+      PRINT STMT                  ;* + 1
+                  
+      PRINT 'information with the attached freight bill':BILLS:' and mail to:'
+      
+
+      PRINT CLIENT.NAME:' % AFS, LLC., ':MAIL.ADD  ; * JMK02 ; * JMK07           ;* + 1
+      
+      PRINT MAIL.CSZ                     ; * JMK02           ;* + 1
+      
+      PRINT                  ;* + 1
+      
+      PRINT                            ;* + 1
+      
+      DONE=FALSE
+      NEED.TO.PRINT.REMARK = TRUE
+      FOR LINE = 1 TO NUM.LINES
+         BEGIN CASE
+            CASE TRIM(PRINT.LIST<3,LINE>) = ''
+            CASE 1
+               IF TRIM(PRINT.LIST<2,LINE>) = MESSAGE.FLAG AND NEED.TO.PRINT.REMARK THEN
+                  PRINT              ;* + 1
+                  
+                  PRINT 'REMARKS:'               ;* + 1
+                  
+                  NEED.TO.PRINT.REMARK = FALSE
+               END
+*
+* Is this line a continuation of the prior?
+*
+               IF PRINT.LIST<3,LINE>='[BLANK]' THEN
+                  PRINT    ;* + 1
+                  
+               END ELSE
+                  IF TRIM(PRINT.LIST<2,LINE>) # '' THEN
+                     PRINT    ;* + 1 
+                     
+                     DESC=PRINT.LIST<1,LINE>'R#2':') '       ; * No
+                     DESC:= PRINT.LIST<3,LINE>'L#74'
+                  END ELSE
+                     DESC= '    '        ; * Yes
+                     DESC:= PRINT.LIST<3,LINE>'L#74'
+                  END
+*              DESC= PRINT.LIST<3,LINE>'L#74'
+                  PRINT DESC           ;* + 1
+                  
+                  DESC=''
+               END
+         END CASE
+      NEXT
+      PRINT         ;* + 1
+      
+      PRINT           ;* + 1
+      
+      PRINT           ;* + 1               34 ?
+      
+      X.POS =3.25*300                    ; * 3.25 INCHES BY 300 dpi
+      Y.POS =8.85*300                    ; * 8.85 INCHES BY 300 dpi
+      LINE=SPACE(28)
+
+      SIG.NAME = NEW.REJECT.REASONS<4,1,1>
+      IF SIG.NAME = '' THEN SIG.NAME = NEW.REJECT.REASONS<2,1,1>
+      BEGIN CASE
+         
+         CASE 1
+            LINE=STR('_',24)
+            FULL.NAME = SIG.NAME
+            STR=''
+      END CASE
+     * Begin GRB01
+     PRINT ESC:'*p':(00):'x':(8*300):'Y'          ; * Position Cursor (X=0 INCHES, Y=8 INCHES)
+     ****  PRINT ESC:'*p':(00):'x':(9*300):'Y'          ; * Position Cursor (X=0 INCHES, Y=9 INCHES)
+     * End GRB01
+      PRINT 'DATE: ':DATE()"D2/":'     SIGNATURE:':LINE:'(':FULL.NAME:')'
+      PRINT
+      PRINT STR
+      CRT @(0,0):
+      PRINTER OFF
+      PRINTER CLOSE
+      CALL ELINE("Send Back Letter printed.")
+      NUM.LINES=DCOUNT(DSP.LIST<1>,@VM)
+
+      RETURN
+
+*****************************************************************************
+PRINT.TABLE:
+******************************************************************
+      IN.REJECT=0
+      PRINTER ON
+      PAGE 1
+      L.TAB=CTR-(LEN(PROG.DESC)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):PROG.DESC
+      R.TAB=WIDTH-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE())
+      HEAD1=PROG.NAME:SPACE(L.TAB):PROG.DESC:SPACE(R.TAB):TIMEDATE():"'L'"
+*
+      TITLE='Payment Rejection Reasons'
+      L.TAB=CTR-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+
+      R.TAB=(WIDTH-LEN(TEMP))-20
+      HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )':"PAGE 'PL'"
+*
+      HEAD3 = STR('-',WIDTH-1):"'L'"
+*
+      TEMP = 'CLIENT  : ':CLIENT.ID'R#5': ', ':CLIENT.NAME:' (':CLIENT.CITY:', ':CLIENT.STATE:')'
+      HEAD4 = TEMP:"'L'"
+*
+      TEMP = 'CARRIER : ':CARRIER.ID'R#5':', ':CARRIER.NAME:' (':CARRIER.CITY:', ':CARRIER.STATE:')'
+      HEAD5 = TEMP:"'L'"
+*
+      TEMP = 'PRONUM  : ':PRO.ID
+      HEAD6 = TEMP:"'L'"
+*
+      BEGIN CASE
+         CASE NEW.VERIFY.FLAG = 'R'
+            T='Payment Rejected'
+         CASE NEW.VERIFY.FLAG = 'V'
+            T='Bill Verified'
+         CASE NEW.VERIFY.FLAG = ''
+            T='Payment Approved'
+         CASE 1
+            T='ERROR-Call IT - ':PROG.NAME:' PRINT.TABLE: DOES NOT RECOGNIZE ':NEW.VERIFY.FLAG:CHAR(7)
+      END CASE
+      HEAD7 = 'STATUS  : ':T:"'L'"
+      HEAD8 = STR('-',WIDTH-1):"'L'"
+      HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6:HEAD7:HEAD8
+      PAGE 0
+      HEADING HED
+      DONE=FALSE
+      FOR LINE = 1 TO NUM.LINES
+         BEGIN CASE
+            CASE TRIM(DSP.LIST<3,LINE>) = ''
+            CASE 1
+*
+* Is this line a continuation of the prior?
+*
+               IF TRIM(DSP.LIST<2,LINE>) # '' THEN
+                  PRINT
+                  DESC=DSP.LIST<1,LINE>'R#2':') '  ; * No
+               END ELSE
+                  DESC= '    '           ; * Yes
+               END
+               DESC:= DSP.LIST<3,LINE>'L#74'
+               PRINT DESC
+         END CASE
+      NEXT
+
+      PRINTER OFF
+      CALL ELINE("Report printed.")
+
+      RETURN
+*****************************************************************************----
+* Load Client Description
+*
+*  Loads the CLIENT.REC and set CLIENT.NAME
+*
+*  Sets FAILURE flag to TRUE if errors occur.. No other values are changed
+*****************************************************************************----
+LOAD.CLIENT.DESC:
+******************************************************************
+*
+* Read Client Information
+*
+      MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT.ID THEN
+         CLIENT.NAME = CLIENT.REC(2)
+         CLIENT.ADDR = CLIENT.REC(3)
+         CLIENT.CITY = CLIENT.REC(4)
+         CLIENT.STATE = CLIENT.REC(5)
+         CLIENT.ZIP = CLIENT.REC(6)
+      END ELSE
+         CALL ELINE("Unable to load Client Information for Client ID ":CLIENT.ID)
+         STOP
+      END
+
+      RETURN
+*****************************************************************************----
+* Load Carrier Description
+*
+*  Loads the CARRIER.REC and set CARRIER.NAME, CARRIER.CITY,
+*  and CARRIER.STATE info based upon the variable CARRIER.ID
+*
+*  Sets FAILURE flag to TRUE if errors occur.. No other values are changed
+*****************************************************************************----
+LOAD.CARRIER.DESC:
+******************************************************************
+*
+* Read Carrier Information
+*
+      READ CARRIER.REC FROM F.CARRIERS, CARRIER.ID THEN
+         T.FAIL = 0
+         T.OFFSET = 0
+         FOR T.X = 31 TO 35
+            IF CARRIER.REC<T.X> = '' THEN T.FAIL+=1
+         NEXT
+         IF T.FAIL = 0 THEN T.OFFSET=30
+         CARRIER.NAME = CARRIER.REC<1+T.OFFSET,1>
+         CARRIER.ADDR = CARRIER.REC<2+T.OFFSET>
+         CARRIER.CITY = CARRIER.REC<3+T.OFFSET,1>
+         CARRIER.STATE = CARRIER.REC<4+T.OFFSET,1>
+         CARRIER.ZIP = CARRIER.REC<5+T.OFFSET,1>
+      END ELSE
+         CALL ELINE("Unable to load Carrier Information for Carrier ID ":CARRIER.ID)
+         STOP
+      END
+      PRO.FORMAT=CARRIER.REC<47>
+      IF PRO.FORMAT<1,1>='' THEN PRO.MASKS='' ELSE
+         VIN=PRO.FORMAT
+         VIN<2>=CARRIER.REC<51>          ; ** Y/N Active or Inactive
+         CALL MASK(VIN,VOUT)
+         PRO.MASKS=VOUT<1>
+      END
+
+      RETURN
+
+****************************************************************************
+MODIFY.REJ.BILL.LIST:
+******************************************************************
+      IN.REJECT=0
+      REJ.BACK = ''
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0, 3):'Client : ':CLIENT.ID:' ':CLIENT.NAME:@(-4)
+      TEXT=CARRIER.ID:' ':CARRIER.NAME:' ':CARRIER.CITY:' ':CARRIER.STATE
+      CRT@(0, 4):'Carrier: ':TEXT[1,70]
+      CRT@(0, 5):STR('-',79)
+      CRT@(3, 6):'##    PRO NUMBER         DATE    BILL AMT  REJECTION TYPE'
+      CRT@(3, 7):'-- ------------------- -------- ---------- --------------'
+      PRO.POS = 1
+      REJ.ADD.MODE = 1
+
+      IF NEW.BILL.DATES<1,1> ='' OR NEW.CARRIER.CHGS<1,1>='' OR NEW.REJ.TYPES<1,1>='' OR NEW.REJ.TYPES<1,1>='A' THEN
+         REJ.STATE = 1
+      END ELSE
+         IF QI='M' THEN
+            REJ.STATE=1
+         END ELSE
+            REJ.STATE = 5
+         END
+      END
+      NEED.REFRESH = 1
+      LOOP
+      WHILE (REJ.STATE <> 0)
+*
+* Do we need to refresh?
+*
+         IF NEED.REFRESH THEN
+            GOSUB DISPLAY.REJ.BILL.LIST
+            NEED.REFRESH = 0
+         END
+*--------------------------------------------
+* Edit the Bill Entry..
+*--------------------------------------------
+         BEGIN CASE
+*
+* Edit PRO NUMBER field
+*
+            CASE REJ.STATE = 1
+               IF PRO.POS = 1 THEN
+                  IF PRO.ID[LEN(PRO.ID)-1,2]='AD' OR PRO.ID[LEN(PRO.ID)-1,2]='BD' OR PRO.ID[LEN(PRO.ID)-1,2]='/1' THEN
+                     VIN=PRO.ID
+                     Q=PRO.ID
+                     GOSUB CHECK.FIRST.ONE
+                  END ELSE
+                     REJ.STATE += 1
+                  END
+               END ELSE
+                  GOSUB EDIT.PRO.NUMBER
+               END
+** Edit PRO DATE field
+*
+            CASE REJ.STATE = 2
+               GOSUB EDIT.PRO.DATE
+               IF REJ.BACK THEN RETURN
+*
+* Edit PRO AMOUNT field
+*
+            CASE REJ.STATE = 3
+               GOSUB EDIT.PRO.AMT
+*
+* Edit Rejection Type  field
+*
+            CASE REJ.STATE = 4
+               GOSUB EDIT.PRO.REJ.TYPE
+*
+* Menu options
+*
+            CASE REJ.STATE = 5
+               IF REJ.ADD.MODE THEN
+                  IF NUM.PROS >= 14 THEN
+                     CALL ELINE('Maximum number of PRO#s have been entered.')
+                     REJ.ADD.MODE=0
+                  END ELSE
+                     NUM.PROS+= 1
+                     PRO.POS = NUM.PROS
+                     REJ.STATE = 0
+                  END
+               END ELSE
+                  GOSUB EDIT.MENU
+                  IF REJ.BACK THEN RETURN
+               END
+*
+* Firewall...
+*
+            CASE 1
+               REJ.STATE = 1
+
+         END CASE
+
+      REPEAT
+
+      RETURN
+
+****************************************************************************
+DISPLAY.REJ.BILL.LIST:
+******************************************************************
+      IN.REJECT=0
+      FOR X = 1 TO 14
+         CRT @( 3,7+X):X'R#2':@(-4)
+         IF X <= NUM.PROS THEN
+            CRT @( 6,7+X):MPRO.ID<1,X>
+            CRT @(26,7+X):NEW.BILL.DATES<1,X>'D2/'
+            IF MPRO.ID<1,X> # '' AND NEW.CARRIER.CHGS<1,X> # '' THEN   ; * SWB01
+               CRT @(34,7+X):NEW.CARRIER.CHGS<1,X>'R26#10'
+            END                          ; * SWB01
+            BEGIN CASE
+               CASE NEW.REJ.TYPES<1,X>='E'
+                  MSG = E.MSG
+               CASE NEW.REJ.TYPES<1,X>='N'
+                  MSG = N.MSG
+               CASE NEW.REJ.TYPES<1,X>='A'
+                  MSG = A.MSG
+               CASE 1
+                  MSG = ''
+            END CASE
+            CRT @(46,7+X):MSG
+         END
+      NEXT
+
+      RETURN
+****************************************************************************
+EDIT.PRO.NUMBER:
+****************************************************************************
+      IN.REJECT=0
+*
+* Enter PRO NUMBER
+*
+      MAX.NUM=''
+      PROID = MPRO.ID<1,PRO.POS>         ; * Work with Temp Var
+      IF PROID='' AND PRO.MASKS<1,1>#'' THEN
+         MASK=PRO.MASKS<1,1>:@(-4)
+         IF PRO.MASKS<1,2>#'' THEN
+            OTHER.MASKS=PRO.MASKS
+            DEL OTHER.MASKS<1,1>         ; ** Remove the First one (already used)
+            TEXT='Other Valid Masks: ':CHANGE(OTHER.MASKS<1>,@VM,' ')
+            PRINT @(0,22):@(-4):TEXT[1,59]:
+         END ELSE OTHER.MASKS=''
+      END ELSE
+         OTHER.MASKS=''
+         MASK = PROID:STR('-',20-LEN(PROID))
+      END
+
+      HELP = 'Enter the Pro Number.'
+      IF REJ.ADD.MODE THEN
+         REQ=0
+         HELP:= ' ""=Stop Adding'
+      END ELSE
+         IF PROID # '' THEN REQ = 0 ELSE REQ = 1
+      END
+      HELP:= ' [D]=Delete Entry [X]=Back [EX]=Exit'
+      CALL GEN.IN(6,7+PRO.POS,MASK,'',Q,REQ,20,'','',2,6,7+PRO.POS,0,QI,HELP,0,23)
+      IF OTHER.MASKS#'' THEN PRINT @(0,22):@(-4):
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN
+         QI=PROID
+         Q=QI
+      END ELSE
+         QI = TRIM(QI)
+      END
+      IF INDEX(QI,'*',1) THEN
+         CALL ELINE('ERROR! Pro Number cannot contain an *')
+         GO EDIT.PRO.NUMBER
+      END
+
+***** SWITCH + KEY TO X FOR QUICKER DATA ENTRY OF YELLOW FRT BILLS
+
+      PLUS.POS=INDEX(QI,'+',1)
+      IF PLUS.POS THEN
+         QI=CHANGE(QI,"+","-")
+         Q=QI
+         PRINT @(6,7+PRO.POS):QI:
+      END
+
+      IF QI[LEN(QI),1]='-' AND (CARRIER.ID='00093' OR CARRIER.ID='00017') THEN
+*    If the last char is a - after the +s were change to - then make an x
+         QI=QI[1,LEN(QI)-1]:'X'
+         Q=QI
+         PRINT @(6,7+PRO.POS):QI:
+      END
+      IF INDEX(QI,'+',1) THEN
+         CALL ELINE('ERROR! Pro Number cannot contain an +')
+         GO EDIT.PRO.NUMBER
+      END
+      BEGIN CASE
+         CASE QI = 'D'
+            DEL MPRO.ID<1,PRO.POS>
+            DEL NEW.BILL.DATES<1,PRO.POS>
+            DEL NEW.CARRIER.CHGS<1,PRO.POS>
+            DEL NEW.REJ.TYPES<1,PRO.POS>
+            NUM.PROS-=1
+            IF PRO.POS > NUM.PROS THEN PRO.POS-=1
+            NEED.REFRESH=1
+            RETURN
+         CASE QI = ''
+            REJ.ADD.MODE=''
+            REJ.STATE = 5
+*
+* Was the entire Pro/Date/Amt entry complete?
+* If not, remove this entry - they X'd off of
+* an incomplete entry.
+*
+            IF NEW.REJ.TYPES<1,PRO.POS> = '' THEN
+               DEL MPRO.ID<1,PRO.POS>
+               DEL NEW.BILL.DATES<1,PRO.POS>
+               DEL NEW.CARRIER.CHGS<1,PRO.POS>
+               NUM.PROS-=1
+               IF PRO.POS > NUM.PROS THEN PRO.POS-=1
+            END
+            NEED.REFRESH=1
+            RETURN
+         CASE QI = 'X'
+            NEED.REFRESH=1
+*
+* Was the entire Pro/Date/Amt/RejType entry complete?
+* If not, remove this entry - they X'd off of
+* an incomplete entry.
+*
+            IF NEW.REJ.TYPES<1,PRO.POS> = '' THEN
+               DEL MPRO.ID<1,PRO.POS>
+               DEL NEW.BILL.DATES<1,PRO.POS>
+               DEL NEW.CARRIER.CHGS<1,PRO.POS>
+               NUM.PROS-=1
+               IF PRO.POS > NUM.PROS AND NOT(REJ.ADD.MODE) THEN PRO.POS-=1
+            END
+            IF REJ.ADD.MODE THEN
+               REJ.STATE=4
+               PRO.POS-=1
+            END ELSE
+               REJ.STATE=5
+            END
+            RETURN
+
+         CASE QI = 'EX'
+            STOP
+      END CASE
+      CALL CLR.CONTROL(Q)
+*
+* Check pro format matching...
+*
+      VIN = OCONV(TRIM(Q),'MCU')
+******************************************************************      
+CHECK.FIRST.ONE:***
+******************************************************************
+
+      CALL CHECK.PRO.NEW(VIN,CARRIER.REC,VOUT)     ; * JMK06
+      IF VOUT<4> THEN
+         IF INDEX(VOUT<4>,'ADAD',1) OR INDEX(VOUT<4>,'BDBD',1) OR INDEX(VOUT<4>,'/1/1',1) THEN
+            CALL ELINE('Pro #s that are ADADs, BDBDs, /1/1, Etc. can not be added to this listing.')
+            GOTO EDIT.PRO.NUMBER
+         END
+         READ DTEST FROM F.HIST,CARRIER.ID:'*':VIN[1,LEN(VIN)-2]:'*0' THEN
+            IF VIN[LEN(VIN)-1,2]='BD' THEN
+               IF DTEST<11> < 0 THEN
+                  MAX.NUM=(-1)*DTEST<11>
+               END ELSE
+                  CALL ELINE('Pro has not overcharge a BD cannot be entered.')
+                  GOTO EDIT.PRO.NUMBER
+               END
+            END
+         END ELSE
+            IF PRO.ID[LEN(PRO.ID)-1,2]='/1' THEN
+               READ DTEST FROM F.CRX,CARRIER.ID:'*':VIN[1,LEN(VIN)-2]:'*0' ELSE
+                  CALL ELINE('Orginal Bill ':VIN[1,LEN(VIN)-2]:' must be on file before a BD or AD can be entered.')
+                  GOTO EDIT.PRO.NUMBER
+               END
+            END ELSE
+               CALL ELINE('Orginal Bill ':VIN[1,LEN(VIN)-2]:' must be on file before a BD or AD can be entered.')
+               GOTO EDIT.PRO.NUMBER
+            END
+         END
+      END
+      CHK.MSG = TRIM(VOUT<1>)
+      CHK.OLD.PRO = VOUT<3>              ; * Mv with Old Pro Number to check
+      IF CHK.MSG # '' THEN
+         CALL ELINE('Error! ':CHK.MSG)
+         GO EDIT.PRO.NUMBER
+      END
+      PROID = OCONV(TRIM(Q),'MCU')
+      CRT @(6,7+PRO.POS):PROID'L#20'
+*
+* Check for Duplicates in the listing
+* Handle editing an existing pro id by nulling it from the
+* list.
+*
+      T=MPRO.ID<1,PRO.POS>               ; * Store current entry
+      MPRO.ID<1,PRO.POS>=''              ; * Clear Current Entry
+* Check for duplicates
+      LOCATE PROID IN MPRO.ID<1> SETTING WHERE ELSE WHERE=0
+      MPRO.ID<1,PRO.POS>=T               ; * Restore current
+      IF WHERE THEN
+         CALL ELINE('The Pro Number ':PROID:' has already been entered on line ':WHERE:'. Try again.')
+         GOTO EDIT.PRO.NUMBER
+      END
+*
+* Check to see if the bill has already been entered...
+* don't play with versions or AD/BDs per OWEN
+*
+      T.PRO.ID = CARRIER.ID:'*':PROID:'*':'0'      ; * Always version 0 for multiples
+      READ TOLD.PRO.REC FROM F.HIST,T.PRO.ID THEN
+         BEGIN CASE
+            CASE TOLD.PRO.REC<14>#''
+               CALL ELINE('That bill has already been paid! You can not ADD it in this group.')
+               GOTO EDIT.PRO.NUMBER
+
+            CASE TOLD.PRO.REC<37>#''
+               CALL ELINE('That bill has already been processed! You can not ADD it in this group.')
+               GOTO EDIT.PRO.NUMBER
+            CASE 1
+
+         END CASE
+
+      END
+
+      MPRO.ID<1,PRO.POS> = PROID         ; * Store Temp Var
+      REJ.STATE += 1
+
+      RETURN
+****************************************************************************
+EDIT.PRO.DATE:
+****************************************************************************
+      IN.REJECT=0
+*
+* Enter BILL DATE
+*
+      BDATE = NEW.BILL.DATES<1,PRO.POS>  ; * Work with Temp Var
+      IF BDATE # '' THEN
+         MASK = BDATE'D2.'
+      END ELSE
+         MASK = 'MM/DD/YY'
+      END
+      HELP = "Enter Pro Date. [T]oday [X]=Bck [EX]it"
+      IF BDATE # '' THEN REQ = 0 ELSE REQ = 1
+      CALL GEN.IN(26,7+PRO.POS,MASK,'DATE',Q,REQ,8,'','',2,-8,7+PRO.POS,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE BDATE # '' & QI = ''
+            Q = BDATE
+         CASE QI = 'X'
+            IF PRO.POS = 1 THEN
+
+               CALL ELINE('You are at the beginning you cannot X-back')
+               GO EPD.EXIT
+            END
+            REJ.STATE-=1
+
+            GOTO EPD.EXIT
+         CASE QI = 'T'
+            Q = DATE()
+         CASE QI = 'EX'
+            STOP
+         CASE NOT(NUM(Q)) OR Q GT DATE() ! Q = ''
+            CALL ELINE('ERROR - Invalid Date.')
+            GOTO EDIT.PRO.DATE
+      END CASE
+
+      BDATE = Q
+      IF CLIENT.REC(27)#'' AND BDATE < CLIENT.REC(27) THEN
+         CALL ELINE("WARNING!! Bill Date is Earlier than Client Pre-Audit Start Date!!!!")
+      END
+      IF CLIENT.ID='00716' & BDATE GE ICONV('12/01/94','D') THEN
+         CALL ELINE('NO Dal-Tile After 12/01/94')
+         GOTO EDIT.PRO.DATE
+      END
+      NEW.BILL.DATES<1,PRO.POS> = BDATE  ; * Store Temp Var
+      REJ.STATE += 1
+
+EPD.EXIT:
+      IN.REJECT=0
+      CRT @(26,7+PRO.POS):BDATE'D2/'
+
+      RETURN
+****************************************************************************
+EDIT.PRO.AMT:
+****************************************************************************
+*
+* Enter CARRIER CHARGE
+*
+      CHARGE = NEW.CARRIER.CHGS<1,PRO.POS>         ; * Work with Temp Var
+      HELP = "Enter the Carrier's Charge. [X]=Back [EX]=Exit"
+
+      IF CHARGE+0 = 0 THEN REQ = 1 ELSE REQ = 0    ; * DRF01
+      CALL GEN.IN(35,7+PRO.POS,CHARGE'L26#10','AMT2',Q,REQ,9,'','',2,35,7+PRO.POS,1,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = '' AND CHARGE # ''
+         CASE NUM(QI)
+            IF QI+0 = 0 THEN               ; * DRF01
+               CALL ELINE('Amount must be greater than 0.00')    ; * DRF01
+               GOTO EDIT.PRO.AMT           ; * DRF01
+            END                            ; * DRF01
+            IF MAX.NUM#'' THEN
+               IF Q GT MAX.NUM THEN
+                  CALL ELINE('BD cannot be entered for more than ':MAX.NUM'R26':' (The overcharge of the orignal bill)')
+                  GOTO EDIT.PRO.AMT
+               END
+            END
+            CHARGE = Q'R0'
+         CASE QI = 'X'
+            REJ.STATE-=1
+
+            GOTO EPA.EXIT
+         CASE QI = 'EX'
+            STOP
+         CASE 1
+            GOTO EDIT.PRO.AMT
+      END CASE
+
+      NEW.CARRIER.CHGS<1,PRO.POS> = CHARGE         ; * Store Temp Var
+      REJ.STATE += 1
+******************************************************************      
+EPA.EXIT:
+******************************************************************
+*
+* Update display and exit
+*
+      CRT @(34,7+PRO.POS):CHARGE'R26#10'
+
+      RETURN
+****************************************************************************
+EDIT.PRO.REJ.TYPE:
+****************************************************************************
+      IN.REJECT=0
+*
+* Enter CARRIER REJECT TYPE
+*
+      TYPE = NEW.REJ.TYPES<1,PRO.POS>    ; * Work with Temp Var
+      IF TYPE='A' AND BCTRL.REC<14>='A' THEN TYPE='N'
+
+      MASK=TYPE:SPACE(14)
+      HELP = "Enter the Rejection Type. [E]=Eventually Pay [N]=Never Pay [X]=Back [EX]=Exit"
+      CALL GEN.IN(46,7+PRO.POS,MASK,'',Q,0,2,'','',2,46,7+PRO.POS,1,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = '' AND TYPE # ''
+         CASE QI = 'X'
+            REJ.STATE-=1
+            GOTO EPRT.EXIT
+         CASE QI = 'EX'
+            STOP
+         CASE QI='N' OR QI='E'
+            TYPE = QI
+         CASE 1
+            CALL ELINE('Invalid option. Valid options are E,N,X or EX. Please try again.')
+            GOTO EDIT.PRO.REJ.TYPE
+      END CASE
+
+      NEW.REJ.TYPES<1,PRO.POS> = TYPE    ; * Store Temp Var
+      REJ.STATE += 1
+******************************************************************
+EPRT.EXIT:
+******************************************************************
+      IN.REJECT=0
+*
+* Update Display and return
+*
+      BEGIN CASE
+         CASE TYPE='E'
+            MSG = E.MSG
+         CASE TYPE='N'
+            MSG = N.MSG
+         CASE TYPE='A'
+            MSG = A.MSG
+      END CASE
+      CRT @(46,7+PRO.POS):MSG
+
+      RETURN
+***************************************************************************
+EDIT.MENU:
+***************************************************************************
+      IN.REJECT=0
+*
+* Save,Multiple,Back,Exit prompt
+*
+      REJ.BACK = 0
+      REJ.ADD.MODE = 0
+      HELP = '[#]=Edit Line [S]=Save [A]=Add Entry [X]=Back [EX]=Exit'
+      CALL GEN.IN(0,22,'Option: S ','',Q,0,2,'','',2,-2,22,1,QI,HELP, 0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE NUM(QI) AND QI # ''
+            LINE = Q'R0'
+            IF LINE > 0 AND LINE <= NUM.PROS THEN
+               PRO.POS = LINE
+               REJ.STATE = 1
+            END ELSE
+               IF LINE < 15 AND LINE = NUM.PROS+1 THEN
+                  NUM.PROS+= 1
+                  PRO.POS = NUM.PROS
+                  REJ.STATE = 1
+               END ELSE
+                  CALL ELINE('Line number out of range. - You can only edit from 1 to ':NUM.PROS)
+                  GOTO EDIT.MENU
+               END
+            END
+         CASE QI = 'A'
+            IF NUM.PROS >= 14 THEN
+               CALL ELINE('Maximum number of PRO#s have been entered.')
+               GOTO EDIT.MENU
+            END ELSE
+               REJ.ADD.MODE = 1
+            END
+         CASE QI = 'EX'
+            STOP
+         CASE QI = 'X'
+            REJ.BACK = 1
+            RETURN
+         CASE QI = 'S' OR QI=''
+            REJ.STATE = 0
+            RETURN
+         CASE 1
+            GOTO EDIT.MENU
+      END CASE
+
+      RETURN
+
+***************************************************************************
+CHECK.FOR.CHANGE:;*(0 = NO CHANGES MADE ; 1+ = CHANGES MADE)
+***************************************************************************
+      IN.REJECT=0
+      CHANGED = 0
+      IF NEW.REJECT.REASONS # REJECT.REASONS THEN CHANGED+=1
+      IF MAILING.ADDR<1> # '' AND NEW.MAILING.ADDR # MAILING.ADDR THEN CHANGED+=1
+      IF NEW.VERIFY.FLAG # VERIFY.FLAG THEN CHANGED+=1
+      IF NEW.CARRIER.CHGS # CARRIER.CHGS THEN CHANGED+=1
+      IF NEW.BILL.DATES # BILL.DATES THEN CHANGED+=1
+      IF NEW.REJ.TYPES # REJ.TYPES THEN CHANGED+=1
+
+      RETURN
+*****************************************************************************
+BUILD.TXT.FILE:
+*****************************************************************************
+ 
+    OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+    CALL ELINE('Unable to open BILLDATA.':USER.NAME:'.')
+    STOP
+ END
+   
+ RPT.REC=''
+ RPT.REC<-1>= NEW.MAILING.ADDR<1>
+      RPT.REC<-1>= NEW.MAILING.ADDR<2>
+      RPT.REC<-1>= NEW.MAILING.ADDR<3>
+      RPT.REC<-1>= NEW.MAILING.ADDR<4>
+      RPT.REC<-1>=  " " 
+      RPT.REC<-1>=  " " 
+      RPT.REC<-1>= 'RE: Client     : ':CLIENT.NAME
+      RPT.REC<-1>= '    Carrier    : ':CARRIER.NAME
+      RPT.REC<-1>=  " " 
+      * LINE 7 THRU 19          + 12
+      TX = DCOUNT(MPRO.ID<1>,@VM)
+      T1='    Pro Number      Amount     Date  '
+      T2=' ----------------  --------- --------'
+       RPT.REC<-1>= T1
+      RPT.REC<-1>= T2
+       FOR X = 1 TO ROW1
+         STR = ' ':MPRO.ID<1,X>'L#16'
+         STR:= NEW.CARRIER.CHGS<1,X>'R26,#11'
+         STR:= ' ':NEW.BILL.DATES<1,X>'D2/'
+         STR:= ' ':NEW.REJ.TYPES<1,X>
+         IF EDI.LINK#'' THEN
+            STR:=' - EDI'
+         END
+         RPT.REC<-1>= STR
+         * NOT SURE HOW MANY LINES ;* + TX value
+      NEXT 
+       RPT.REC<-1>=  " " 
+       STMT = 'The above '
+      IF TX > 1 THEN STMT:=TX:' '
+      STMT:= 'freight bill'
+      IF TX > 1 THEN BILLS='s' ELSE BILLS=''
+      STMT:= BILLS:' can not be processed for payment until the'
+      RPT.REC<-1>= STMT          ;* + 1
+      
+      STMT = 'following reason'
+      IF NUM.CODES+NUM.MSGS > 1 THEN STMT:='s have' ELSE STMT:=' has'
+      STMT:=' been satisfied.  Please provide the necessary'
+      RPT.REC<-1>= STMT                  ;* + 1
+          
+                  
+      RPT.REC<-1>= 'information with the attached freight bill':BILLS:' and mail to:'
+       RPT.REC<-1>= CLIENT.NAME:' % AFS, LLC., ':MAIL.ADD            ;* + 1
+     RPT.REC<-1>= MAIL.CSZ                           ;* + 1
+     RPT.REC<-1>=    " "                 ;* + 1
+     RPT.REC<-1>=     " "                          ;* + 1
+     
+      FOR LINE = 1 TO NUM.LINES
+         BEGIN CASE
+            CASE TRIM(PRINT.LIST<3,LINE>) = ''
+            CASE 1
+               IF TRIM(PRINT.LIST<2,LINE>) = MESSAGE.FLAG AND NEED.TO.PRINT.REMARK THEN
+                  RPT.REC<-1>=      " "           ;* + 1
+                  RPT.REC<-1>= 'REMARKS:'               ;* + 1
+                  NEED.TO.PRINT.REMARK = FALSE
+               END
+*
+* Is this line a continuation of the prior?
+*
+               IF PRINT.LIST<3,LINE>='[BLANK]' THEN
+                  RPT.REC<-1>=     " "  ;* + 1
+               END ELSE
+                  IF TRIM(PRINT.LIST<2,LINE>) # '' THEN
+                     RPT.REC<-1>=   " "    ;* + 1 
+                     DESC=PRINT.LIST<1,LINE>'R#2':') '       ; * No
+                     DESC:= PRINT.LIST<3,LINE>'L#74'
+                  END ELSE
+                     DESC= '    '        ; * Yes
+                     DESC:= PRINT.LIST<3,LINE>'L#74'
+                  END
+                  RPT.REC<-1>= DESC           ;* + 1
+                  DESC=''
+               END
+         END CASE
+      NEXT
+      RPT.REC<-1>=  " "       ;* + 1
+      RPT.REC<-1>=  " "         ;* + 1
+      RPT.REC<-1>=   " "        ;* + 1               34 ? 
+       RPT.REC<-1>= 'DATE: ':DATE()"D2/":'     SIGNATURE:':LINE:'(':FULL.NAME:')'
+       
+   WRITE RPT.REC ON F.BILLDATA ,CLIENT.ID:'*':DATE()
+ RETURN   
+
+
+
+*****************************************************************************
+* DEBUG
+*****************************************************************************
+DEBUG:
+*
+* Was a special debug message passed? If not, Use the default.
+*
+      IF DEBUG.MSG = '' THEN DEBUG.MSG='DEBUG POINT - BREAK IT!'
+      CRT @(0,0):DEBUG.MSG:
+      INPUT NULL,1
+      CRT @(0,0):SPACE(LEN(DEBUG.MSG)):
+      DEBUG.MSG=''                       ; * Clear it to prevent reuse of special.
+
+      RETURN
+

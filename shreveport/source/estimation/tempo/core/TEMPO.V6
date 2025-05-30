@@ -1,0 +1,552 @@
+      SUBROUTINE TEMPO.V5(VIN,VOUT)
+*******************************************************************
+* Program name : TEMPO
+* Author       : GREG BINO
+* Date written : 02-16-2021
+* Library      : FBBP
+* COPYRIGHT (c) : AFS, LLC 2021, All Rights Reserved.
+*
+* BETA MAKE SECURE CONNECTION AND JSON REQUEST
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 08:19:55 on 05/18/2021.
+
+* Start modification history
+* 051821 - NKH01 - ACCU-1074 LTL rating
+* End modification history
+*
+*******************************************************************************
+
+$INCLUDE UNIVERSE.INCLUDE UDO.H
+CALL GET.USER.NEW(USER,CH.NUM)
+
+      OPEN "GRB" TO F.GRB ELSE STOP
+      READ PROCDATA2 FROM F.GRB,"PROCDATA4" ELSE PROCDATA2 = ""
+      logfile="restpost2"
+
+*      STAT = protocolLogging(logfile, "ON", 27)
+
+      OPEN '','LAST.LCC.ERR' TO LAST.LCC.ERR ELSE
+         CALL OPEN.ABORT('LAST.LCC.ERR',PROG.NAME)
+      END
+      OPEN '','CONTROL' TO CONTROL.FILE ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)                                                               
+      END
+      READ CONTROL.REC FROM CONTROL.FILE, 'TEMPO.TOKEN' THEN
+         CONTROL.DATE = CONTROL.REC<1>
+         CONTROL.TOKEN = CONTROL.REC<2>
+      END
+            
+      VOUT = ''      
+      CLIENT = VIN<1>
+      CLIENT.ID = OCONV(CLIENT,'MD0')
+      SCAC = VIN<2>
+      IF SCAC = 'ALL' THEN SCAC = ''
+      SHIP.DATE = VIN<3>
+      WEIGHT = VIN<4>
+      CITY1 = VIN<5>
+      COUNTRY.CODE1 = VIN<6>
+      POSTAL1 = VIN<7>
+      STATE.PROVINCE1 = VIN<8>
+      CITY2 = VIN<9>
+      COUNTRY.CODE2 = VIN<10>
+      POSTAL2 = VIN<11>
+      STATE.PROVINCE2 = VIN<12>
+      DIRECTION = VIN<13>
+      LCC.ERR.KEY = VIN<14>      
+      IF COUNTRY.CODE2 = '' THEN
+         COUNTRY.CODE2 = "USA"
+      END
+      CLASSES = VIN<15>      ; * NKH01
+      MISC.CHG = VIN<16>         
+    
+      LANE.ID = "COVMAA01"
+      LANE.ID = 1
+      BILLED.WEIGHT = 2600
+      BILLED.DISTANCE = 500
+
+      IF DATE() > CONTROL.DATE THEN
+         CLIENT.DAT = "4n0TMGxfhQW1ICdO0DrDurpng1dwGbdp"
+         SECRET.DAT = "zsK3lzqQsz8yiKUDTPTlMS9jb7_Jq9L8eAxPETaqti5BGujR0A72AP8RqV3ovpjZ"
+         AUDIENCE.DAT = "https://tempo.qa.afs.net/"
+         GRANT.DAT = "client_credentials"
+
+         PROCDATA = "{"
+         PROCDATA:=' "client_id" : "':CLIENT.DAT:'",'
+         PROCDATA:=' "client_secret" : "':SECRET.DAT:'",'
+         PROCDATA:=' "audience" : "':AUDIENCE.DAT:'",'
+         PROCDATA:=' "grant_type" : "':GRANT.DAT:'"'
+         PROCDATA:= "}"
+*
+         URL = "https://afslogistics.auth0.com/oauth/token"
+
+         METHOD = "POST"
+         hndRequest = ""
+         HEADER = ""
+         STAT = SETHTTPDEFAULT("VERSION", "1.1")
+   
+         STAT = createSecurityContext(CTX, "TLSv1.2")
+         STAT = createSecureRequest(URL, METHOD, hndRequest, CTX)
+         STAT = SETREQUESTHEADER(hndRequest, "Content-Type", "application/json")
+         RESTDATA=""
+         httpstatus = ""
+         STAT = submitRequest(hndRequest, 3600, PROCDATA, HEADER, RESTDATA, httpstatus)
+      
+         TOKEN = RESTDATA
+         TOK.LEN = LEN(TOKEN)
+         TOKEN = TOKEN[17,TOK.LEN-58]
+
+         CONTROL.REC<1> = DATE()
+         CONTROL.REC<2> = TOKEN
+         WRITE CONTROL.REC TO CONTROL.FILE, 'TEMPO.TOKEN'
+      END ELSE
+         TOKEN = CONTROL.TOKEN
+      END
+
+      GOSUB FORMAT.JSON
+      HEADER = ""
+IF CLIENT.ID = '04917' OR CLIENT.ID = '02237' OR CLIENT.ID = '05669' THEN
+      URL = "https://tempo.afs.net/tempo/v3/rateShop"
+END ELSE      
+      URL = "https://tempo.qa.afs.net/tempo/v3/rateShop"
+END      
+
+      METHOD = "POST"
+      STAT = createSecurityContext(CTX, "TLSv1.2")
+      STAT = addAuthenticationRule(CTX, 2, "VerificationStrength","generous")
+      STAT = createSecureRequest(URL, METHOD, hndRequest, CTX)
+      STAT = SETREQUESTHEADER(hndRequest, "Content-Type", "application/json;charset=utf-8")
+      CONVERT '"' TO '' IN TOKEN
+
+      STAT = setRequestHeader(hndRequest, "Authorization","Bearer ":TOKEN)
+      RESTDATA=""
+      httpstatus = ""
+*DEBUG
+      STAT = submitRequest(hndRequest, 32000, PROCDATA, HEADER, RESTDATA, httpstatus)
+***** IF USER = "GBINO" THEN DEBUG
+*      PRINT "Response status: ":httpstatus
+*      PRINT "Response headers:":HEADER
+*      PRINT "Length of response data:":LEN(RESTDATA)
+*      PRINT "Response Data:":RESTDATA ; INPUT CONT
+      STAT = protocolLogging(logfile, "OFF", 27)
+  
+*DEBUG 
+      GOSUB PARSE.RESULTS
+    
+      RETURN
+      
+************************************************************************
+PARSE.RESULTS:
+************************************************************************
+      UDOTYPE = ''
+      RESTLEN = LEN(RESTDATA)
+      RESTDATA = RESTDATA[10,RESTLEN-10]
+      UDOHANDLE = ""
+      RESP = ''
+      RESP.CNT = 1
+      STATUS =UDORead(RESTDATA, UDOFORMAT_JSON, UDOHANDLE )
+      
+      IF STATUS # 0 AND RESTDATA > "" AND LCC.ERR.KEY # "" THEN
+         GOSUB REPORT.JSON.ERR
+      END
+      
+      ST = UDOArrayGetSize(UDOHANDLE, ITEM_SIZE) ; IF ST NE UDO_SUCCESS THEN
+         ITEM_SIZE = 1
+      END
+      
+      FOR I = 1 TO ITEM_SIZE
+         GOSUB INIT.VARS
+         TEMP.ARRAY = ''
+         ST = UDOArrayGetItem(UDOHANDLE, I, result_udo, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         ST = UDOGetProperty(result_udo, "scac", SCAC, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         ST = UDOGetProperty(result_udo, "mode", MODE, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         ST = UDOGetProperty(result_udo, "gross_rate", GROSS.RATE, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER     
+         ST = UDOGetProperty(result_udo, "discount_rate", DISCOUNT.RATE, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER     
+         ST = UDOGetProperty(result_udo, "discount_percent", DISCOUNT.PERCENT, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER                       
+         
+*         ST = UDOGetProperty(result_udo, "transit_days", TRANSIT.DAYS, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER     ; * This does not work - Returns 0 instad of 2
+         
+         * Begin NKH01
+         * Main detail data
+         IF UDOGetProperty(result_udo, "detail", DETAIL, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER         
+         LOOP
+            GETSTAT = UDOGetNextProperty(DETAIL, W.UDO, W.VALUE, W.TYPE)         
+         WHILE GETSTAT = UDO_SUCCESS DO 
+            BEGIN CASE
+               CASE W.UDO = 'transit_days' 
+                  TRANSIT.DAYS = W.VALUE 
+               CASE W.UDO = 'tariff_name'
+                  TARIFF.NAME = W.VALUE
+               CASE W.UDO = 'tariff_date'
+                  TARIFF.DATE = W.VALUE    
+               CASE W.UDO = 'direct'
+                  DIRECT = W.TYPE     ; * true/false (1/0)
+               CASE W.UDO = 'fuel_offset'
+                  FUEL.OFFSET = W.VALUE
+               CASE W.UDO = 'mileage' 
+                  MILEAGE = W.VALUE
+               CASE W.UDO = 'matrix_calc'               
+                  IF UDOGetProperty(DETAIL, "matrix_calc", MATRIX.CALC, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER                     
+                  LOOP
+                     GETSTAT2 = UDOGetNextProperty(MATRIX.CALC, W.UDO2, W.VALUE2, W.TYPE2)                     
+                  WHILE GETSTAT2 = UDO_SUCCESS DO
+                     BEGIN CASE
+                        CASE W.UDO2 = 'charge_floor'
+                           CHARGE.FLOOR = W.VALUE2
+                        CASE W.UDO2 = 'charge_min_discount'
+                           CHARGE.MIN.DISCOUNT = W.VALUE2
+                        CASE W.UDO2 = 'rateware_markup'
+                           RATEWARE.MARKUP = W.VALUE2                           
+                     END CASE      
+                  REPEAT                              
+            END CASE  
+         REPEAT
+         ST = UDOGetProperty(result_udo, "contract_id", CONTRACT.ID, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER              
+         ST = UDOGetProperty(result_udo, "effective", EFFECTIVE, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER                       
+         ST = UDOGetProperty(result_udo, "expiration", EXPIRATION, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER                       
+         ST = UDOGetProperty(result_udo, "currency", CURRENCY, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER   
+         ST = UDOGetProperty(result_udo, "undiscounted_gross", UNDISCOUNTED.GROSS, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN UNDISCOUNTED.GROSS = 0
+                             
+         
+         * Surcharges
+         ACC = '' ; ACC.RATE = '' ; ACC.POS = 1
+         IF UDOGetProperty(result_udo, "surcharges", arrSurcharges, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER         
+         LOOP 
+            GETSTAT = UDOArrayGetNextItem(arrSurcharges, W.UDO, W.TYPE)
+         WHILE GETSTAT = UDO_SUCCESS DO
+            IF UDOGetProperty(W.UDO, "type", SC.TYPE, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER   
+            IF UDOGetProperty(W.UDO, "rate", SC.RATE, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER   
+            IF UDOGetProperty(W.UDO, "detail", SUR.DETAIL, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER        
+            LOOP
+               GETSTAT = UDOGetNextProperty(SUR.DETAIL, W.UDO2, W.VALUE2, W.TYPE2)  
+
+                      
+            WHILE GETSTAT = UDO_SUCCESS DO 
+               IF SC.TYPE = 'FUEL' AND W.UDO2 = 'charge' THEN
+                  IF UDOGetProperty(SUR.DETAIL, "charge", CHARGE, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER                     
+                  LOOP
+                     GETSTAT2 = UDOGetNextProperty(CHARGE, W.UDO3, W.VALUE3, W.TYPE3)                       
+                  WHILE GETSTAT2 = UDO_SUCCESS DO
+                     BEGIN CASE
+                        CASE W.UDO3 = 'type'
+                           FUEL.TYPE = W.VALUE3
+                        CASE W.UDO3 = 'value'
+                           FUEL.VALUE = W.VALUE3
+                     END CASE
+                  REPEAT
+               END            
+
+               IF SC.TYPE = 'ACCESSORIAL' THEN
+                  BEGIN CASE                  
+                     CASE W.UDO2 = 'key' 
+                        ACC = INSERT(ACC,1,1;W.VALUE2) 
+                        ACC.RATE = INSERT(ACC.RATE,1,1;SC.RATE)                                            
+                     CASE W.UDO2 = 'description'
+                        ACC.DESC = INSERT(ACC.DESC,1,1;W.VALUE2)                     
+                  END CASE
+                  ACC.POS += 1
+               END
+            REPEAT
+            
+            IF SC.TYPE = 'FUEL' THEN
+               FUEL.AMT = SC.RATE
+            END
+            
+         REPEAT                                        
+
+         * RateWare Info
+         IF UDOGetProperty(result_udo, "rateware_info", RATEWARE.INFO, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER                  
+         IF UDOGetProperty(RATEWARE.INFO, "queries", arrQueries, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER         
+         LOOP 
+            GETSTAT = UDOArrayGetNextItem(arrQueries, W.UDO, W.TYPE)
+         WHILE GETSTAT = UDO_SUCCESS DO
+            IF UDOGetProperty(W.UDO, "tariff", TARIFF, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER 
+            IF UDOGetProperty(W.UDO, "effective_date", TARIFF.EFF.DATE, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER                 
+            IF UDOGetProperty(W.UDO, "min_charge", MIN.CHARGE, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER 
+         REPEAT                                        
+
+         IF UDOGetProperty(RATEWARE.INFO, "results", arrResults, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER         
+         LOOP 
+            GETSTAT = UDOArrayGetNextItem(arrResults, W.UDO, W.TYPE)
+         WHILE GETSTAT = UDO_SUCCESS DO
+            IF UDOGetProperty(W.UDO, "actual_wgt", ACTUAL.WGT, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER 
+            IF UDOGetProperty(W.UDO, "deficit_wgt", DEFICIT.WGT, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER                 
+            IF UDOGetProperty(W.UDO, "billed_wgt", BILLED.WGT, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER 
+            IF UDOGetProperty(W.UDO, "min_charge", MIN.CHARGE, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER        
+            IF UDOGETProperty(W.UDO, "total_charge", TOTAL.CHARGE, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+            IF UDOGetProperty(W.UDO, "deficit_rate", DEFICIT.RATE, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER 
+            IF UDOGetProperty(W.UDO, "deficit_charge", DEFICIT.CHARGE, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER                 
+            IF UDOGetProperty(W.UDO, "discount_amt", DISCOUNT.AMT, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER 
+            IF UDOGetProperty(W.UDO, "eff_date", EFF.DATE, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER                    
+            IF UDOGETProperty(W.UDO, "line_item_results", arrLineItemResults, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER            
+
+            * Line Item Classes and Weights
+            CHARGES = ''
+            RATES = ''
+            FAKS = ''
+            WEIGHTS = ''
+            FREIGHT.CLASSES = ''
+            LOOP            
+               GETSTAT = UDOArrayGetNextItem(arrLineItemResults, L.UDO, L.TYPE)               
+            WHILE GETSTAT = UDO_SUCCESS DO    
+               IF UDOGetProperty(L.UDO, "charge", CHARGE, UDOTYPE) NE UDO_SUCCESS THEN 
+                  GOSUB ERR.HANDLER 
+                  CHARGE = 0
+               END
+               IF UDOGetProperty(L.UDO, "rate", RATE, UDOTYPE) NE UDO_SUCCESS THEN 
+                  GOSUB ERR.HANDLER                 
+                  RATE = ''
+               END
+               IF UDOGetProperty(L.UDO, "fak", FAK, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER 
+               IF UDOGetProperty(L.UDO, "weight", WEIGHT, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER                    
+               IF UDOGETProperty(L.UDO, "freight_class", FREIGHT.CLASS, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER 
+               CHARGES<1,-1> = CHARGE
+               RATES<1,-1> = RATE
+               FAKS<1,-1> = FAK
+               WEIGHTS<1,-1> = WEIGHT
+               FREIGHT.CLASSES<1,-1> = FREIGHT.CLASS
+*               CHARGES = INSERT(CHARGES,1,1;CHARGE)
+*               RATES = INSERT(RATES,1,1;RATE)
+*               FAKS = INSERT(FAKS,1,1;FAK)
+*               WEIGHTS = INSERT(WEIGHTS,1,1;WEIGHT)
+*               FREIGHT.CLASSES = INSERT(FREIGHT.CLASSES,1,1;FREIGHT.CLASS)
+
+            REPEAT
+            IF UDOGetProperty(RATEWARE.INFO, "discount_pct_used", DISCOUNT.PCT.USED, UDOTYPE) NE UDO_SUCCESS THEN GOSUB ERR.HANDLER                                                                  
+         REPEAT             
+
+         * Create VOUT
+         VOUT<1,I> = SCAC
+         VOUT<2,I> = MODE
+         VOUT<3,I> = GROSS.RATE
+         VOUT<5,I> = UNDISCOUNTED.GROSS
+*         VOUT<6,I> = Client id
+         VOUT<7,I> = FUEL.AMT
+         VOUT<8,I> = TRANSIT.DAYS         
+         VOUT<9,I> = TARIFF.NAME 
+         VOUT<10,I>= TARIFF.DATE
+         VOUT<11,I>= DIRECT
+         VOUT<12,I>= FUEL.OFFSET 
+         VOUT<13,I>= MILEAGE
+         VOUT<14,I>= CHARGE.FLOOR
+         VOUT<15,I>= CHARGE.MIN.DISCOUNT
+         VOUT<16,I>= CONTRACT.ID
+         VOUT<17,I>= EFFECTIVE
+         VOUT<18,I>= EXPIRATION
+         VOUT<19,I>= CURRENCY
+         CONVERT @VM TO @SM IN CHARGES        
+         VOUT<21> = INSERT(VOUT<21>,1,I;CHARGES)
+         CONVERT @VM TO @SM IN RATES                  
+         VOUT<22> = INSERT(VOUT<23>,1,I;RATES)
+         CONVERT @VM TO @SM IN FAKS
+         VOUT<23> = INSERT(VOUT<23>,1,I;FAKS)
+         CONVERT @VM TO @SM IN WEIGHTS
+         VOUT<24> = INSERT(VOUT<24>,1,I;WEIGHTS)         
+         CONVERT @VM TO @SM IN FREIGHT.CLASSES         
+         VOUT<25> = INSERT(VOUT<25>,1,I;FREIGHT.CLASSES)
+         IF DISCOUNT.PCT.USED = "" THEN DISCOUNT.PCT.USED = 0
+         VOUT<26,I> = DISCOUNT.PCT.USED
+         VOUT<27,I> = DISCOUNT.RATE
+         VOUT<28,I> = ACTUAL.WGT
+         VOUT<29,I> = DEFICIT.WGT
+         VOUT<30,I> = BILLED.WGT
+         VOUT<31,I> = MIN.CHARGE
+         VOUT<32,I> = TOTAL.CHARGE
+         VOUT<33,I> = DEFICIT.RATE
+         VOUT<34,I> = DEFICIT.CHARGE
+         VOUT<35,I> = DISCOUNT.AMT
+         VOUT<36,I> = EFF.DATE
+         CONVERT @VM TO @SM IN ACC
+         VOUT<37> = INSERT(VOUT<37>,1,I;ACC)
+         CONVERT @VM TO @SM IN ACC.RATE
+         VOUT<38> = INSERT(VOUT<38>,1,I;ACC.RATE)
+         VOUT<39,I> = FUEL.TYPE
+         VOUT<40,I> = FUEL.VALUE
+         CONVERT @VM TO @SM IN ACC.DESC
+         VOUT<41> = INSERT(VOUT<41>,1,I;ACC.DESC)
+         VOUT<42,I> = RATEWARE.MARKUP
+*DEBUG         
+         
+         * End NKH01                  
+         
+      NEXT I
+
+      RETURN
+
+* Begin NKH01
+****************************************************
+INIT.VARS:
+*****************************************************
+      SCAC = ''
+      MODE = ''
+      GROSS.RATE = ''
+      FUEL.AMT = 0
+      UNDISCOUNTED.GROSS = ''
+      TRANSIT.DAYS = 0        
+      TARIFF.NAME = ''
+      TARIFF.DATE = ''
+      DIRECT = ''
+      FUEL.OFFSET = ''
+      MILEAGE = ''
+      CHARGE.FLOOR = ''
+      CHARGE.MIN.DISCOUNT = ''
+      CONTRACT.ID = ''
+      EFFECTIVE = ''
+      EXPIRATION = ''
+      CURRENCY = ''
+      SC.TYPE = ''
+      SC.RATE = ''
+      TARIFF = ''
+      TARIFF.EFF.DATE = ''
+      MIN.CHARGE = '' 
+      CHARGES = ''
+      RATES = ''
+      FAKS = ''
+      WEIGHTS = ''
+      FREIGHT.CLASSES = ''     
+      DISCOUNT.RATE = ''
+      DISCOUNT.PCT.USED = ''
+      ACTUAL.WGT = ''
+      DEFICIT.WGT = ''
+      BILLED.WGT = ''
+      MIN.CHARGE = ''
+      TOTAL.CHARGE = ''
+      DEFICIT.RATE = ''
+      DEFICIT.CHARGE = ''
+      DISCOUNT.AMT = ''
+      EFF.DATE = ''  
+      FUEL.TYPE = ''
+      FUEL.VALUE = '' 
+      ACC.DESC = ''  
+      RATEWARE.MARKUP = '' 
+      
+      RETURN
+
+* End NKH01      
+****************************************************
+ERR.HANDLER:
+*****************************************************
+      ERRCODE = "" ; ERRMSG = ""
+      S = UDOGetLastError(ERRCODE, ERRMSG)
+      ERROR = "UDO ERROR: (":ERRCODE:") ":ERRMSG
+      VOUT<6> =ERROR
+
+      RETURN
+
+************************************************************************
+REPORT.JSON.ERR:
+************************************************************************
+      LAST.LCC.ERR.REC = ''
+      READ LAST.LCC.ERR.REC FROM LAST.LCC.ERR, LCC.ERR.KEY THEN
+         IF RESTDATA = LAST.LCC.ERR.REC<1> THEN
+            LAST.LCC.ERR.REC<2> += 1
+            WRITEV LAST.LCC.ERR.REC<2> ON LAST.LCC.ERR, LCC.ERR.KEY, 2
+         END            
+      END ELSE
+         LAST.LCC.ERR.REC<1> = RESTDATA
+         LAST.LCC.ERR.REC<2> = '1'
+         WRITE LAST.LCC.ERR.REC ON LAST.LCC.ERR, LCC.ERR.KEY
+         TEXT =''
+         TEXT<1,-1>= 'ERROR: ':RESTDATA
+         TEXT<1,-1>=' '
+         TEXT<1,-1>='Please see the following for a total count of errors during this process. Note: Error count is ALL errors incured during this process. Not just the one reported on this email.'
+         TEXT<1,-1>='Filename: LAST.LCC.ERR'
+         TEXT<1,-1>='Record ID: ':LCC.ERR.KEY
+         TEXT<1,-1>='Attribute: 2'
+         SUBJ='RESTDATA data error from Tempo Rating'
+         MVIN=''
+*          MVIN<1,-1>='gbino@afs.net'
+*         MVIN<1,-1>='nmeddaugh@afs.net'
+         MVIN<4>='AFS'
+         MVIN<5>=SUBJ
+         MVIN<6>=TEXT
+         CALL SENDMAIL(MVIN,MVOUT)
+      END  
+  
+      RETURN
+                
+************************************************************************
+REPORT.INTERNAL.ERROR:
+************************************************************************
+      EMAIL.START.TIME = TIME()
+
+      EMAIL.OUT<6, -1> = 'URL = ':URL
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = 'CLIENT = ':CLIENT.ID
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = 'ERROR = ':ERROR
+      EMAIL.OUT<6, -1> = ' '
+      EMAIL.OUT<6, -1> = ' '
+
+      EVIN=EMAIL.OUT
+      EVOUT=''
+      **     CALL SENDMAIL(EVIN,EVOUT)
+****      VOUT<1> = "ERROR"
+      VOUT<1> = 0
+      RETURN
+************************************************************************
+REPORT.FATAL.ERROR:
+************************************************************************
+      EMAIL.START.TIME = TIME()
+     **** EMAIL.OUT<1>=EMAIL.RECIP
+*       EMAIL.OUT<1,-1> = 'gbino@afs.net'
+      EMAIL.OUT<1,-1> = 'dfriend@afs.net'
+      EMAIL.OUT<1,-1> = 'nmeddaugh@afs.net'
+      FATAL.ERROR.SUBJ = 'REST REQUEST ERROR'
+      EMAIL.OUT<5>=FATAL.ERROR.SUBJ
+      EMAIL.OUT<6,-1> = 'URL = ':URL
+      EVIN=EMAIL.OUT
+      EVOUT=''
+      **   CALL SENDMAIL(EVIN,EVOUT)
+      IDATE=DATE()
+      ITIME=TIME()
+      TIME.BLOCK=INT(ITIME/600)
+      *  VOUT<1> = "ERROR"
+      RETURN
+************************************************************
+FORMAT.JSON:
+***********************************************************
+      ACC = MISC.CHG<1>       
+      PROCDATA= "{"
+      PROCDATA:= ' "client_id" : "':CLIENT.ID:'",'
+      PROCDATA:= ' "scac" : "':SCAC:'",'
+      PROCDATA:= ' "shipment" : {'
+      PROCDATA:= ' "ship_date" : "':SHIP.DATE:'",'
+      PROCDATA:= ' "line_items" : ['
+      LINE.ITEM.COUNT = DCOUNT(CLASSES,@VM)
+      FOR LI = 1 TO LINE.ITEM.COUNT -1
+         PROCDATA:= ' {"freight_class" : ':CLASSES<1,LI>:',':' "weight" : ':WEIGHT<1,LI>:'},'
+      NEXT LI
+      PROCDATA:= ' {"freight_class" : ':CLASSES<1,LI>:',':' "weight" : ':WEIGHT<1,LI>:'}'
+      PROCDATA:= '],'
+      PROCDATA:= ' "special_services": ['
+      ACC.COUNT = DCOUNT(ACC,@VM)
+      FOR AC = 1 TO ACC.COUNT - 1      
+         PROCDATA:= ' {"key":"':ACC<1,AC>:'"},'
+      NEXT AC
+      PROCDATA:= ' {"key":"':ACC<1,AC>:'"}'      
+      PROCDATA:= '],'
+      PROCDATA:= ' "stops" : [{'
+      PROCDATA:= ' "city" : "':CITY1:'",'
+      PROCDATA:= ' "country_code" : "':COUNTRY.CODE1:'",'
+      PROCDATA:= ' "postal" : "':POSTAL1:'",'
+      PROCDATA:= ' "state_province" : "':STATE.PROVINCE1:'"},{'
+      PROCDATA:= ' "city" : "':CITY2:'",'
+      PROCDATA:= ' "country_code" : "':COUNTRY.CODE2:'",'
+      PROCDATA:= ' "postal" : "':POSTAL2:'",'
+      PROCDATA:= ' "state_province" : "':STATE.PROVINCE2:'"'
+      PROCDATA:= '}],'
+      PROCDATA:= ' "modes" : ['
+      IF CLIENT = '06916' THEN         ; * NKH01
+         PROCDATA:= ' "TRUCKLOAD" '
+      END ELSE                         ; * NKH01
+         PROCDATA:= ' "LTL" '          ; * NKH01
+      END                              ; * NKH01
+      PROCDATA:= ' ],'
+      PROCDATA:= ' "direction" : "':DIRECTION:'"'
+      PROCDATA:= "}}"
+
+      RETURN
+   END
+

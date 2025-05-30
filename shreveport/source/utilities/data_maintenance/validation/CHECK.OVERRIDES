@@ -1,0 +1,443 @@
+      SUBROUTINE CHECK.OVERRIDES(VIN,CLIENT.ID,CARRIER,PRO.REC,VOUT)
+************************************************************************
+$OPTIONS HEADER.EJECT
+$OPTIONS EXEC.EQ.PREF
+$OPTIONS INFO.ABORT
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'CHECK.OVERRIDES' ; UPL.VOUT = ''          ; * NPR_UPL 04/22/2010
+****      CALL GET.USER.NEW(USER,CH.NUM)
+****      UPL.VIN<3> = USER
+****      UPL.VIN<4> = CH.NUM
+****      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+*
+* VIN<1> IS CUSTOMER/VENDER NAME
+      VOUT=''
+      ACTUAL.CHG=VIN<2>
+      OLA.AMT=VIN<3>
+      EDI.BILL=VIN<4>
+      PRO.NUM=VIN<5>
+      OPEN '','FB.OVERRIDE' TO F.OVERRIDE ELSE
+         CALL OPEN.ABORT('FB.OVERRIDE',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      READ OVERRIDE.FIELDS FROM F.TABLES,'OVERRIDE.FIELDS' ELSE OVERRIDE.FIELDS=''
+**
+      OVERRIDE.ID = CLIENT.ID:'*':CARRIER
+      READ OVERRIDE.REC FROM F.OVERRIDE, OVERRIDE.ID THEN
+         GOSUB CHECK.FOR.OVERRIDE
+         IF VOUT#'' THEN RETURN
+      END
+      OVERRIDE.ID = CLIENT.ID:'*ALL'
+      READ OVERRIDE.REC FROM F.OVERRIDE,OVERRIDE.ID THEN
+         GOSUB CHECK.FOR.OVERRIDE
+         IF VOUT#'' THEN RETURN
+      END
+      OVERRIDE.ID = 'ALL*':CARRIER
+      READ OVERRIDE.REC FROM F.OVERRIDE,OVERRIDE.ID THEN
+         GOSUB CHECK.FOR.OVERRIDE
+         IF VOUT#'' THEN RETURN
+      END
+      RETURN
+CHECK.FOR.OVERRIDE:***
+      NUM.OVERRIDES = DCOUNT(OVERRIDE.REC<1>,@VM)
+**********************************************
+* BUILD SPECIAL OVERCHARGE ARRAY
+* Attributes represent a single Rule Group
+* Each Value of the Attr represents an AND statement
+* Each Sub-Value of a value represents an OR statement
+* The data stored in the array is the Value Number of the OVERRIDE RULES
+* In other words
+* The Rule Value Number from the Override file are stored in the array
+**********************************************
+      OVER.ARR=''
+      ATT=0                              ; * Start at 0 the 1st (initial) group change will make it 1
+      VAL=1
+      LAST.GROUP='FIRST'
+      LAST.SUBGROUP='FIRST'
+      FOR X = 1 TO NUM.OVERRIDES
+         GROUP=OVERRIDE.REC<6,X>
+         SUBGROUP=OVERRIDE.REC<14,X>
+         IF SUBGROUP='' THEN SUBGROUP=X  ; * Keep it unique for now
+         IF GROUP#LAST.GROUP THEN
+            ATT+=1
+            VAL=1
+            LAST.GROUP=GROUP
+            LAST.SUBGROUP=SUBGROUP
+         END
+         IF SUBGROUP#LAST.SUBGROUP THEN
+            LAST.SUBGROUP=SUBGROUP
+            VAL+=1
+         END
+         OVER.ARR<ATT,VAL,-1>=X
+      NEXT X
+
+      OLD.GROUP = ''
+      SHIP.DATE = PRO.REC<1>
+      NEXT.GROUP = 0
+      RULES = ''
+
+**********************************************
+* LOOP THRU SPECIAL OVERCHARGE ARRAY
+* to evaluate the rules in order
+**********************************************
+****CALL GET.USER(USER)
+      RULE.TIMES=DCOUNT(OVER.ARR,@AM)
+      FOR RULE=1 TO RULE.TIMES
+         RULE.INDEX=OVER.ARR<RULE>
+         RULES=''                        ; * List of Valid Rules
+         GROUP.TIMES=DCOUNT(RULE.INDEX<1>,@VM)
+         FOR GROUP=1 TO GROUP.TIMES
+            GROUP.INDEX=RULE.INDEX<1,GROUP>
+            SUBGROUP.TIMES=DCOUNT(GROUP.INDEX<1,1>,@SVM)
+            SUBGROUP.DA=''
+            RESULT=0
+            FOR SUBGROUP=1 TO SUBGROUP.TIMES
+               RULE.VAL=GROUP.INDEX<1,1,SUBGROUP>
+               BEGIN.DATE = OVERRIDE.REC<1,RULE.VAL>         ; * Should ALWAYS be the same within Groups
+               END.DATE = OVERRIDE.REC<2,RULE.VAL>           ; * Should ALWAYS be the same within Groups
+               FIELD = OVERRIDE.REC<3,RULE.VAL>
+               OPERATOR = OVERRIDE.REC<4,RULE.VAL>
+               INFO = OVERRIDE.REC<5,RULE.VAL>
+               AUDIT = OVERRIDE.REC<7,RULE.VAL>    ; * Should ALWAYS be the same within Groups
+               IF FIELD='CLASS' THEN
+                  IF INFO='77.5' THEN
+                     INFO='77'           ; * In case the Override is set to 77.5 (Only 77 is entered)
+                  END
+                  IF INFO='92.5' THEN
+                     INFO='92'           ; * In case the Override is set to 92.5 (Only 92 is entered)
+                  END
+               END
+               LOCATE FIELD IN OVERRIDE.FIELDS<1> SETTING POS ELSE GO SKIP.RULE
+               FIELD.NUM = OVERRIDE.FIELDS<3,POS>
+               FIELD.INFO = PRO.REC<FIELD.NUM>
+               FIELD.INFO = OCONV(FIELD.INFO,'MCU')
+               IF FIELD='CVNAME' THEN
+
+                  FIELD.INFO=OCONV(VIN<1>,'MCU')
+               END
+               IF FIELD='OLAVAR' THEN
+                  IF OLA.AMT+0=0 THEN GO SKIP.RULE
+                  FIELD.INFO=ACTUAL.CHG-OLA.AMT
+               END
+               IF FIELD='PRO' THEN
+                  FIELD.INFO=PRO.NUM
+               END
+
+*** Check Dates
+               IF SHIP.DATE < BEGIN.DATE THEN GO SKIP.RULE
+               IF END.DATE#'' THEN IF SHIP.DATE > END.DATE THEN GO SKIP.RULE
+               BEGIN CASE
+                  CASE FIELD='ALL'
+                     RULES<1,-1>='ALL BILLS'
+                     RULES<2,-1>='TRUE'
+                     RULES<3,-1>='TRUE'
+                     GO FOUND.OVERRIDE
+                  CASE FIELD = 'INTRA'
+                     ORIG.ST = PRO.REC<25>
+                     DEST.ST = PRO.REC<26>
+                     IF ORIG.ST = DEST.ST THEN
+                        RULES<1,-1> = 'INTRASTATE SHIPMENT'
+                        RULES<2,-1>='TRUE'
+                        RULES<3,-1>='TRUE'
+                        RESULT=1
+                     END
+
+                  CASE FIELD = 'INTER'
+                     ORIG.ST = PRO.REC<25>
+                     DEST.ST = PRO.REC<26>
+                     IF ORIG.ST # DEST.ST THEN
+                        RULES<1,-1> = 'INTERSTATE SHIPMENT'
+                        RULES<2,-1>='TRUE'
+                        RULES<3,-1>='TRUE'
+                        RESULT=1
+                     END
+
+                  CASE FIELD = 'FLAT'
+                     FLAT.FLAG = PRO.REC<119>
+                     IF FLAT.FLAG = 1 THEN
+                        RULES<1,-1> = 'FLAT RATE'
+                        RULES<2,-1>='TRUE'
+                        RULES<3,-1>='TRUE'
+                        RESULT=1
+                     END
+
+                  CASE FIELD = 'EDI'
+                     IF EDI.BILL = 1 THEN
+                        RULES<1,-1> = 'EDI BILL'
+                        RULES<2,-1>='TRUE'
+                        RULES<3,-1>='TRUE'
+                        RESULT=1
+                     END
+
+                  CASE FIELD = 'NO-EDI'
+                     IF EDI.BILL # 1 THEN
+                        RULES<1,-1> = 'NOT EDI BILL'
+                        RULES<2,-1>='TRUE'
+                        RULES<3,-1>='TRUE'
+                        RESULT=1
+                     END
+
+                  CASE OPERATOR = 'AP' OR OPERATOR='NA'
+                     BEGIN CASE
+                        CASE FIELD = 'CVNAME'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'OCITY'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'DCITY'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'EXPSE'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'BOL'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'POD'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'PRO'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'ACC'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'ACC1'        ; *NPR01
+                           SPECIAL.FLAG=1          ; *NPR01
+                        CASE FIELD = 'DST'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'OST'
+                           SPECIAL.FLAG=1
+                        CASE 1
+                           SPECIAL.FLAG=0
+                     END CASE
+                     NUM.ITEMS = DCOUNT(FIELD.INFO,@VM)
+                     FOUND.OCC=0
+                     FOR Y = 1 TO NUM.ITEMS
+                        INFO.DAT.LEN = LEN(INFO)
+                        FIRST.CHAR = INFO[1,1]
+                        LAST.CHAR = INFO[INFO.DAT.LEN,1]
+                        INFO.DATA=FIELD.INFO<1,Y>
+                        BEGIN CASE
+                           CASE FIRST.CHAR ='[' & LAST.CHAR =']' & SPECIAL.FLAG
+                              TEMP.INFO.DAT = INFO[2,9999]
+                              TEMP.INFO.DAT = TEMP.INFO.DAT[1,LEN(INFO)-2]
+                              IF INDEX(INFO.DATA,TEMP.INFO.DAT,1) THEN FOUND.OCC=1
+                           CASE FIRST.CHAR ='[' & SPECIAL.FLAG
+                              TEMP.LEN = INFO.DAT.LEN-1
+                              INFO.LEN = LEN(INFO.DATA)
+                              IF INFO[2,TEMP.LEN] = INFO.DATA[INFO.LEN-TEMP.LEN+1,TEMP.LEN] THEN FOUND.OCC=1
+                           CASE LAST.CHAR =']' & SPECIAL.FLAG
+                              TEMP.LEN = INFO.DAT.LEN-1
+                              IF INFO[1,TEMP.LEN] = INFO.DATA[1,TEMP.LEN] THEN FOUND.OCC=1
+                           CASE 1
+                              IF OCONV(INFO,'MCU')='NULL' THEN
+                                 IF INFO.DATA='' THEN FOUND.OCC=1
+                              END ELSE
+                                 IF INFO.DATA EQ INFO THEN FOUND.OCC=1
+                              END
+                        END CASE
+                     NEXT Y
+                     IF OPERATOR = 'AP' THEN
+                        IF FOUND.OCC THEN
+                           RULES<1,-1>=FIELD
+                           RULES<2,-1>=OPERATOR
+                           RULES<3,-1>=INFO
+                           RESULT=1
+                        END
+                     END
+                     IF OPERATOR = 'NA' THEN
+                        IF NOT(FOUND.OCC) THEN
+                           RULES<1,-1>=FIELD
+                           RULES<2,-1>=OPERATOR
+                           RULES<3,-1>=INFO
+                           RESULT=1
+                        END
+                     END
+
+                  CASE 1
+                     NUM.ITEMS = DCOUNT(FIELD.INFO,@VM)
+                     FOR Y = 1 TO NUM.ITEMS
+
+                        *ADD SUBGROUP.DA UPDATE HERE
+                        *SUBGROUP.DA<1>=FIELD (mv)
+                        *SUBGROUP.DA<2>=FIELD.INFO (SV Positionally dependant on <1>) DATA FROM PRO.REC
+                        *SUBGROUP.DA<3>='Y/N' Y-Passed ONE of the test, N-Failed ALL of the tests SV Tied to #2
+                        *SUBGROUP.DA<4>=Operator of the test (For the Rules Output SV NOT TIED TO SV of #2)
+                        *SUBGROUP.DA<5>=Operand (Number that the Bill Data was Tested Against Output SV NOT TIED TO SV of #2)
+
+                        INFO.DATA=FIELD.INFO<1,Y>
+                        LOCATE FIELD IN SUBGROUP.DA<1> BY 'AL' SETTING FIELD.POS THEN
+                           INS OPERATOR BEFORE SUBGROUP.DA<4,FIELD.POS,-1>
+                           INS INFO BEFORE SUBGROUP.DA<5,FIELD.POS,-1>
+                        END ELSE
+                           INS FIELD BEFORE SUBGROUP.DA<1,FIELD.POS>
+
+                           TEMP=" ":INFO.DATA      ; * Add a space to prevent the NULL Thing
+                           INS TEMP BEFORE SUBGROUP.DA<2,FIELD.POS>
+                           SUBGROUP.DA<2,FIELD.POS>=SUBGROUP.DA<2,FIELD.POS>[2,999]        ; * Remove the Space
+                           INS "N" BEFORE SUBGROUP.DA<3,FIELD.POS>     ; * Default to No
+                           INS OPERATOR BEFORE SUBGROUP.DA<4,FIELD.POS>
+                           INS INFO BEFORE SUBGROUP.DA<5,FIELD.POS>
+                        END
+                        FIELD.TRUE=0
+
+
+                        BEGIN CASE
+                           CASE FIELD = 'CVNAME'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'OCITY'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'DCITY'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'EXPSE'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'BOL'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'POD'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'PRO'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'ACC'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'ACC1'     ; *NPR01
+                              SPECIAL.FLAG=1       ; *NPR01
+                           CASE FIELD = 'DST'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'OST'
+                              SPECIAL.FLAG=1
+                           CASE 1
+                              SPECIAL.FLAG=0
+                        END CASE
+                        BEGIN CASE
+                           CASE OPERATOR = 'EQ'
+                              INFO.DAT.LEN = LEN(INFO)
+                              FIRST.CHAR = INFO[1,1]
+                              LAST.CHAR = INFO[INFO.DAT.LEN,1]
+
+                              BEGIN CASE
+                                 CASE FIRST.CHAR ='[' & LAST.CHAR =']' & SPECIAL.FLAG
+                                    TEMP.INFO.DAT = INFO[2,9999]
+                                    TEMP.INFO.DAT = TEMP.INFO.DAT[1,LEN(INFO)-2]
+
+                                    IF INDEX(INFO.DATA,TEMP.INFO.DAT,1) THEN FIELD.TRUE=1
+                                 CASE FIRST.CHAR ='[' & SPECIAL.FLAG
+
+                                    TEMP.LEN = INFO.DAT.LEN-1
+                                    INFO.LEN = LEN(INFO.DATA)
+                                    IF INFO[2,TEMP.LEN] = INFO.DATA[INFO.LEN-TEMP.LEN+1,TEMP.LEN] THEN FIELD.TRUE=1
+                                 CASE LAST.CHAR =']' & SPECIAL.FLAG
+                                    TEMP.LEN = INFO.DAT.LEN-1
+
+                                    IF INFO[1,TEMP.LEN] = INFO.DATA[1,TEMP.LEN] THEN FIELD.TRUE=1
+                                 CASE 1
+
+                                    IF OCONV(INFO,'MCU')='NULL' THEN
+                                       IF INFO.DATA='' THEN FIELD.TRUE=1
+                                    END ELSE
+                                       IF INFO.DATA EQ INFO THEN FIELD.TRUE=1
+                                    END
+                              END CASE
+
+********************************************************************************************************
+                           CASE OPERATOR = 'GE'
+                              IF INFO.DATA GE INFO THEN FIELD.TRUE=1
+                           CASE OPERATOR = 'GT'
+                              IF INFO.DATA GT INFO THEN FIELD.TRUE=1
+                           CASE OPERATOR = 'LE'
+                              IF INFO.DATA LE INFO THEN FIELD.TRUE=1
+                           CASE OPERATOR = 'LT'
+                              IF INFO.DATA LT INFO THEN FIELD.TRUE=1
+                           CASE OPERATOR = 'NE'
+                              INFO.DAT.LEN = LEN(INFO)
+                              FIRST.CHAR = INFO[1,1]
+                              LAST.CHAR = INFO[INFO.DAT.LEN,1]
+                              BEGIN CASE
+                                 CASE FIRST.CHAR ='[' & LAST.CHAR =']' & SPECIAL.FLAG
+                                    TEMP.INFO.DAT = INFO[2,9999]
+                                    TEMP.INFO.DAT = TEMP.INFO.DAT[1,LEN(INFO)-2]
+                                    IF INDEX(INFO.DATA,TEMP.INFO.DAT,1) ELSE FIELD.TRUE=1
+                                 CASE FIRST.CHAR ='[' & SPECIAL.FLAG
+                                    TEMP.LEN = INFO.DAT.LEN-1
+                                    INFO.LEN = LEN(INFO.DATA)
+                                    IF INFO[2,TEMP.LEN] = INFO.DATA[INFO.LEN-TEMP.LEN+1,TEMP.LEN] ELSE FIELD.TRUE=1
+                                 CASE LAST.CHAR =']' & SPECIAL.FLAG
+                                    TEMP.LEN = INFO.DAT.LEN-1
+                                    IF INFO[1,TEMP.LEN] = INFO.DATA[1,TEMP.LEN] ELSE FIELD.TRUE=1
+                                 CASE 1
+                                    IF OCONV(INFO,'MCU')='NULL' THEN
+                                       IF INFO.DATA#'' THEN FIELD.TRUE=1
+                                    END ELSE
+                                       IF INFO.DATA NE INFO THEN FIELD.TRUE=1
+                                    END
+                              END CASE
+                        END CASE
+                        LOCATE INFO.DATA IN SUBGROUP.DA<2,FIELD.POS> BY 'AR' SETTING INFO.POS THEN
+                           IF FIELD.TRUE THEN
+                              SUBGROUP.DA<3,FIELD.POS,INFO.POS>='Y'
+                           END
+                        END ELSE
+                           TEMP=" ":INFO.DATA      ; * Add a space to prevent the NULL Thing
+                           INS TEMP BEFORE SUBGROUP.DA<2,FIELD.POS,INFO.POS>
+                           SUBGROUP.DA<2,FIELD.POS,INFO.POS>=SUBGROUP.DA<2,FIELD.POS,INFO.POS>[2,999]          ; * Remove the Space
+                           IF FIELD.TRUE THEN
+                              INS 'Y' BEFORE SUBGROUP.DA<3,FIELD.POS,INFO.POS>
+                           END ELSE
+                              INS 'N' BEFORE SUBGROUP.DA<3,FIELD.POS,INFO.POS>
+                           END
+                        END
+                     NEXT Y
+               END CASE
+            NEXT SUBGROUP
+            IF SUBGROUP.DA#'' THEN
+               FIELD.TIMES=DCOUNT(SUBGROUP.DA<1>,@VM)
+               FOR X = 1 TO FIELD.TIMES
+                  ALL.YES=1
+                  INFO.TIMES=DCOUNT(SUBGROUP.DA<2,X>,@SVM)
+                  FOR Y = 1 TO INFO.TIMES
+                     IF SUBGROUP.DA<3,X,Y>='N' THEN ALL.YES=0
+                  NEXT Y
+                  IF ALL.YES=1 THEN
+*               Flag this "OR" as passing
+*               Add all of the rules associted with this rule to the Rules array
+                     RESULT=1
+                     REASON.TIMES=DCOUNT(SUBGROUP.DA<4,X>,@SVM)
+                     FOR Y = 1 TO REASON.TIMES
+                        RULES<1,-1>=SUBGROUP.DA<1,X>         ; * Field Name
+                        RULES<2,-1>=SUBGROUP.DA<4,X,Y>       ; * Operator
+                        RULES<3,-1>=SUBGROUP.DA<5,X,Y>       ; * Operand (From Overrides)
+                     NEXT Y
+                  END
+               NEXT X
+            END
+            IF RESULT=0 THEN GO SKIP.RULE
+         NEXT GROUP
+
+*****************************************
+*If you made it this far do the "rule"
+*****************************************
+
+         GO FOUND.OVERRIDE
+
+SKIP.RULE:***
+      NEXT RULE.TIMES
+
+** NO.OVERRIDE Found
+      VOUT=''
+      GO EXIT.PROGRAM
+
+FOUND.OVERRIDE:
+      VOUT = ''
+
+      BEGIN CASE
+         CASE AUDIT = 'YES'
+            VOUT<1>='4'
+         CASE AUDIT = 'NO'
+            VOUT<1>='1'
+         CASE 1
+            VOUT<1>=AUDIT
+      END CASE
+      IF RULES # '' THEN
+         VOUT<2> = RULES<1>
+         VOUT<3> = RULES<2>
+         VOUT<4> = RULES<3>
+      END
+      GO EXIT.PROGRAM
+
+EXIT.PROGRAM:***
+
+      RETURN

@@ -1,0 +1,927 @@
+***********************************************************************
+* Program : RESEND.EMAIL
+*           Resend a client's email from a specific processing date
+* Author  : James Barberousse
+* Date    : May 24, 2002
+*
+* Copyright (c) 2002 by AFS Logistics, LLC. - All Rights Reserved
+***********************************************************************
+* 011805 - JMK01 - ADD BLAT ERROR RESPONSE TO ERROR EMAIL OUTPUT
+* 031105 - JMK02 - ALLOW FOR RE-SENDING TO NEW SET OF EMAIL ADDRESSES
+* 032805 - JMK03 - SAVE EMAIL CHANGES FOR REVIEW
+* 110105 - JMK04 - MOVE MARY AND MYRA EMAILS TO BCC LOCATION
+* 110805 - JMK05 - ADD RHONDA PROTHO TO ACCESS LIST
+* 111105 - JMK06 - ADD ZIP OPTION FOR EMAIL ATTACHMENTS
+* 030309 - NPR01 - T090253 - Highlight Client name based on ranking
+* 081809 - NPR02 - T091057 - Replace Sandra Long with Stacy Rittenbach wherever the former occurs
+* 051517 - TAG01 - Change Winzip To 7Zip
+$INCLUDE FILE.DEFS INC_ADDS60.CODES
+
+* Initialize general variables
+
+      PROMPT''
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='RESEND.EMAIL'
+      PROG.DESC='Resend Client Process Email'
+      PACK.NAME='Freight Payment'
+
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'RESEND.EMAIL' ; UPL.VOUT = ''   ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      REV.NORMAL=TERM.ESC.SEQ:CHAR(TERM.REV+TERM.DIM)
+      REV.HILITE=TERM.ESC.SEQ:CHAR(TERM.REV)
+      REV.OFF=TERM.ESC.SEQ:CHAR(TERM.NORMAL)
+
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+      MASK.CHAR='-'
+      PLACE.HOLDER='!@#$%^&*()'
+      PAGE.SIZE=15
+      TOPMOST.Y.POS=5
+      BOTTOMMOST.Y.POS=TOPMOST.Y.POS+PAGE.SIZE-1
+
+* Initialize input variables and screen save variables
+      CLIENT.ID=''
+      CLIENT.SAVE=''
+      DIVISION.ID=''
+      DIVISION.SAVE=''
+      ALL.DIVISIONS=''
+      PROCESS.DATE=''
+      PROCESS.SAVE=''
+      USING.NEW.MACRO=''                 ; * Switch to determine which Excel macro to use
+      TO.ADD=''                          ; * JMK02
+      CC.ADD=''                          ; * JMK02
+      BCC.ADD=''                         ; * JMK02
+      RANKING = ''                       ; * NPR01
+
+* Initialize other variables
+
+* Setup the screen
+      GOSUB DISPLAY.SCREEN
+
+* Restrict program usage
+      VALID.USER=1
+      AR.USER=0
+      BEGIN CASE
+         CASE USER.NAME='BRIAN'
+         CASE USER.NAME='KAREN'
+         CASE USER.NAME='OWEN'
+         CASE USER.NAME='MYRA'
+         CASE USER.NAME='MARY'
+         CASE USER.NAME='CHADM'
+         CASE USER.NAME='DAVID'
+         CASE USER.NAME='NPRATT'
+         CASE USER.NAME='MKERBOW'
+
+         CASE USER.NAME='MDODSON' ; AR.USER=1      ; * MSD
+*NPR02         CASE USER.NAME='SANDRA' ; AR.USER=1       ; * MSD
+         CASE USER.NAME='SRITTENBACH' ; AR.USER=1  ; * NPR02
+         CASE USER.NAME='CBEASLEY' ; AR.USER=1
+         CASE USER.NAME='CGOSS' ; AR.USER=1
+*         CASE USER.NAME='RCASON' ; AR.USER=1       ; * MSD
+*         CASE USER.NAME='KCHAUVIN' ; AR.USER=1     ; * MSD
+*         CASE USER.NAME='LCARDWELL' ; AR.USER=1    ; * MSD
+*         CASE USER.NAME='RPROTHRO'     ; * JMK05
+         CASE 1
+            VALID.USER=0
+      END CASE
+
+      IF NOT(VALID.USER) THEN
+         CALL FB.PRINT.CENT(1,80,12,'! Restricted Access Application !')
+         CALL FB.PRINT.CENT(1,80,14,'Access Denied')
+         CALL ELINE('')
+         GOTO THE.END
+      END
+
+* Open files
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','EMAILDATA' TO F.EMAILDATA ELSE
+         CALL OPEN.ABORT('EMAILDATA',PROG.NAME)
+      END
+      OPEN '','BILLDATA.FORMS' TO F.FORMS ELSE
+         CALL OPEN.ABORT('BILLDATA.FORMS',PROG.NAME)
+      END
+
+* Get client ID
+100:***
+      MASK=CLIENT.ID:STR(MASK.CHAR,5-LEN(CLIENT.ID)):@(-4)
+      HELP='Enter client ID or letters for search. [EX]it'
+      CALL GEN.IN(18,4,MASK,'',Q,0,20,'','',2,18,4,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI=''
+            IF CLIENT.ID#'' THEN QI=CLIENT.ID ELSE GOTO 100
+         CASE NOT(QI MATCHES '0N')
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            GOSUB DISPLAY.SCREEN
+            BEGIN CASE
+               CASE ITEM.LIST=''
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+            END CASE
+            GOTO 100
+         CASE NUM(QI)
+            QI=QI'R%5'
+         CASE 1
+            GOTO 100
+      END CASE
+      READ CLIENT.REC FROM F.CLIENTS,QI THEN
+         IF QI='00000' THEN
+            CALL ELINE('This is not a valid account.')
+            GOTO 100
+         END
+         IF QI[1,2]='99' THEN
+            CALL ELINE('Traffic Survey accounts are not allowed.')
+            GOTO 100
+         END
+         CLIENT.ID=QI
+         CLIENT.NAME=CLIENT.REC<2>
+         CLIENT.STATUS=CLIENT.REC<30>
+         RANKING=CLIENT.REC<240>
+         BEGIN CASE
+            CASE CLIENT.STATUS='A'
+               CLIENT.STATUS='(A - Active)'
+            CASE CLIENT.STATUS='I'
+               CLIENT.STATUS='(I - Inactive)'
+            CASE CLIENT.STATUS='O'
+               CLIENT.STATUS='(O - Out of Business)'
+         END CASE
+         CLIENT.SAVE=CLIENT.ID:' ':CLIENT.NAME:' ':CLIENT.STATUS
+         CLIENT.TITLE=CLIENT.ID:' ':CLIENT.NAME
+         CALL CENTER(CLIENT.TITLE,80)
+      END ELSE
+         CRT @(18,4):QI:@(-4)
+         CALL ELINE('Client ':QI:' not on file.')
+         GOTO 100
+      END
+
+      HIN = CLIENT.REC<240> ; HOUT = ""  ; * NPR01  Highlight based on ranking
+      CALL CLIENT.HL(HIN,HOUT) ; HLB = HOUT<1,1> ; HLA = HOUT<1,2>     ; * NPR01
+
+      CRT @(18,4):HLB:CLIENT.SAVE:HLA:@(-4)        ; * NPR01
+
+      USING.NEW.MACRO=CLIENT.REC<116>    ; * Options are NONE, OLD, NEW
+
+      HAS.DIVISIONS=(CLIENT.REC<12>='Y')
+      IF NOT(HAS.DIVISIONS) THEN
+         DIVISION.ID='N'
+         DIVISION.SAVE='None'
+         ALL.DIVISIONS=''
+         GOSUB DISPLAY.SCREEN
+         GOTO 300
+      END
+      DIVISION.FILE='DIVISION.CODES,':CLIENT.ID
+      OPEN '',DIVISION.FILE TO F.DIVISION ELSE
+         CALL ELINE('Division file ':DIVISION.FILE:' could not be opened.')
+         DIVISION.ID='N'
+         DIVISION.SAVE='None'
+         GOSUB DISPLAY.SCREEN
+         GOTO 300
+      END
+
+* Get division ID
+200:***
+      ALL.DIVISIONS=''
+      MASK=DIVISION.ID:STR(MASK.CHAR,5-LEN(DIVISION.ID)):@(-4)
+      HELP='Enter division ID. [N]one [A]ll [L]ist [X]=Back [EX]it'
+      CALL GEN.IN(18,6,MASK,'',Q,0,5,'','',2,18,6,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            GOSUB DISPLAY.SCREEN
+            GOTO 100
+         CASE QI='L'
+            EXECUTE 'SORT ':DIVISION.FILE:' 1'
+            CALL ELINE('')
+            GOSUB DISPLAY.SCREEN
+            GOTO 200
+         CASE QI='A'
+            NULL
+         CASE QI='N'
+            NULL
+         CASE QI=''
+            IF DIVISION.ID#'' THEN QI=DIVISION.ID ELSE GOTO 200
+         CASE NUM(QI)
+            QI=QI'R%5'
+         CASE 1
+*DF            GOTO 200
+            QI=QI'R%5'
+      END CASE
+      IF QI='A' THEN
+         DIVISION.ID='N'
+         DIVISION.SAVE='Main and All Divisions'
+         ALL.DIVISIONS=''
+         STMT='SELECT ':DIVISION.FILE
+         EXECUTE STMT CAPTURING OUTPUT
+         NUM.SELECTED=@SELECTED
+         IF NUM.SELECTED=0 THEN
+            CALL ELINE('No divisions on file.')
+            GOTO 200
+         END
+         LOOP
+            READNEXT FILENAME ELSE FILENAME=PLACE.HOLDER
+         UNTIL FILENAME=PLACE.HOLDER
+            ALL.DIVISIONS<-1>=FILENAME
+         REPEAT
+      END ELSE
+         IF QI='N' THEN
+            DIVISION.ID='N'
+            DIVISION.SAVE='None'
+         END ELSE
+            READ DIVISION.REC FROM F.DIVISION,QI THEN
+               DIVISION.ID=QI
+               DIVISION.SAVE=DIVISION.ID
+            END ELSE
+               CRT @(18,6):QI:@(-4)
+               CALL ELINE('Division ':QI:' not on file for client ':CLIENT.ID:'.')
+               GOTO 200
+            END
+         END
+      END
+      CRT @(18,6):DIVISION.SAVE:@(-4)
+
+* Get process date
+300:***
+      MASK=PROCESS.DATE'D4-':STR(MASK.CHAR,10-LEN(PROCESS.DATE'D4-')):@(-4)
+      HELP='Enter process date. [T]oday [Y]esterday [X]=Back [EX]it'
+      CALL GEN.IN(18,8,MASK,'',Q,0,10,'','',2,18,8,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            GOSUB DISPLAY.SCREEN
+            IF HAS.DIVISIONS THEN GOTO 200 ELSE GOTO 100
+         CASE QI='T'
+            QI=DATE()'D4-'
+         CASE QI='Y'
+            QI=(DATE()-1)'D4-'
+         CASE QI=''
+            IF PROCESS.DATE#'' THEN QI=PROCESS.DATE'D4-' ELSE GOTO 300
+         CASE QI MATCHES '0N'
+            BEGIN CASE
+               CASE LEN(QI)=4
+                  QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4-')[7,4]
+               CASE LEN(QI)=6
+                  IF QI[5,2]<50 THEN
+                     QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4-')[7,2]:QI[5,2]
+                  END ELSE
+                     QI=QI[1,2]:'.':QI[3,2]:'.':'19':QI[5,2]           ; * ((DATE()-365)'D4-')[7,2]:QI[5,2]
+                  END
+               CASE LEN(QI)=8
+                  QI=QI[1,2]:'.':QI[3,2]:'.':QI[5,4]
+               CASE 1
+                  CALL ELINE('Use one of the following formats: MMDD or MMDDYY or MMDDYYYY.')
+                  GOTO 300
+            END CASE
+      END CASE
+      PROCESS.DATE=ICONV(QI,'D')
+      IF PROCESS.DATE='' THEN
+         CALL ELINE('Invalid date.')
+         GOTO 300
+      END
+      PROCESS.SAVE=PROCESS.DATE'D4-'
+      CRT @(18,8):PROCESS.SAVE:@(-4)
+
+      OUT.PROCESS.DATE=OCONV(PROCESS.DATE,'D2/')
+      PROCESS.MONTH=FIELD(OUT.PROCESS.DATE,'/',1)
+      PROCESS.DAY=FIELD(OUT.PROCESS.DATE,'/',2)
+      PROCESS.YEAR=FIELD(OUT.PROCESS.DATE,'/',3)
+      OUT.PROCESS.DATE=PROCESS.YEAR:PROCESS.MONTH:PROCESS.DAY
+
+* GET EMAIL ADDRESSES
+400:***
+      EVIN=''                            ; * JMK02
+      EVIN<1>=PROG.NAME                  ; * JMK02
+      EVIN<2>=PACK.NAME                  ; * JMK02
+      EVIN<3>='Re-send Email Addresses'  ; * JMK02 - HEADING TEXT
+      EVIN<4>=0                          ; * JMK02 - DISPLAY ONLY FLAG
+      EVIN<5>=2                          ; * JMK02 - PROCESS LEVEL
+      EVOUT=''                           ; * JMK02
+      IF TO.ADD='' THEN                  ; * JMK03
+         IF DIVISION.ID#'N' THEN         ; * JMK02
+            EVOUT<1>=DIVISION.REC<9>     ; * JMK02
+            EVOUT<2>=DIVISION.REC<12>    ; * JMK02
+            EVOUT<3>=DIVISION.REC<13>    ; * JMK02
+         END ELSE                        ; * JMK02
+            EVOUT<1>=CLIENT.REC<125>     ; * JMK02
+            EVOUT<2>=CLIENT.REC<126>     ; * JMK02
+            EVOUT<3>=CLIENT.REC<127>     ; * JMK02
+         END                             ; * JMK02
+      END ELSE                           ; * JMK03
+         EVOUT<1>=TO.ADD                 ; * JMK03
+         EVOUT<2>=CC.ADD                 ; * JMK03
+         EVOUT<3>=BCC.ADD                ; * JMK03
+      END                                ; * JMK03
+      IF AR.USER THEN
+         EVOUT=USER.NAME:"@AFSLOGISTICS.COM"
+      END
+      CALL FB.EMAIL(EVIN,EVOUT)          ; * JMK02
+
+      IF AR.USER THEN
+         EVOUT=USER.NAME:"@AFSLOGISTICS.COM"
+      END
+
+      IF EVOUT<1>='' THEN                ; * JMK02
+         IF DIVISION.ID#'N' THEN         ; * JMK02
+            CALL ELINE('No TO: email addresses exist for division ':DIVISION.ID:'.')       ; * JMK02
+            GOTO THE.END                 ; * JMK02
+         END ELSE                        ; * JMK02
+            CALL ELINE('No TO: email addresses exist for client ':CLIENT.ID:'.')           ; * JMK02
+            GOTO THE.END                 ; * JMK02
+         END                             ; * JMK02
+      END                                ; * JMK02
+      TO.ADD=EVOUT<1>                    ; * JMK02
+      CC.ADD=EVOUT<2>                    ; * JMK02
+      BCC.ADD=EVOUT<3>                   ; * JMK02
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)    ; * JMK02
+      GOSUB DISPLAY.SCREEN               ; * JMK02
+* Get final confirmation
+1000:***
+      MASK=STR(MASK.CHAR,2)
+      HELP='[Y]es [N]o [X]=Back [EX]it'
+      CALL GEN.IN(0,20,'Is this information correct? ':MASK,'',Q,0,2,'','',2,29,20,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X' OR QI='N' OR QI='0'
+            GOSUB DISPLAY.SCREEN
+            GOTO 300
+         CASE QI='Y' OR QI='1'
+            NULL
+         CASE 1
+            GOTO 1000
+      END CASE
+
+
+START.OF.LOOP:***
+
+      CLIENT.DIVISION=CLIENT.ID
+      IF (DIVISION.ID#'N') THEN CLIENT.DIVISION:='_':DIVISION.ID
+
+      CRT @(0,4):@(-3)
+      IF DIVISION.ID='N' THEN
+         CRT @(0,12):'Reading EMAILDATA folder for client ':CLIENT.ID:'. Please wait...':
+      END ELSE
+         CRT @(0,12):'Reading EMAILDATA folder for client ':CLIENT.ID:', division ':DIVISION.ID:'. Please wait...':
+      END
+
+* Select all filenames in EmailData directory and pull out those that match the client
+* and date criteria entered above. Build the REPORTS array as follows:
+*     REPORTS<1> = Report Name (Name of the report)
+*     REPORTS<2> = Division ID
+*     REPORTS<3> = File Format (EXCEL, TEXT, HTML, etc.)
+*     REPORTS<4> = Begin Date
+*     REPORTS<5> = End Date
+*     REPORTS<6> = Found Flag (Y or N)
+*     REPORTS<7> = Send Flag (Y or N)
+*     REPORTS<8> = File Name
+*     REPORTS<9> = Path to filename
+
+      STMT='SELECT EMAILDATA'
+      EXECUTE STMT CAPTURING OUTPUT
+      CRT 'Done.'
+      NUM.SELECTED=@SELECTED
+      IF NUM.SELECTED=0 THEN
+         CALL ELINE('No files found in EMAILDATA.')
+         GOTO THE.END
+      END
+      PATH='E:\ARDENT\PUBLIC\EMAILDATA\'           ; * Path to EMAILDATA'
+      REPORTS=''
+      COUNTER=0
+      LOOP
+         READNEXT FILENAME ELSE FILENAME=PLACE.HOLDER
+      UNTIL FILENAME=PLACE.HOLDER
+         FILENAME.CLIENT.DIVISION=FIELD(FILENAME,'-',1)
+         FILENAME.DIVISION =FIELD(FILENAME.CLIENT.DIVISION,'_',2)
+         IF FILENAME.DIVISION='' THEN FILENAME.DIVISION=SPACE(5)
+         FILENAME.BEGIN.DATE =FIELD(FILENAME,'-',2)
+         FILENAME.END.DATE =FIELD(FILENAME,'-',3)
+         FILENAME.REPORT =FIELD(FILENAME,'-',4)
+
+         IF FILENAME.CLIENT.DIVISION=CLIENT.DIVISION THEN
+            IF FILENAME.END.DATE=OUT.PROCESS.DATE THEN
+               PRE.EMAIL.FILENAME=OCONV(FILENAME,'G-3')      ; * JMK06
+               COUNTER+=1
+               LOCATE FILENAME IN REPORTS<8> BY 'AL' SETTING FILE.POS ELSE NULL
+               INS FILENAME.DIVISION BEFORE REPORTS<2,FILE.POS>
+               INS FILENAME.BEGIN.DATE[3,2]:'/':FILENAME.BEGIN.DATE[5,2]:'/':FILENAME.BEGIN.DATE[1,2] BEFORE REPORTS<4,FILE.POS>
+               INS FILENAME.END.DATE[3,2]:'/':FILENAME.END.DATE[5,2]:'/':FILENAME.END.DATE[1,2] BEFORE REPORTS<5,FILE.POS>
+               INS 'Y' BEFORE REPORTS<6,FILE.POS>  ; * Found Flag
+               INS 'Y' BEFORE REPORTS<7,FILE.POS>  ; * Send Flag
+               INS FILENAME BEFORE REPORTS<8,FILE.POS>       ; * Filename
+               INS PATH BEFORE REPORTS<9,FILE.POS>           ; * Path to filename in EMAILDATA
+
+               BEGIN CASE
+                  CASE FILENAME.REPORT='BLS.XLS'
+                     INS 'Bills Processed' BEFORE REPORTS<1,FILE.POS>
+                     INS 'EXCEL' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='DUP.XLS'
+                     INS 'Duplicate Bills Processed' BEFORE REPORTS<1,FILE.POS>
+                     INS 'EXCEL' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='NRB.XLS'
+                     INS 'New Returned Bills' BEFORE REPORTS<1,FILE.POS>
+                     INS 'EXCEL' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='NPB.XLS'
+                     INS 'New Never Pay Bills' BEFORE REPORTS<1,FILE.POS>
+                     INS 'EXCEL' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='ORB.XLS'
+                     INS 'Old Returned Bills' BEFORE REPORTS<1,FILE.POS>
+                     INS 'EXCEL' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='ARB.XLS'
+                     INS 'Approved Returned Bills' BEFORE REPORTS<1,FILE.POS>
+                     INS 'EXCEL' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='SOC.TXT'
+                     INS 'Summary of Charges' BEFORE REPORTS<1,FILE.POS>
+                     INS 'TEXT' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='SOC.HTM'
+                     INS 'Summary of Charges' BEFORE REPORTS<1,FILE.POS>
+                     INS 'HTML' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='INV.HTM'
+                     INS 'Invoice' BEFORE REPORTS<1,FILE.POS>
+                     INS 'HTML' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='SOE.TXT'
+                     INS 'Summary of Expenses' BEFORE REPORTS<1,FILE.POS>
+                     INS 'TEXT' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='SOD.TXT'
+                     INS 'Summary of Divisions' BEFORE REPORTS<1,FILE.POS>
+                     INS 'TEXT' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='EXD.TXT'
+                     INS 'Expense Distribution' BEFORE REPORTS<1,FILE.POS>
+                     INS 'TEXT' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='MOD.TXT'
+                     INS 'Mode Distribution' BEFORE REPORTS<1,FILE.POS>
+                     INS 'TEXT' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='WCR.XLS'
+                     INS 'Shurtape Weekly Carrier Report' BEFORE REPORTS<1,FILE.POS>
+                     INS 'EXCEL' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT[1,5]='EBILL'
+                     EBILL.DATE=FILENAME.REPORT[11,2]:'-':FILENAME.REPORT[13,2]:'-':FILENAME.REPORT[7,4]
+                     INS 'Original e-bill File ':EBILL.DATE BEFORE REPORTS<1,FILE.POS>
+                     INS 'EXCEL' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='DOM.XLS'
+                     INS 'Alcon/APL West Source File Report' BEFORE REPORTS<1,FILE.POS>
+                     INS 'EXCEL' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='DOMED.XLS'
+                     INS 'Alcon/APL West Source File Report' BEFORE REPORTS<1,FILE.POS>
+                     INS 'EXCEL' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='INT.XLS'
+                     INS 'Alcon/APL West Source File Report' BEFORE REPORTS<1,FILE.POS>
+                     INS 'EXCEL' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='INTED.XLS'
+                     INS 'Alcon/APL West Source File Report' BEFORE REPORTS<1,FILE.POS>
+                     INS 'EXCEL' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='COM.XLS'
+                     INS 'Alcon/APL West Source File Report' BEFORE REPORTS<1,FILE.POS>
+                     INS 'EXCEL' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='COMED.XLS'
+                     INS 'Alcon/APL West Source File Report' BEFORE REPORTS<1,FILE.POS>
+                     INS 'EXCEL' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='ALI.XLS'
+                     INS 'Alcon/APL West Source File Report' BEFORE REPORTS<1,FILE.POS>
+                     INS 'EXCEL' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='AML.XLS'
+                     INS 'Alcon/APL West Source File Report' BEFORE REPORTS<1,FILE.POS>
+                     INS 'EXCEL' BEFORE REPORTS<3,FILE.POS>
+                  CASE FILENAME.REPORT='UNK.XLS'
+                     INS 'Alcon/APL West Source File Report' BEFORE REPORTS<1,FILE.POS>
+                     INS 'EXCEL' BEFORE REPORTS<3,FILE.POS>
+               END CASE
+            END
+         END
+      REPEAT
+
+      IF COUNTER=0 THEN
+         CALL ELINE('No reports were located in EMAILDATA for client ':CLIENT.ID:', division ':DIVISION.ID:'.')
+         GOTO GET.NEXT.DIVISION
+      END
+
+* files from BILLDATA\FORMS
+      FOUND.MARKER=COUNTER+1             ; * Store next position to add
+      IF USING.NEW.MACRO#'NONE' THEN
+         COUNTER+=1
+         REPORTS<1,COUNTER>='Format/Print Bills Processed'
+         REPORTS<2,COUNTER>=SPACE(5)
+         REPORTS<3,COUNTER>='EXCEL'
+         REPORTS<4,COUNTER>=SPACE(8)
+         REPORTS<5,COUNTER>=SPACE(8)
+         IF USING.NEW.MACRO='NEW' THEN
+            REPORTS<8,COUNTER>='NEW_EXCEL_MACRO.XLS'
+         END ELSE
+            REPORTS<8,COUNTER>='EXCEL_MACRO.XLS'
+         END
+         REPORTS<9,COUNTER>='E:\ARDENT\PUBLIC\BILLDATA\FORMS\'         ; * JMK02 '
+      END
+
+* Find out which reports at FOUND.MARKER and later exist in EMAILDATA
+* Set FOUND and SEND flags in REPORTS array
+      FOR X=FOUND.MARKER TO COUNTER
+         READ DUMMY FROM F.FORMS,REPORTS<8,X> THEN
+            REPORTS<6,X>='Y'             ; * Found
+            REPORTS<7,X>='Y'             ; * Send (default)
+         END ELSE
+            REPORTS<6,X>='N'             ; * Found
+            REPORTS<7,X>='N'             ; * Send (can't send what you can't find)
+         END
+      NEXT X
+
+      NUM.REPORTS=DCOUNT(REPORTS<1>,@VM)           ; * Should be the same as COUNTER
+
+      CRT @(0,3):@(-3)
+      CRT @(0,3):CLIENT.TITLE
+      CRT @(0,4):REV.NORMAL:'Report':SPACE(27):'Division Format Begin-Date End-Date Found Send':REV.OFF
+      CRT @(0,4+PAGE.SIZE+1):REV.NORMAL:SPACE(79):REV.OFF
+
+* Build screen display SCREEN.LINE
+      SCREEN.LINE=''
+      FOR X=1 TO NUM.REPORTS
+         SCREEN.LINE<X>=REPORTS<1,X>'L#32':SPACE(3):REPORTS<2,X>'R%5':SPACE(2):REPORTS<3,X>'L#6':SPACE(2):REPORTS<4,X>'L#8':SPACE(2):REPORTS<5,X>'L#8':SPACE(3):REPORTS<6,X>'L#1':SPACE(5):REPORTS<7,X>'L#1'
+         SCREEN.LINE<X>:=SPACE(79-LEN(SCREEN.LINE<X>))
+      NEXT X
+
+      START.DISPLAY=1
+      END.DISPLAY=NUM.REPORTS
+      IF END.DISPLAY>PAGE.SIZE THEN END.DISPLAY=PAGE.SIZE
+      GOSUB DISPLAY.REPORTS
+
+      INDEX=1
+      OLD.INDEX=INDEX
+      Y.POS=5
+      OLD.Y.POS=Y.POS
+      BACK.FLAG=0
+
+GET.USER.RESPONSE:***
+      LOOP WHILE INDEX>=1 AND INDEX<=NUM.REPORTS
+         SCROLL.WINDOW=0
+         LOOP WHILE INDEX<START.DISPLAY
+            START.DISPLAY-=1
+            END.DISPLAY-=1
+            SCROLL.WINDOW=1
+         REPEAT
+         LOOP WHILE INDEX>END.DISPLAY
+            START.DISPLAY+=1
+            END.DISPLAY+=1
+            SCROLL.WINDOW=1
+         REPEAT
+         IF SCROLL.WINDOW THEN GOSUB DISPLAY.REPORTS
+         IF REPORTS<6,INDEX>='Y' THEN
+TOP:        CRT @(0,OLD.Y.POS):SCREEN.LINE<OLD.INDEX>
+            CRT @(0,Y.POS):REV.HILITE:SCREEN.LINE<INDEX>:REV.OFF
+            BACK.FLAG=0
+            MASK=REV.HILITE:REPORTS<7,INDEX>:STR(MASK.CHAR,2-LEN(REPORTS<7,INDEX>)):REV.OFF
+            HELP='Send ':REPORTS<8,INDEX>:'? [Y]es [N]o [X]=Back [EX]it'
+            CALL GEN.IN(77,Y.POS,MASK,'',Q,0,2,'','',2,77,Y.POS,0,QI,HELP,0,23)
+            QI=OCONV(QI,'MCU')
+            BEGIN CASE
+               CASE QI='EX'
+                  GOTO THE.END
+               CASE QI='X'
+                  BACK.FLAG=1
+                  QI=REPORTS<7,INDEX>
+               CASE QI='N' OR QI='0'
+                  QI='N'
+               CASE QI='Y' OR QI='1'
+                  QI='Y'
+               CASE QI=''
+                  QI=REPORTS<7,INDEX>
+               CASE 1
+                  GOTO TOP
+            END CASE
+            REPORTS<7,INDEX>=QI
+            SCREEN.LINE<INDEX>[78,1]=REPORTS<7,INDEX>
+            CRT @(0,Y.POS):SCREEN.LINE<INDEX>
+            OLD.INDEX=INDEX
+         END
+         OLD.Y.POS=Y.POS
+         IF BACK.FLAG THEN
+            INDEX-=1
+            Y.POS-=1
+            IF Y.POS<TOPMOST.Y.POS THEN Y.POS=TOPMOST.Y.POS
+         END ELSE
+            INDEX+=1
+            Y.POS+=1
+            IF Y.POS>BOTTOMMOST.Y.POS THEN Y.POS=BOTTOMMOST.Y.POS
+         END
+      REPEAT
+      CRT @(0,Y.POS):SCREEN.LINE<INDEX>  ; * un-hilite last line
+
+2000:***
+      MASK=STR(MASK.CHAR,2)
+      HELP='[Y]es [N]o [X]=Back [EX]it'
+      CALL GEN.IN(0,21,'Is this information correct? ':MASK,'',Q,0,2,'','',2,29,21,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            INDEX=NUM.REPORTS
+            OLD.INDEX=INDEX
+            IF NUM.REPORTS>=PAGE.SIZE THEN
+               Y.POS=BOTTOMMOST.Y.POS
+            END ELSE
+               Y.POS=BOTTOMMOST.Y.POS-PAGE.SIZE+NUM.REPORTS
+            END
+            OLD.Y.POS=Y.POS
+            BACK.FLAG=1
+            GOTO GET.USER.RESPONSE
+         CASE QI='N' OR QI='0'
+            INDEX=1
+            OLD.INDEX=INDEX
+            Y.POS=TOPMOST.Y.POS
+            OLD.Y.POS=Y.POS
+            BACK.FLAG=0
+            GOTO GET.USER.RESPONSE
+         CASE QI='Y' OR QI='1'
+            NULL
+         CASE 1
+            GOTO 2000
+      END CASE
+
+      NUM.ATTACHMENTS=0
+      FOR X=1 TO NUM.REPORTS
+         IF REPORTS<7,X>='Y' THEN NUM.ATTACHMENTS+=1
+      NEXT X
+      IF NUM.ATTACHMENTS=0 THEN
+         CALL ELINE('No attachments were selected to send.')
+         GOTO GET.NEXT.DIVISION
+      END
+
+      NEW.EMAIL.COUNTER=0
+ADD.NEW.EMAIL:***
+*     NEW.EMAIL.ADDRESS=''               ; * JMK02
+*     CRT @(0,4):@(-3)                   ; * JMK02
+*     CRT @(0,6):'Additional Email Address Number ':(NEW.EMAIL.COUNTER+1)'R#2':' :'        ; * JMK02
+*     MASK=STR(MASK.CHAR,30):@(-4)       ; * JMK02
+*     HELP='Enter an additional email address to receive this email. [ENTER]=None [EX]it'  ; * JMK02
+*     CALL GEN.IN(37,6,MASK,'',Q,0,30,'','',2,37,6,0,QI,HELP,0,23)     ; * JMK02
+*     QI=OCONV(QI,'MCU')                 ; * JMK02
+*     CRT @(37,6):QI:@(-4)               ; * JMK02
+*     BEGIN CASE                         ; * JMK02
+*        CASE QI='EX'                    ; * JMK02
+*           GOTO THE.END                 ; * JMK02
+*        CASE QI=''                      ; * JMK02
+*           NULL                         ; * JMK02
+*        CASE 1                          ; * JMK02
+*           NEW.EMAIL.COUNTER+=1         ; * JMK02
+*           IF DIVISION.ID#'N' THEN      ; * JMK02
+*              DIVISION.REC<9,-1>=TRIM(NEW.EMAIL.ADDRESS)    ; * JMK02
+*           END ELSE                     ; * JMK02
+*              CLIENT.REC<125,-1>=TRIM(NEW.EMAIL.ADDRESS)    ; * JMK02
+*           END * JMK02
+*           GOTO ADD.NEW.EMAIL           ; * JMK02
+*     END CASE                           ; * JMK02
+
+*     CRT @(0,4):@(-3)                   ; * JMK02
+*     CRT @(0,19):NEW.EMAIL.COUNTER:' new email address(es) added.'    ; * JMK02
+*     CRT @(0,21):'Sending email with ':NUM.ATTACHMENTS:' attachments...':@(-4)  ; * JMK02
+
+* Prepare email and send it
+      EMAIL.OUT=''
+*     IF DIVISION.ID#'N' THEN            ; * JMK02
+      * Send email to divisional email addresses
+*        EMAIL.OUT<1>=TRIM(DIVISION.REC<9>)        ; * To: Email addresses ; * JMK02
+*        IF EMAIL.OUT<1>='' THEN         ; * JMK02
+*           CALL ELINE('No TO: email addresses exist for division ':DIVISION.ID:'.') ; * JMK02
+*           GOTO THE.END                 ; * JMK02
+*        END                             ; * JMK02
+*        EMAIL.OUT<2>=TRIM(DIVISION.REC<12>)       ; * CC: Email addresses ; * JMK02
+*        EMAIL.OUT<3>=TRIM(DIVISION.REC<13>)       ; * BCC: Email addresses ; * JMK02
+*     END ELSE                           ; * JMK02
+      * Send email to main email addresses
+*        EMAIL.OUT<1>=TRIM(CLIENT.REC<125>)        ; * To: Email addresses ; * JMK02
+*        IF EMAIL.OUT<1>='' THEN         ; * JMK02
+*           CALL ELINE('No TO: email addresses exist for client ':CLIENT.ID:'.') ; * JMK02
+*           GOTO THE.END                 ; * JMK02
+*        END                             ; * JMK02
+*        EMAIL.OUT<2>=TRIM(CLIENT.REC<126>)        ; * CC: Email addresses ; * JMK02
+*        EMAIL.OUT<3>=TRIM(CLIENT.REC<127>)        ; * BCC: Email addresses ; * JMK02
+*     END                                ; * JMK02
+      EMAIL.OUT<1>=TO.ADD                ; * JMK02
+      EMAIL.OUT<2>=CC.ADD                ; * JMK02
+      EMAIL.OUT<3>=BCC.ADD               ; * JMK02
+
+      EMAIL.OUT<4>='Reports@afs.net'     ; * From Email address
+
+      EMAIL.OUT<5,1>=CLIENT.ID:' - ':CLIENT.NAME   ; * Subject of Email
+      IF DIVISION.ID#'N' THEN
+         EMAIL.OUT<5,1>:=' Div ':DIVISION.ID
+      END
+      EMAIL.OUT<5,1>:=' ':REPORTS<4,1>:' - ':REPORTS<5,1>
+
+      * Email body
+      EMAIL.OUT<6,-1>='AFS Logistics, LLC.                                        Phone: 318-798-2111'
+*DF      EMAIL.OUT<6,-1>='330 Marshall Street, Suite 400                               FAX: 318-797-3628'
+      EMAIL.OUT<6,-1>='670 Emberwood Drive                                          FAX: 318-797-3628'
+*DF      EMAIL.OUT<6,-1>='Shreveport, LA 71101                                               WWW.AFS.Net'
+      EMAIL.OUT<6,-1>='Shreveport, LA 71106                                               WWW.AFS.Net'
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>='This is a resend of a previously sent email.'
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>='The following reports include all bills processed from ':REPORTS<4,1>:' thru ':REPORTS<5,1>:':'
+      EMAIL.OUT<6,-1>='------------------------------------------------------------------------------'
+
+      FOR X=1 TO NUM.REPORTS
+         IF REPORTS<7,X>='Y' THEN
+            EMAIL.OUT<6,-1>=REPORTS<1,X>'L#35':SPACE(2):REPORTS<3,X>'L#6':SPACE(2):REPORTS<8,X>
+            EMAIL.OUT<11,-1>=REPORTS<9,X>:REPORTS<8,X>
+         END
+      NEXT X
+
+      IF CLIENT.REC<221>='Y' AND EMAIL.OUT<11>#'' THEN       ; * JMK06
+         NUM.ATTACH=DCOUNT(EMAIL.OUT<11>,@VM)      ; * JMK06
+         ZIPFILE=PATH:PRE.EMAIL.FILENAME:'-RPTS.ZIP'         ; * JMK06
+         DELETE F.EMAILDATA,ZIPFILE      ; * JMK06
+         FOR X=1 TO NUM.ATTACH           ; * JMK06
+            EMAIL.FILENAME=EMAIL.OUT<11,X>         ; * JMK06
+            STMT='DOS /c "C:\Program_Files\7-Zip\7z.exe a -tzip" ':ZIPFILE:' ':EMAIL.FILENAME        ; * JMK06
+****            STMT='DOS /c "E:\Program_Files\7-Zip\7z.exe a -tzip" ':ZIPFILE:' ':EMAIL.FILENAME        ; * JMK06
+            EXECUTE STMT CAPTURING RESULTS         ; * JMK06
+         NEXT X                          ; * JMK06
+         EMAIL.OUT<11>=ZIPFILE           ; * JMK06
+      END                                ; * JMK06
+
+      EMAIL.OUT<6,-1>='------------------------------------------------------------------------------'
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>='If you have any questions concerning your reports, please contact Myra Butts'
+      EMAIL.OUT<6,-1>='at 318-798-2111 extension 1232.'
+
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>='                         Thank You For Your Business'
+
+      EMAIL.OUT<7>=1                     ; * Auto format (add carriage returns to end of text)
+
+      * Add our email addresses to the list of addresses for record keeping
+      FOUND.MYRA=0
+      UP.EMAIL=OCONV(EMAIL.OUT<1>,'MCU'):@VM:OCONV(EMAIL.OUT<2>,'MCU')
+      LOCATE 'MBUTTS@AFSLOGISTICS.COM' IN UP.EMAIL<1> SETTING TEMP THEN FOUND.MYRA=1
+      LOCATE 'MYRA@AFSLOGISTICS.COM' IN UP.EMAIL SETTING TEMP THEN FOUND.MYRA=1
+*****      IF NOT(FOUND.MYRA) THEN EMAIL.OUT<2,-1>='Myra@afs.net'GRB01
+*     EMAIL.OUT<2,-1>='Myra@afs.net'      ; * CC: Email addresses ; * JMK04
+*     EMAIL.OUT<2,-1>='Mary@afs.net'      ; * CC: Email addresses ; * JMK04
+      EMAIL.OUT<3,-1>='WeeklyClientEmails@afs.net'           ; * JMK99
+      EMAIL.OUT<3,-1>='LJjohnson@afs.net'          ; * CC: Email addresses ; * JMK04GRB01
+      EMAIL.OUT<3,-1>='Mary@afs.net'     ; * CC: Email addresses ; * JMK04
+
+      * For testing and debugging only: Replace all email addresses with our email addresses
+      IF USER.NAME='OWEN' THEN
+*****         EMAIL.OUT<1>='OHolman@afs.net'   ; * To: Email addresses
+         EMAIL.OUT<2>=''                 ; * CC: Email addresses
+         EMAIL.OUT<3>=''                 ; * BCC: Email addresses
+      END
+
+      IF USER.NAME='MDODSON' THEN
+         EMAIL.OUT<1>='MDODSON@afs.net'  ; * To: Email addresses
+         EMAIL.OUT<2>=''                 ; * CC: Email addresses
+         EMAIL.OUT<3>=''                 ; * BCC: Email addresses
+      END
+
+      NUM.ATTACHMENTS=DCOUNT(EMAIL.OUT<11>,@VM)
+      BEGIN CASE
+         CASE CLIENT.ID='01031' AND NUM.ATTACHMENTS>7        ; * Oklahoma Rig & Supply
+            * If there are more than 7 attachments, split the email up into
+            * pieces of 6 attachments each
+            NUM.PIECES=INT(NUM.ATTACHMENTS/6)
+            IF REM(NUM.ATTACHMENTS,6) THEN NUM.PIECES+=1
+            TEMP='Due to limitations of your email server, this email containing ':NUM.ATTACHMENTS:' attachments'
+            INS TEMP BEFORE EMAIL.OUT<6,5>
+            TEMP='will be sent in ':NUM.PIECES:' separate emails.'
+            INS TEMP BEFORE EMAIL.OUT<6,6>
+            ATTACHMENTS=EMAIL.OUT<11>
+            EMAIL.OUT<11>=''
+            LOOP WHILE ATTACHMENTS#''
+               EMAIL.OUT<11,-1>=ATTACHMENTS<1,1>
+               DEL ATTACHMENTS<1,1>
+               IF REM(DCOUNT(EMAIL.OUT<11>,@VM),6)=0 THEN    ; * Got six => send them
+                  VIN=EMAIL.OUT
+                  VOUT=''
+                  CALL SENDMAIL(VIN,VOUT)          ; * This is the regular client email
+                  IF VOUT<1>='ERROR' THEN
+                     GOSUB EMAIL.SENDING.FAILURE
+                  END
+                  EMAIL.OUT<11>=''
+               END
+            REPEAT
+            IF EMAIL.OUT<11> THEN        ; * Send partial group of 6
+               VIN=EMAIL.OUT
+               VOUT=''
+               CALL SENDMAIL(VIN,VOUT)   ; * This is the regular client email
+               IF VOUT<1>='ERROR' THEN
+                  GOSUB EMAIL.SENDING.FAILURE
+               END
+            END
+         CASE 1                          ; * Everyone else
+            VIN=EMAIL.OUT
+            VOUT=''
+            CALL SENDMAIL(VIN,VOUT)      ; * This is the regular client email
+            IF VOUT<1>='ERROR' THEN
+               GOSUB EMAIL.SENDING.FAILURE
+            END
+      END CASE
+
+      CRT @(0,21):'Sending email with ':NUM.ATTACHMENTS:' attachments...Done.'
+
+GET.NEXT.DIVISION:***
+      DIVISION.ID=ALL.DIVISIONS<1>       ; * Get first or next division to process
+      IF DIVISION.ID#'' THEN
+         DEL ALL.DIVISIONS<1>
+         READ DIVISION.REC FROM F.DIVISION,DIVISION.ID THEN
+            GOTO START.OF.LOOP
+         END ELSE
+            CALL ELINE('Division ':DIVISION.ID:' not on file for client ':CLIENT.ID:'.')
+            GOTO GET.NEXT.DIVISION
+         END
+      END
+
+      GOTO THE.END
+
+***********************************************************************
+
+EMAIL.SENDING.FAILURE:***
+*   This subroutine is called when an email to be sent to a client fails
+*   for some reason, most probably a misspelling of the TO:, CC:, or BCC:
+*   addresses.  In the case of an email failure, send a warning email to
+*   Owen, David, Myra, and James saying that this email failed to go out.
+      EMAIL.TO=CHANGE(EMAIL.OUT<1>,@VM,' ')
+      EMAIL.CC=CHANGE(EMAIL.OUT<2>,@VM,' ')
+      EMAIL.BC=CHANGE(EMAIL.OUT<3>,@VM,' ')
+      EMAIL.ERROR.OUT=''
+*****      EMAIL.ERROR.OUT<1,1>='oweninfo@afs.net'           ; * To: Email addresses
+      EMAIL.ERROR.OUT<1,2>='David@afs.net'
+*****      EMAIL.ERROR.OUT<1,3>='Myra@afs.net'GRB01
+      EMAIL.OUT<1,3>='LJjohnson@afs.net'           ; * CC: Email addresses ; * JMK04GRB01
+      EMAIL.ERROR.OUT<1,4>='Mary@afs.net'
+*****      EMAIL.ERROR.OUT<2,1>='MKerbow@afs.net'        ; * CC: Email addresses ; * JMK01
+      EMAIL.ERROR.OUT<3>=''              ; * BCC Email addresses
+*     EMAIL.ERROR.OUT<4>='Reports@afs.net'          ; * From Email address ; * JMK04
+      EMAIL.ERROR.OUT<4>='Reports_Error@afs.net'   ; * From Email address ; * JMK04
+      EMAIL.ERROR.OUT<5,1>='** ERROR ** ':EMAIL.OUT<5,1>     ; * Subject
+      EMAIL.ERROR.OUT<6,1>='******************************************************************************'
+      EMAIL.ERROR.OUT<6,2>='This email is NOT BEING SENT due to a failure of the email program blat.'
+      EMAIL.ERROR.OUT<6,3>=' '
+      EMAIL.ERROR.OUT<6,4>='It is NOT being sent to the following people at client ':CLIENT.ID:' ':CLIENT.NAME:':'
+      EMAIL.ERROR.OUT<6,5>=' '
+      EMAIL.ERROR.OUT<6,6>=' TO: Addresses: ':EMAIL.TO
+      EMAIL.ERROR.OUT<6,7>=' CC: Addresses: ':EMAIL.CC
+      EMAIL.ERROR.OUT<6,8>='BCC: Addresses: ':EMAIL.BC
+      EMAIL.ERROR.OUT<6,9>='******************************************************************************'
+      NUM.EMAIL.LINES=DCOUNT(EMAIL.OUT<6>,@VM)
+      FOR X=1 TO NUM.EMAIL.LINES
+         EMAIL.ERROR.OUT<6,-1>=EMAIL.OUT<6,X>
+      NEXT X
+      EMAIL.ERROR.OUT<6,-1>='******************************************************************************'
+      NUM.ERROR.LINES=DCOUNT(VOUT,@AM)   ; * JMK01
+      FOR X=1 TO NUM.ERROR.LINES         ; * JMK01
+         EMAIL.ERROR.OUT<6,-1>=VOUT<X>   ; * JMK01
+      NEXT X                             ; * JMK01
+      EMAIL.ERROR.OUT<7>=1               ; * Auto format (add carriage returns to end of text)
+      VIN=EMAIL.ERROR.OUT
+      VOUT=''
+      CALL SENDMAIL(VIN,VOUT)
+      RETURN
+
+***********************************************************************
+
+DISPLAY.REPORTS:***
+      FOR X=START.DISPLAY TO END.DISPLAY
+         CRT @(0,5+X-START.DISPLAY):SCREEN.LINE<X>:@(-4)
+      NEXT X
+      RETURN
+
+***********************************************************************
+
+DISPLAY.SCREEN:***
+* Display prompts and data on the screen
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+
+      CRT @(0, 4):'Client Number   :'
+      CRT @(0, 6):'Division Number :'
+      CRT @(0, 8):'Process Date    :'
+
+      IF CLIENT.ID THEN
+         CRT @(18,4):CLIENT.SAVE
+      END
+      IF DIVISION.ID THEN
+         CRT @(18,6):DIVISION.SAVE
+      END
+      IF PROCESS.DATE THEN
+         CRT @(18,8):PROCESS.SAVE
+      END
+      RETURN
+
+***********************************************************************
+
+THE.END:***
+* End of program
+      CRT @(0,23):@(-4):
+   END

@@ -1,0 +1,1777 @@
+*     SUBROUTINE FB.1.1.CHARGES.NEW(CLIENT.ID,CLIENT.REC,DISPLAY.MODE)             ; * JMK13
+      SUBROUTINE FB.1.1.CHARGES.NEW(CLIENT.ID,CLIENT.REC,DISPLAY.MODE,CHARGE.LIST)         ; * JMK13
+********************************************************************************
+* COPYRIGHT (C) 1995 - 2002 by AFS LOGISTICS LLC. -- ALL RIGHTS RESERVED
+*       ----------------------------------------------------
+* This program is the sole property of AFS Logistics, LLC (AUTOMATED
+* FREIGHT SYSTEMS) and may not be used, copied, or modified without
+* the express written consent of Brian Barker of AFS Logistics, LLC.
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR : BRIAN M. QUEEN
+* DATE   : DECEMBER 1, 1990
+*
+* EDIT HISTORY:
+*
+*    NAME |   DATE   | DESCRIPTION
+* --------+----------+-------------------------------------------------
+*     JTR | 09/29/95 | Added additional screen for entry options.
+*         |          | Added CZAR year, AutoRate, BenchMark Items,
+*         |          | and Current Items
+* CODY H. | 01/16/97 | Added auditors name
+*     JB  | 03/27/02 | Made a full screen, added space for AFSi charge
+*         |          | and later new charges, cleaned up the code
+*   JMK01 | 11/08/02 | Add LCC minimum amount
+*   JMK02 | 04/04/03 | Add Misroute Email Flag
+*   JMK03 | 08/08/03 | Add Parcel Charge Fee for Fedex style shipments
+*   JMK04 | 12/10/03 | Change Salesman Labels
+*   JMK05 | 12/18/03 | Add Service Management Rates
+*   JMK06 | 11/02/04 | Add Reject Handling Charge per bill
+*   JMK07 | 11/02/04 | Add Per Bill Audit Fee
+*   JMK08 | 11/11/04 | Add Fedex Ground rate %
+*   JMK09 | 12/03/04 | Add Prorated Per Bill process fee
+*   JMK10 | 01/14/05 | Add UPS Tracking Number Fee
+*   JMK11 | 01/14/05 | Add failsafe for per bill fees
+*   JMK12 | 01/26/05 | Add FEDX Air Overchg %
+*   JMK13 | 07/22/05 | CHARGE.LIST passed from FB.1.1
+*   JMK14 | 07/22/05 | Add Logistics Flat fee configuration screen
+*   JMK15 | 10/07/05 | Restructure screen to show "$" and "%"
+*   JMK16 | 10/11/05 | Verify per bill fees if monthly minimum exists
+*   JMK17 | 10/21/05 | Add ALERT when the Logstics FSC is set to "N"
+*   JMK18 | 11/07/05 | Add Logistics Flat fee total to main screen
+*   JCW01 | 05/10/06 | CHANGES TO @SELECTED, CLEARSELECT, AND STMT<X>
+* 093008 - JMK19 - C081601 - Client Maintenance ; additional information
+* 061710 - JMK20 - T100528 - n in mv date field
+* 102710 - NPR01 - T101055 - Set defaults for client transitioning from Logistics Client "N"o  to "Y"es
+* 101011 - RLM01 - Projects 80 & 87 - Moved Auditor, Initital Salesman and Servicing Salesman prompts from CHARGES screen to ADMIN screen
+* 111711 - JMK21 - SysAid#349 - Consulting Commision cap
+* 060313 - JMK22 - CORRECT ISSUE WITH DATES
+* 070814 - DRF01 - SysAid 1589 - Corected issue with attribute 268 being
+*                  set to zero instead of null
+* 020816 - DRF02 - SysAid 22217 - Chnage charge page Wkly UPS Svc Fee to Pulse BI Wkly Fee
+* 091216 - DRF03 - SysAid 26557 - Changed charge page to have PulseTMS wkly and per bill fee
+*112816 - TAG01 0 SysAid 26539 - Blink Prompts that need required answers
+* 062117 - TAG02 - SysAid 33599 - Change Screen Label
+* This subroutine allows the entry and editing of a client's charges.
+* The first page -- the charge page (which is actually many different screen pages)
+* is a list of multivalue charges based on attribute 84, the effective date of
+* the charges.
+* The second page is an additional group of flat charges and switches.
+* This subroutine is called from FB.1.1, which is the main update program
+* for the clients file.
+********************************************************************************
+* PICK COMPILER INFORMATION
+* ~~~~~~~~~~~~~~~~~~~~~~~~~
+*  ~PICK-FILE: FBBP
+*  ~PICK-RECORD: FB.1.1.CHARGES.NEW
+*  ~ PICK-FILE: BP
+*  ~ PICK-RECORD: JIM
+*  ~COMPILE-REC: YES
+*  ~AUTO-ANSWER: NO
+*  ~RUN-REC: NO
+********************************************************************************
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+$OPTIONS HEADER.EJECT
+$INCLUDE FILE.DEFS INC_ADDS60.CODES
+
+* Initialize general variables
+      PROMPT''
+      CALL GET.USER(USER)
+      TERM.TYPE=SYSTEM(7)
+      BEGIN CASE
+         CASE TERM.TYPE='REGENT60'
+            REV.NORMAL=TERM.ESC.SEQ:CHAR(TERM.REV+TERM.DIM)
+            REV.HILITE=TERM.ESC.SEQ:CHAR(TERM.REV)
+            REV.OFF=TERM.ESC.SEQ:CHAR(TERM.NORMAL)
+         CASE 1
+            REV.NORMAL=@(-13):@(-11)
+            REV.HILITE=@(-13)
+            REV.OFF=@(-14):@(-12)
+* Begin TAG01
+            START.BLINK=@(-5)
+            STOP.BLINK=@(-6)
+* End TAG01
+      END CASE
+      POSITION.HOLDER='* Holds Position in DA *'
+      MASK.CHAR='-'
+      CLIENT.TITLE=CLIENT.ID:' ':CLIENT.REC<2>
+      CALL CENTER(CLIENT.TITLE,80)
+      SAVED.CLIENT.REC=CLIENT.REC
+      ALREADY.ADDED=0
+      ALREADY.DELETED=0
+      SALESMAN.LIST=''                   ; * Initially null, but loaded only once if needed
+
+* Open files
+      OPEN '','AR.SLSMAN.1000.1' TO F.SLSMAN ELSE
+         CALL OPEN.ABORT('AR.SLSMAN.1000.1',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIER ELSE         ; * JMK14
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)     ; * JMK14
+      END                                ; * JMK14
+
+* The following is a list of attributes in the client file that comprise the
+* "charge page(s)".  It should be maintained and kept in sync with the identical
+* list in FB.1.1 (found in the code where the file is updated).
+* If new charges are added to the charge page, be sure to add the attributes from
+* the client file to this list.
+*     CHARGE.LIST=32:@VM:33:@VM:34:@VM:35:@VM:36:@VM:39:@VM:40:@VM:73:@VM:85:@VM:88:@VM:113:@VM:122:@VM:172:@VM:128:@VM:129:@VM:130:@VM:131:@VM:133    ; * JMK05
+*     CHARGE.LIST=32:@VM:33:@VM:34:@VM:35:@VM:36:@VM:39:@VM:40:@VM:73:@VM:85:@VM:88:@VM:113:@VM:122:@VM:172:@VM:128:@VM:129:@VM:130:@VM:131:@VM:133:@VM:177:@VM:178        ; * JMK05 ; * JMK06
+*     CHARGE.LIST=32:@VM:33:@VM:34:@VM:35:@VM:36:@VM:39:@VM:40:@VM:73:@VM:85:@VM:88:@VM:113:@VM:122:@VM:172:@VM:128:@VM:129:@VM:130:@VM:131:@VM:133:@VM:177:@VM:178:@VM:185          ; * JMK05 ; * JMK06 ; * JMK07
+*     CHARGE.LIST=32:@VM:33:@VM:34:@VM:35:@VM:36:@VM:39:@VM:40:@VM:73:@VM:85:@VM:88:@VM:113:@VM:122:@VM:172:@VM:128:@VM:129:@VM:130:@VM:131:@VM:132:@VM:133:@VM:177:@VM:178:@VM:185    ; * JMK05 ; * JMK06 ; * JMK07 ; * JMK08
+*     CHARGE.LIST=32:@VM:33:@VM:34:@VM:35:@VM:36:@VM:39:@VM:40:@VM:73:@VM:85:@VM:88:@VM:113:@VM:122:@VM:172:@VM:128:@VM:129:@VM:130:@VM:131:@VM:132:@VM:133:@VM:177:@VM:178:@VM:185:@VM:187    ; * JMK05 ; * JMK06 ; * JMK07 ; * JMK08 ; * JMK09
+*     CHARGE.LIST=32:@VM:33:@VM:34:@VM:35:@VM:36:@VM:39:@VM:40:@VM:73:@VM:85:@VM:88:@VM:113:@VM:122:@VM:172:@VM:128:@VM:129:@VM:130:@VM:131:@VM:132:@VM:133:@VM:177:@VM:178:@VM:185:@VM:187:@VM:190      ; * JMK05 ; * JMK06 ; * JMK07 ; * JMK08 ; * JMK09 ; * JMK10
+*     CHARGE.LIST=32:@VM:33:@VM:34:@VM:35:@VM:36:@VM:39:@VM:40:@VM:73:@VM:85:@VM:88:@VM:113:@VM:122:@VM:172:@VM:128:@VM:129:@VM:130:@VM:131:@VM:132:@VM:133:@VM:177:@VM:178:@VM:185:@VM:187:@VM:190:@VM:199        ; * JMK05 ; * JMK06 ; * JMK07 ; * JMK08 ; * JMK09 ; * JMK10 ; * JMK12
+*     CHARGE.LIST=32:@VM:33:@VM:34:@VM:35:@VM:36:@VM:39:@VM:40:@VM:73:@VM:85:@VM:88:@VM:113:@VM:122:@VM:172:@VM:128:@VM:129:@VM:130:@VM:131:@VM:132:@VM:133:@VM:177:@VM:178:@VM:185:@VM:187:@VM:190:@VM:199:@VM:200          ; * JMK05 ; * JMK06 ; * JMK07 ; * JMK08 ; * JMK09 ; * JMK10 ; * JMK12 ; * JMK13
+*     This is now being passed from FB.1.1 and no longer needs to by maintained here.  This removes possible conflict with being out of sync. ; * JMK13
+      NUM.CHARGES=DCOUNT(CHARGE.LIST,@VM)
+
+* Setup screen
+      CRT @(0,2):@(-3):CLIENT.TITLE
+
+* Locate last effective date
+      POS=DCOUNT(CLIENT.REC<84>,@VM)
+      IF POS=0 THEN
+         IF DISPLAY.MODE THEN
+            TEMP='There are no charge pages to view for this client'
+            CALL CENTER(TEMP,80)
+            CRT @(0,10):TEMP
+            CALL ELINE('')
+            RETURN
+         END
+         TEMP='There are no charge pages on file for this client'
+         CALL CENTER(TEMP,80)
+         CRT @(0,8):TEMP
+         IF CLIENT.REC<27>='' THEN
+            TEMP='There is no pre-audit startup date for this client. Before you can enter'
+            CALL CENTER(TEMP,80)
+            CRT @(0,13):TEMP
+            TEMP='charges for this client, you must first enter a pre-audit startup date.'
+            CALL CENTER(TEMP,80)
+            CRT @(0,15):TEMP
+            CALL ELINE('')
+            RETURN
+         END
+         TEMP='The pre-audit start date of ':CLIENT.REC<27>'D4-':' will be used as the initial'
+         CALL CENTER(TEMP,80)
+         CRT @(0,13):TEMP
+         TEMP='charge page effective date for this client'
+         CALL CENTER(TEMP,80)
+         CRT @(0,15):TEMP
+90:      HELP='[Y]es [N]o [EX]it'
+         CALL GEN.IN(0,20,'Continue? Y','',Q,0,2,'','',2,-1,20,1,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         IF QI='' THEN QI='Y'
+         IF NOT(QI='Y' OR QI='N' OR QI='EX') THEN GOTO 90
+         IF QI='N' OR QI='EX' THEN RETURN
+         CLIENT.REC<84>=CLIENT.REC<27>
+         POS=DCOUNT(CLIENT.REC<84>,@VM)
+         GOSUB SET.DEFAULT.CHARGES
+      END
+      EFF.DATE=CLIENT.REC<84,POS>
+      REDSPLY=0                          ; * JMK14
+
+********************************************************************************
+*     Start of Page 1: Charge Page
+********************************************************************************
+
+* Top of loop for new charge page
+100:  ***
+      HEAD1=' Charges Effective ':EFF.DATE'D4-'
+      HEAD2='Charge Page ':POS:' of ':DCOUNT(CLIENT.REC<84>,@VM):' '
+      HEAD=HEAD1:SPACE(79-LEN(HEAD1)-LEN(HEAD2)):HEAD2
+      CRT @(0,3):REV.NORMAL:HEAD:REV.OFF
+* Begin TAG01
+*      CRT @(0,17):REV.NORMAL:SPACE(79):REV.OFF
+* End TAG01
+105:  ***
+*     IF CLIENT.REC<131,POS>='' THEN TEMP=SPACE(8) ELSE TEMP=CLIENT.REC<131,POS>'R26#8'    ; * JMK21
+
+      CRT @( 0, 4):' 1 Overcharge       %':CLIENT.REC< 33,POS>'R26#8'
+      CRT @( 0, 5):' 2 UPS Overcharge   %':CLIENT.REC< 88,POS>'R26#8'
+      IF CLIENT.REC<131,POS>='' THEN TEMP=SPACE(8) ELSE TEMP=CLIENT.REC<131,POS>'R26#8'    ; * JMK21
+      CRT @( 0, 6):' 3 Max Ovrchrg Comm $':TEMP
+      LOG.PCT=CLIENT.REC<85,POS>'R26'    ; * JMK18
+      IF SUM(CLIENT.REC<210,POS>)#"0" THEN         ; * JMK18
+         LOG.PCT:='T'                    ; * JMK18
+      END                                ; * JMK18
+      IF SUM(CLIENT.REC<216,POS>)#"0" THEN         ; * JMK18
+         LOG.PCT:='C'                    ; * JMK18
+      END                                ; * JMK18
+*     CRT @( 0, 7):' 4 Logistics        %':CLIENT.REC< 85,POS>'R26#8' ; * JMK18
+      CRT @( 0, 7):' 4 Logistics        %':LOG.PCT'R#8'      ; * JMK18
+      CRT @( 0, 8):' 5 Discount         %':CLIENT.REC< 34,POS>'R26#8'
+      CRT @( 0, 9):' 6 Claims           %':CLIENT.REC< 39,POS>'R26#8'
+      CRT @( 0,10):' 7 Pstg Reimburse   $':CLIENT.REC< 35,POS>'R26#8'
+      CRT @( 0,11):' 8 Per Bill Rate    $':CLIENT.REC< 73,POS>'R37#8'
+      CRT @( 0,12):' 9 EDI Per Bill Rate$':CLIENT.REC<122,POS>'R37#8'
+*     CRT @( 0,13):'10 Wkly Flat Fee     ':CLIENT.REC< 40,POS>'R26#8'  ; * JMK03
+*     CRT @( 0,14):'11 Wkly Postage Fee  ':CLIENT.REC<129,POS>'R26#8'  ; * JMK03
+*     CRT @( 0,15):'12 Wkly UPS Svc Fee  ':CLIENT.REC<113,POS>'R26#8'  ; * JMK03
+*     CRT @( 0,16):'13 Wkly AFSi Fee     ':CLIENT.REC<130,POS>'R26#8'  ; * JMK03
+*     CRT @(29, 4):'  14 Monthly Fee       ':CLIENT.REC< 32,POS>'R26#8'          ; * JMK03
+*     CRT @(29, 5):'  15 Mthly Minimum Fee ':CLIENT.REC< 36,POS>'R26#8'          ; * JMK03
+*     CRT @(29, 6):'  16 Mthly Logis Fee   ':CLIENT.REC<128,POS>'R26#8'          ; * JMK03
+*     CRT @(29, 7):'  17                   ':SPACE(8)        ; * JMK03
+      CRT @( 0,13):'10 EDI PCL Gd Per Bl$':CLIENT.REC<172,POS>'R37#8'
+      CRT @( 0,14):'11 Wkly Flat Fee    $':CLIENT.REC< 40,POS>'R26#8'  ; * JMK03
+      CRT @( 0,15):'12 Wkly Prc/Hnd Fee $':CLIENT.REC<129,POS>'R26#8'  ; * JMK03
+*DF      CRT @( 0,16):'13 Wkly UPS Svc Fee $':CLIENT.REC<113,POS>'R26#8'  ; * JMK03; * DRF02
+* Begin TAG02
+      CRT @( 0,16):'13 AFSIntel Wkly Fee$':CLIENT.REC<113,POS>'R26#8'
+* End TAG02
+      CRT @(29, 4):'  14 AFSi Wkly Fee    $':CLIENT.REC<130,POS>'R26#8'          ; * JMK03
+
+      CRT @(29, 5):'  15 Monthly Fee      $':CLIENT.REC< 32,POS>'R26#8'          ; * JMK03
+      CRT @(29, 6):'  16 Mthly Min Fee    $':CLIENT.REC< 36,POS>'R26#8'          ; * JMK03
+      MLOG.FEE=CLIENT.REC<128,POS>'R26'  ; * JMK18
+      IF SUM(CLIENT.REC<209,POS>)#"0" THEN         ; * JMK18
+         MLOG.FEE:='T'                   ; * JMK18
+      END                                ; * JMK18
+      IF SUM(CLIENT.REC<215,POS>)#"0" THEN         ; * JMK18
+         MLOG.FEE:='C'                   ; * JMK18
+      END                                ; * JMK18
+*     CRT @(29, 7):'  17 Mthly Logis Fee  $':CLIENT.REC<128,POS>'R26#8'          ; * JMK03 ; * JMK18
+      CRT @(29, 7):'  17 Mthly Logis Fee  $':MLOG.FEE'R#8'   ; * JMK03 ; * JMK18
+      IF CLIENT.REC<177,POS>#"" OR CLIENT.REC<178,POS>#"" THEN         ; * JMK05
+         SVC.RATE='Yes'                  ; * JMK05
+      END ELSE                           ; * JMK05
+         SVC.RATE='No'                   ; * JMK05
+      END                                ; * JMK05
+      CRT @(29, 8):'  18 Traffic Service  %':SVC.RATE'L#8'   ; * JMK05
+      CRT @(29, 9):'  19 Rej Per Bill Pstg$':CLIENT.REC<185,POS>'R26#8'          ; * JMK06
+      CRT @(29,10):'  20 Aud Per Bill Rate$':CLIENT.REC<132,POS>'R37#8'          ; * JMK07
+*     CRT @(29,11):'  21                   ':space(8) ; * JMK08
+      CRT @(29,11):'  21 FedEx Grnd Ovrchg%':CLIENT.REC<187,POS>'R26#8'          ; * JMK08
+*     CRT @(29,12):'  22                   ':SPACE(8) ; * JMK09
+      CRT @(29,12):'  22 PR Per Bill Rate $':CLIENT.REC<190,POS>'R37#8'          ; * JMK09
+*     CRT @(29,13):'  23                   ':SPACE(8) ; * JMK10
+      CRT @(29,13):'  23 UPS Track # Fee  $':CLIENT.REC<199,POS>'R37#8'          ; * JMK10
+*     CRT @(29,14):'  24                   ':SPACE(8) ; * JMK12
+      CRT @(29,14):'  24 FEDX Air Ovrchg  %':CLIENT.REC<200,POS>'R26#8'          ; * JMK12
+*     CRT @(29,15):'  25                   ':SPACE(8)        ; * JMK21
+      IF CLIENT.REC<268,POS>='' THEN TEMP=SPACE(8) ELSE TEMP=CLIENT.REC<268,POS>'R26#8'    ; * JMK21
+      CRT @(29,15):'  25 Max Consult Comm $':TEMP  ; * JMK21
+*      CRT @(29,16):'  26                   ':SPACE(8)
+* Begin TAG01
+      IF CLIENT.REC<307,POS>='' THEN TEMP=SPACE(8) ELSE TEMP=CLIENT.REC<307,POS>'R26#8'    ; * DRF03
+      IF (CLIENT.REC<306>=2 ! CLIENT.REC<306>=3) AND CLIENT.REC<307,POS> = "" THEN
+         CRT @(29,16):START.BLINK:'  26 PulseTMS Wkly    $':STOP.BLINK:TEMP      ; * DRF03
+      END ELSE
+         CRT @(29,16):'  26 PulseTMS Wkly    $':TEMP         ; * DRF03
+      END
+* End TAG01
+      IF CLIENT.REC<308,POS>='' THEN TEMP=SPACE(8) ELSE TEMP=CLIENT.REC<308,POS>'R26#8'    ; * DRF03
+*Begin TAG01
+      IF CLIENT.REC<308,POS>='' THEN TEMP=SPACE(8) ELSE TEMP=CLIENT.REC<308,POS>'R26#8'    ; * DRF03
+      IF (CLIENT.REC<309>=2 ! CLIENT.REC<309>=3) AND CLIENT.REC<308,POS> = "" THEN
+         CRT @(29,17):START.BLINK:'  27 AFS Analytics Wk $':STOP.BLINK:TEMP      ; * DRF03
+      END ELSE
+         CRT @(29,17):'  27 AFS Analytics Wk $':TEMP
+      END
+* End TAG01
+      CRT @(60, 4):'  28               '
+      CRT @(60, 5):'  29               '
+      CRT @(60, 6):'  30               '
+      CRT @(60, 7):'  31               '
+      CRT @(60, 8):'  32               '
+      CRT @(60, 9):'  33               '
+      CRT @(60,10):'  34               '
+      CRT @(60,11):'  35               '
+      CRT @(60,12):'  36               '
+      CRT @(60,13):'  37               '
+      CRT @(60,14):'  38               '
+      CRT @(60,15):'  39               '
+      CRT @(60,16):'  40               '
+
+      CRT @( 0,18):'40 Notes Line 1 ':CLIENT.REC<133,POS,1>'L#50':@(-4)
+      CRT @( 0,19):'41 Notes Line 2 ':CLIENT.REC<133,POS,2>'L#50':@(-4)
+      CRT @( 0,20):'42 Notes Line 3 ':CLIENT.REC<133,POS,3>'L#50':@(-4)
+      IF REDSPLY THEN RETURN             ; * JMK14
+
+* Get selection
+110:  ***
+      HELP='Enter number to edit. [B]ack [F]orward [N]ew [D]elete [CR]=Next [U]pdate [EX]it'
+      CALL GEN.IN(0,22,'Enter Selection: --','',Q,0,2,'','',2,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'                    ; * Exit without changes (abandon all changes)
+            CLIENT.REC=SAVED.CLIENT.REC
+            RETURN
+
+         CASE QI='U'                     ; * Exit with changes
+            NVAL=DCOUNT(CLIENT.REC<84>,@VM)        ; * JMK20
+            FOR VAL=1 TO NVAL            ; * JMK20
+               BAD.VAL=0                 ; * JMK20
+               TEST.DATE=OCONV(CLIENT.REC<84,VAL>,'D4/')     ; * JMK20
+               IF TEST.DATE='' THEN BAD.VAL=VAL    ; * JMK20
+               IF BAD.VAL THEN           ; * JMK20
+                  CALL ELINE('Page ':BAD.VAL:' has an invalid effective date.  Please correct.')     ; * JMK20
+                  GOTO 110               ; * JMK20
+               END                       ; * JMK20
+            NEXT VAL                     ; * JMK20
+            RETURN
+
+         CASE QI='CR' OR QI=''           ; * Display Page 2 containing more charges and switches
+            GOTO 200
+
+         CASE QI='N'                     ; * New charge page
+            IF DISPLAY.MODE THEN
+               CALL ELINE('Invalid entry - You may view only.')
+               GOTO 110
+            END ELSE
+               IF ALREADY.DELETED THEN
+                  CALL ELINE('To properly track changes, you may not add and delete pages at one time.')
+                  GOTO 110
+               END
+               IF POS<DCOUNT(CLIENT.REC<84>,@VM) THEN
+                  POS=DCOUNT(CLIENT.REC<84>,@VM)
+                  EFF.DATE=CLIENT.REC<84,POS>
+                  DATA 'N'
+                  GOTO 100
+               END
+120:           HELP='[Y]es [N]o'
+               CALL GEN.IN(0,22,'Create a new page of charges? N','',Q,0,1,'','',2,-1,22,1,QI,HELP,0,23)
+               QI=OCONV(QI,'MCU')
+               BEGIN CASE
+                  CASE QI='Y'
+130:                 HELP='Enter a new effective date for a new charge page. [X]=Back'
+                     CALL GEN.IN(0,22,'New Effective Date: ':DATE()'D2/','DATE',Q,0,8,'','',2,-8,22,0,QI,HELP,0,23)
+                     QI=OCONV(QI,'MCU')
+                     BEGIN CASE
+                        CASE QI='X'
+                           GOTO 120
+                        CASE QI=''
+                           Q=DATE()
+                     END CASE
+                     CRT @(0,22):@(-3)
+                     EFF.DATE=Q
+                     IF EFF.DATE LE CLIENT.REC<84,POS> THEN
+140:                    HELP='[Y]es [N]o'
+                        CALL GEN.IN(0,22,'New Effective Date is on or before the last Effective Date. Continue? N','',Q,0,1,'','',2,-1,22,1,QI,HELP,0,23)
+                        QI=OCONV(QI,'MCU')
+                        IF QI='' THEN QI='N'
+                        IF NOT(QI='Y' OR QI='N') THEN GOTO 140
+                        IF QI='N' THEN GOTO 130
+                        LOCATE EFF.DATE IN CLIENT.REC<84> BY 'AR' SETTING NEW.DATE.POS THEN
+                           CALL ELINE('This date already exists. Press ENTER to see that date.')
+                           POS=NEW.DATE.POS
+                        END ELSE
+                           CALL ELINE('Date does not exist. Press ENTER to insert that date.')
+                           GOSUB INSERT.CHARGE.PAGE          ; * Insert effective date and zero charges
+                           POS=NEW.DATE.POS
+                           IF POS>1 THEN GOSUB COPY.EXISTING.CHARGES.FORWARD
+                           ALREADY.ADDED=1
+                        END
+                        GOTO 100
+                     END ELSE
+                        POS+=1
+                        CLIENT.REC<84,POS>=EFF.DATE
+                        GOSUB COPY.EXISTING.CHARGES.FORWARD
+                        ALREADY.ADDED=1
+                        GOTO 100
+                     END
+                  CASE QI='N' OR QI=''
+                     GOTO 110
+                  CASE 1
+                     GOTO 120
+               END CASE
+            END
+
+         CASE QI='D'
+            IF DISPLAY.MODE THEN
+               CALL ELINE('Invalid entry - You may view only.')
+               GOTO 110
+            END ELSE
+*DF               IF USER='OWEN' OR USER='JAMES' THEN
+               IF USER='OWEN' OR USER='JAMES' OR USER='DAVID' THEN
+                  IF ALREADY.ADDED THEN
+                     CALL ELINE('To properly track changes, you may not add and delete pages at one time.')
+                     GOTO 110
+                  END
+150:              HELP='[Y]es [N]o'
+                  CALL GEN.IN(0,22,'Delete Charge Page ':POS:'? N','',Q,0,1,'','',2,-1,22,1,QI,HELP,0,23)
+                  QI=OCONV(QI,'MCU')
+                  IF QI='' THEN QI='N'
+                  IF NOT(QI='Y' OR QI='N') THEN GOTO 150
+                  IF QI='N' THEN
+                     GOTO 110
+                  END ELSE
+                     GOSUB DELETE.CHARGE.PAGE
+                     ALREADY.DELETED=1
+                     IF DCOUNT(CLIENT.REC<84>,@VM)=0 THEN
+                        CRT @(0,3):@(-3)
+                        TEMP='All charge pages for this client have been deleted'
+                        CALL CENTER(TEMP,80)
+                        CRT @(0,8):TEMP
+160:                    HELP='[U]pdate [EX]it'
+                        CALL GEN.IN(0,20,'Update or Exit without updating?  ','',Q,0,2,'','',2,-1,20,1,QI,HELP,0,23)
+                        QI=OCONV(QI,'MCU')
+                        IF NOT(QI='U' OR QI='EX') THEN GOTO 160
+                        IF QI='EX' THEN CLIENT.REC=SAVED.CLIENT.REC
+                        RETURN
+                     END
+                     IF POS>DCOUNT(CLIENT.REC<84>,@VM) THEN POS=DCOUNT(CLIENT.REC<84>,@VM)
+                     EFF.DATE=CLIENT.REC<84,POS>
+                     GOTO 100
+                  END
+               END ELSE
+                  CALL ELINE('You are not authorized to delete charge pages. See Owen.')
+                  GOTO 110
+               END
+            END
+
+         CASE QI='F'                     ; * Forward a page
+            IF POS=DCOUNT(CLIENT.REC<84>,@VM) THEN
+               CALL ELINE('** Displaying Last Page **')
+               GOTO 110
+            END ELSE
+               POS+=1
+               EFF.DATE=CLIENT.REC<84,POS>
+               GOTO 100
+            END
+
+         CASE QI='B'                     ; * Back a page
+            IF POS=1 THEN
+               CALL ELINE('** Displaying First Page **')
+               GOTO 110
+            END ELSE
+               POS-=1
+               EFF.DATE=CLIENT.REC<84,POS>
+               GOTO 100
+            END
+
+         CASE NUM(QI)                    ; * Edit numbered item
+            IF QI<1 OR QI>42 THEN
+               CALL ELINE('Invalid entry - Number out of range.')
+               GOTO 110
+            END ELSE
+               IF DISPLAY.MODE THEN
+                  BEGIN CASE             ; * JMK05
+                     CASE QI=18          ; * JMK05
+                        GOSUB 18000      ; * JMK05
+                     CASE 1              ; * JMK05
+                        CALL ELINE('Invalid entry - You may view only.')
+                        GOTO 110
+                  END CASE               ; * JMK05
+               END ELSE
+                  IF QI>0 AND QI<40 THEN
+                     CALL ELINE('WARNING : You are about to change a charge. You may want a new effective date.')
+                  END
+                  ON QI GOSUB 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000,10000,11000 ,12000,13000,14000,15000,16000,17000,18000,19000,20000,21000 ,22000,23000,24000,25000,26000,27000,28000,29000,30000,31000 ,32000,33000,34000,35000,36000,37000,38000,39000,40000 ,41000,42000
+                  GOTO 105
+               END
+            END
+
+         CASE 1
+            CALL ELINE('Invalid entry - Command not recognized.')
+            GOTO 110
+      END CASE
+
+* 1 Overcharge percent
+1000: ***
+      MASK=CLIENT.REC<33,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<33,POS>'R26'))
+      HELP='Enter overcharge %. [X]=Back'
+      CALL GEN.IN(21,4,MASK,'AMT2',Q,0,8,'','',2,21,4,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<33,POS>
+      IF NOT(NUM(Q)) THEN GOTO 1000
+      IF Q#'' AND Q<100 AND Q#0 THEN
+         CALL ELINE('ERROR : Amount cannot be less than 1.00%.')
+         GOTO 1000
+      END
+      IF Q>10000 THEN
+         CALL ELINE('ERROR : Amount must not exceed 100%.')
+         GOTO 1000
+      END
+      CLIENT.REC<33,POS>=Q
+      RETURN
+
+* 2 UPS overcharge percent
+2000: ***
+      MASK=CLIENT.REC<88,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<88,POS>'R26'))
+      HELP='Enter UPS overcharge %. [X]=Back'
+      CALL GEN.IN(21,5,MASK,'AMT2',Q,0,8,'','',2,21,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<88,POS>
+      IF NOT(NUM(Q)) THEN GOTO 2000
+      IF Q#'' AND Q<100 AND Q#0 THEN
+         CALL ELINE('ERROR : Amount cannot be less than 1.00%.')
+         GOTO 2000
+      END
+      IF Q>10000 THEN
+         CALL ELINE('ERROR : Amount must not exceed 100%.')
+         GOTO 2000
+      END
+      CLIENT.REC<88,POS>=Q
+      RETURN
+
+* 3 Maximum overcharge commission (cap)
+3000: ***
+      MASK=CLIENT.REC<131,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<131,POS>'R26'))
+      HELP='Enter maximum overcharge commission $ (CAP). [ ]=Clear (no CAP) [X]=Back'
+      CALL GEN.IN(21,6,MASK,'AMT2',Q,0,8,'','',2,21,6,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<131,POS>
+      IF QI=' ' THEN Q=''
+      IF NOT(NUM(Q)) THEN GOTO 3000
+      IF Q#'' AND Q=0 THEN
+         CALL ELINE('ERROR : Amount cannot be zero.')
+         GOTO 3000
+      END
+      IF Q#'' AND Q<0 THEN
+         CALL ELINE('ERROR : Amount cannot be negative.')
+         GOTO 3000
+      END
+      CLIENT.REC<131,POS>=Q
+      RETURN
+
+* 4 Logistics percent
+4000: ***
+      MASK=CLIENT.REC<85,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<85,POS>'R26'))
+*     HELP='Enter logistics %. [X]=Back' ; * JMK14
+      HELP='Enter logistics %. [T]rans Mode. [C]arrier. [X]=Back'      ; * JMK14
+      CALL GEN.IN(21,7,MASK,'AMT2',Q,0,8,'','',2,21,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<85,POS>
+      IF QI='T' THEN                     ; * JMK14
+         CVIN=''                         ; * JMK14
+         CVIN<1>=USER                    ; * JMK14
+         CVIN<2>=POS                     ; * JMK14
+         CVIN<3>='T'                     ; * JMK14
+         CVIN<4>=DISPLAY.MODE            ; * JMK14
+         CALL FB.1.1.CHGS.LOG(CVIN,CVOUT,CLIENT.REC,F.CARRIER)         ; * JMK14
+         REDSPLY=1                       ; * JMK14
+         GOSUB 100                       ; * JMK14
+         CRT @(0,22):@(-3):              ; * JMK14
+         REDSPLY=0                       ; * JMK14
+         RETURN                          ; * JMK14
+      END                                ; * JMK14
+      IF QI='C' THEN                     ; * JMK14
+         CVIN=''                         ; * JMK14
+         CVIN<1>=USER                    ; * JMK14
+         CVIN<2>=POS                     ; * JMK14
+         CVIN<3>='C'                     ; * JMK14
+         CVIN<4>=DISPLAY.MODE            ; * JMK14
+         CALL FB.1.1.CHGS.LOG(CVIN,CVOUT,CLIENT.REC,F.CARRIER)         ; * JMK14
+         REDSPLY=1                       ; * JMK14
+         GOSUB 100                       ; * JMK14
+         CRT @(0,22):@(-3):              ; * JMK14
+         REDSPLY=0                       ; * JMK14
+         RETURN                          ; * JMK14
+      END                                ; * JMK14
+      IF NOT(NUM(Q)) THEN GOTO 4000
+      IF Q#'' AND Q<100 AND Q#0 THEN
+         CALL ELINE('ERROR : Amount cannot be less than 1.00%.')
+         GOTO 4000
+      END
+      IF Q>10000 THEN
+         CALL ELINE('ERROR : Amount must not exceed 100%.')
+         GOTO 4000
+      END
+      CLIENT.REC<85,POS>=Q
+      RETURN
+
+* 5 Discount percent
+5000: ***
+      MASK=CLIENT.REC<34,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<34,POS>'R26'))
+      HELP='Enter discount %. [X]=Back'
+      CALL GEN.IN(21,8,MASK,'AMT2',Q,0,8,'','',2,21,8,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<34,POS>
+      IF NOT(NUM(Q)) THEN GOTO 5000
+      IF Q#'' AND Q<100 AND Q#0 THEN
+         CALL ELINE('ERROR : Amount cannot be less than 1.00%.')
+         GOTO 5000
+      END
+      IF Q>10000 THEN
+         CALL ELINE('ERROR : Amount must not exceed 100%.')
+         GOTO 5000
+      END
+      CLIENT.REC<34,POS>=Q
+      RETURN
+
+* 6 Claims percent
+6000: ***
+      MASK=CLIENT.REC<39,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<39,POS>'R26'))
+      HELP='Enter claims %. [X]=Back'
+      CALL GEN.IN(21,9,MASK,'AMT2',Q,0,8,'','',2,21,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<39,POS>
+      IF NOT(NUM(Q)) THEN GOTO 6000
+      IF Q#'' AND Q<100 AND Q#0 THEN
+         CALL ELINE('ERROR : Amount cannot be less than 1.00%.')
+         GOTO 6000
+      END
+      IF Q>10000 THEN
+         CALL ELINE('ERROR : Amount must not exceed 100%.')
+         GOTO 6000
+      END
+      CLIENT.REC<39,POS>=Q
+      RETURN
+
+* 7 Postage reimbursment per carrier
+7000: ***
+      MASK=CLIENT.REC<35,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<35,POS>'R26'))
+      HELP='Enter postage reimbursment per carrier $. [X]=Back'
+      CALL GEN.IN(21,10,MASK,'AMT2',Q,0,8,'','',2,21,10,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<35,POS>
+      IF NOT(NUM(Q)) THEN GOTO 7000
+      IF Q#'' AND Q<0 THEN
+         CALL ELINE('ERROR : Amount cannot be negative.')
+         GOTO 7000
+      END
+      CLIENT.REC<35,POS>=Q
+      RETURN
+
+* 8 Per bill rate
+8000: ***
+      MASK=CLIENT.REC<73,POS>'R37':STR(MASK.CHAR,8-LEN(CLIENT.REC<73,POS>'R37'))
+      HELP='Enter per bill rate $. [X]=Back'
+      CALL GEN.IN(21,11,MASK,'AMT3',Q,0,8,'','',2,21,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<73,POS>
+      IF NOT(NUM(Q)) THEN GOTO 8000
+      IF Q#'' AND Q<0 THEN
+         CALL ELINE('ERROR : Amount cannot be negative.')
+         GOTO 8000
+      END
+      IF Q+0=0 THEN                      ; * JMK16
+         IF CLIENT.REC<36,POS>+0#0 THEN  ; * JMK16
+            CALL ELINE('WARNING : Monthly Minimum Fee is ':CLIENT.REC<36,POS>'R26,')       ; * JMK16
+         END                             ; * JMK16
+      END                                ; * JMK16
+      CLIENT.REC<73,POS>=Q
+      IF CLIENT.REC<190,POS>='' THEN     ; * JMK09
+         CLIENT.REC<190,POS>=CLIENT.REC<73,POS>    ; * JMK09
+      END                                ; * JMK09
+      RETURN
+
+* 9 EDI per bill rate
+9000: ***
+      MASK=CLIENT.REC<122,POS>'R37':STR(MASK.CHAR,8-LEN(CLIENT.REC<122,POS>'R37'))
+      HELP='Enter EDI per bill rate (This includes 00015 FedEx) $. [X]=Back'
+      CALL GEN.IN(21,12,MASK,'AMT3',Q,0,8,'','',2,21,12,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<122,POS>
+      IF NOT(NUM(Q)) THEN GOTO 9000
+      IF Q#'' AND Q<0 THEN
+         CALL ELINE('ERROR : Amount cannot be negative.')
+         GOTO 9000
+      END
+      CLIENT.REC<122,POS>=Q
+      RETURN
+
+* 10 PCL per bill rate; * JMK03
+10000:***; * JMK03
+      MASK=CLIENT.REC<172,POS>'R37':STR(MASK.CHAR,8-LEN(CLIENT.REC<172,POS>'R37'))         ; * JMK03
+*df      HELP='Enter Parcel per bill rate $. [X]=Back'          ; * JMK03
+      HELP='Enter Parcel per bill rate (FedEx Ground 01075 and UPS 00041 Only) $. [X]=Bck'           ; * JMK03
+      CALL GEN.IN(21,13,MASK,'AMT3',Q,0,8,'','',2,21,13,0,QI,HELP,0,23)          ; * JMK03
+      QI=OCONV(QI,'MCU')                 ; * JMK03
+      IF QI='X' THEN RETURN              ; * JMK03
+      IF QI='' THEN Q=CLIENT.REC<172,POS>          ; * JMK03
+      IF NOT(NUM(Q)) THEN GOTO 10000     ; * JMK03
+      IF Q#'' AND Q<0 THEN               ; * JMK03
+         CALL ELINE('ERROR : Amount cannot be negative.')    ; * JMK03
+         GOTO 10000                      ; * JMK03
+      END                                ; * JMK03
+      CLIENT.REC<172,POS>=Q              ; * JMK03
+      RETURN                             ; * JMK03
+
+* 11 Weekly flat fee
+11000:***
+      MASK=CLIENT.REC<40,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<40,POS>'R26'))
+      HELP='Enter weekly flat fee $. [X]=Back'
+      CALL GEN.IN(21,14,MASK,'AMT2',Q,0,8,'','',2,21,14,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<40,POS>
+      IF NOT(NUM(Q)) THEN GOTO 11000
+      IF Q#'' AND Q<0 THEN
+         CALL ELINE('ERROR : Amount cannot be negative.')
+         GOTO 11000
+      END
+      CLIENT.REC<40,POS>=Q
+      RETURN
+
+* 12 Weekly postage fee
+12000:***
+      MASK=CLIENT.REC<129,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<129,POS>'R26'))
+      HELP='Enter weekly postage fee $. [X]=Back'
+      CALL GEN.IN(21,15,MASK,'AMT2',Q,0,8,'','',2,21,15,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<129,POS>
+      IF NOT(NUM(Q)) THEN GOTO 12000
+      IF Q#'' AND Q<0 THEN
+         CALL ELINE('ERROR : Amount cannot be negative.')
+         GOTO 12000
+      END
+      CLIENT.REC<129,POS>=Q
+      RETURN
+
+* 13 Weekly UPS service fee
+13000:***
+      MASK=CLIENT.REC<113,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<113,POS>'R26'))
+      HELP='Enter weekly UPS service fee $. [X]=Back'
+      CALL GEN.IN(21,16,MASK,'AMT2',Q,0,8,'','',2,21,16,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<113,POS>
+      IF NOT(NUM(Q)) THEN GOTO 13000
+      IF Q#'' AND Q<0 THEN
+         CALL ELINE('ERROR : Amount cannot be negative.')
+         GOTO 13000
+      END
+      CLIENT.REC<113,POS>=Q
+      RETURN
+
+* 14 Weekly AFSi fee
+14000:***
+      MASK=CLIENT.REC<130,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<130,POS>'R26'))
+      HELP='Enter weekly AFSi fee $. [X]=Back'
+      CALL GEN.IN(52,4,MASK,'AMT2',Q,0,8,'','',2,52,4,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<130,POS>
+      IF NOT(NUM(Q)) THEN GOTO 14000
+      IF Q#'' AND Q<0 THEN
+         CALL ELINE('ERROR : Amount cannot be negative.')
+         GOTO 14000
+      END
+      CLIENT.REC<130,POS>=Q
+      RETURN
+
+* 15 Monthly fee
+15000:***
+      MASK=CLIENT.REC<32,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<32,POS>'R26'))
+      HELP='Enter monthly fee $. [X]=Back'
+      CALL GEN.IN(52,5,MASK,'AMT2',Q,0,8,'','',2,52,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<32,POS>
+      IF NOT(NUM(Q)) THEN GOTO 15000
+      IF Q#'' AND Q<0 THEN
+         CALL ELINE('ERROR : Amount cannot be negative.')
+         GOTO 15000
+      END
+      CLIENT.REC<32,POS>=Q
+      RETURN
+
+* 16 Monthly minimum fee
+16000:***
+      MASK=CLIENT.REC<36,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<36,POS>'R26'))
+      HELP='Enter monthly minimum fee $. [X]=Back'
+      CALL GEN.IN(52,6,MASK,'AMT2',Q,0,8,'','',2,52,6,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<36,POS>
+      IF NOT(NUM(Q)) THEN GOTO 16000
+      IF Q#'' AND Q<0 THEN
+         CALL ELINE('ERROR : Amount cannot be negative.')
+         GOTO 16000
+      END
+      IF Q+0#0 THEN                      ; * JMK16
+         IF CLIENT.REC<73,POS>+0=0 THEN  ; * JMK16
+            CALL ELINE('WARNING : Per Bill Rate is ':CLIENT.REC<73,POS>'R26,')   ; * JMK16
+         END                             ; * JMK16
+      END                                ; * JMK16
+      CLIENT.REC<36,POS>=Q
+      RETURN
+
+* 17 Monthly logistics fee
+17000:***
+      MASK=CLIENT.REC<128,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<128,POS>'R26'))
+*     HELP='Enter monthly logistics fee $. [X]=Back' ; * JMK14
+      HELP='Enter monthly logistics fee $. [T]rans Mode. [C]arrier. [X]=Back'    ; * JMK14
+      CALL GEN.IN(52,7,MASK,'AMT2',Q,0,8,'','',2,52,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<128,POS>
+      IF QI='T' THEN                     ; * JMK14
+         CVIN=''                         ; * JMK14
+         CVIN<1>=USER                    ; * JMK14
+         CVIN<2>=POS                     ; * JMK14
+         CVIN<3>='T'                     ; * JMK14
+         CVIN<4>=DISPLAY.MODE            ; * JMK14
+         CALL FB.1.1.CHGS.LOG(CVIN,CVOUT,CLIENT.REC,F.CARRIER)         ; * JMK14
+         REDSPLY=1                       ; * JMK14
+         GOSUB 100                       ; * JMK14
+         CRT @(0,22):@(-3):              ; * JMK14
+         REDSPLY=0                       ; * JMK14
+         RETURN                          ; * JMK14
+      END                                ; * JMK14
+      IF QI='C' THEN                     ; * JMK14
+         CVIN=''                         ; * JMK14
+         CVIN<1>=USER                    ; * JMK14
+         CVIN<2>=POS                     ; * JMK14
+         CVIN<3>='C'                     ; * JMK14
+         CVIN<4>=DISPLAY.MODE            ; * JMK14
+         CALL FB.1.1.CHGS.LOG(CVIN,CVOUT,CLIENT.REC,F.CARRIER)         ; * JMK14
+         REDSPLY=1                       ; * JMK14
+         GOSUB 100                       ; * JMK14
+         CRT @(0,22):@(-3):              ; * JMK14
+         REDSPLY=0                       ; * JMK14
+         RETURN                          ; * JMK14
+      END                                ; * JMK14
+      IF NOT(NUM(Q)) THEN GOTO 17000
+      IF Q#'' AND Q<0 THEN
+         CALL ELINE('ERROR : Amount cannot be negative.')
+         GOTO 17000
+      END
+      CLIENT.REC<128,POS>=Q
+      RETURN
+
+* 18
+18000:***
+      CALL FB.1.1.CHARGES.SVC(CLIENT.ID,CLIENT.REC,DISPLAY.MODE,POS)   ; * JMK05
+      CRT @(0,2):@(-3):CLIENT.TITLE      ; * JMK05
+      RETURN TO 100                      ; * JMK05
+
+* 19 Reject per bill rate; * JMK06
+19000:***; * JMK06
+      MASK=CLIENT.REC<185,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<185,POS>'R26'))         ; * JMK06
+      HELP='Enter Reject per bill rate $. [X]=Back'          ; * JMK06
+      CALL GEN.IN(52,9,MASK,'AMT2',Q,0,8,'','',2,52,9,0,QI,HELP,0,23)  ; * JMK06
+      QI=OCONV(QI,'MCU')                 ; * JMK06
+      IF QI='X' THEN RETURN              ; * JMK06
+      IF QI='' THEN Q=CLIENT.REC<185,POS>          ; * JMK06
+      IF NOT(NUM(Q)) THEN GOTO 19000     ; * JMK06
+      IF Q#'' AND Q<0 THEN               ; * JMK06
+         CALL ELINE('ERROR : Amount cannot be negative.')    ; * JMK06
+         GOTO 19000                      ; * JMK06
+      END                                ; * JMK06
+      CLIENT.REC<185,POS>=Q              ; * JMK06
+      RETURN                             ; * JMK06
+
+* 20 Audit per bill rate; * JMK07
+20000:***; * JMK07
+      MASK=CLIENT.REC<132,POS>'R37':STR(MASK.CHAR,8-LEN(CLIENT.REC<132,POS>'R37'))         ; * JMK07
+      HELP='Enter Audit per bill rate $. [X]=Back'           ; * JMK07
+      CALL GEN.IN(52,10,MASK,'AMT3',Q,0,8,'','',2,52,10,0,QI,HELP,0,23)          ; * JMK07
+      QI=OCONV(QI,'MCU')                 ; * JMK07
+      IF QI='X' THEN RETURN              ; * JMK07
+      IF QI='' THEN Q=CLIENT.REC<132,POS>          ; * JMK07
+      IF NOT(NUM(Q)) THEN GOTO 20000     ; * JMK07
+      IF Q#'' AND Q<0 THEN               ; * JMK07
+         CALL ELINE('ERROR : Amount cannot be negative.')    ; * JMK07
+         GOTO 20000                      ; * JMK07
+      END                                ; * JMK07
+      CLIENT.REC<132,POS>=Q              ; * JMK07
+      RETURN                             ; * JMK07
+
+* 21 Fedex Ground overcharge percent ; * JMK08
+21000:*** ; * JMK08
+      MASK=CLIENT.REC<187,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<187,POS>'R26'))         ; * JMK08
+      HELP='Enter Fedex Ground overcharge %. [X]=Back'       ; * JMK08
+      CALL GEN.IN(52,11,MASK,'AMT2',Q,0,8,'','',2,52,11,0,QI,HELP,0,23)          ; * JMK08
+      QI=OCONV(QI,'MCU')                 ; * JMK08
+      IF QI='X' THEN RETURN              ; * JMK08
+      IF QI='' THEN Q=CLIENT.REC<187,POS>          ; * JMK08
+      IF NOT(NUM(Q)) THEN GOTO 21000     ; * JMK08
+      IF Q#'' AND Q<100 AND Q#0 THEN     ; * JMK08
+         CALL ELINE('ERROR : Amount cannot be less than 1.00%.')       ; * JMK08
+         GOTO 21000                      ; * JMK08
+      END                                ; * JMK08
+      IF Q>10000 THEN                    ; * JMK08
+         CALL ELINE('ERROR : Amount must not exceed 100%.')  ; * JMK08
+         GOTO 21000                      ; * JMK08
+      END                                ; * JMK08
+      CLIENT.REC<187,POS>=Q              ; * JMK08
+      RETURN                             ; * JMK08
+
+* 22 Pro Rated per bill rate ; * JMK09
+22000:***; * JMK07
+      MASK=CLIENT.REC<190,POS>'R37':STR(MASK.CHAR,8-LEN(CLIENT.REC<190,POS>'R37'))         ; * JMK009
+      HELP='Enter Pro Rated per bill rate $. [X]=Back'       ; * JMK09
+      CALL GEN.IN(52,12,MASK,'AMT3',Q,0,8,'','',2,52,12,0,QI,HELP,0,23)          ; * JMK09
+      QI=OCONV(QI,'MCU')                 ; * JMK09
+      IF QI='X' THEN RETURN              ; * JMK09
+      IF QI='' THEN Q=CLIENT.REC<190,POS>          ; * JMK09
+      IF NOT(NUM(Q)) THEN GOTO 22000     ; * JMK09
+      IF Q#'' AND Q<0 THEN               ; * JMK09
+         CALL ELINE('ERROR : Amount cannot be negative.')    ; * JMK09
+         GOTO 22000                      ; * JMK09
+      END                                ; * JMK09
+      CLIENT.REC<190,POS>=Q              ; * JMK09
+      RETURN                             ; * JMK09
+
+* 23 Pro Rated per bill rate ; * JMK10
+23000:***; * JMK10
+      MASK=CLIENT.REC<199,POS>'R37':STR(MASK.CHAR,8-LEN(CLIENT.REC<199,POS>'R37'))         ; * JMK010
+      HELP='Enter UPS tracking number per bill rate $. [X]=Back'       ; * JMK10
+      CALL GEN.IN(52,13,MASK,'AMT3',Q,0,8,'','',2,52,13,0,QI,HELP,0,23)          ; * JMK10
+      QI=OCONV(QI,'MCU')                 ; * JMK10
+      IF QI='X' THEN RETURN              ; * JMK10
+      IF QI='' THEN Q=CLIENT.REC<199,POS>          ; * JMK10
+      IF NOT(NUM(Q)) THEN GOTO 23000     ; * JMK10
+      IF Q#'' AND Q<0 THEN               ; * JMK10
+         CALL ELINE('ERROR : Amount cannot be negative.')    ; * JMK10
+         GOTO 23000                      ; * JMK10
+      END                                ; * JMK10
+      CLIENT.REC<199,POS>=Q              ; * JMK10
+      RETURN                             ; * JMK10
+
+* 24 FEDX Air overcharge percent ; * JMK12
+24000:*** ; * JMK12
+      MASK=CLIENT.REC<200,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<200,POS>'R26'))         ; * JMK12
+      HELP='Enter FEDX Air overcharge %. [X]=Back'           ; * JMK12
+      CALL GEN.IN(52,14,MASK,'AMT2',Q,0,8,'','',2,52,14,0,QI,HELP,0,23)          ; * JMK12
+      QI=OCONV(QI,'MCU')                 ; * JMK12
+      IF QI='X' THEN RETURN              ; * JMK12
+      IF QI='' THEN Q=CLIENT.REC<200,POS>          ; * JMK12
+      IF NOT(NUM(Q)) THEN GOTO 24000     ; * JMK12
+      IF Q#'' AND Q<100 AND Q#0 THEN     ; * JMK12
+         CALL ELINE('ERROR : Amount cannot be less than 1.00%.')       ; * JMK12
+         GOTO 24000                      ; * JMK12
+      END                                ; * JMK12
+      IF Q>10000 THEN                    ; * JMK12
+         CALL ELINE('ERROR : Amount must not exceed 100%.')  ; * JMK12
+         GOTO 24000                      ; * JMK12
+      END                                ; * JMK12
+      CLIENT.REC<200,POS>=Q              ; * JMK12
+      RETURN                             ; * JMK12
+
+* 25 Consulting commission maximum per bill ; * JMK21
+25000:***
+      IF CLIENT.REC<268,POS>='' THEN
+         MASK=SPACE(8)
+      END ELSE
+         MASK=CLIENT.REC<268,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<268,POS>'R26'))      ; * JMK21
+      END
+      HELP='Enter maximum consulting commission $ (CAP). [ ]=Clear (no CAP) [X]=Back'      ; * JMK21
+      CALL GEN.IN(52,15,MASK,'AMT2',Q,0,8,'','',2,52,15,0,QI,HELP,0,23)          ; * JMK21
+      QI=OCONV(QI,'MCU')                 ; * JMK21
+      IF QI='X' THEN RETURN              ; * JMK21
+      IF QI='' THEN Q=CLIENT.REC<268,POS>          ; * JMK21
+      IF QI=' ' THEN Q=''                ; * JMK21
+      IF NOT(NUM(Q)) THEN GOTO 25000     ; * JMK21
+      IF Q#'' AND Q=0 THEN               ; * JMK21
+         CALL ELINE('ERROR : Amount cannot be zero.')        ; * JMK21
+         GOTO 25000                      ; * JMK21
+      END                                ; * JMK21
+      IF Q#'' AND Q<0 THEN               ; * JMK21
+         CALL ELINE('ERROR : Amount cannot be negative.')    ; * JMK21
+         GOTO 25000                      ; * JMK21
+      END                                ; * JMK21
+      CLIENT.REC<268,POS>=Q              ; * JMK21
+      RETURN
+
+* 26
+26000:***
+      IF CLIENT.REC<307,POS>='' THEN
+         MASK=SPACE(8)
+      END ELSE
+         MASK=CLIENT.REC<307,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<307,POS>'R26'))      ; * JMK21
+      END
+      HELP='Enter PulseTMS weekly fee, [X]=Back'   ; * DRF03
+      CALL GEN.IN(52,16,MASK,'AMT2',Q,0,8,'','',2,52,16,0,QI,HELP,0,23)          ; * JMK21    ; * DRF03
+      QI=OCONV(QI,'MCU')                 ; * JMK21    ; * DRF03
+      IF QI='X' THEN RETURN              ; * JMK21    ; * DRF03
+      IF QI='' THEN Q=CLIENT.REC<307,POS>          ; * JMK21    ; * DRF03
+      IF QI=' ' THEN Q=''                ; * JMK21    ; * DRF03
+      IF NOT(NUM(Q)) THEN GOTO 26000     ; * JMK21    ; * DRF03
+      IF Q#'' AND Q<0 THEN               ; * JMK21    ; * DRF03
+         CALL ELINE('ERROR : Amount cannot be negative.')    ; * JMK21    ; * DRF03
+         GOTO 26000                      ; * JMK21    ; * DRF03
+      END                                ; * JMK21    ; * DRF03
+      CLIENT.REC<307,POS>=Q              ; * JMK21    ; * DRF03
+      RETURN                             ; * DRF03
+
+* 27
+27000:***
+      IF CLIENT.REC<308,POS>='' THEN     ; * DRF03
+         MASK=SPACE(8)                   ; * DRF03
+      END ELSE                           ; * DRF03
+         MASK=CLIENT.REC<308,POS>'R26':STR(MASK.CHAR,8-LEN(CLIENT.REC<308,POS>'R26'))      ; * JMK21    ; * DRF03
+      END                                ; * DRF03
+      HELP='Enter AFS Analytics weekly fee, [X]=Back'        ; * DRF03
+      CALL GEN.IN(52,17,MASK,'AMT2',Q,0,8,'','',2,52,17,0,QI,HELP,0,23)          ; * JMK21    ; * DRF03
+      QI=OCONV(QI,'MCU')                 ; * JMK21    ; * DRF03
+      IF QI='X' THEN RETURN              ; * JMK21    ; * DRF03
+      IF QI='' THEN Q=CLIENT.REC<308,POS>          ; * JMK21    ; * DRF03
+      IF QI=' ' THEN Q=''                ; * JMK21    ; * DRF03
+      IF NOT(NUM(Q)) THEN GOTO 27000     ; * JMK21    ; * DRF03
+      IF Q#'' AND Q<0 THEN               ; * JMK21    ; * DRF03
+         CALL ELINE('ERROR : Amount cannot be negative.')    ; * JMK21    ; * DRF03
+         GOTO 27000                      ; * JMK21    ; * DRF03
+      END                                ; * JMK21    ; * DRF03
+      CLIENT.REC<308,POS>=Q              ; * JMK21    ; * DRF03
+      RETURN                             ; * DRF03
+
+* 28
+28000:***
+      RETURN
+
+* 29
+29000:***
+      RETURN
+
+* 30
+30000:***
+      RETURN
+
+* 31
+31000:***
+      RETURN
+
+* 32
+32000:***
+      RETURN
+
+* 33
+33000:***
+      RETURN
+
+* 34
+34000:***
+      RETURN
+
+* 35
+35000:***
+      RETURN
+
+* 36
+36000:***
+      RETURN
+
+* 37
+37000:***
+      RETURN
+
+* 38
+38000:***
+      RETURN
+
+* 39
+39000:***
+      RETURN
+
+* 40 Charge page notes line 1
+40000:***
+      MASK=CLIENT.REC<133,POS,1>:STR(MASK.CHAR,50-LEN(CLIENT.REC<133,POS,1>))
+      HELP='Enter line 1 of charge page notes. [ ]=Clear'
+      CALL GEN.IN(16,18,MASK,'',Q,0,50,'','',2,16,18,0,QI,HELP,0,23)
+      IF QI='' THEN QI=CLIENT.REC<133,POS,1>
+      CLIENT.REC<133,POS,1>=TRIM(QI)
+      RETURN
+
+* 41 Charge page notes line 2
+41000:***
+      MASK=CLIENT.REC<133,POS,2>:STR(MASK.CHAR,50-LEN(CLIENT.REC<133,POS,2>))
+      HELP='Enter line 2 of charge page notes. [ ]=Clear'
+      CALL GEN.IN(16,19,MASK,'',Q,0,50,'','',2,16,19,0,QI,HELP,0,23)
+      IF QI='' THEN QI=CLIENT.REC<133,POS,2>
+      CLIENT.REC<133,POS,2>=TRIM(QI)
+      RETURN
+
+* 42 Charge page notes line 3
+42000:***
+      MASK=CLIENT.REC<133,POS,3>:STR(MASK.CHAR,50-LEN(CLIENT.REC<133,POS,3>))
+      HELP='Enter line 3 of charge page notes. [ ]=Clear'
+      CALL GEN.IN(16,20,MASK,'',Q,0,50,'','',2,16,20,0,QI,HELP,0,23)
+      IF QI='' THEN QI=CLIENT.REC<133,POS,3>
+      CLIENT.REC<133,POS,3>=TRIM(QI)
+      RETURN
+
+********************************************************************************
+*     End of Page 1: Charge Page
+********************************************************************************
+
+
+********************************************************************************
+*     Start of Page 2: More charges and switches
+********************************************************************************
+
+200:  ***
+      CRT @(0,3):@(-3)
+      CRT @(0,3):STR('=',79)
+      CRT @(0,20):STR('=',79)
+
+205:  ***
+      LEAD.SALESMAN.ID=CLIENT.REC<114>
+      IF LEAD.SALESMAN.ID='' THEN
+         LEAD.SALESMAN.NUMBER.NAME=''
+      END ELSE
+         READ SALESMAN.REC FROM F.SLSMAN,LEAD.SALESMAN.ID THEN
+            LEAD.SALESMAN.NUMBER.NAME=LEAD.SALESMAN.ID:' ':SALESMAN.REC<1>'L#25'
+         END ELSE
+            LEAD.SALESMAN.NUMBER.NAME=LEAD.SALESMAN.ID:' Name Not Found'
+         END
+      END
+
+      SECOND.SALESMAN.ID=CLIENT.REC<115>
+      IF SECOND.SALESMAN.ID='' THEN
+         SECOND.SALESMAN.NUMBER.NAME=''
+      END ELSE
+         READ SALESMAN.REC FROM F.SLSMAN,SECOND.SALESMAN.ID THEN
+            SECOND.SALESMAN.NUMBER.NAME=SECOND.SALESMAN.ID:' ':SALESMAN.REC<1>'L#25'
+         END ELSE
+            SECOND.SALESMAN.NUMBER.NAME=SECOND.SALESMAN.ID:' Name Not Found'
+         END
+      END
+
+      CRT @(0, 4):' 1 Logistics Client            ':CLIENT.REC< 93>'L#1':@(-4)
+      CRT @(0, 5):' 2 Add Logistics FSC           ':CLIENT.REC<111>'L#1':@(-4)
+      CRT @(0, 6):' 3 Automated Misroute          ':CLIENT.REC< 94>'L#1':@(-4)
+      CRT @(0, 7):' 4 Automated Misroute Letters  ':CLIENT.REC<139>'L#1':@(-4)
+      CRT @(0, 8):' 5 Number of Warning Letters   ':CLIENT.REC<140>'L#1':@(-4)
+      CRT @(0, 9):' 6 Type of Debit Memo          ':CLIENT.REC<142>'L#1':@(-4)
+* CRT @(0,10):' 7 Auditor                     ':CLIENT.REC< 71>'L#20':@(-4)   ; * RLM01
+      CRT @(0,10):' 7'                   ; * RLM01
+*     CRT @(0,11):' 8 Lead Salesman               ':LEAD.SALESMAN.NUMBER.NAME:@(-4)        ; * JMK04
+*     CRT @(0,12):' 9 Second Salesman             ':SECOND.SALESMAN.NUMBER.NAME:@(-4)      ; * JMK04
+* CRT @(0,11):' 8 Initial Salesman            ':LEAD.SALESMAN.NUMBER.NAME:@(-4)        ; * JMK04    ; * RLM01
+      CRT @(0,11):' 8'                   ; * RLM01
+* CRT @(0,12):' 9 Servicing Salesman          ':SECOND.SALESMAN.NUMBER.NAME:@(-4)      ; * JMK04    ; * RLM01
+      CRT @(0,12):' 9'                   ; * RLM01
+      CRT @(0,13):'10 Misroute Minimum Difference ':CLIENT.REC< 95>'R26#6':@(-4)
+*     CRT @(0,14):'11 Minimum Debit Amount        ':CLIENT.REC<141>'R26#6':@(-4)           ; * JMK01
+*     CRT @(0,15):'12 Throw Away Amount           ':CLIENT.REC<143>'R26#6':@(-4)           ; * JMK01
+*     CRT @(0,16):'13                             ':@(-4)    ; * JMK01
+      CRT @(0,14):'11 Misroute Minimum Debit Amt  ':CLIENT.REC<141>'R26#6':@(-4)           ; * JMK01
+      CRT @(0,15):'12 Misroute Throw Away Amount  ':CLIENT.REC<143>'R26#6':@(-4)           ; * JMK01
+      CRT @(0,16):'13 LCC Minimum Difference      ':CLIENT.REC<148>'R26#6':@(-4)           ; * JMK01
+*     CRT @(0,17):'14                             ':@(-4)    ; * JMK02
+      CRT @(0,17):'14 Automated Misroute Emails   ':CLIENT.REC<171>'L#1':@(-4)   ; * JMK02
+      CRT @(0,18):'15                             ':@(-4)
+      CRT @(0,19):'16                             ':@(-4)
+
+      CRT @(40, 4):'17 Initial Contract Date       ':CLIENT.REC<234>'D2/':@(-4)  ; * JMK19
+      CRT @(40, 5):'18 Initial Contract Terms      ':CLIENT.REC<235>'R#2':@(-4)  ; * JMK19
+      CRT @(40, 6):'19 Renewal Contract Date       ':CLIENT.REC<236>'D2/':@(-4)  ; * JMK19
+      CRT @(40, 7):'20 Renewal Contract Terms      ':CLIENT.REC<237>'R#2':@(-4)  ; * JMK19
+      CRT @(40, 8):'21 Logistics Cancel Date       ':CLIENT.REC<238>'D2/':@(04)  ; * JMK19
+
+210:  ***
+      HELP='Enter number to edit. [CR]=Next [U]pdate [EX]it'
+      CALL GEN.IN(0,22,'Enter Selection: --','',Q,0,2,'','',2,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'                    ; * Exit without changes (abandon all changes)
+            CLIENT.REC=SAVED.CLIENT.REC
+            RETURN
+
+         CASE QI='U'                     ; * Exit with changes
+            GOSUB FAILSAFE.CHECK
+            IF GOOD.TO.GO THEN RETURN
+            GOTO 210
+
+         CASE QI='CR' OR QI=''           ; * Display Page 1 Charge Page
+            GOSUB FAILSAFE.CHECK
+            IF GOOD.TO.GO THEN GOTO 100
+            GOTO 210
+
+         CASE NUM(QI)                    ; * Edit numbered item
+*           IF QI<1 OR QI>16 THEN        ; * JMK19
+            IF QI<1 OR QI>21 THEN        ; * JMK19
+               CALL ELINE('Invalid entry - Number out of range.')
+               GOTO 210
+            END ELSE
+               IF DISPLAY.MODE THEN
+                  CALL ELINE('Invalid entry - You may view only.')
+                  GOTO 210
+               END ELSE
+*                 ON QI GOSUB 51000,52000,53000,54000,55000,56000,57000,58000,59000,60000,61000,62000,63000,64000,65000,66000      ; * JMK19
+                  ON QI GOSUB 51000,52000,53000,54000,55000,56000,57000,58000,59000,60000,61000,62000,63000,64000,65000,66000,67000,68000,69000,70000,71000      ; * JMK19
+                  GOTO 205
+               END
+            END
+
+         CASE 1
+            CALL ELINE('Invalid entry - Command not recognized.')
+            GOTO 210
+      END CASE
+
+* 1 Logistics client? Y/N
+51000:***
+      TEMP=CLIENT.REC<93>
+      MASK=CLIENT.REC<93>:STR(MASK.CHAR,2-LEN(CLIENT.REC<93>))
+      HELP='Is this a logistics client? [Y]es [N]o [X]=Back'
+      CALL GEN.IN(31,4,MASK,'',Q,0,2,'','',2,31,4,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=CLIENT.REC<93>
+      BEGIN CASE
+         CASE QI='X'
+            RETURN
+         CASE QI='Y' OR QI='1'
+            CLIENT.REC<93>='Y'
+         CASE QI='N' OR QI='0'
+            CLIENT.REC<93>='N'
+         CASE 1
+            GOTO 51000
+      END CASE
+      IF CLIENT.REC<93>='Y' AND TEMP='N' THEN
+         CALL FB.1.1.VERIFY.LOGISTICS(CLIENT.ID,CLIENT.REC,VIN,VOUT)
+         IF VOUT<1> THEN
+            CALL ELINE('Logistics client not changed.')
+            CLIENT.REC<93>='N'
+         END
+      END
+
+*NPR01   IF CLIENT.REC<93>='Y' AND CLIENT.REC<111>='' THEN
+*NPR01      CLIENT.REC<111>='Y'
+*NPR01   END
+*NPR01   IF CLIENT.REC<93>='Y' AND CLIENT.REC<94>='' THEN
+*NPR01      CLIENT.REC<94>='Y'
+*NPR01   END
+
+*NPR01 Start changes
+      W.LOG.FLAG = CLIENT.REC<93>
+      W.LOG.FLAG.OLD = TEMP
+      IF W.LOG.FLAG.OLD = "" THEN W.LOG.FLAG.OLD = "N"
+
+      BEGIN CASE
+         CASE W.LOG.FLAG = "Y" AND W.LOG.FLAG.OLD = "N"      ; * Flag changed to be a Logistics Client
+            IF CLIENT.REC<94>='' THEN CLIENT.REC<94>='Y'
+            IF CLIENT.REC<111>='' THEN CLIENT.REC<111>='Y'
+            IF CLIENT.REC<139>='' THEN CLIENT.REC<139>='Y'
+            IF CLIENT.REC<140>='' THEN CLIENT.REC<140>='2'
+            IF CLIENT.REC<141>='' THEN CLIENT.REC<141>='4000'
+            IF CLIENT.REC<142>='' THEN CLIENT.REC<142>='O'
+            IF CLIENT.REC<143>='' THEN CLIENT.REC<143>='200'
+            IF CLIENT.REC<171>='' THEN CLIENT.REC<171>='Y'
+         CASE W.LOG.FLAG = "N" AND W.LOG.FLAG.OLD = "Y"      ; * Flag changed to be a NON Logistics Client
+            CLIENT.REC<94>='N'
+            CLIENT.REC<111>='N'
+            CLIENT.REC<139>='N'
+            CLIENT.REC<140>=''
+            CLIENT.REC<141>='0'
+            CLIENT.REC<142>=''
+            CLIENT.REC<143>='0'
+            CLIENT.REC<171>='N'
+         CASE 1
+      END CASE
+*NPR01 End Changes
+
+      RETURN
+
+* 2 Add logistics FSC? Y/N
+52000:***
+      IF CLIENT.REC<93>#'Y' THEN
+         CALL ELINE('Cannot enter Logistics FSC as this client is not a logistics client.')
+         RETURN
+      END
+      MASK=CLIENT.REC<111>:STR(MASK.CHAR,2-LEN(CLIENT.REC<111>))
+      HELP='Should the FSC be added to the benchmark? [Y]es [N]o [X]=Back'
+      CALL GEN.IN(31,5,MASK,'',Q,0,2,'','',2,31,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=CLIENT.REC<111>
+      BEGIN CASE
+         CASE QI='X'
+            RETURN
+         CASE QI='Y' OR QI='1'
+            CLIENT.REC<111>='Y'
+         CASE QI='N' OR QI='0'
+            CALL ELINE('This field is generally set to yes.  If you set this field to no you will')  ; * JMK17
+            CALL ELINE('be removing ALL FSC calculations from the benchmark side.  This will greatly')         ; * JMK17
+            CALL ELINE('reduce any logistics differences and AFS WILL LOSE Revenue!')      ; * JMK17
+            CALL ELINE('Are you sure that this is what you want to do?')         ; * JMK17
+            CLIENT.REC<111>='N'
+         CASE 1
+            GOTO 52000
+      END CASE
+      RETURN
+
+* 3 Automate misroutes? Y/N
+53000:***
+      MASK=CLIENT.REC<94>:STR(MASK.CHAR,2-LEN(CLIENT.REC<94>))
+      HELP='Automate misroutes in On-Line Audit? [Y]es [N]o [X]=Back'
+      CALL GEN.IN(31,6,MASK,'',Q,0,2,'','',2,31,6,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=CLIENT.REC<94>
+      BEGIN CASE
+         CASE QI='X'
+            RETURN
+         CASE QI='Y' OR QI='1'
+            CLIENT.REC<94>='Y'
+         CASE QI='N' OR QI='0'
+            CLIENT.REC<94>='N'
+         CASE 1
+            GOTO 53000
+      END CASE
+      RETURN
+
+* 4 Automate misroute letters? Y/N
+54000:***
+      MASK=CLIENT.REC<139>:STR(MASK.CHAR,2-LEN(CLIENT.REC<139>))
+      HELP='Automate misroute letters? [Y]es [N]o [X]=Back'
+      CALL GEN.IN(31,7,MASK,'',Q,0,2,'','',2,31,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=CLIENT.REC<139>
+      BEGIN CASE
+         CASE QI='X'
+            RETURN
+         CASE QI='Y' OR QI='1'
+            CLIENT.REC<139>='Y'
+         CASE QI='N' OR QI='0'
+            CLIENT.REC<139>='N'
+         CASE 1
+            GOTO 54000
+      END CASE
+      RETURN
+
+* 5 Number of warning letters before debit memo
+55000:***
+      MASK=CLIENT.REC<140>:STR(MASK.CHAR,2-LEN(CLIENT.REC<140>))
+      HELP='Enter number of warning letters before debit memos. [1] [2] [N]o DM [X]=Back'
+      CALL GEN.IN(31,8,MASK,'AMT2',Q,0,2,'','',2,31,8,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<140>
+      IF NOT(Q=0 OR Q=1 OR Q=2 OR Q='N') THEN GOTO 55000
+      CLIENT.REC<140>=Q
+      RETURN
+
+* 6 Type of debit memos
+56000:***
+      MASK=CLIENT.REC<142>:STR(MASK.CHAR,2-LEN(CLIENT.REC<142>))
+      HELP='Type of debit memos? [T]otal Freight Bill [O]ver Amount [X]=Back'
+      CALL GEN.IN(31,9,MASK,'',Q,0,2,'','',2,31,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=CLIENT.REC<142>
+      BEGIN CASE
+         CASE QI='X'
+            RETURN
+         CASE QI='T' OR QI=1
+            QI='T'
+         CASE QI='O' OR QI=0
+            QI='O'
+         CASE 1
+            GOTO 56000
+      END CASE
+      CLIENT.REC<142>=QI
+      RETURN
+
+* 7 Auditor's name
+57000:***
+      CALL ELINE('Auditor prompt has been moved to the Administration subscreen.')         ; * RLM01
+      RETURN                             ; * RLM01
+      MASK=CLIENT.REC<71>:STR(MASK.CHAR,20-LEN(CLIENT.REC<71>))
+      HELP="Enter the auditor's name for this client. [X]=Back"
+      CALL GEN.IN(31,10,MASK,'',Q,0,20,'','',2,31,10,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN QI=CLIENT.REC<71>
+      CLIENT.REC<71>=TRIM(QI)
+      RETURN
+
+* 8 Lead salesman number and name on the account
+58000:***
+      CALL ELINE('Initial Salesman prompt has been moved to the Administration subscreen.')          ; * RLM01
+      RETURN                             ; * RLM01
+      MASK=LEAD.SALESMAN.NUMBER.NAME:STR(MASK.CHAR,30-LEN(LEAD.SALESMAN.NUMBER.NAME))
+*     HELP='Enter LEAD salesman (obtained account) number or name. [L]ist [X]=Back' ; * JMK04
+      HELP='Enter initial salesman (obtained account) number or name. [L]ist [X]=Back'     ; * JMK04
+      CALL GEN.IN(31,11,MASK,'',Q,0,31,'','',2,31,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X' OR QI=''
+            RETURN
+         CASE QI='L'
+            GOSUB POP.UP.LIST.OF.SALESMEN
+            IF SELECTION='NO DATA' THEN GOTO 58000
+            IF SELECTION='E' THEN
+               DATA 8
+               RETURN
+            END
+         CASE QI=' '
+            SALESMAN.CODE=''
+         CASE NUM(QI)
+            QI=QI'R%5'
+            READ SALESMAN.REC FROM F.SLSMAN,QI THEN
+               SALESMAN.CODE=QI
+            END ELSE
+               CALL ELINE('Salesman number ':QI:' is not on file.')
+               GOTO 58000
+            END
+         CASE ALPHA(QI)
+            CALL SOUNDEX.DISPLAY(QI,'AR.SLSMAN.1000.1','AR.SLSMAN.1000.1,SDX.NAME','1',QX)
+            CT=DCOUNT(QX<1>,@VM)
+            IF CT=0 THEN GOTO 58000
+            CRT @(0,3):STR('=',79)
+            CRT @(0,20):STR('=',79)
+            DATA 8,QX<1,1>
+            RETURN
+         CASE 1
+            GOTO 58000
+      END CASE
+      CLIENT.REC<114>=SALESMAN.CODE
+      RETURN
+
+* 9 Second salesman number and name on the account
+59000:***
+      CALL ELINE('Servicing Salesman prompt has been moved to the Administration subscreen.')        ; * RLM01
+      RETURN                             ; * RLM01
+      MASK=SECOND.SALESMAN.NUMBER.NAME:STR(MASK.CHAR,30-LEN(SECOND.SALESMAN.NUMBER.NAME))
+*     HELP='Enter SECOND salesman (managing account) number or name. [L]ist [X]=Back' ; * JMK04
+      HELP='Enter servicing salesman (managing account) number or name. [L]ist [X]=Back'   ; * JMK04
+      CALL GEN.IN(31,12,MASK,'',Q,0,31,'','',2,31,12,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X' OR QI=''
+            RETURN
+         CASE QI='L'
+            GOSUB POP.UP.LIST.OF.SALESMEN
+            IF SELECTION='NO DATA' THEN GOTO 59000
+            IF SELECTION='E' THEN
+               DATA 9
+               RETURN
+            END
+         CASE QI=' '
+            SALESMAN.CODE=''
+         CASE NUM(QI)
+            QI=QI'R%5'
+            READ SALESMAN.REC FROM F.SLSMAN,QI THEN
+               SALESMAN.CODE=QI
+            END ELSE
+               CALL ELINE('Salesman number ':QI:' is not on file.')
+               GOTO 59000
+            END
+         CASE ALPHA(QI)
+            CALL SOUNDEX.DISPLAY(QI,'AR.SLSMAN.1000.1','AR.SLSMAN.1000.1,SDX.NAME','1',QX)
+            CT=DCOUNT(QX<1>,@VM)
+            IF CT=0 THEN GOTO 59000
+            CRT @(0,3):STR('=',79)
+            CRT @(0,20):STR('=',79)
+            DATA 9,QX<1,1>
+            RETURN
+         CASE 1
+            GOTO 59000
+      END CASE
+      CLIENT.REC<115>=SALESMAN.CODE
+      RETURN
+
+* 10 Core carrier misroute minimum difference
+60000:***
+      MASK=CLIENT.REC<95>:STR(MASK.CHAR,6-LEN(CLIENT.REC<95>))
+      HELP='Enter the core carrier minimum difference. [X]=Back'
+      CALL GEN.IN(31,13,MASK,'AMT2',Q,0,6,'','',2,31,13,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<95>
+      IF NOT(NUM(Q)) THEN GOTO 60000
+      CLIENT.REC<95>=Q
+      RETURN
+
+* 11 Minimum amount for debit memos
+61000:***
+      MASK=CLIENT.REC<141>:STR(MASK.CHAR,6-LEN(CLIENT.REC<141>))
+      HELP='Enter minimum amount for debit memos. [X]=Back'
+      CALL GEN.IN(31,14,MASK,'AMT2',Q,0,6,'','',2,31,14,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<141>
+      IF NOT(NUM(Q)) THEN GOTO 61000
+      CLIENT.REC<141>=Q
+      RETURN
+
+* 12 Amount too low to do a letter on
+62000:***
+      MASK=CLIENT.REC<143>:STR(MASK.CHAR,6-LEN(CLIENT.REC<143>))
+      HELP='Enter the amount too low to do a letter on. [X]=Back'
+      CALL GEN.IN(31,15,MASK,'AMT2',Q,0,6,'','',2,31,15,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN RETURN
+      IF QI='' THEN Q=CLIENT.REC<143>
+      IF NOT(NUM(Q)) THEN GOTO 62000
+      CLIENT.REC<143>=Q
+      RETURN
+
+* 13
+63000:***
+      MASK=CLIENT.REC<148>:STR(MASK.CHAR,6-LEN(CLIENT.REC<148>))       ; * JMK01
+      HELP='Enter the LCC minimum difference. [X]=Back'      ; * JMK01
+      CALL GEN.IN(31,16,MASK,'AMT2',Q,0,6,'','',2,31,16,0,QI,HELP,0,23)          ; * JMK01
+      QI=OCONV(QI,'MCU')                 ; * JMK01
+      IF QI='X' THEN RETURN              ; * JMK01
+      IF QI='' THEN Q=CLIENT.REC<148>    ; * JMK01
+      IF NOT(NUM(Q)) THEN GOTO 63000     ; * JMK01
+      CLIENT.REC<148>=Q                  ; * JMK01
+      RETURN
+
+* 14
+64000:***
+      MASK=CLIENT.REC<171>:STR(MASK.CHAR,2-LEN(CLIENT.REC<171>))       ; * JMK02
+      HELP='Automate misroute emails? [Y]es [N]o [X]=Back'   ; * JMK02
+      CALL GEN.IN(31,17,MASK,'',Q,0,2,'','',2,31,17,0,QI,HELP,0,23)    ; * JMK02
+      QI=OCONV(QI,'MCU')                 ; * JMK02
+      IF QI='' THEN QI=CLIENT.REC<171>   ; * JMK02
+      BEGIN CASE                         ; * JMK02
+         CASE QI='X'                     ; * JMK02
+            RETURN                       ; * JMK02
+         CASE QI='Y' OR QI='1'           ; * JMK02
+            CLIENT.REC<171>='Y'          ; * JMK02
+         CASE QI='N' OR QI='0'           ; * JMK02
+            CLIENT.REC<171>='N'          ; * JMK02
+         CASE 1                          ; * JMK02
+            GOTO 64000                   ; * JMK02
+      END CASE                           ; * JMK02
+      RETURN
+
+* 15
+65000:***
+      RETURN
+
+* 16
+66000:***
+      RETURN
+
+* 17
+67000:***
+      IF CLIENT.REC<234>#'' THEN         ; * JMK19
+         MASK=CLIENT.REC<234>'D2/'       ; * JMK19
+      END ELSE                           ; * JMK19
+         MASK='MM/DD/YY'                 ; * JMK19
+      END                                ; * JMK19
+      HELP='Enter the Initial Contract Date (date signed). [X]=Back'   ; * JMK19
+      CALL GEN.IN(71,4,MASK,'DATE',Q,0,8,'','',2,71,4,0,QI,HELP,0,23)  ; * JMK19
+      QI=OCONV(QI,'MCU')                 ; * JMK19
+      BEGIN CASE                         ; * JMK19
+         CASE QI='EX'                    ; * JMK22
+            GOTO 67000                   ; * JMK22
+         CASE QI='X'                     ; * JMK19
+            RETURN                       ; * JMK19
+         CASE OCONV(Q,'D')#''            ; * JMK19
+         CASE 1                          ; * JMK19
+            GOTO 67000                   ; * JMK19
+      END CASE                           ; * JMK19
+      CLIENT.REC<234>=Q                  ; * JMK19
+      RETURN                             ; * JMK19
+
+* 18
+68000:***
+      IF CLIENT.REC<235>#'' THEN         ; * JMK19
+         MASK=CLIENT.REC<235>'R#2'       ; * JMK19
+      END ELSE                           ; * JMK19
+         MASK='##'                       ; * JMK19
+      END                                ; * JMK19
+      HELP='Enter the Initial Contract Terms (months). [X]=Back'       ; * JMK19
+      CALL GEN.IN(71,5,MASK,'AMT2',Q,0,2,'','',2,71,5,0,QI,HELP,0,23)  ; * JMK19
+      QI=OCONV(QI,'MCU')                 ; * JMK19
+      BEGIN CASE                         ; * JMK19
+         CASE QI='EX'                    ; * JMK22
+            GOTO 68000                   ; * JMK22
+         CASE QI='X'                     ; * JMK19
+            RETURN                       ; * JMK19
+         CASE NUM(QI) AND QI#''          ; * JMK19
+         CASE 1                          ; * JMK19
+            GOTO 68000                   ; * JMK19
+      END CASE                           ; * JMK19
+      CLIENT.REC<235>=Q                  ; * JMK19
+      RETURN                             ; * JMK19
+
+* 19
+69000:***
+      IF CLIENT.REC<236>#'' THEN         ; * JMK19
+         MASK=CLIENT.REC<236>'D2/'       ; * JMK19
+      END ELSE                           ; * JMK19
+         MASK='MM/DD/YY'                 ; * JMK19
+      END                                ; * JMK19
+      HELP='Enter the Last Renewal Contract Date. [X]=Back'  ; * JMK19
+      CALL GEN.IN(71,6,MASK,'DATE',Q,0,8,'','',2,71,6,0,QI,HELP,0,23)  ; * JMK19
+      QI=OCONV(QI,'MCU')                 ; * JMK19
+      BEGIN CASE                         ; * JMK19
+         CASE QI='EX'                    ; * JMK22
+            GOTO 69000                   ; * JMK22
+         CASE QI='X'                     ; * JMK19
+            RETURN                       ; * JMK19
+         CASE OCONV(Q,'D')#''            ; * JMK19
+         CASE 1                          ; * JMK19
+            GOTO 69000                   ; * JMK19
+      END CASE                           ; * JMK19
+      CLIENT.REC<236>=Q                  ; * JMK19
+      RETURN                             ; * JMK19
+
+* 20
+70000:***
+      IF CLIENT.REC<237>#'' THEN         ; * JMK19
+         MASK=CLIENT.REC<237>'R#2'       ; * JMK19
+      END ELSE                           ; * JMK19
+         MASK='##'                       ; * JMK19
+      END                                ; * JMK19
+      HELP='Enter the Initial Contract Terms (months). [X]=Back'       ; * JMK19
+      CALL GEN.IN(71,7,MASK,'AMT2',Q,0,2,'','',2,71,7,0,QI,HELP,0,23)  ; * JMK19
+      QI=OCONV(QI,'MCU')                 ; * JMK19
+      BEGIN CASE                         ; * JMK19
+         CASE QI='EX'                    ; * JMK22
+            GOTO 70000                   ; * JMK22
+         CASE QI='X'                     ; * JMK19
+            RETURN                       ; * JMK19
+         CASE NUM(QI) AND QI#''          ; * JMK19
+         CASE 1                          ; * JMK19
+            GOTO 70000                   ; * JMK19
+      END CASE                           ; * JMK19
+      CLIENT.REC<237>=Q                  ; * JMK19
+      RETURN                             ; * JMK19
+
+* 21
+71000:***
+      IF CLIENT.REC<238>#'' THEN         ; * JMK19
+         MASK=CLIENT.REC<238>'D2/'       ; * JMK19
+      END ELSE                           ; * JMK19
+         MASK='MM/DD/YY'                 ; * JMK19
+      END                                ; * JMK19
+      HELP='Enter the Logistics Program Cancellation Date. [X]=Back'   ; * JMK19
+      CALL GEN.IN(71,8,MASK,'DATE',Q,0,8,'','',2,71,8,0,QI,HELP,0,23)  ; * JMK19
+      QI=OCONV(QI,'MCU')                 ; * JMK19
+      BEGIN CASE                         ; * JMK19
+         CASE QI='EX'                    ; * JMK22
+            GOTO 71000                   ; * JMK22
+         CASE QI='X'                     ; * JMK19
+            RETURN                       ; * JMK19
+         CASE OCONV(Q,'D')#''            ; * JMK19
+         CASE 1                          ; * JMK19
+            GOTO 71000                   ; * JMK19
+      END CASE                           ; * JMK19
+      CLIENT.REC<238>=Q                  ; * JMK19
+      RETURN                             ; * JMK19
+
+********************************************************************************
+*     End of Page 2: More charges and switches
+********************************************************************************
+
+********************************************************************************
+*     Internal subroutines
+********************************************************************************
+
+SET.DEFAULT.CHARGES:***
+      FOR X=1 TO NUM.CHARGES
+         ATTRIBUTE=CHARGE.LIST<1,X>
+         BEGIN CASE
+            CASE ATTRIBUTE=131           ; * Max overcharge commission
+               CLIENT.REC<ATTRIBUTE,POS>=POSITION.HOLDER
+               CLIENT.REC<ATTRIBUTE,POS>=''
+            CASE ATTRIBUTE=133           ; * Charge page notes
+               CLIENT.REC<ATTRIBUTE,POS,1>=POSITION.HOLDER
+               CLIENT.REC<ATTRIBUTE,POS,1>=''
+               CLIENT.REC<ATTRIBUTE,POS,2>=POSITION.HOLDER
+               CLIENT.REC<ATTRIBUTE,POS,2>=''
+               CLIENT.REC<ATTRIBUTE,POS,3>=POSITION.HOLDER
+               CLIENT.REC<ATTRIBUTE,POS,3>=''
+            CASE ATTRIBUTE=268           ; * Max consulting commission ; * DRF01
+               CLIENT.REC<ATTRIBUTE,POS>=POSITION.HOLDER     ; * DRF01
+               CLIENT.REC<ATTRIBUTE,POS>=''        ; * DRF01
+            CASE 1
+               CLIENT.REC<ATTRIBUTE,POS>=0
+         END CASE
+      NEXT X
+      RETURN
+
+********************************************************************************
+
+COPY.EXISTING.CHARGES.FORWARD:***
+      FOR X=1 TO NUM.CHARGES
+         ATTRIBUTE=CHARGE.LIST<1,X>
+         CLIENT.REC<ATTRIBUTE,POS>=CLIENT.REC<ATTRIBUTE,POS-1>
+      NEXT X
+      RETURN
+
+********************************************************************************
+
+INSERT.CHARGE.PAGE:***
+      INS EFF.DATE BEFORE CLIENT.REC<84,NEW.DATE.POS>
+      FOR X=1 TO NUM.CHARGES
+         ATTRIBUTE=CHARGE.LIST<1,X>
+         TEMP=CLIENT.REC<133>
+         BEGIN CASE
+            CASE ATTRIBUTE=131           ; * Max overcharge commission
+               INS POSITION.HOLDER BEFORE CLIENT.REC<ATTRIBUTE,NEW.DATE.POS>
+               CLIENT.REC<ATTRIBUTE,NEW.DATE.POS>=''
+            CASE ATTRIBUTE=133           ; * Charge page notes
+               INS POSITION.HOLDER BEFORE CLIENT.REC<ATTRIBUTE,NEW.DATE.POS>
+               CLIENT.REC<ATTRIBUTE,NEW.DATE.POS>=''
+               CLIENT.REC<ATTRIBUTE,NEW.DATE.POS,1>=POSITION.HOLDER
+               CLIENT.REC<ATTRIBUTE,NEW.DATE.POS,1>=''
+               CLIENT.REC<ATTRIBUTE,NEW.DATE.POS,2>=POSITION.HOLDER
+               CLIENT.REC<ATTRIBUTE,NEW.DATE.POS,2>=''
+               CLIENT.REC<ATTRIBUTE,NEW.DATE.POS,3>=POSITION.HOLDER
+               CLIENT.REC<ATTRIBUTE,NEW.DATE.POS,3>=''
+            CASE 1
+               INS 0 BEFORE CLIENT.REC<ATTRIBUTE,NEW.DATE.POS>
+         END CASE
+      NEXT X
+      RETURN
+
+********************************************************************************
+
+DELETE.CHARGE.PAGE:***
+      DEL CLIENT.REC<84,POS>             ; * Effective date
+      FOR X=1 TO NUM.CHARGES
+         ATTRIBUTE=CHARGE.LIST<1,X>
+         DEL CLIENT.REC<ATTRIBUTE,POS>
+      NEXT X
+      RETURN
+
+********************************************************************************
+
+FAILSAFE.CHECK:***
+      GOOD.TO.GO=1                       ; * assume everything is good and try to find problems
+      IF NOT(DISPLAY.MODE) AND CLIENT.REC<94>='Y' AND CLIENT.REC<95>='' THEN
+         GOOD.TO.GO=0
+         CALL ELINE('The Misroute Minimum Difference (option 4) needs a value.')
+      END
+      PB.FEE.CNT=0                       ; * JMK11
+      IF CLIENT.REC<73,POS>#'' THEN PB.FEE.CNT+=1  ; * JMK11
+      IF CLIENT.REC<122,POS>#'' THEN PB.FEE.CNT+=1           ; * JMK11
+      IF CLIENT.REC<190,POS>#'' THEN PB.FEE.CNT+=1           ; * JMK11
+      IF PB.FEE.CNT>0 AND PB.FEE.CNT#3 THEN        ; * JMK11
+         GOOD.TO.GO=0                    ; * JMK11
+         IF CLIENT.REC<73,POS>#'' THEN   ; * JMK11
+            CALL ELINE('Missing per bill fee.')    ; * JMK11
+         END                             ; * JMK11
+         IF CLIENT.REC<122,POS>#'' THEN  ; * JMK11
+            CALL ELINE('Missing EDI per bill fee.')          ; * JMK11
+         END                             ; * JMK11
+         IF CLIENT.REC<190,POS>#'' THEN  ; * JMK11
+            CALL ELINE('Missing pro-ration per bill fee.')   ; * JMK11
+         END                             ; * JMK11
+      END                                ; * JMK11
+      RETURN
+
+********************************************************************************
+
+POP.UP.LIST.OF.SALESMEN:***
+      SALESMAN.CODE=''
+      IF SALESMAN.LIST='' THEN
+         EXECUTE 'SSELECT AR.SLSMAN.1000.1 BY NAME' CAPTURING OUTPUT
+         NUM.SALESMAN=@SELECTED
+*        IF NUM.SALESMAN=0 THEN   ; * JCW01
+         IF NUM.SALESMAN < 1 THEN        ; * JCW01
+            CALL ELINE('No salesmen on file.')
+            SELECTION='NO DATA'
+            RETURN
+         END
+         DONE=0
+         LOOP
+            READNEXT SALESMAN.ID ELSE DONE=1
+         UNTIL DONE=1
+            READ SALESMAN.REC FROM F.SLSMAN,SALESMAN.ID THEN
+               SALESMAN.LIST<-1>=SPACE(11):SALESMAN.ID'R%5':SPACE(10):SALESMAN.REC<1>'L#50'
+            END
+         REPEAT
+         FOR X=1 TO NUM.SALESMAN
+            SALESMAN.LIST<X>:=SPACE(79-LEN(SALESMAN.LIST<X>))
+         NEXT X
+         HEADING=' Salesman Number          Salesman Name'
+         HEADING:=SPACE(79-LEN(HEADING))
+      END
+      SELECTION=''
+      CRT @(0,23):'Select Principle Salesman for this account.':@(-4):
+      CALL POP.UP.LIST(SALESMAN.LIST,HEADING,7,16,SELECTION)
+      IF SELECTION#'E' THEN              ; * Exited POP.UP.LIST with no choice
+         SALESMAN.CODE=TRIM(SALESMAN.LIST<SELECTION>[12,5])
+      END
+      RETURN

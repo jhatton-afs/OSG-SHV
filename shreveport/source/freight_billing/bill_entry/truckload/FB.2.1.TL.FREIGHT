@@ -1,0 +1,491 @@
+      SUBROUTINE FB.2.1.TL.FREIGHT(VIN,VOUT,LI.CODES,QI)
+      ********************************************************************
+* Program name :  FB.2.1.TL.FREIGHT
+* Author       :  TAMI SEAGO
+* Date written :  APRIL 15, 1999
+* Library      :  FBBP
+$* COPYRIGHT (C) 2024 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+*
+* Last updated by afs (AFSLOGISTICS\gbino) at 10:36:12 on 02/16/2024.
+*
+* Start modification history
+* 092903 - CREATE FOR TRUCK LOAD SURVEY
+* 012604 - JMK01 - VERIFY TL CHRGS RETURNED TO CALLING PROGRAM
+* 021204 - JMK02 - ESTIMATE FSC WHEN FRT CHARGES CHANGE
+* 070805 - JMK03 - RECALCULATE FRT WHEN ADDITIONAL LINES ARE ENTERED
+* 100308 - JMK04 - C082257 - Add description to the FB Details for the MISC code
+* 020112 - SWB01 - Ticket 1619 - Preserve all ready entered data when
+*                                in Change Mode.
+* 040813 - SWB02 - SysAid#5528 - Freight Bill details become duplicated or inflated
+* 061623 - NKH01 - ACCU-2359 Allow up to 30 lines of accessorial codes
+* 021624 - GRB01 - ACCU-2576 Add accesorial array for non audit clients(tempo)
+* End modification history
+*********************************************************************
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_CLIENTS
+
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.2.1.TL.FREIGHT' ; UPL.VOUT = ''        ; * NPR_UPL 04/23/2010
+*DF      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+
+*
+* Initialize variables
+*
+      PROMPT''
+      DTL.CHRG.CODES = VIN<3>
+      DTL.CHRG.AMTS = VIN<4>
+      DIM.WEIGHT = VIN<5>
+      ACTUAL.WGT = VIN<6>
+      CARRIER.ID = VIN<7>
+      CARRIER.NAME = VIN<8>
+      ORIG = VIN<9>
+      DEST = VIN<10>
+      ACTUAL.CHG = VIN<11>
+      CC=VIN<12>
+      OPT = VIN<13>
+      USER=VIN<14>
+      MISC.REASON = VIN<15>
+      CLIENT.ID =VIN<16>                 ; * JMK04
+      PROG.NAME='FB.2.1.TL.FREIGHT'
+      *Begin GRB01
+      OPEN '','TEMPO.CLIENTS.ACC' TO F.TEMPOCACC ELSE
+         CALL OPEN.ABORT('TEMPO.CLIENTS.ACC',PROG.NAME)
+      END
+      IF CLIENT.ID # '' THEN
+         READ LI.CODES FROM F.TEMPOCACC,CLIENT.ID ELSE LI.CODES =''
+      END
+* End GRB01
+
+      BEGIN CASE
+         CASE OPT='I'
+            MODE='INPUT'
+            INQUIRE=0
+         CASE OPT='E'
+            MODE='EDIT'
+            INQUIRE=0
+         CASE OPT='V'
+            INQUIRE=1
+            MODE="VIEW"                  ; * NPR122310
+      END CASE
+*
+* Start input
+*
+      GOSUB DISPLAY.SCREEN
+      PG=1
+      GOSUB DISPLAY.DATA
+      ORIG.CHARGES=TOTAL.CHARGES         ; * JMK02
+
+
+      LN = 0
+      PAGING = 0                         ; * NKH01
+****************************************************
+ENTER.CHRG.DETAIL:***
+****************************************************
+      IF MODE='INPUT' THEN
+         LN = LN+1
+         QI=LN
+         * Begin NKH01
+         BEGIN CASE
+            CASE LN = 11
+               PG=2
+               PAGING = 1
+               GOSUB DISPLAY.DATA
+               GO ENTER.CHRG.DETAIL
+            CASE LN = 21
+               PG=3
+               PAGING = 1
+               GOSUB DISPLAY.DATA
+               GO ENTER.CHRG.DETAIL
+            CASE LN = 12 AND PAGING
+               LN = 11
+               QI = 11
+               PAGING = 0
+            CASE LN = 22 AND PAGING
+               LN = 21
+               QI = 21
+               PAGING = 0
+            CASE LN GT 30
+               MODE='EDIT'
+               GO ENTER.CHRG.DETAIL
+         END CASE
+                                         ; * End NKH01
+      END ELSE
+         GOSUB CALCULATE.TOTAL
+         HELP="Enter Line Num, [F]orward [B]ack [Return] 'X'=Back 'EX'=Exit":@(-4)         ; * NKH01
+         LINE = "Enter line number. ## ":@(-4)
+         CALL GEN.IN(0,22,LINE,'',Q,0,3,'','',0,-5,22,0,QI,HELP,0,23)
+         CC+=LEN(QI)+1                   ; * GOSUB PRINT.CC        ; * NKH01
+      END
+****************************************************
+BEGIN.INPUT:***
+****************************************************
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI=''
+*           IF MODE = 'EDIT' THEN                ; * JMK01
+            GO EXIT.SUBROUTINE
+*           END ELSE                             ; * JMK01
+*              GO ENTER.CHRG.DETAIL              ; * JMK01
+*           END                                  ; * JMK01
+         CASE QI='X'
+            RETURN
+         CASE QI='EX'
+            STOP
+         CASE NUM(QI)
+            IF INQUIRE THEN
+               CALL ELINE('Can not access detail in inquiry!')
+               CC+=1                     ; * GOSUB PRINT.CC          ; * NKH01
+            END ELSE
+               IF QI > 1 THEN
+                  IF DTL.CHRG.CODES<1,QI-1>='' THEN
+                     CALL ELINE("Cannot Skip a line.  You must select the next blank line")
+                     GO ENTER.CHRG.DETAIL
+                  END
+               END
+               SEL = QI
+               GOSUB ENTER.TL.CODE
+            END
+            * Begin NKH01
+         CASE Q = 'F' OR Q = 'f'
+            START.POS += 10
+            IF START.POS > LINES THEN START.POS = 1
+            PG+=1
+            IF PG > 3 THEN PG =3
+            GOSUB DISPLAY.DATA
+         CASE Q = 'B' OR Q = 'b'
+            START.POS -= 10
+            IF START.POS < 1 THEN START.POS = DIV(LINES,10) * 10 + 1
+            PG -= 1
+            IF PG < 1 THEN PG = 1
+            GOSUB DISPLAY.DATA
+            * End NKH01
+      END CASE
+      GO ENTER.CHRG.DETAIL
+
+******************************************************
+ENTER.TL.CODE:**** Enter truckload freight code
+******************************************************
+      IF SEL LT 1 OR SEL GT 30 THEN      ; * NKH01
+         CALL ELINE('Invalid entry.')
+         RETURN
+      END
+      LINE = SEL+6
+      IF PG=2 THEN LINE = LINE-10        ; * NKH01
+      IF PG=3 THEN LINE = LINE-20        ; * NKH01
+*
+8010: HELP="[ ]=Done [L]ist Codes [D]el [E]dit [X]=Back [EX]it"
+      IF SEL = 1 THEN
+         QI = 'FRT'
+      END ELSE
+         IF DTL.CHRG.CODES<1,SEL>='' THEN
+            MASK = ''
+         END ELSE
+            MASK = DTL.CHRG.CODES<1,SEL>'L#4'
+         END
+         CALL GEN.IN(3,LINE,MASK,'',Q,0,4,'','',2,3,LINE,0,QI,HELP,0,23)
+         CC+=LEN(QI)+1                   ; * GOSUB PRINT.CC    ; * NKH01
+      END
+      CRT @(0,22):@(-4):
+      QI=OCONV(QI,'MCU')
+      IF QI='+' THEN QI='FRT'
+      BEGIN CASE
+         CASE SEL = 1 AND QI = 'X'
+            CRT @(3,LINE):DTL.CHRG.CODES<1,SEL>'L#4':
+            RETURN
+         CASE QI=''
+            Q = DTL.CHRG.CODES<1,SEL>
+            IF Q = '' THEN
+               IF MODE='INPUT' THEN MODE='EDIT'
+               RETURN
+            END
+         CASE QI='EX'
+            STOP
+         CASE QI='L'
+            LINV =''
+            IF CLIENT.ID # '' THEN   ;* GRB01
+               LINV<1> = CLIENT.ID   ;* GRB01
+            END
+            CALL LIST.LI.CODES(LINV,CODE.RETURNED)
+            GOSUB DISPLAY.SCREEN
+            GOSUB DISPLAY.DATA
+            Q=CODE.RETURNED<1>
+         CASE QI='X' OR QI = ' '
+            CRT @(3,LINE):DTL.CHRG.CODES<1,SEL>'L#4':
+            MODE='EDIT'
+            RETURN
+         CASE QI='D'
+            DEL DTL.CHRG.CODES<1,SEL>
+            DEL DTL.CHRG.AMTS<1,SEL>
+            DEL MISC.REASON<1,SEL>       ; * JMK04
+            IF MODE='INPUT' THEN MODE='EDIT'
+            GOSUB DISPLAY.SCREEN
+            GOSUB DISPLAY.DATA
+            RETURN
+         CASE QI='E'
+            CRT @(3,LINE):DTL.CHRG.CODES<1,SEL>:@(-4)
+            MODE='EDIT'
+            RETURN
+         CASE 1
+            IF NUM(QI) THEN
+               NUMB=QI
+               QI=LI.CODES<1,QI>
+               IF QI='' THEN
+                  CALL ELINE("NO CODE ASSOCIATED WITH NUMBER ":NUMB)
+                  GO 8010
+               END
+            END ELSE IF QI = 'FRT' AND DTL.CHRG.AMTS<1,SEL> <= 0 THEN  ; * SWB02
+               CALL ELINE('FRT is <= 0. Reduce an Accessorial amount.')          ; * SWB02
+               RETURN                    ; * SWB02
+            END                          ; * SWB02
+            Q=QI
+      END CASE
+      LOCATE Q IN LI.CODES<1> SETTING POS THEN
+         DESC=LI.CODES<2,POS>
+         DTL.CHRG.CODES<1,SEL>=Q
+         CRT @(3,LINE):Q'L#4'
+         CRT @(8,LINE):DESC'L#25'
+      END ELSE
+      
+         CALL ELINE('Code not on file!  You must enter a valid line item code!')
+         GO 8010
+      END
+******************************************************
+ENTER.CHARGE:***
+******************************************************
+
+      LINE.BALANCE.MSG = ''              ; * SWB02
+      LINE.BALANCE.AMT = ''              ; * SWB02
+      IF OCONV(DTL.CHRG.AMTS<1,SEL>, 'MD2') >= BALANCE.AMT THEN        ; * SWB02
+         LINE.BALANCE.AMT = OCONV(DTL.CHRG.AMTS<1,SEL>, 'MD2') - BALANCE.AMT     ; * SWB02
+         LINE.BALANCE.MSG = '- Enter ':FMT(LINE.BALANCE.AMT, 'MR2'):' or less to balance.'           ; * SWB02
+      END                                ; * SWB02
+      HELP="Enter the Charge ''=ACCEPT 'X'=Back 'EX'=Exit ":LINE.BALANCE.MSG     ; * SWB02
+      IF SEL = 1 AND DTL.CHRG.AMTS<1,1> = 0 THEN MASK = '0.00''R#8' ELSE MASK=DTL.CHRG.AMTS<1,SEL>'R26Z#8'
+      CALL GEN.IN(35,LINE,MASK,'AMT2',Q,0,8,'','',2,-8,LINE,0,QI,HELP,0,23)
+      CC+=LEN(QI)+1                      ; * GOSUB PRINT.CC    ; * NKH01
+      QI=TRIM(OCONV(QI,'MCU'))
+      BEGIN CASE
+         CASE QI=''
+            Q=DTL.CHRG.AMTS<1,SEL>
+            IF Q='' THEN
+               IF SEL # 1 THEN
+                  CALL ELINE('Entry is required')
+                  GO ENTER.CHARGE
+               END ELSE
+                  Q = 0
+               END
+            END ELSE IF Q < 0 AND SEL = 1 THEN     ; * SWB02
+               CALL ELINE('The Amount must be a number equal to or greater than 0.')       ; * SWB02
+               GO ENTER.CHARGE           ; * SWB02
+            END
+         CASE QI='X'
+            PRINT @(35,LINE):DTL.CHRG.AMTS<1,SEL>'R26#8'
+            IF SEL = 1 THEN RETURN
+            GO 8010
+         CASE QI='EX'
+            STOP
+         CASE NUM(QI)
+            IF QI LT 0 THEN
+               IF SEL # 1 THEN
+                  CALL ELINE('Must be a number equal to or greater than 0')      ; * SWB02
+                  GO ENTER.CHARGE
+               END ELSE
+                  IF QI LT 0 THEN
+*This code is to allow the user to reduce the amount of the FRT charge and add an FSC code for the amount * -1
+*if there is no FSC already on the Details screen.
+                     IF DTL.CHRG.AMTS<1, SEL> < ABS(Q) THEN  ; * SWB02
+                        CALL ELINE('You cannot make the FRT charge less than 0.')          ; * SWB02
+                        GO ENTER.CHARGE  ; * SWB02
+                     END                 ; * SWB02
+                     LOCATE 'FSC' IN DTL.CHRG.CODES<1> SETTING CHRG.POS THEN
+                        CALL ELINE('Must be 0 or greater')
+                        GO ENTER.CHARGE
+                     END ELSE
+                        DTL.CHRG.CODES<1,-1>='FSC'
+                        DTL.CHRG.AMTS<1,-1>=-Q
+                        DTL.CHRG.AMTS<1,1>=DTL.CHRG.AMTS<1,1>+Q
+                        GOSUB DISPLAY.DATA
+                        GO ENTER.CHARGE
+                     END
+                  END
+               END
+            END
+         CASE 1
+            CALL ELINE('You must enter a valid number!')
+            GO ENTER.CHARGE
+      END CASE
+      DTL.CHRG.AMTS<1,SEL>=Q
+      PRINT @(35,LINE):Q'R26#8'
+
+*****************************************************
+8020: *
+*****************************************************
+      IF DTL.CHRG.CODES<1,SEL>='MISC' THEN         ; * JMK04
+         HELP="Enter reason for MISC code. 'X'=Back. 'EX'=Exit.":@(-4)           ; * JMK04
+         MASK=MISC.REASON<1,SEL>         ; * JMK04
+         CALL GEN.IN(48,LINE,MASK,'',Q,0,30,'','',0,48,LINE,0,QI,HELP,0,23)      ; * JMK04
+         CC+=LEN(QI)+1                   ; * GOSUB PRINT.CC  ; * JMK04  NKH01
+         BEGIN CASE                      ; * JMK04
+            CASE QI='EX'                 ; * JMK04
+               STOP                      ; * JMK04
+            CASE QI = 'X'                ; * JMK04
+               CRT @(48,LINE):MISC.REASON<1,SEL>'L#30':      ; * JMK04
+               GO ENTER.CHARGE           ; * JMK04
+            CASE QI=''                   ; * SWB01
+               QI=MASK                   ; * SWB01
+            CASE QI=' '                  ; * SWB01
+               CALL ELINE('You must enter a reason for the MISC code.')          ; * JMK04
+               GO 8020                   ; * JMK04
+            CASE 1                       ; * JMK04
+               MISC.REASON<1,SEL>=Q      ; * JMK04
+               CRT @(48,LINE):MISC.REASON<1,SEL>'L#30'       ; * JMK04
+         END CASE                        ; * JMK04
+      END                                ; * JMK04
+
+      GOSUB CALCULATE.TOTAL
+      GOSUB DISPLAY.DATA                 ; * JMK03
+      IF TOTAL.CHARGES#ORIG.CHARGES THEN           ; * JMK02
+         TOT.FRT.AMT=0                   ; * JMK02
+         NDVAL=DCOUNT(DTL.CHRG.CODES<1>,@VM)       ; * JMK02
+         FOR DVAL=1 TO NDVAL             ; * JMK02
+            IF DTL.CHRG.CODES<1,DVAL>='FRT' OR DTL.CHRG.CODES<1,DVAL>='MIN' THEN           ; * JMK02
+               TOT.FRT.AMT+=DTL.CHRG.AMTS<1,DVAL>  ; * JMK02
+            END                          ; * JMK02
+         NEXT DVAL                       ; * JMK02
+         FVIN=''                         ; * JMK02
+         FVOUT=''                        ; * JMK02
+         GOSUB CALCULATE.TOTAL           ; * JMK02
+      END                                ; * JMK02
+
+      RETURN
+******************************************************
+DISPLAY.SCREEN:***
+******************************************************
+
+      CRT @(0,0):@(-3)
+      CRT @(0,0):"FB DETAIL INFORMATION"
+      CRT @(0,2):"Orig     :  ":ORIG'R24'
+      CRT @(0,3):"Dest     :  ":DEST'R24'
+      CRT @(0,5):"LN Code Description                 Charges"
+      CRT @(0,6):"-- ---- -------------------------- ---------"
+      FOR X = 1 TO 10
+         CRT @(0,X+6):X'R%2'
+      NEXT X
+      CRT @(51,0):"Additional Information"
+      CRT @(47,1):"-------------------------------"
+      CRT @(47,4):"Actu Chg : $":ACTUAL.CHG'R26#8'
+      CRT @(35,17):"========="
+      CRT @(0,18):"TOTAL"
+      RETURN
+******************************************************
+DISPLAY.DATA:***
+*******************************************************
+      GOSUB CALCULATE.TOTAL
+
+      * Begin NKH01
+      LINES = DCOUNT(DTL.CHRG.CODES<1>,@VM)
+      START.POS = 1
+      DONE = 0
+      FOR I = START.POS TO 10
+
+         IF PG = 1 THEN AR.POS = I+0
+         IF PG = 2 THEN AR.POS = I+10
+         IF PG = 3 THEN AR.POS = I+20
+         D.LINE=I+6
+         IF DTL.CHRG.CODES<1,AR.POS>='' THEN
+            PRINT @(0,D.LINE):AR.POS'R%2':@(-4)
+         END ELSE
+            PRINT @(0,D.LINE):AR.POS'R%2':         ; * Selection
+            PRINT @(3,D.LINE):DTL.CHRG.CODES<1,AR.POS>'L#4':           ; * Code
+            LOCATE DTL.CHRG.CODES<1,AR.POS> IN LI.CODES<1> SETTING POS THEN
+               DESC=LI.CODES<2,POS>
+            END ELSE
+               IF DTL.CHRG.CODES<1,AR.POS> = "FSC" THEN      ;* GRB01
+                  DESC = "FUEL"                             ;* GRB01
+               END ELSE
+                  DESC='** Not On File **'
+               END
+            END
+            PRINT @(8,D.LINE):DESC'L#20':          ; * Code Description
+            PRINT @(35,D.LINE):DTL.CHRG.AMTS<1,AR.POS>'R26#8':         ; * Charges
+            PRINT @(48,D.LINE):MISC.REASON<1,AR.POS>'L#30':  ; * JMK04
+         END
+      NEXT I
+      GOSUB CALCULATE.TOTAL
+      RETURN
+******************************************************
+CALCULATE.TOTAL:***
+******************************************************
+      FRT.CHG=0                          ; * JMK03
+      MIS.CHG=0                          ; * JMK03
+      NVAL=DCOUNT(DTL.CHRG.CODES<1>,@VM)           ; * JMK03
+      FOR VAL=1 TO NVAL                  ; * JMK03
+         CHRG = DTL.CHRG.AMTS<1,VAL>     ; * JMK03
+         IF NOT(NUM(CHRG)) THEN CHRG=0   ; * JMK03
+         BEGIN CASE                      ; * JMK03
+            CASE DTL.CHRG.CODES<1,VAL>='FRT'       ; * JMK03
+               FRT.CHG+=CHRG             ; * JMK03
+            CASE 1                       ; * JMK03
+               MIS.CHG+=CHRG             ; * JMK03
+         END CASE                        ; * JMK03
+      NEXT VAL                           ; * JMK03
+      ADJ.FRT.CHG=ACTUAL.CHG-MIS.CHG     ; * JMK03
+      LOCATE('FRT',DTL.CHRG.CODES,1;FPOS) THEN     ; * JMK03
+         DTL.CHRG.AMTS<1,FPOS>=ADJ.FRT.CHG
+      END                                ; * JMK03
+      TOTAL.CHARGES=0                    ; * JMK03
+      FOR X=1 TO 30 UNTIL DTL.CHRG.CODES<1,X>=''   ; * JMK03      NKH01
+         CHARGES = DTL.CHRG.AMTS<1,X>    ; * JMK03
+         IF NOT(NUM(CHARGES)) THEN CHARGES=''      ; * JMK03
+         TOTAL.CHARGES+= CHARGES         ; * JMK03
+      NEXT X                             ; * JMK03
+      BALANCE.MSG = ''                   ; * SWB02
+      BALANCE.AMT = 0                    ; * SWB02
+      IF DTL.CHRG.AMTS<1,1> + 0 < 0 THEN           ; * SWB02
+         BALANCE.AMT = FMT(OCONV(DTL.CHRG.AMTS<1,1>, 'MD2') * -1, 'MR2')         ; * SWB02
+         BALANCE.MSG = 'Need to reduce non-FRT by ':BALANCE.AMT        ; * SWB02
+      END                                ; * SWB02
+      CRT @(35,18):TOTAL.CHARGES'R26#8':SPACE(2):BALANCE.MSG:@(-4)     ; * Total Charges     ; * SWB02
+
+      RETURN
+******************************************************
+EXIT.SUBROUTINE:* Exit & Return to Calling Program
+******************************************************
+      IF TOTAL.CHARGES # ACTUAL.CHG AND QI #'EX' THEN
+         CALL ELINE('The total on this page must match the Actual Charges!')
+         MODE = 'EDIT'
+         GOSUB DISPLAY.SCREEN
+         GOSUB DISPLAY.DATA
+         GO ENTER.CHRG.DETAIL
+      END
+
+      CODE.1 = DTL.CHRG.CODES<1, 1>      ; * SWB02
+      IF CODE.1 = 'FRT' OR CODE.1 = '080' THEN     ; * SWB02
+         IF DTL.CHRG.AMTS<1, 1> <= 0 THEN          ; * SWB02
+            IF TOTAL.CHARGES = 0 AND DTL.CHRG.AMTS<1, 1> <= 0 THEN     ; * SWB02
+               CALL ELINE('The charge for ':CODE.1:' cannot be less than 0!')    ; * SWB02
+               MODE = 'EDIT'             ; * SWB02
+               GOSUB DISPLAY.SCREEN      ; * SWB02
+               GOSUB DISPLAY.DATA        ; * SWB02
+               QI = CC                   ; * SWB02
+               GO ENTER.CHRG.DETAIL      ; * SWB02
+            END ELSE                     ; * SWB02
+               IF TOTAL.CHARGES > 0 AND DTL.CHRG.AMTS<1, 1> < 0 THEN   ; * SWB02
+                  CALL ELINE('The charge for ':CODE.1:' must be equal to or greater than 0!')        ; * SWB02
+                  MODE = 'EDIT'          ; * SWB02
+                  GOSUB DISPLAY.SCREEN   ; * SWB02
+                  GOSUB DISPLAY.DATA     ; * SWB02
+                  QI = CC                ; * SWB02
+                  GO ENTER.CHRG.DETAIL   ; * SWB02
+               END                       ; * SWB02
+            END                          ; * SWB02
+         END                             ; * SWB02
+      END                                ; * SWB02
+      VOUT=''
+      VOUT<3> = DTL.CHRG.CODES
+      VOUT<4> = DTL.CHRG.AMTS
+      VOUT<5> = CC
+      VOUT<6> = MISC.REASON              ; * JMK04
+
+      RETURN

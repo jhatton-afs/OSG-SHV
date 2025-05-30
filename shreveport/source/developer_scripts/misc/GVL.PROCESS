@@ -1,0 +1,386 @@
+********************************************************************************
+* COPYRIGHT (C) 2011 by AFS LOGISTICS LLC. -- ALL RIGHTS RESERVED
+*       ----------------------------------------------------
+* This program is the sole property of AFS Logistics, LLC (AUTOMATED
+* FREIGHT SYSTEMS) and may not be used, copied, or modified without
+* the express written consent of Brian Barker of AFS Logistics, LLC.
+*
+* FREIGHT BILLING PACKAGE
+* PROGRAM PCL.PROCESS
+*
+* AUTHOR : MIKE KERBOW
+* DATE   : JANUARY 2013
+*
+* Program to allow updates to all AFS employee-related data in the CLIENTS
+* file record as specfied in Information Technology Projects 80 and 87.
+*       ----------------------------------------------------
+*
+* EDIT HISTORY:
+*
+*
+********************************************************************************
+* PICK COMPILER INFORMATION
+* ~~~~~~~~~~~~~~~~~~~~~~~~~
+*  ~PICK-FILE  : FBBP
+*  ~PICK-RECORD: PCL.PROCESS
+*  ~COMPILE-REC: YES
+*  ~AUTO-ANSWER: NO
+*  ~RUN-REC    : NO
+********************************************************************************
+* 012814 - JMK01 - SysAid#8433 - Missing Invoice from AccuTerm -  Riverbed 4680
+* 041614 - JMK02 - Notify for Inactive Client in Batch
+* 111414 - JMK03 - SysAid#12940 - Salt Lake Process- Mike Kerbow please
+* 010915 - JMK04 - SysAid#14599 - LaJuanyka Johnson
+********************************************************************************
+      $OPTIONS EXEC.EQ.PERF
+      $OPTIONS INFO.ABORT
+      $OPTIONS HEADER.EJECT
+      $INCLUDE FILE.DEFS INC_ADDS60.CODES
+*
+* Initialize general variables
+*
+      PROMPT''
+      CALL GET.USER(USER)
+      TERM.TYPE=SYSTEM(7)
+      BEGIN CASE
+         CASE TERM.TYPE='REGENT60'
+            REV.ON = TERM.ESC.SEQ:CHAR(TERM.REV)   ; * JCW07
+            REV.OFF = TERM.ESC.SEQ:CHAR(TERM.NORMAL)         ; * JCW07
+         CASE 1
+            REV.ON=@(-13)
+            REV.OFF=@(-14)
+      END CASE
+      POSITION.HOLDER='* Holds Position in DA *'
+      MASK.CHAR='-'
+      REDSPLY=0
+      ALREADY.ADDED=0
+      ALREADY.DELETED=0
+      SELECTION=''
+      SALESMAN.LIST=''                   ; * Initially null, but loaded only once if needed
+      DASH=STR('-',132)
+      DDASH=STR('=',132)
+      PROG.DESC='PCL Processing'
+      PACK.NAME='Freight Billing'
+      PROG.NAME='PCL.PROCESS'
+      BILL.FREQ=''
+      BILL.FREQ<1,1>='1' ; BILL.FREQ<2,1>='Weekly'
+      BILL.FREQ<1,2>='2' ; BILL.FREQ<2,2>='Monthly'
+      BILL.TERM=''
+      BILL.TERM<1,1>='1' ; BILL.TERM<2,1>='Net 15'
+      BILL.TERM<1,2>='2' ; BILL.TERM<2,2>='Net 30'
+      BILL.TERM<1,3>='3' ; BILL.TERM<2,3>='Net 45'
+      BILL.TERM<1,4>='4' ; BILL.TERM<2,4>='Net 60'
+      BILL.TERM<1,5>='5' ; BILL.TERM<2,5>='Due on Receipt'
+*
+* Display page heading
+*
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+* Open files
+*
+      OPEN '','BCUST' TO F.CLIENT ELSE CALL OPEN.ABORT("BCUST",PROG.NAME)
+      OPEN '','PCL.BILL.DATE.XREF' TO F.PCL.BILL.DATE.NDX ELSE CALL OPEN.ABORT("PCL.BILL.DATE.XREF",PROG.NAME)
+      OPEN '','FB.TABLES' TO F.TABLES ELSE CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      OPEN '','FB.ADJUST.CLIENT' TO F.ADJUST.CLIENT ELSE CALL OPEN.ABORT("FB.ADJUST.CLIENT",PROG.NAME)
+*
+* Get company file information
+*
+      BEGIN CASE
+         CASE USER='BRIAN'
+         CASE USER='BRIANP'
+         CASE USER='BROSE'
+
+         CASE USER='BFRANKLIN'
+         CASE USER='DAVID'
+         CASE USER='MKERBOW'
+*        CASE USER='PBASS'               ; * JMK01
+
+*        CASE USER='ABROOKS'
+*        CASE USER='AMOULDING'
+*        CASE USER='JWHITING'
+*        CASE USER='KMCQUISTON'
+         CASE USER='KLAGARS'
+         CASE USER='LCOOK'           ; * JMK04
+         CASE USER='MARY'
+         CASE USER='MYRA'
+
+         CASE 1
+            CALL ELINE("Unauthorized Access")
+            STOP
+      END CASE
+*
+* Enter invoice date.
+*
+100:  CRT @(0,2):@(-3)
+      HELP = "Enter Invoice Date. [T]oday [X]=Bck [EX]it"
+      CALL GEN.IN(0,22,'Enter Invoice Date : MM/DD/YY','DATE',Q,0,8,'','',2,-8,22,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'T'
+            Q = DATE()
+         CASE QI = 'X'
+            GOTO EXIT.PROGRAM
+         CASE QI = 'EX'
+            GOTO EXIT.PROGRAM
+         CASE NOT(NUM(Q)) OR Q GT DATE() ! Q = ''
+            CALL ELINE('ERROR - Invalid Date.')
+            GOTO 100
+      END CASE
+      IF Q < DATE()-730 THEN
+         CALL ELINE("Warning! Invoice was created more than 2 years ago!")
+         GOTO 100
+      END
+      IF Q > DATE() THEN
+         CALL ELINE("Error Invoice date can't be in the future!")
+         CC+=1
+         GOTO 100
+      END
+      INV.DATE=Q
+      CRT @(60,3):'Inv Date : ':INV.DATE 'D2/'
+200: *
+      HELP = "Enter Session Number (0,1,2) [X]=Bck [EX]it"
+      CALL GEN.IN(0,22,'Enter Session : 0','',Q,0,8,'','',2,-1,22,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = '2'
+         CASE QI = '1'
+         CASE QI = '0'
+         CASE QI = 'X'
+            GOTO EXIT.PROGRAM
+         CASE QI = 'EX'
+            GOTO EXIT.PROGRAM
+         CASE 1
+            CALL ELINE('ERROR - Invalid Session.')
+            GOTO 200
+      END CASE
+      SESSION=Q
+      CRT @(60,5):'Session : ':SESSION
+300: *
+      HELP = "Ready to continue (Y/N) [X]=Bck [EX]it"
+      CALL GEN.IN(0,22,'Ready to continue :Y','',Q,0,8,'','',2,-1,22,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI = '' THEN QI='Y'
+      BEGIN CASE
+         CASE QI = 'X'
+            GOTO EXIT.PROGRAM
+         CASE QI = 'EX'
+            GOTO EXIT.PROGRAM
+         CASE QI = 'Y'
+         CASE QI = 'N'
+            GOTO EXIT.PROGRAM
+         CASE 1
+            CALL ELINE('ERROR - Invalid Answer.')
+            GOTO 300
+      END CASE
+
+      PCL.BILL.DATE.NDX.ID=INV.DATE
+      READ PCL.BILL.DATE.NDX.REC FROM F.PCL.BILL.DATE.NDX,PCL.BILL.DATE.NDX.ID ELSE
+         CALL ELINE('No Billing Transactions for ':INV.DATE'D2/':'.')
+         GO 100
+      END
+      PCL.ALERT=0
+      NATT=DCOUNT(PCL.BILL.DATE.NDX.REC,@AM)
+      FOR ATT=1 TO NATT
+         CLIENT.ID=PCL.BILL.DATE.NDX.REC<ATT>
+         TABLE.ID='NO-PROCESS*':CLIENT.ID
+         READ TABLE.REC FROM F.TABLES,TABLE.ID THEN
+            IF TABLE.REC<1>="Waiting on Parcel Import from SLC" THEN
+               DELETE F.TABLES,TABLE.ID
+               PCL.ALERT=1
+            END
+         END
+      NEXT ATT
+      PCL.BLK.STMT='SSELECT FB.TABLES WITH F1 = "Waiting on Parcel Import from SLC"'
+      EXECUTE PCL.BLK.STMT RTNLIST PCL.BLK.LIST CAPTURING PCL.BLK.RESULTS
+      PCL.BLK.TCNT=@SELECTED
+      PCL.BLK.EOF=0
+      PCL.BLK.CNT=0
+      PCL.BLK.PER=''
+      LOOP
+         READNEXT PCL.BLK.ID FROM PCL.BLK.LIST ELSE PCL.BLK.EOF=1
+      UNTIL PCL.BLK.EOF DO
+         PCL.BLK.CNT+=1
+         CALL PROG.BAR(22,PCL.BLK.CNT,PCL.BLK.TCNT,PCL.BLK.PER)
+         READ TABLE.REC FROM F.TABLES,PCL.BLK.ID THEN
+            IF TABLE.REC<1>="Waiting on Parcel Import from SLC" THEN
+*              DELETE F.TABLES,TABLE.ID  ; * JMK01
+               DELETE F.TABLES,PCL.BLK.ID          ; * JMK01
+               PCL.ALERT=1
+            END
+         END
+      REPEAT
+      IF PCL.ALERT THEN
+         TO_ADD=''
+*****         TO_ADD<1,-1>='MButts@afs.net'
+         TO_ADD<1,-1>='MMckay@afs.net'
+         CC_ADD=''
+         BCC_ADD=''
+*****         BCC_ADD<1,-1>='MKerbow@afs.net'
+*****         BCC_ADD<1,-1>='DFriend@afs.net'
+         BCC_ADD<1,-1>='BFranklin@afs.net'
+         FROM_ADD='Reports@afs.net'
+         SUBJECT='Parcel Weekly Billing File Import'
+         MESSAGE='Parcel billing file has been imported, adjusted and Freight Payment blocks have been removed.'
+         EMAIL.OUT=''
+         EMAIL.OUT<1>=TO_ADD
+         EMAIL.OUT<2>=CC_ADD
+         EMAIL.OUT<3>=BCC_ADD
+         EMAIL.OUT<4>=FROM_ADD
+         EMAIL.OUT<5>=SUBJECT
+         EMAIL.OUT<6>=MESSAGE
+         EMAIL.OUT<7>=1
+         CALL SENDMAIL(EMAIL.OUT,RESULT)
+      END
+      SESSION.START=1
+      IF SESSION=2 THEN SESSION.START=INT(NATT/2)
+      READ FP.PROCESS.REC FROM F.TABLES,'FP_PROCESS' ELSE FP.PROCESS.REC=''
+      PROC.NVAL=DCOUNT(FP.PROCESS.REC<1>,@VM)+1
+      BEGIN CASE
+         CASE SESSION=1
+            LOCATE 'SLC01' IN FP.PROCESS.REC<1> BY 'AR' SETTING SLCPOS ELSE
+               INS 'SLC01' BEFORE FP.PROCESS.REC<1,SLCPOS>
+               INS DATE() BEFORE FP.PROCESS.REC<2,SLCPOS>
+               INS TIME() BEFORE FP.PROCESS.REC<3,SLCPOS>
+               INS USER BEFORE FP.PROCESS.REC<4,SLCPOS>
+            END
+         CASE SESSION=2
+            LOCATE 'SLC02' IN FP.PROCESS.REC<1> BY 'AR' SETTING SLCPOS ELSE
+               INS 'SLC02' BEFORE FP.PROCESS.REC<1,SLCPOS>
+               INS DATE() BEFORE FP.PROCESS.REC<2,SLCPOS>
+               INS TIME() BEFORE FP.PROCESS.REC<3,SLCPOS>
+               INS USER BEFORE FP.PROCESS.REC<4,SLCPOS>
+            END
+         CASE 1
+            LOCATE 'SLC00' IN FP.PROCESS.REC<1> BY 'AR' SETTING SLCPOS ELSE
+               INS 'SLC00' BEFORE FP.PROCESS.REC<1,SLCPOS>
+               INS DATE() BEFORE FP.PROCESS.REC<2,SLCPOS>
+               INS TIME() BEFORE FP.PROCESS.REC<3,SLCPOS>
+               INS USER BEFORE FP.PROCESS.REC<4,SLCPOS>
+            END
+      END CASE
+      IF FP.PROCESS.REC<1>='' THEN
+         DELETE F.TABLES,'FP_PROCESS'
+      END ELSE
+         WRITE FP.PROCESS.REC ON F.TABLES,'FP_PROCESS'
+      END
+      FOR ATT=SESSION.START TO NATT
+         CLIENT.ID=PCL.BILL.DATE.NDX.REC<ATT>
+         READ CLIENT.REC FROM F.CLIENT,CLIENT.ID ELSE CLIENT.REC=''
+         IF CLIENT.REC<30>='I' OR CLIENT.REC<30>='O' THEN    ; * JMK02
+            TO_ADD=''                    ; * JMK02
+*****            TO_ADD<1,-1>='MButts@afs.net'          ; * JMK02
+            TO_ADD<1,-1>='MMckay@afs.net'          ; * JMK02
+            TO_ADD<1,-1>='AMoulding@afs.net'       ; * JMK02
+            CC_ADD=''                    ; * JMK02
+            BCC_ADD=''                   ; * JMK02
+*****            BCC_ADD<1,-1>='MKerbow@afs.net'        ; * JMK02
+*****            BCC_ADD<1,-1>='DFriend@afs.net'        ; * JMK02
+            FROM_ADD='FBBP_PCL.PROCESS@afs.net'    ; * JMK02
+            SUBJECT='Inactive Client ':CLIENT.ID:' - ':CLIENT.REC<2>:' was queued for Freight Payment Processing.'       ; * JMK02
+            MESSAGE='User ':USER:' attempted to perform Freight Payment Processing for Parcel Billing Transactions'      ; * JMK02
+            MESSAGE:=' for a Client that is currently marked as Inactive.  Please review and adjust if necessary.'       ; * JMK02
+            EMAIL.OUT=''                 ; * JMK02
+            EMAIL.OUT<1>=TO_ADD          ; * JMK02
+            EMAIL.OUT<2>=CC_ADD          ; * JMK02
+            EMAIL.OUT<3>=BCC_ADD         ; * JMK02
+            EMAIL.OUT<4>=FROM_ADD        ; * JMK02
+            EMAIL.OUT<5>=SUBJECT         ; * JMK02
+            EMAIL.OUT<6>=MESSAGE         ; * JMK02
+            EMAIL.OUT<7>=1               ; * JMK02
+            CALL SENDMAIL(EMAIL.OUT,RESULT)        ; * JMK02
+            GO NEXT.ATT                  ; * JMK02
+         END                             ; * JMK02
+         FB.CK.STMT='SELECT FB.BILLS,':CLIENT.ID:' WITH 39 = "2""3""4""V""A""" SAMPLE 1'   ; * JMK03
+         EXECUTE FB.CK.STMT RTNLIST FB.CK.LIST CAPTURING FB.CK.RESULTS ; * JMK03
+         FB.CK.FLG=@SELECTED             ; * JMK03
+         IF FB.CK.FLG>0 AND CLIENT.REC<151>='5' THEN         ; * JMK03
+            CLEARSELECT FB.CK.LIST       ; * JMK03
+            TO_ADD=''                    ; * JMK03
+*****            TO_ADD<1,-1>='MButts@afs.net'          ; * JMK03
+            TO_ADD<1,-1>='MMckay@afs.net'          ; * JMK03
+            TO_ADD<1,-1>='KLagars@afs.net'         ; * JMK03
+            TO_ADD<1,-1>='LJJohnson@afs.net'       ; * JMK03
+            CC_ADD=''                    ; * JMK03
+            BCC_ADD=''                   ; * JMK03
+*****            BCC_ADD<1,-1>='MKerbow@afs.net'        ; * JMK03
+*****            BCC_ADD<1,-1>='DFriend@afs.net'        ; * JMK03
+            FROM_ADD='Reports@afs.net'   ; * JMK03
+            SUBJECT='"Hybrid" client with unverified freight bills'
+            MESSAGE=\Client \:CLIENT.ID:\ - \:CLIENT.REC<2>:\ has at least one freight bill that is preventing\          ; * JMK03
+            MESSAGE:=\ the automated Parcel Billing process cycle from producing this week's invoice.  This can\         ; * JMK03
+            MESSAGE:=\ happen due to bills needing additional verification or review by an auditor.  This will\          ; * JMK03
+            MESSAGE:=\ need to be processed manually when all freight bills are ready.\    ; * JMK03
+            EMAIL.OUT=''                 ; * JMK03
+            EMAIL.OUT<1>=TO_ADD          ; * JMK03
+            EMAIL.OUT<2>=CC_ADD          ; * JMK03
+            EMAIL.OUT<3>=BCC_ADD         ; * JMK03
+            EMAIL.OUT<4>=FROM_ADD        ; * JMK03
+            EMAIL.OUT<5>=SUBJECT         ; * JMK03
+            EMAIL.OUT<6>=MESSAGE         ; * JMK03
+            EMAIL.OUT<7>=1               ; * JMK03
+            CALL SENDMAIL(EMAIL.OUT,RESULT)        ; * JMK03
+            GO NEXT.ATT                  ; * JMK03
+         END                             ; * JMK03
+         CLIENT.DOW=CLIENT.REC<151>
+         IF CLIENT.DOW='' THEN
+            CLIENT.REC<151>='5'
+            CLIENT.DOW='5'
+*           WRITEV '5' ON F.CLIENT,CLIENT.ID,151   ; * JMK01
+            WRITE CLIENT.REC ON F.CLIENT,CLIENT.ID ; * JMK01
+            ADJUST.CLIENT.ID=CLIENT.ID:'*':DATE():'*':TIME():'*':USER  ; * JMK01
+            WRITE CLIENT.REC ON F.ADJUST.CLIENT,ADJUST.CLIENT.ID       ; * JMK01
+         END
+         BEGIN CASE
+            CASE INV.DATE=ICONV('06/29/13','D')
+               PCL.BDATE=INV.DATE-7
+               PCL.EDATE=INV.DATE
+            CASE INV.DATE=ICONV('07/05/13','D')
+               PCL.BDATE=INV.DATE-5
+               PCL.EDATE=INV.DATE
+            CASE CLIENT.REC<82>#''
+               PCL.BDATE=CLIENT.REC<82>+1
+               PCL.EDATE=INV.DATE
+            CASE 1
+               PCL.BDATE=INV.DATE-6
+               PCL.EDATE=INV.DATE
+         END CASE
+*DF         IF CLIENT.DOW EQ '5' AND CLIENT.REC<179>='' AND CLIENT.REC<82> < PCL.EDATE THEN
+         IF CLIENT.REC<179>='' AND CLIENT.REC<82> < PCL.EDATE THEN
+            PCL.STMT='FB.2.3.NW ':CLIENT.ID:' ':PCL.BDATE'D2/':' ':PCL.EDATE'D2/'
+            EXECUTE PCL.STMT
+         END
+NEXT.ATT: *
+      NEXT ATT
+*
+EXIT.PROGRAM: *
+*
+      READ FP.PROCESS.REC FROM F.TABLES,'FP_PROCESS' ELSE FP.PROCESS.REC=''
+      BEGIN CASE
+         CASE SESSION=1
+            LOCATE 'SLC01' IN FP.PROCESS.REC<1> SETTING FPOS THEN
+               DEL FP.PROCESS.REC<1,FPOS>
+               DEL FP.PROCESS.REC<2,FPOS>
+               DEL FP.PROCESS.REC<3,FPOS>
+               DEL FP.PROCESS.REC<4,FPOS>
+            END
+         CASE SESSION=2
+            LOCATE 'SLC02' IN FP.PROCESS.REC<1> SETTING FPOS THEN
+               DEL FP.PROCESS.REC<1,FPOS>
+               DEL FP.PROCESS.REC<2,FPOS>
+               DEL FP.PROCESS.REC<3,FPOS>
+               DEL FP.PROCESS.REC<4,FPOS>
+            END
+         CASE 1
+            LOCATE 'SLC00' IN FP.PROCESS.REC<1> SETTING FPOS THEN
+               DEL FP.PROCESS.REC<1,FPOS>
+               DEL FP.PROCESS.REC<2,FPOS>
+               DEL FP.PROCESS.REC<3,FPOS>
+               DEL FP.PROCESS.REC<4,FPOS>
+            END
+      END CASE
+      IF FP.PROCESS.REC<1>='' THEN
+         DELETE F.TABLES,'FP_PROCESS'
+      END ELSE
+         WRITE FP.PROCESS.REC ON F.TABLES,'FP_PROCESS'
+      END
+      END

@@ -1,0 +1,1775 @@
+****************************************************
+* Program name : FB.2.2.NW
+* Author       : BRIAN M. QUEEN
+* Date written : JUNE 25, 1991
+* Library      : FBBP
+* COPYRIGHT (c) : AFS, LLC 2016, All Rights Reserved.
+* verify freight bill entry
+*
+* Last updated by AFS (gbino) at 07:57:18 on 10/02/2019.
+*
+* Start modification history
+* 040604 - JMK01 - CHECK FB.BILLS.CRX FOR WRONG ACCOUNT ENTERED
+* 040804 - JMK02 - ADD CHAR TIME DURATION TO EMP PERF
+* 090705 - JMK03 - CHANGE -0 TO -O FOR UPS BILLS
+* 042806 - JMK04 - ADD PO DISTRIBUTION FOR ROBROY 01349 & 01350
+* 050806 - JCW01 - CHANGES TO '@SELECTED', 'CLEARSELECT', AND 'STMT<X>'
+* 111108 - JMK05 - Adjust Pro Format Validation for multiple pro formats
+* 030309 - NPR01 - T090253 - Highlight Client name based on ranking
+* 082709 - NPR02 - T091091 - Added option to overide Pro Format based on Client/Carrier combination if it exists
+* 080610 - NPR03 - T100399 - Additional updating for tracking what changes where made to a bill.
+* 041311 - NPR04 - T110334 - Add verification of Orig Zip if set up for verification for Outbound shipments.
+* 012714 - DRF01 - SysAid - Not able to verify carriers 15994 and 16058
+*                  for 01308 Pfaudler.
+* 111314 - DRF02 - SysAid 13191 - Added an additional character to the
+*                   pro number as a carrier has a 21 digit pro number
+* 120418 - NKH01 - ACCU-214 Added OCR logic
+* 100219 - NKH02 - ACCU-593 Added pro compare
+* End modification history
+*
+*******************************************************
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_CLIENTS
+
+      * Initialize variables
+      PROMPT''
+      PROG.NAME='FB.2.2.NW'
+      PROG.DESC='FREIGHT BILL VERIFICATION - NEW WAY'
+      PACK.NAME='FREIGHT BILLING'
+
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.2.2.NW' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                          ;* NPR_UPL 04/23/2010
+      CALL GET.USER(USER)
+      CO.NAME='AFS Logistics, LLC'
+      EXP.DIST='' ; BAL.DUE='' ; CLIENT.ID=''
+      CLIENT.NAME='' ; CARRIER.ID=''
+      CARRIER.NAME='' ; CARRIER.CITY='' ; CARRIER.STATE='' ; BACK.FLAG=0
+      CHANGE.FLAG=0 ; VOIDED=0
+      BILL.MODE=''
+      MAT CLIENT.REC = ''
+      WRONG.CLIENT.REC = ''              ; * JMK01
+      LAST.CLIENT.KEYED=''
+      HLA = "" ; HLB = '' ; * NPR01
+      OCR.ENTRY = 0       ; * NKH01
+      T.ARRAY = ''        ; * NKH01
+      OCR.COUNT = 1       ; * NKH01
+      BILL.VERIFIED = 0   ; * NKH01
+      SKIPPING = 0        ; * NKH01
+
+      GOSUB 8000                         ; * Initialize data
+
+      * Open files
+      OPEN 'EMP.HR.PERF' TO F.EMP.HR.PERF ELSE
+         CALL OPEN.ABORT("EMP.HR.PERF",PROG.NAME)
+      END
+      OPEN 'EMP.DY.PERF' TO F.EMP.DY.PERF ELSE
+         CALL OPEN.ABORT("EMP.DY.PERF",PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+         CALL OPEN.ABORT("ZIPS",PROG.NAME)
+      END
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+         CALL OPEN.ABORT("FB.TRANSPORT",PROG.NAME)
+      END
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE         ; * JMK01
+         EXECUTE 'CREATE-FILE FB.BILLS.CRX 1 103' CAPTURING OUTPUT     ; * JMK01
+         OPEN '','FB.BILLS.CRX' TO F.CRX ELSE      ; * JMK01
+            CALL OPEN.ABORT("FB.BILLS.CRX",PROG.NAME)        ; * JMK01
+         END                             ; * JMK01
+      END                                ; * JMK01
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      OPEN '','BCTRL' TO F.BCTRL ELSE
+         CALL OPEN.ABORT('BCTRL',PROG.NAME)
+      END
+      READ DBCTRL FROM F.BCTRL,USER ELSE DBCTRL=''
+      USER.NAME=DBCTRL<13>
+      USER.DPT=DBCTRL<15>
+      OPEN '','FB.PRO.FORMAT' TO F.PRO.FORMAT ELSE
+         CALL OPEN.ABORT("FB.PRO.FORMAT",PROG.NAME)
+      END
+      OPEN '','PRO.OVERRIDE' TO PRO.OVERRIDE ELSE     ; * NKH02
+         CALL OPEN.ABORT('PRO.OVERRIDE',PROG.NAME)    ; * NKH02
+      END                                             ; * NKH02      
+
+      CC=0
+      CHR.START.TIME=TIME()              ; * JMK02
+
+**********************************************************************
+100:* Enter client number
+**********************************************************************
+      GOSUB 8100                         ; * Display screen
+      HELP="Enter the client number. [X]=Exit. [EX]=Exit."
+      IF CLIENT.ID='' THEN MASK='#####' ELSE MASK=CLIENT.ID
+      CALL GEN.IN(15,3,MASK,'',Q,0,20,'','',2,-5,3,0,QI,HELP,0,23)
+      CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX' ! QI='X'
+            STOP
+         CASE QI='' & CLIENT.ID=''
+            STOP
+         CASE QI='' & CLIENT.ID NE ''
+            Q=CLIENT.ID
+         CASE NOT(QI MATCHES "0N")
+            VIN=0
+            CALL SOUNDEX.DISPLAY.NEW(VIN,VOUT,QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CC+=VOUT<1> ; GOSUB PRINT.CC
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 100
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 100
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN SND.DATA=ITEM.LIST<1,1> ; GOSUB SEND.DATA
+                  GOTO 100
+            END CASE
+         CASE NUM(QI)
+            Q=QI'R%5'
+         CASE 1
+            GOTO 100
+      END CASE
+
+      * Get client name
+      IF CLIENT.ID NE Q THEN
+         CLIENT.ID=Q
+         CARRIER.ID=''
+      END
+      MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         CALL ELINE("ERROR - Client ":CLIENT.ID:" not on file.")
+         CC+=1 ; GOSUB PRINT.CC
+         GOTO 100
+      END
+      ZIP.DIGITS=CL.ZIP.FLAG
+      IF ZIP.DIGITS='C' THEN ZIP.DIGITS=6
+      ZIP.MASK='L#':ZIP.DIGITS
+      IF CLIENT.REC(146)#'NW' THEN
+         CALL ELINE('This client ':CLIENT.ID:' is not a new way client')
+         GO 100
+      END
+
+      HIN = CLIENT.REC(240)  ; HOUT = ""                              ;* NPR01  Highlight based on ranking
+      CALL CLIENT.HL(HIN,HOUT)   ; HLB = HOUT<1,1> ; HLA = HOUT<1,2>  ;* NPR01
+
+      CRT @(15,3):CLIENT.ID:' ':HLB:CL.NAME:HLA:@(-4)                 ;* NPR01
+
+      * Open client files
+      OPEN '','FB.BILLS,':CLIENT.ID TO F.BILLS ELSE
+         CALL ELINE("ERROR - Can not open FB.BILLS file for client ":CLIENT.ID)
+         CC+=1 ; GOSUB PRINT.CC
+         GOTO 100
+      END
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.HIST ELSE
+         CALL ELINE("ERROR - Can not open FB.BILLS.HIST file for client ":CLIENT.ID)
+         CC+=1 ; GOSUB PRINT.CC
+         GOTO 100
+      END
+      IF CL.VAR.FLAG='Y' THEN
+         OPEN '','VARIANCE.CODES,':CLIENT.ID TO F.VAR ELSE
+            CALL ELINE("ERROR - Can not open VARIANCE.CODES file for client ":CLIENT.ID)
+            CC+=1 ; GOSUB PRINT.CC
+            GOTO 100
+         END
+      END
+      IF CL.DIV.FLAG='Y' THEN
+         OPEN '','DIVISION.CODES,':CLIENT.ID TO F.DIV ELSE
+            CALL ELINE("ERROR - Can not open DIVISION.CODES file for client ":CLIENT.ID)
+            CC+=1 ; GOSUB PRINT.CC
+            GOTO 100
+         END
+         ZIP.DIV.XREF=1
+         OPEN 'ZIP.DIV.XREF,':CLIENT.ID TO F.ZIP.DIV.XREF ELSE ZIP.DIV.XREF=0
+      END
+      IF CL.EXP.FLAG='Y' THEN
+         OPEN '','EXPENSE.CODES,':CLIENT.ID TO F.EXP ELSE
+            CALL ELINE("ERROR - Can not open EXPENSE.CODES file for client ":CLIENT.ID)
+            CC+=1 ; GOSUB PRINT.CC
+            GOTO 100
+         END
+      END
+      OPEN '','FB.CLIENTS.CUSTS,':CLIENT.ID TO F.CLIENTS.CUST ELSE
+         F.CLIENTS.CUST=''
+      END
+      IF CL.VEND.FLAG = 'Y' ! CL.CUST.FLAG = 'Y' THEN
+         OPEN '','VEND.CUST,':CLIENT.ID TO F.VEND.CUST ELSE
+            CALL ELINE("Cannot open VEND.CUST for client ":CLIENT.ID)
+            CC+=1 ; GOSUB PRINT.CC
+            GOTO 100
+         END
+      END
+      CLIENT.START.TIME=TIME()
+
+      IF CLIENT.ID[1,2]#'99' THEN        
+         OPEN '','FB.BILLS.ACCESS,':CLIENT.ID TO F.ACCESS ELSE         
+            EXECUTE 'CREATE-FILE DATA FB.BILLS.ACCESS,':CLIENT.ID:' 101,1' CAPTURING OUTPUT          
+            OPEN '','FB.BILLS.ACCESS,':CLIENT.ID TO F.ACCESS ELSE      
+               CALL ELINE("Cannot Create FB.BILLS.ACCESS,":CLIENT.ID)  
+               CC+=1 ; GOSUB PRINT.CC    
+               GOTO 100        
+            END                          
+         END                             
+      END    
+                                  
+***********************************************************************
+150:* Enter stack
+**********************************************************************
+      CRT @(70,3):' Stack '
+      HELP="Stack 1=OK, 2=Class needs checking, 3=Amounts do not match, 4=Did not Audit"
+      IF BILL.MODE='' THEN MASK='##' ELSE MASK=BILL.MODE'R#2'
+      CALL GEN.IN(77,3,MASK,'',Q,0,2,'','',2,-2,3,0,QI,HELP,0,23)
+      CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GO 100
+         CASE QI='' & BILL.MODE NE ''
+            Q=BILL.MODE
+         CASE Q = '1' ! Q = '2' ! Q = '3' ! Q = '4' ! Q = 'A' ! Q = 'a'  ; * NKH01
+            IF Q = 'a' THEN Q = 'A'                                      ; * NKH01
+            NULL
+         CASE 1
+            CALL ELINE('Invalid Entry Please Try Again')
+            GO 150
+      END CASE
+      BILL.MODE=Q
+      CRT @(77,3):BILL.MODE'R#2'
+
+************************************************************************
+200:* Enter carrier
+***********************************************************************
+      IF CARRIER.ID#'' THEN MASK=CARRIER.ID'R%5' ELSE MASK='#####'
+      HELP="Enter carrier #. [LS]=List unverified pro's. [LP]=Print unverified pro's.":CHAR(10):CHAR(13):"[X]=Back to Client. [EX]=Exit."
+      CALL GEN.IN(15,4,MASK,'',Q,0,20,'','',2,-5,4,0,QI,HELP,0,22)
+      CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         * Begin NKH01
+         CASE QI='OCR'
+            T.ARRAY = ''            
+            IF BILL.MODE # 'A' THEN
+               HUSH ON
+*DF               CMD = 'SSELECT FB.BILLS,':CLIENT.ID:' WITH 280 # "" AND WITH 39 = "O" AND WITH 68 = "':BILL.MODE:'" BY CARRIER# BY 280'
+               CMD = 'SSELECT FB.BILLS,':CLIENT.ID:' WITH 280 # "" AND WITH (39 = "" "A" "V") AND WITH 68 = "':BILL.MODE:'" BY CARRIER# BY 280'
+               EXECUTE CMD
+               HUSH OFF
+            END ELSE
+               HUSH ON
+*DF               CMD = 'SSELECT FB.BILLS,':CLIENT.ID:' WITH 280 # "" AND WITH 39 = "O" BY CARRIER# BY 280'
+               CMD = 'SSELECT FB.BILLS,':CLIENT.ID:' WITH 280 # "" AND WITH (39 = "" "A" "V") BY CARRIER# BY 280'
+               EXECUTE CMD
+               HUSH OFF
+            END            
+            EOF = 0
+            OCR.ENTRY = 1
+            OCR.COUNT = 1
+            LOOP
+               READNEXT OCR.ID ELSE EOF = 1
+            UNTIL EOF
+               READV IMAGE FROM F.BILLS, OCR.ID, 280 ELSE IMAGE = ''                        
+               T.ARRAY<1,-1> = IMAGE
+               T.ARRAY<2,-1> = FIELD(OCR.ID,'*',3,1)
+               T.ARRAY<4,-1> = FIELD(OCR.ID,'*',2,1)
+            REPEAT
+            ARRAY.COUNT = DCOUNT(T.ARRAY<1>,@VM)            
+            IF ARRAY.COUNT < 1 THEN
+               CALL ELINE('There is no OCR to verify at this time')
+               OCR.ENTRY = 0
+            END ELSE
+               CALL FB.SHOW.INV.IMAGE(T.ARRAY<1,OCR.COUNT>)            
+            END
+            GOTO 200
+         * End NKH01
+         CASE QI='LS' ! QI='LP'
+            IF QI='LS' THEN OPT='' ELSE OPT='P'
+            PREC='SELECT FB.BILLS,':CLIENT.ID:' WITH STATUS # "O" AND WITH STATUS # "2" AND WITH STATUS # "3" AND WITH STATUS # "4"'
+            PREC:=" BY STATUS BY CARRIER BY PRO"
+            PREC:=' AND WITH VERSION = "0"'
+            EXECUTE PREC PASSLIST CAPTURING OUTPUT
+            IF @SELECTED > 0 THEN
+                EXECUTE 'LIST FB.BILLS,':CLIENT.ID:' PRO CARRIER.SHORT.NAME TOTAL 7 TOTAL 8 STATUS 68 53 (I':OPT
+               CALL ELINE('')
+               CC+=1 ; GOSUB PRINT.CC
+            END ELSE
+               CALL ELINE("All pro's have been verified.")
+               CC+=1 ; GOSUB PRINT.CC
+            END
+            GOSUB 8100                   ; * Display screen
+            GOTO 200
+         CASE QI='X'
+            CRT @(15,4):@(-4):
+            GOTO 150
+         CASE QI='EX'
+            STOP
+         CASE NOT(QI MATCHES "0N")
+            VIN=0
+            CALL SOUNDEX.DISPLAY.NEW(VIN,VOUT,QI,'CARRIERS','SDX.CARRIER,NAME','1,2,3,4',ITEM.LIST)
+            GOSUB 8100                   ; * Display screen
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 200
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 200
+               CASE ITEM.LIST NE ''
+                  SND.DATA=ITEM.LIST<1,1> ; GOSUB SEND.DATA
+                  GOTO 200
+            END CASE
+         CASE QI=''
+            Q=CARRIER.ID
+         CASE NUM(QI)
+            Q=QI'R%5'
+         CASE 1
+            GOTO 200
+      END CASE
+      CARRIER.ID=Q
+
+      CALL CLR.CONTROL(CARRIER.ID)
+
+      * Get carrier data
+      READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE
+         CALL ELINE("ERROR - Carrier ":CARRIER.ID:" not on file.")
+         CC+=1 ; GOSUB PRINT.CC
+         GOTO 200
+      END
+
+      ID.PRO.FORMAT = CLIENT.ID:"*":CARRIER.ID  ; PRO.FORMAT.REC = ''
+      READ PRO.FORMAT.REC FROM F.PRO.FORMAT, ID.PRO.FORMAT THEN
+         CARRIER.REC<47> = PRO.FORMAT.REC<1>  ;* PRO.FORMAT
+         CARRIER.REC<51> = PRO.FORMAT.REC<2>  ;* MASK.ACTIVE
+         CARRIER.REC<52> = PRO.FORMAT.REC<3>  ;* CHECK.DIG.ACTIVE
+         CARRIER.REC<53> = PRO.FORMAT.REC<4>  ;* CHECK.DIG.POS
+         CARRIER.REC<54> = PRO.FORMAT.REC<5>  ;* SEED.BEG.POS
+         CARRIER.REC<55> = PRO.FORMAT.REC<6>  ;* SEED.END.POS
+         CARRIER.REC<56> = PRO.FORMAT.REC<7>  ;* METHOD.STR
+         CARRIER.REC<57> = PRO.FORMAT.REC<8>  ;* OLD.BEG.POS
+         CARRIER.REC<58> = PRO.FORMAT.REC<9>  ;* OLD.END.POS
+      END
+
+      CARRIER.NAME=CARRIER.REC<1>
+      CARRIER.CITY=CARRIER.REC<3>
+      CARRIER.STATE=CARRIER.REC<4>
+      CARRIER.MODE=CARRIER.REC<44>
+      READV T.MODE FROM F.TRANSPORT,CARRIER.REC<44>,1 ELSE T.MODE=''
+      T.MODE=OCONV(T.MODE,'MCU')
+      INVALID.REMIT.ZIP=0
+      IF INDEX(USER,'TERESA-BRIAN-DARLENE-CHARILE-KATHY-WAYNE',1)=0 THEN
+         HELP='Enter the Remittance Zip Code from the Freight Bill'
+         CALL GEN.IN(0,22,'Remittance Zip:  ','',Q,0,5,'','',2,-1,22,1,QI,HELP,
+            0,23)
+         CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+         QI = OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI = 'EX'
+               STOP
+            CASE QI = 'X'
+               GO 200
+         END CASE
+         IF CARRIER.REC<48>#'N' THEN
+            IF QI='' THEN
+               CALL ELINE("Error! The Zip you entered is incorrect! Lookup  only! Entry Not Allowed!")
+               CC+=1 ; GOSUB PRINT.CC
+               INVALID.REMIT.ZIP=1
+            END
+
+            IF QI#CARRIER.REC<5>[1,5] THEN
+               CALL ELINE("Error! The Zip you entered is incorrect! Lookup  only! Entry Not Allowed!")
+               CC+=1 ; GOSUB PRINT.CC
+               INVALID.REMIT.ZIP=1
+            END
+         END
+      END
+      IF INVALID.REMIT.ZIP THEN GO 200
+      IF CLIENT.ID='10356' AND CARRIER.ID='00015' THEN
+         CARRIER.REC<47>="1N'-'3N'-'5N":@VM:CARRIER.REC<47>
+         CARRIER.REC<51>='Y':@VM:CARRIER.REC<51>
+         CARRIER.REC<52>='N':@VM:CARRIER.REC<52>
+         FOR J = 53 TO 58
+            CARRIER.REC<J>=@VM:CARRIER.REC<J>
+         NEXT J
+      END
+      IF (CLIENT.ID='00614' OR CLIENT.ID='00761' OR CLIENT.ID='00839' OR CLIENT.ID='00839' OR CLIENT.ID='00850' OR CLIENT.ID='00861' OR CLIENT.ID='00883' OR CLIENT.ID='00888' OR CLIENT.ID='00889' OR CLIENT.ID='00902' OR CLIENT.ID='00913' OR CLIENT.ID='00917' OR CLIENT.ID='00918' OR CLIENT.ID='00928' OR CLIENT.ID='00929' OR CLIENT.ID='00929' OR CLIENT.ID='00933' OR CLIENT.ID='00938' OR CLIENT.ID='00978' OR CLIENT.ID='00982' OR CLIENT.ID='01015' OR CLIENT.ID='01020' OR CLIENT.ID='01024' OR CLIENT.ID='01028' OR CLIENT.ID='01038' OR CLIENT.ID='01043' OR CLIENT.ID='01044' OR CLIENT.ID='01045' OR CLIENT.ID='01056' OR CLIENT.ID='01063' OR CLIENT.ID='01066' OR CLIENT.ID='01087' OR CLIENT.ID='01088' OR CLIENT.ID='01095' OR CLIENT.ID='01102' OR CLIENT.ID='01114' OR CLIENT.ID='01132' OR CLIENT.ID='01148' OR CLIENT.ID='01152' OR CLIENT.ID='01161' OR CLIENT.ID='01164' OR CLIENT.ID='01179' OR CLIENT.ID='01190' OR CLIENT.ID='01223' OR CLIENT.ID='001241' OR CLIENT.ID='01274' OR CLIENT.ID='01357' OR CLIENT.ID='01352' OR CLIENT.ID='01241' OR CLIENT.ID='01258' OR CLIENT.ID='01264' OR CLIENT.ID='01270' OR CLIENT.ID='01283' OR CLIENT.ID='01292' OR CLIENT.ID='01309' OR CLIENT.ID='01349' OR CLIENT.ID='01351' OR CLIENT.ID='01352' OR CLIENT.ID='01357' OR CLIENT.ID='01361' OR CLIENT.ID='01371' OR CLIENT.ID='01380' OR CLIENT.ID='01381' OR CLIENT.ID='01398' OR CLIENT.ID='01401' OR CLIENT.ID='01408' OR CLIENT.ID='01433' OR CLIENT.ID='01442' OR CLIENT.ID='01448' OR CLIENT.ID='01456' OR CLIENT.ID='01458' OR CLIENT.ID='01472' OR CLIENT.ID='01475' OR CLIENT.ID='01479' OR CLIENT.ID='01480' OR CLIENT.ID='01481' OR CLIENT.ID='01487' OR CLIENT.ID='01491' OR CLIENT.ID='01493' OR CLIENT.ID='01511' OR CLIENT.ID='01522' OR CLIENT.ID='01525' OR CLIENT.ID='01529' OR CLIENT.ID='01539' OR CLIENT.ID='01545' OR CLIENT.ID='01576' OR CLIENT.ID='01577' OR CLIENT.ID='01582' OR CLIENT.ID='01600' OR CLIENT.ID='01635' OR CLIENT.ID='01644' OR CLIENT.ID='01661' OR CLIENT.ID='01697' OR CLIENT.ID='01700' OR CLIENT.ID='01704' OR CLIENT.ID='01706' OR CLIENT.ID='10272' OR CLIENT.ID='10298' OR CLIENT.ID='10356') AND CARRIER.ID='01075' THEN
+         CARRIER.REC<47>="12N":@VM:CARRIER.REC<47>
+         CARRIER.REC<51>='Y':@VM:CARRIER.REC<51>
+         CARRIER.REC<52>='N':@VM:CARRIER.REC<52>
+         FOR J = 53 TO 58
+            CARRIER.REC<J>=@VM:CARRIER.REC<J>
+         NEXT J
+         CARRIER.REC<47>="11N":@VM:CARRIER.REC<47>
+         CARRIER.REC<51>='Y':@VM:CARRIER.REC<51>
+         CARRIER.REC<52>='N':@VM:CARRIER.REC<52>
+         FOR J = 53 TO 58
+            CARRIER.REC<J>=@VM:CARRIER.REC<J>
+         NEXT J
+         CARRIER.REC<47>="10N":@VM:CARRIER.REC<47>
+         CARRIER.REC<51>='Y':@VM:CARRIER.REC<51>
+         CARRIER.REC<52>='N':@VM:CARRIER.REC<52>
+         FOR J = 53 TO 58
+            CARRIER.REC<J>=@VM:CARRIER.REC<J>
+         NEXT J
+      END
+      PRO.FORMAT=CARRIER.REC<47>
+      IF PRO.FORMAT<1,1>='' THEN PRO.MASKS='' ELSE
+      
+         VIN=PRO.FORMAT
+         VIN<2>=CARRIER.REC<51>          ; ** Y/N Active or Inactive
+         CALL MASK(VIN,VOUT)
+         PRO.MASKS=VOUT<1>
+      END
+
+*********************************************************************
+300:* Enter pro
+*********************************************************************
+      GOSUB 8100                         ; * Display screen
+
+*********************************************************************
+310:
+*********************************************************************
+      * Begin NKH01
+      IF OCR.ENTRY THEN
+         IF BILL.VERIFIED OR SKIPPING THEN 
+            SKIPPING = 0
+            IF T.ARRAY<1,OCR.COUNT+1> > "" THEN
+               IF T.ARRAY<1,OCR.COUNT> # T.ARRAY<1,OCR.COUNT+1> THEN
+                  CALL FB.SHOW.INV.IMAGE(T.ARRAY<1,OCR.COUNT+1>) 
+                END                      
+            END ELSE
+               IF OCR.COUNT > ARRAY.COUNT THEN
+                  CALL ELINE('All OCR images are complete')
+                  OCR.ENTRY = 0
+                  GOTO 315
+               END
+            END                          
+            OCR.COUNT += 1 
+            QI = ''
+            PRO = ''
+            BILL.VERIFIED = 0
+            IF OCR.COUNT > ARRAY.COUNT THEN  
+               CALL ELINE('All OCR images are complete')
+               OCR.ENTRY = 0
+               GOTO 315
+            END               
+         END   
+      END
+      
+*********************************************************************      
+315:  
+*********************************************************************        
+      * End NKH01
+      IF PRO.MASKS<1,1>#'' THEN
+         MASK=PRO.MASKS<1,1>
+         IF PRO.MASKS<1,2>#'' THEN
+            OTHER.MASKS=PRO.MASKS
+            DEL OTHER.MASKS<1,1>         ; ** Remove the First one (already used)
+            TEXT='Other Valid Masks: ':CHANGE(OTHER.MASKS<1>,@VM,' ')
+            PRINT @(0,22):@(-4):TEXT[1,59]:
+         END ELSE OTHER.MASKS=''
+      END ELSE
+         OTHER.MASKS=''
+         MASK=STR('-',20)
+      END
+      BACK.FLAG=0
+      HELP="Enter Pro [S]=Scan Carrier [N]=Next Img [E]=Go To Data Entry [X]=Back [EX]=Exit"    ; * NKH01
+      CALL GEN.IN(5,6,MASK,'',Q,0,21,'','',2,5,6,0,QI,HELP,0,23)      ; * DRF02
+      CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+      IF OTHER.MASKS#'' THEN PRINT @(0,22):@(-4):
+      IF QI='' THEN GO 310               ; * Do Nothing Per Brian 12/2/97
+      IF CARRIER.ID='03517' AND LEN(QI)=10 AND NUM(QI) THEN
+         IF QI[9,1]#'/' THEN
+            QI=QI[1,3]:QI[6,5]
+            Q=QI
+         END
+      END
+      IF INDEX(QI,'*',1) THEN
+         CALL ELINE('ERROR! Pro Number cannot contain an *')
+         CC+=1 ; GOSUB PRINT.CC
+         GO 300
+      END
+      IF CARRIER.ID='00041' THEN         ; * JMK03
+         IF QI[LEN(QI)-1,2]='-0' THEN    ; * JMK03
+            QI=QI[1,LEN(QI)-2]:'-O'      ; * JMK03
+            Q=QI                         ; * JMK03
+            PRINT @(5,6):QI:             ; * JMK03
+         END                             ; * JMK03
+      END                                ; * JMK03
+      PLUS.POS=INDEX(QI,'+',1)
+      IF PLUS.POS THEN
+         QI=CHANGE(QI,"+","-")
+         Q=QI
+         PRINT @(5,6):QI:
+      END
+
+      IF QI[LEN(QI),1]='-' AND (CARRIER.ID='00093' OR CARRIER.ID='00017') THEN
+*    If the last char is a - after the +s were change to - then make an x
+         QI=QI[1,LEN(QI)-1]:'X'
+         Q=QI
+         PRINT @(5,6):QI:
+      END
+      IF INDEX(QI,'+',1) THEN
+         CALL ELINE('ERROR! Pro Number cannot contain an +')
+         CC+=1 ; GOSUB PRINT.CC
+         GO 300
+      END
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         * Begin NKH01
+         CASE QI='N'
+            OCR.ENTRY = 1
+*            OCR.COUNT += 1
+            SKIPPING = 1
+            GOTO 300            
+         * End NKH01
+         CASE QI='L'
+            PREC='SELECT FB.BILLS,':CLIENT.ID:' WITH STATUS # "O" AND WITH STATUS # "2" AND WITH STATUS # "3" AND WITH STATUS# "4"'
+            PREC:=' BY STATUS BY CARRIER BY PRO'
+            PREC:=' AND WITH CARRIER.NUM = "':CARRIER.ID:'"'
+            PREC:=' AND WITH VERSION EQ "0"'
+            EXECUTE PREC PASSLIST CAPTURING OUTPUT
+            IF @SELECTED > 0 THEN
+               IF USER='AMY' OR USER='MYRA' THEN
+                  EXECUTE 'LIST FB.BILLS,':CLIENT.ID:' CARRIER.NUM PRO CARRIER.NAME TOTAL 7 TOTAL 8 STATUS (I'
+               END ELSE
+                  EXECUTE 'LIST FB.BILLS,':CLIENT.ID:' PRO 1 CARRIER.NAME TOTAL 7 TOTAL 8 STATUS (I'
+               END
+               CALL ELINE('')
+               CC+=1 ; GOSUB PRINT.CC
+            END ELSE
+               CALL ELINE("All pro's have been verified.")
+               CC+=1 ; GOSUB PRINT.CC
+            END
+            GOTO 300
+         CASE QI='S'
+            CRT @(0,0):@(-3)
+            CALL FB.DRAW.BOX(8,3,67,16,' ','')
+            CALL FB.DRAW.BOX(9,4,65,12,' ','+=+|+=+|')
+            CALL FB.DRAW.BOX(9,4,65,3,' ','+=+|+=+|')
+            CALL FB.PRINT.CENT(9,74,8,"C A R R I E R   C O M M E N T S")
+            FOR I=1 TO 8
+               COMMENT=CARRIER.REC<45,I>'L#60'
+               ROW=I+6
+               CRT @(10,ROW):I'R#2':'|':COMMENT
+            NEXT I
+            CALL ELINE('')
+            GOTO 300
+         CASE QI='E'
+            EXECUTE 'FB.2.1.NW'
+            GOTO 300
+         CASE QI='X'
+            CRT @(5,6):SPACE(21)      ; * DRF02
+            GOTO 200
+         CASE QI='EX'
+            STOP
+      END CASE
+
+      PRO=OCONV(Q,'MCU')
+      CALL CLR.CONTROL(PRO)
+      VIN=PRO
+      CALL CHECK.PRO.NEW(VIN,CARRIER.REC,VOUT)     ; * JMK05
+      CHK.MSG = TRIM(VOUT<1>)
+      CHK.OLD.PRO = VOUT<3>              ; * Mv with Old Pro Number to check
+      IF CHK.MSG # '' THEN
+         CALL ELINE('Error! ':CHK.MSG)
+         CC+=1 ; GOSUB PRINT.CC
+         GO 310
+      END
+      PRO.LEN=LEN(PRO)
+      IF PRO[PRO.LEN-1,2]='BD' THEN BAL.DUE=1 ELSE BAL.DUE=0
+
+      GOSUB PRO.COMPARE    ; * NKH02
+
+      * Determine if pro exits
+      FOR VERSION=9 TO 0 STEP -1
+         PRO.ID=CARRIER.ID:'*':PRO:"*":VERSION
+         READ PRO.REC FROM F.BILLS,PRO.ID THEN
+            IF VERSION NE 0 THEN
+               CALL ELINE('Duplicate pro - Verification not necessary.')
+               CC+=1 ; GOSUB PRINT.CC
+               GOTO 310
+            END ELSE
+               GOTO 320
+            END
+         END
+      NEXT VERSION
+      * Check "Generic Old" Style Pro Number 08/20/96
+      IF INDEX(PRO,'-',1) OR PRO[1,1]='0' THEN
+         CHK.PRO=CHANGE(PRO,'-','')
+         POS.CNTR=0
+      LOOP POS.CNTR+=1 ; UNTIL CHK.PRO[1,1]#'0' DO
+            CHK.PRO=CHK.PRO[2,999]
+         REPEAT
+         FOR VERSION=9 TO 0 STEP -1
+            PRO.ID=CARRIER.ID:'*':CHK.PRO:"*":VERSION
+            READ PRO.REC FROM F.BILLS,PRO.ID THEN
+               PRINT @(5,6):CHK.PRO'L#21':      ; * DRF02
+               IF VERSION NE 0 THEN
+                  CALL ELINE('Duplicate pro - Verification not necessary.')
+                  CC+=1 ; GOSUB PRINT.CC
+                  GOTO 310
+               END ELSE
+                  GOTO 320
+               END
+            END
+         NEXT VERSION
+      END
+      * Check "Old" Style Pro Numbers from Carrier Setup
+      IF CHK.OLD.PRO # '' THEN
+         CHK.TIMES=DCOUNT(CHK.OLD.PRO<1>,@VM)
+         FOR CHK.CNT=1 TO CHK.TIMES
+            PRO=CHK.OLD.PRO<1,CHK.CNT>
+            FOR VERSION=9 TO 0 STEP -1
+               PRO.ID=CARRIER.ID:'*':PRO:"*":VERSION
+               READ PRO.REC FROM F.BILLS,PRO.ID THEN
+                  IF VERSION NE 0 THEN
+                     CALL ELINE('Duplicate pro - Verification not necessary.')
+                     CC+=1 ; GOSUB PRINT.CC
+                     GOTO 310
+                  END ELSE
+                     GOTO 320
+                  END
+               END
+            NEXT VERSION
+         NEXT CHK.CNT
+      END
+
+      ERRMSG='Pro ':PRO.ID:' not on file.'         ; * JMK01
+      READ CRX.REC FROM F.CRX,PRO.ID THEN          ; * JMK01
+         WRONG.CLIENT.ID=CRX.REC<1>      ; * JMK01
+         READ WRONG.CLIENT.REC FROM F.CLIENTS,WRONG.CLIENT.ID THEN     ; * JMK01
+            ERRMSG='This bill was keyed under the account number ':WRONG.CLIENT.ID:'-':WRONG.CLIENT.REC<2>     ; * JMK01
+         END                             ; * JMK01
+      END                                ; * JMK01
+      CALL ELINE(ERRMSG)                 ; * JMK01
+      CC+=1 ; GOSUB PRINT.CC
+      GOTO 300
+
+************************************************************************
+320:
+************************************************************************
+      IF PRO.REC<39>='O' OR PRO.REC<39>='2' OR PRO.REC<39>='3' OR PRO.REC<39>='4' THEN
+         CALL ELINE('Pro already verified.')
+         CC+=1 ; GOSUB PRINT.CC
+         GOTO 310
+      END
+      TEMP.BILL.STS=PRO.REC<68>
+      * Begin NKH01
+      IF BILL.MODE # "A" THEN      
+         IF PRO.REC<68>#BILL.MODE THEN
+            IF BILL.MODE=3 AND PRO.REC<68>=4 ELSE
+               IF PRO.REC<68>=4 THEN TEMP.BILL.STS=3
+               CALL ELINE('This shows that it is status ':TEMP.BILL.STS:'. You are trying to verify it under status ':BILL.MODE)
+               CC+=1 ; GOSUB PRINT.CC
+               GOTO 310
+            END
+         END
+      END
+      * End NKH01
+      IF PRO.REC<39> = 'R' THEN
+         CALL ELINE('Pro is REJECTED PAYMENT! Approve payment before verifying!')
+         CC+=1 ; GOSUB PRINT.CC
+         GOTO 310
+      END
+      IF USER=PRO.REC<53> THEN
+         IF USER='AMY' OR USER='OWEN' OR USER='NPRATT' OR USER='DAVID' OR USER='MYRA' OR USER='MKERBOW' THEN
+            CALL ELINE('WARNING you entered this bill')
+         END ELSE
+            CALL ELINE('User ':PRO.REC<53>:' entered the bill. ':USER:' cannot verify the bill')
+            LINE.OUT=''
+            LINE.OUT<1,10>=123
+            TEMP.ID=USER:"*":DATE():"*":TIME()
+            MVIN=''
+            SUBJ='Entry and verify attempted by same person'
+            TEXT=USER:' attempted to verify a bill entered by ':PRO.REC<53>
+            TEXT<1,-1>='on ':DATE()'D2/':' ':OCONV(TIME(),'MTHS')
+            TEXT<1,-1>='Client ':CLIENT.ID:' Carrier ':CARRIER.ID:' Pro ':PRO.ID
+            MVIN=''
+            MVIN<4>='AFS'
+            MVIN<5>=SUBJ
+            MVIN<6>=TEXT
+            CALL SENDMAIL(MVIN,MVOUT)
+            GOTO 300
+         END
+      END
+      VER.CODE=''
+      VER.CODE=PRO.REC<45>
+      LOCATE 'A' IN VER.CODE<1> BY 'AL' SETTING DUMMY.POS THEN
+         AMT.VERIFIED=1
+      END ELSE
+         AMT.VERIFIED=0
+      END
+      DISP=PRO:' Version ':VERSION
+      CRT @(5,6):DISP
+      GOSUB 8300                         ; * Assign data
+
+*********************************************************************
+400:* Enter bill date
+*********************************************************************
+      IF CL.DATE.VER='Y' THEN
+         MASK='MM/DD/YY'
+         HELP="Enter the Pro Date. [T]=Today. [X]=Back to Pro Entry. [EX]=Exit."
+         CALL GEN.IN(5,7,MASK,'DATE',Q,1,8,'','',2,-8,7,0,QI,HELP,0,23)
+         CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='T'
+               Q=DATE()
+            CASE QI='X'
+               CRT @(5,7):SPACE(8):
+               GOTO 310
+            CASE QI='EX'
+               STOP
+         END CASE
+         BILL.DATE=Q
+         CRT @(5,7):BILL.DATE'D2/'
+         IF BILL.DATE NE PRO.REC<1> THEN
+            MSG='Invalid Date.' ; GOSUB CB
+            GOTO 400
+         END
+      END ELSE
+         IF BACK.FLAG THEN GOTO 310
+      END
+      CRT @(5,7):PRO.REC<1>'D2/'
+      BACK.FLAG=0
+
+*********************************************************************
+450:* Enter due date
+*********************************************************************
+      IF CL.DUE.VER='Y' & CL.DUE.FLAG='Y' THEN
+         MASK='MM/DD/YY'
+         CRT @(14,7):'Due'
+         HELP="Enter the due Date. [T]=Today. [X]=Back to Pro Entry. [EX]=Exit."
+         CALL GEN.IN(18,7,MASK,'DATE',Q,1,8,'','',2,-8,7,0,QI,HELP,0,23)
+         CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='T'
+               Q=DATE()
+            CASE QI='X'
+               CRT @(18,7):SPACE(8):
+               GOTO 400
+            CASE QI='EX'
+               STOP
+         END CASE
+         DUE.DATE=Q
+         CRT @(18,7):DUE.DATE'D2/'
+         IF DUE.DATE NE PRO.REC<38> THEN
+            MSG='Invalid Date.' ; GOSUB CB
+            GOTO 450
+         END
+      END ELSE
+         IF BACK.FLAG THEN GOTO 400
+      END
+      CRT @(18,7):PRO.REC<38>'D2/'
+      BACK.FLAG=0
+
+*********************************************************************
+500:* Enter inbound or outbound
+*********************************************************************
+      IF CL.IO.VER='Y' & CL.IO.FLAG='B' THEN
+         MASK='# '
+         HELP='Enter [I]Inbound [O]Outbound [T]=Third Party [X]Back to Date Entry. [EX]Exit.'
+         CALL GEN.IN(5,8,MASK,'',Q,0,2,'','',2,-2,8,0,QI,HELP,0,23)
+         CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='X'
+               CRT @(5,8):' ':
+               BACK.FLAG=1
+               GOTO 450
+            CASE QI='EX'
+               STOP
+            CASE QI=1 ! QI='I'
+               Q='I'
+            CASE QI=0 ! QI='O'
+               Q='O'
+            CASE QI=3 ! QI='T'
+               Q='T'
+            CASE 1
+               GOTO 500
+         END CASE
+         IN.OUT=Q
+         IF IN.OUT NE PRO.REC<2> THEN
+            MSG='Invalid In/Out Code.' ; GOSUB CB
+            GOTO 500
+         END
+         CRT @(5,8):IN.OUT'L#2'
+      END ELSE
+         IF BACK.FLAG THEN GOTO 400
+      END
+      BACK.FLAG=0
+
+*********************************************************************
+600:* Enter division
+*********************************************************************
+      IF CL.DIV.FLAG NE 'N' & CL.DIV.VER='Y' THEN
+         LOCATE 'DC' IN VER.CODE<1> BY 'AL' SETTING DUMMY.POS THEN
+            * Division was calculated based on expense code
+            IF BACK.FLAG THEN GO 500
+            GO 700
+         END
+         IF CLIENT.ID='01638' THEN
+            MASK=STR('#',6)
+         END ELSE
+            MASK=STR('#',5)
+         END
+         IF CLIENT.ID='00917' OR CLIENT.ID='00918' THEN
+            HELP='Enter the last two digits of the Division from the Blue Code Sheet'
+         END ELSE
+            HELP='Enter Division. [X]=Back. [EX]=Exit'
+         END
+         IF CLIENT.ID='01638' THEN
+            CALL GEN.IN(5,9,MASK,'',Q,1,6,'','',2,-6,9,0,QI,HELP,0,23)
+         END ELSE
+            CALL GEN.IN(5,9,MASK,'',Q,1,5,'','',2,-5,9,0,QI,HELP,0,23)
+         END
+         CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='X'
+               CRT @(5,9):'     '
+               BACK.FLAG=1
+               GOTO 500
+            CASE QI='EX'
+               STOP
+         END CASE
+         IF CLIENT.ID='01638' THEN
+            DIVISION=Q'R%6'
+         END ELSE
+            DIVISION=Q'R%5'
+         END
+
+************************************************************************         
+CHECK.THIS.DIV:
+************************************************************************
+            IF DIVISION NE PRO.REC<9> THEN
+               IF ZIP.DIV.XREF THEN
+                  CHECK.ZIP=DIVISION
+                  READV DIVISION FROM F.ZIP.DIV.XREF,DIVISION,1 THEN
+                     DIV.COUNT = DCOUNT(DIVISION<1>,@VM)
+                     IF DIV.COUNT GT 1 THEN
+                        CALL FB.2.1.GET.DIV(CHECK.ZIP,CLIENT.ID,DIVISION,"E",QI)
+                        IF QI='X' THEN
+                           GOTO 500
+                        END
+                        GOTO CHECK.THIS.DIV
+                     END ELSE
+                        IF DIVISION=CHECK.ZIP THEN
+                           MSG='Invalid Division.' ; GOSUB CB
+                           GOTO 600
+                        END ELSE
+                           GOTO CHECK.THIS.DIV
+                        END
+                     END
+                  END
+               END
+               MSG='Invalid Division.' ; GOSUB CB
+               GOTO 600
+            END
+         
+         READ DIV.REC FROM F.DIV,DIVISION ELSE DIV.REC=''
+         CRT @(5,9):DIVISION
+         IF IN.OUT='O' THEN
+            CRT @(5,10):ORIG.ZIP'L#6':' ':ORIG.CITY:', ':ORIG.STATE:@(-4)
+            GOTO 800
+         END ELSE
+            CRT @(5,11):DEST.ZIP'L#6':' ':DEST.CITY:', ':DEST.STATE:@(-4):
+            GOTO 700
+         END
+      END ELSE
+         IF BACK.FLAG THEN GOTO 500
+      END
+      BACK.FLAG=0
+
+**********************************************************************
+700: * Enter origin zip
+*********************************************************************
+      IF CL.ORIG.FLAG EQ 'Y' AND CL.ORIG.VER EQ 'Y' THEN        
+         IF (IN.OUT='I') OR (IN.OUT='T') OR (IN.OUT='O' AND CL.ZIP.DEF<1,1> NE PRO.REC<3>) THEN
+            HELP="Enter the Origination Zip Code. [X]=Back. [EX]=Exit."
+            MASK=STR('#',ZIP.DIGITS)
+            CALL GEN.IN(5,10,MASK,'',Q,1,ZIP.DIGITS,'R','0',2,5,10,0,QI,HELP,0,23)
+            CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+            QI=OCONV(QI,'MCU')
+            IF QI MATCHES '5N"-"' THEN
+               QI=CHANGE(QI,'-','M')
+            END
+            IF CLIENT.ID='00841' AND CARRIER.ID='00030' AND IN.OUT='O' AND QI='67101' THEN
+               QI='67107'
+            END
+            BEGIN CASE
+               CASE QI='X'
+                  CRT @(5,10):@(-4):
+                  BACK.FLAG=1
+                  GOTO 600
+               CASE QI='EX'
+                  STOP
+               CASE NUM(QI)
+                  Q=QI
+               CASE QI MATCHES '1A1N1A1N1A1N'
+                  Q=QI
+               CASE QI MATCHES '5N"M"'
+                  Q=QI
+            END CASE
+         END ELSE
+            IF BACK.FLAG THEN GOTO 600
+            Q=PRO.REC<3>
+         END
+         ORIG.ZIP=Q
+         IF ORIG.ZIP NE PRO.REC<3> THEN
+            MSG='Invalid Origin Zip Code.' ; GOSUB CB
+            GOTO 700
+         END
+         DESC=ORIG.ZIP ZIP.MASK:' '
+         IF ZIP.DIGITS=5 OR ZIP.DIGITS=6 THEN DESC=DESC:ORIG.CITY:', '
+         DESC=DESC:ORIG.STATE
+         CRT @(5,10):DESC:@(-4)
+      END ELSE
+         IF BACK.FLAG THEN GOTO 600
+      END
+      BACK.FLAG=0
+
+*********************************************************************
+800:* Enter destination zip
+*********************************************************************
+      IF CL.DEST.FLAG EQ 'Y' AND CL.DEST.VER EQ 'Y' THEN
+         IF (IN.OUT='O') OR (IN.OUT='T') OR (IN.OUT='I' AND CL.ZIP.DEF<1,1> NE PRO.REC<4>) THEN
+            HELP="Enter the Destination Zip Code. [X]=Back. [EX]=Exit."
+            MASK=STR('#',ZIP.DIGITS)
+            CALL GEN.IN(5,11,MASK,'',Q,1,ZIP.DIGITS,'R','0',2,5,11,0,QI,HELP,0,23)
+            CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+            QI=OCONV(QI,'MCU')
+            IF QI MATCHES '5N"-"' THEN
+               QI=CHANGE(QI,'-','M')
+            END
+            IF CLIENT.ID='00841' AND CARRIER.ID='00030' AND IN.OUT='I' AND QI='67101' THEN
+               QI='67107'
+            END
+            BEGIN CASE
+               CASE QI='X'
+                  CRT @(5,11):@(-4):
+                  BACK.FLAG=1
+                  GOTO 700
+               CASE QI='EX'
+                  STOP
+               CASE NUM(QI)
+                  Q=QI
+               CASE QI MATCHES '1A1N1A1N1A1N'
+                  Q=QI
+               CASE QI MATCHES '5N"M"'
+                  Q=QI
+               CASE 1
+                  GOTO 800
+            END CASE
+         END ELSE
+            IF BACK.FLAG THEN GOTO 700
+            Q=PRO.REC<4>
+         END
+         DEST.ZIP=Q
+         IF DEST.ZIP NE PRO.REC<4> THEN
+            MSG='Invalid Destination Zip Code.' ; GOSUB CB
+            GOTO 800
+         END
+         DESC=DEST.ZIP ZIP.MASK:' '
+         IF ZIP.DIGITS=5 OR ZIP.DIGITS=6 THEN DESC=DESC:DEST.CITY:', '
+         DESC=DESC:DEST.STATE
+         CRT @(5,11):DESC:@(-4):
+      END ELSE
+         IF BACK.FLAG THEN GOTO 700
+      END
+      BACK.FLAG=0
+
+*********************************************************************
+900:* Enter expense code
+*********************************************************************
+      IF CL.EXP.FLAG='Y' & CL.EXP.VER='Y' THEN
+         HELP="Enter the Expense Code. [X]=Back. [EX]=Exit."
+         MASK=STR('-',50)
+         IF CLIENT.ID='00883' THEN
+            BEGIN CASE
+               CASE CARRIER.ID='00041'
+                  MASK='__7777777'
+                  MASK=MASK'L#50'
+               CASE IN.OUT='I'
+                  MASK='__0500407'
+                  MASK=MASK'L#50'
+            END CASE
+         END
+         IF CLIENT.ID='00760'  THEN
+            VIN = CLIENT.ID
+            IF CL.DIV.FLAG = 'Y' AND DIVISION #'' THEN
+               VIN<2> = DIVISION
+               VIN<3> = DIV.REC<8>
+            END
+            VIN<4> = CARRIER.ID
+            VIN<5> = CARRIER.NAME
+            VIN<6> = CARRIER.MODE        ; * Transportation Mode
+            VIN<7> = IN.OUT
+            VIN<8> = VC.CODE
+            VIN<9> = VC.DESC
+            VIN<10> = ORIG.ZIP
+            VIN<11> = ORIG.STATE
+            VIN<12> = DEST.ZIP
+            VIN<13> = DEST.STATE
+            VIN<14> = 'DEFAULT'
+            VIN<15> = EXP.CODE
+            VIN<17> = ''                 ; * USED FOR EDI
+            VIN<19> = BILL.DATE
+            VIN<21>=DIV.REC<11>
+            VIN<22>=CONSIGN.DESC
+            VIN<23>=PRO
+            VIN<18>=BOL                  ; * Only user for Daws (01084) right now
+            CALL GET.EXPENSE(VIN,VOUT)
+            MASK = VOUT<1>
+            MULTI.CODE = VOUT<8>
+            MULTI.PERCENT = VOUT<9>
+            CALL GEN.IN(5,12,MASK,'',Q,0,50,'','',2,5,12,0,QI,HELP,0,23)
+         END ELSE
+            CALL GEN.IN(5,12,MASK,'',Q,1,50,'','',2,-50,12,0,QI,HELP,0,23)
+         END
+         IF INDEX(QI,'+',1) THEN
+            QI=CHANGE(QI,'+','-')
+            Q=QI
+            CRT @(5,12):QI:
+         END
+         CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+         QI=OCONV(QI,'MCU')
+         
+         BEGIN CASE
+            CASE QI='X'
+               BACK.FLAG=1
+               CRT @(5,12):@(-4):
+               GOTO 800
+            CASE QI='EX'
+               STOP
+         END CASE
+                 
+         IF CLIENT.ID='00883' THEN
+            BEGIN CASE
+               CASE Q MATCHES '2N'
+                  BEGIN CASE
+                     CASE CARRIER.ID='00041'
+                        Q = Q:'7777777'
+                     CASE IN.OUT='I'
+                        Q = Q:'0500407'
+                  END CASE
+               CASE LEN(Q) = 3
+                  IF Q[3,1]='7' THEN Q = Q:'777777'
+                  IF Q[3,1]='9' THEN Q = Q:'999999'
+            END CASE
+         END
+                  
+         IF  CLIENT.ID='00760'  OR CLIENT.ID='01250'  THEN
+            EXP.CODE = QI
+            VIN<14> = 'FORMAT'
+            IF  CLIENT.ID='00760' OR CLIENT.ID='01250'  THEN
+               VIN<14>='TRANSLATE'
+            END
+            VIN<15> = EXP.CODE
+            VIN<17> = ''                 ; * USED FOR EDI
+            CALL GET.EXPENSE(VIN,VOUT)
+            Q=VOUT<1>
+            ORIG.EXP.CODE=VOUT<7>
+         END
+         EXP.CODE=Q
+
+         IF EXP.CODE:'A' NE PRO.REC<5>:'A' THEN
+            MSG='Invalid Expense Code.' ; GOSUB CB
+            GOTO 900
+         END
+         
+         READV EXP.CODE.DESC FROM F.EXP,EXP.CODE,1 ELSE EXP.CODE.DESC='Unknown'
+         CRT @(5,12):EXP.CODE:' ':EXP.CODE.DESC:@(-4):
+         BACK.FLAG=0
+      END ELSE
+         IF BACK.FLAG THEN GOTO 800
+      END
+
+**********************************************************************
+925:* Enter class
+*********************************************************************
+      IF CL.CLS.FLAG='Y' & CL.CLS.VER='Y' THEN
+         HELP="Enter the class. [X]=Back. [EX]=Exit."
+         MASK=STR('-',5)
+         CALL GEN.IN(5,14,MASK,'',Q,1,5,'','',2,-5,12,0,QI,HELP,0,23)
+         CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='X'
+               BACK.FLAG=1
+               CRT @(5,14):@(-4):
+               GOTO 900
+            CASE QI='EX'
+               STOP
+         END CASE
+         CLASS=Q
+         IF CLASS NE PRO.REC<50> THEN
+            MSG='Invalid Class.' ; GOSUB CB
+            GOTO 925
+         END
+      END ELSE
+         IF BACK.FLAG THEN GOTO 900
+      END
+
+*********************************************************************
+950:* Enter bill of lading code
+*********************************************************************
+      IF CL.BOL.VER='Y' & CL.BOL.FLAG='Y' THEN
+         VIN=0
+         VIN<2>=USER         
+         VIN<4>=IN.OUT
+         VIN<13>=BOL.DIST                ; * JMK04
+         IF CLIENT.ID='01349' OR CLIENT.ID='01350' THEN      ; * JMK04
+            IF BOL.DIST<1,1>='' THEN     ; * JMK04
+               RR.PRO=PRO                ; * JMK04
+               RR.PRO.NO=CHANGE(RR.PRO,'-','')     ; * JMK04
+               RR.PRO.NO=CHANGE(RR.PRO.NO,' ','')  ; * JMK04
+               CHR.POS=0                 ; * JMK04
+               CHR.EXIT=0                ; * JMK04
+               LOOP                      ; * JMK04
+                  CHR.POS+=1             ; * JMK04
+                  CHR=RR.PRO.NO[CHR.POS,1]         ; * JMK04
+                  IF CHR#'0' THEN CHR.EXIT=1       ; * JMK04
+                  IF CHR.POS>LEN(RR.PRO.NO) THEN CHR.EXIT=1  ; * JMK04
+               UNTIL CHR.EXIT DO         ; * JMK04
+               REPEAT                    ; * JMK04
+               RR.PRO.NO=RR.PRO.NO[CHR.POS,9999]   ; * JMK04
+               IF RR.PRO.NO#'' THEN      ; * JMK04
+                  OPEN '','PRO.BOL.XREF' TO F.PBX ELSE       ; * JMK04
+                     CALL OPEN.ABORT('PRO.BOL.XREF',PROG.NAME)         ; * JMK04
+                  END                    ; * JMK04
+                  READ PBX.REC FROM F.PBX,RR.PRO.NO THEN     ; * JMK04
+                     BOL=PBX.REC<1>      ; * JMK04
+                     BOL.DIST=PBX.REC<2>           ; * JMK04
+                     PREV.BOL=BOL        ; * JMK04
+                     PREV.BOL.DIST=BOL.DIST        ; * JMK04
+                     VIN<13>=BOL.DIST    ; * JMK04
+                  END                    ; * JMK04
+               END                       ; * JMK04
+            END                          ; * JMK04
+         END                             ; * JMK04
+         CALL FB.2.1.BOL.NEW(VIN,VOUT,CLIENT.ID,MAT CLIENT.REC,BOL,QI,'V')
+         BOL.DIST=VOUT<3>                ; * JMK04
+         CC+=VOUT<1> ; GOSUB PRINT.CC
+         BEGIN CASE
+            CASE QI='EX'
+               STOP
+            CASE QI='X'
+               BACK.FLAG=1
+               GOTO 925
+         END CASE
+      END ELSE
+         IF BACK.FLAG THEN GOTO 925
+      END
+      BACK.FLAG=0
+
+*********************************************************************
+975:* Verify discounts
+*********************************************************************
+      IF CL.DISC.VER='Y' & CL.DISC.FLAG='Y' THEN
+         CALL FB.2.2.DISC(DISC.PERC,DISC.DET,ACTUAL.CHG,QI)
+         IF QI='X' THEN
+            BACK.FLAG=1
+            GOTO 950
+         END
+      END ELSE
+         IF BACK.FLAG THEN GOTO 950
+      END
+      BACK.FLAG=0
+
+*********************************************************************
+1000:* Enter weight
+*********************************************************************
+      IF CL.WT.VER='Y' & CL.WT.FLAG='Y' THEN
+         HELP='Enter the shipment wght. Enter a - behind the wght to convert from kilo to lbs.'
+         MASK=SPACE(6)
+         CALL GEN.IN(0,19,MASK,'',Q,1,7,'','',2,-6,19,0,QI,HELP,0,23)
+         CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='X'
+               CRT @(0,19):'      ':
+               BACK.FLAG=1
+               GOTO 975
+            CASE QI='EX'
+               STOP
+            CASE QI[LEN(QI),1]='-'
+               QI=QI[1,LEN(QI)-1]
+               IF NUM(QI) THEN
+                  QI=QI/.45359
+                  QI=QI'R0'
+                  Q=QI
+               END ELSE
+                  GOTO 1000
+               END
+            CASE NUM(QI)
+               Q=QI
+            CASE 1
+               GOTO 1000
+         END CASE
+         WEIGHT=Q
+         IF WEIGHT NE PRO.REC<6> THEN
+            MSG='Invalid Weight.' ; GOSUB CB
+            GOTO 1000
+         END
+      END ELSE
+         IF BACK.FLAG THEN GOTO 950
+      END
+      CRT @(0,19):WEIGHT'R#6'
+      BACK.FLAG=0
+      CALL FB.CLEAR.WINDOW
+
+*********************************************************************
+1100:* Enter carrier charge
+*********************************************************************
+      HELP="Enter the Carrier's Charge. [X]=Back. [EX]=Exit."
+      IF BACK.FLAG THEN GO 1000
+      IF AMT.VERIFIED THEN CRT @(6,19):PRO.REC<7>'R26#9'
+      GO 1200
+      LOCATE 'CC' IN VER.CODE<1> BY 'AL' SETTING DUMMY.POS THEN
+         * Carrier charge was calculated
+         IF BACK.FLAG THEN GO 1000
+         CRT @(6,19):PRO.REC<7>'R26#9'
+         GO 1200
+      END
+      
+************************************************************************      
+1150:
+************************************************************************
+      MASK=0'R26,#9'
+      CALL GEN.IN(6,19,MASK'R26#9','AMT2',Q,1,9,'','',2,-9,
+         19,0,QI,HELP,0,23)
+      CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(6,19):'         ':
+            BACK.FLAG=1
+            GOTO 1000
+         CASE QI='EX'
+            STOP
+      END CASE
+      CARRIER.CHG=Q'R0'
+      IF CARRIER.CHG NE PRO.REC<7> THEN
+         MSG='Invalid Carrier Charge.' ; GOSUB CB
+         GOTO 1100
+      END
+      CRT @(6,19):CARRIER.CHG'R26#9'
+      BACK.FLAG=0
+
+*********************************************************************
+1200:* Enter actual charge
+*********************************************************************
+      HELP="Enter the Actual Charge. [X]=Back. [EX]=Exit."
+      IF AMT.VERIFIED THEN
+         IF BACK.FLAG THEN GO 1100
+         CRT @(15,19):PRO.REC<8>'R26#9'
+         GO 1250
+      END
+      MASK=0'R26,#9'
+      FLAT.RATE=0
+      CALL GEN.IN(15,19,MASK'R26#9','AMT2',Q,0,9,'','',2,-9,
+         19,0,QI,HELP,0,23)
+      CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+      QI=OCONV(QI,'MCU')
+      IF QI[LEN(QI),1]='+' THEN
+         FLAT.RATE=1
+         QI=QI[1,LEN(QI)-1]
+      END
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(15,19):'         ':
+            BACK.FLAG=1
+            GOTO 1100
+         CASE QI='EX'
+            STOP
+      END CASE
+      IF Q[LEN(Q),1]='+' THEN Q=Q[1,LEN(Q)-1]
+      IF CLIENT.ID='01380' AND (CARRIER.ID='08354' OR CARRIER.ID='01906'OR CARRIER.ID='15994' OR CARRIER.ID='16058') AND PRO.REC<2>='O' THEN    ; * DRF01
+         Q=Q*.8
+         Q=Q'R0'
+      END
+      ACTUAL.CHG=Q'R0'
+      FLAT.RATE.MATCH=1
+      IF FLAT.RATE THEN
+         IF PRO.REC<119>#1 THEN FLAT.RATE.MATCH=0
+      END ELSE
+         IF PRO.REC<119>=1 THEN FLAT.RATE.MATCH=0
+      END
+      IF ACTUAL.CHG NE PRO.REC<8> OR NOT(FLAT.RATE.MATCH) THEN
+            MSG='Invalid Actual Charge.' ; GOSUB CB
+            CALL FB.CLEAR.WINDOW
+            GOTO 1200
+      END
+      CRT @(15,19):ACTUAL.CHG'R26#9'
+      IF FLAT.RATE THEN
+         CRT @(24,19):'F'
+      END ELSE
+         CRT @(24,19):' '
+      END
+
+      BACK.FLAG=0
+      
+************************************************************************
+1250:* Enter misrouting charge
+************************************************************************
+      IF CLIENT.REC(69)='Y' THEN
+         CRT @(33,16):'Misrouting Approved'
+         CRT @(33,17):' Charges    Carrier'
+         CRT @(33,18):'----------  -------'
+         LOCATE 'M' IN VER.CODE<1> BY 'AL' SETTING DUMMY.POS THEN
+            CRT @(33,19):PRO.REC<63>'R26#10'
+            IF PRO.REC<63>+0 > 0 THEN
+               READV MISROUTE.NAME FROM F.CARRIERS,PRO.REC<69>,1 ELSE
+                  MISROUTE.NAME='Unkown Carrier'
+               END
+               CRT @(46,19):PRO.REC<69>'R%5':' ':MISROUTE.NAME'L#20'
+            END ELSE
+               CRT @(46,19):SPACE(26)
+            END
+         END ELSE
+            HELP="Enter the Misrouting Charge. [X]=Back. [EX]=Exit."
+            MASK=0'R26,#10'
+            CALL GEN.IN(33,19,MASK,'AMT2',Q,0,10,'','',2,-10,19,0,QI,HELP,0,23)
+            CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+            QI=OCONV(QI,'MCU')
+            BEGIN CASE
+               CASE QI='X'
+                  CRT @(33,19):'          ':
+                  BACK.FLAG=1
+                  GOTO 1200
+               CASE QI='EX'
+                  STOP
+               CASE QI=''
+                  Q=0
+            END CASE
+            MISROUTING=Q'R0'
+            IF MISROUTING NE PRO.REC<63>+0 THEN
+               MSG='Invalid Misrouting Charge.' ; GOSUB CB
+               GOTO 1250
+            END
+            CRT @(33,19):MISROUTING'R26#10'
+            BACK.FLAG=0
+            IF MISROUTING+0#0 THEN
+            
+************************************************************************            
+ENTER.MISROUTE.CARRIER:
+************************************************************************
+               MASK='#####'
+               HELP = "Enter the approved carrier for the misroute."
+               CALL GEN.IN(46,19,MASK,'',Q,0,20,'','',2,-5,19,0,QI,HELP,0,23)
+               CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+               QI = OCONV(QI,'MCU')
+               BEGIN CASE
+                  CASE QI = 'EX'
+                     STOP
+                  CASE QI = 'X'
+                     CRT @(46,19):SPACE(26)
+                     BACKFLAG=1
+                     GOTO 1250
+                  CASE QI = ''
+                     CALL ELINE('Entry is required')
+                     GOTO ENTER.MISROUTE.CARRIER
+                  CASE NOT(QI MATCHES "0N")
+                     VIN=0               ; * Starting Chars In
+                     VOUT=''
+                     CALL SOUNDEX.DISPLAY.NEW(VIN,VOUT,QI,'CARRIERS','SDX.CARRIER,NAME','1,2,3,4',ITEM.LIST)
+                     CC+=VOUT<1> ; GOSUB PRINT.CC
+                     GOSUB 8100
+                     CRT @(33,16):'Misrouting Approved'
+                     CRT @(33,17):' Charges    Carrier'
+                     CRT @(33,18):'----------  -------'
+                     BEGIN CASE
+                        CASE ITEM.LIST = ''
+                           GOTO ENTER.MISROUTE.CARRIER
+                        CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                           GOTO ENTER.MISROUTE.CARRIER
+                        CASE ITEM.LIST # ''
+                           IF NUM(ITEM.LIST<1,1>) THEN SND.DATA=ITEM.LIST<1,1> ; GOSUB SEND.DATA
+                           GOTO ENTER.MISROUTE.CARRIER
+                     END CASE
+                  CASE NUM(QI)
+                     Q = QI'R%5'
+                  CASE 1
+                     GOTO ENTER.MISROUTE.CARRIER
+               END CASE
+               MISROUTE.CARRIER = Q
+               IF MISROUTE.CARRIER NE PRO.REC<69> THEN
+                  MSG='Invalid Misroute Carrier.' ; GOSUB CB
+                  GOTO ENTER.MISROUTE.CARRIER
+               END
+
+               * Get Carrier Data
+               READV MISROUTE.NAME FROM F.CARRIERS,MISROUTE.CARRIER,1 ELSE
+                  MISTOURE.NAME='Unkown Carrier'
+               END
+               CRT @(46,19):MISROUTE.CARRIER'R%5':' ':MISROUTE.NAME'L#20'
+            END
+         END
+         IF BACK.FLAG THEN GO 1200
+      END ELSE
+         IF BACK.FLAG THEN GO 1200
+      END
+
+************************************************************************
+1300:* Verify variance
+************************************************************************
+      VARIANCE=(CARRIER.CHG-ACTUAL.CHG)'R0'
+      CRT @(25,19):VARIANCE'R26#7':@(-3)
+      IF AMT.VERIFIED THEN
+         IF BACK.FLAG THEN GO 1250
+         GO 1400
+      END
+      LOCATE 'VD' IN VER.CODE<1> BY 'AL' SETTING DUMMY.POS THEN
+         * Variance distribution was calculated
+         IF BACK.FLAG THEN GO 1250
+         GO 1400
+      END
+*      IF VARIANCE NE 0 AND BILL.MODE # '3' THEN      ; * NKH01
+      IF VARIANCE NE 0 AND PRO.REC<68> # '3' THEN     ; * NKH01
+         VIN=0
+         VIN<2>=USER
+         VIN<3>=VARIANCE
+         CALL FB.2.2.VARIANCE.NEW(VIN,VOUT,BAL.DUE,VAR.ARR,QI)
+         CC+=VOUT<1> ; GOSUB PRINT.CC
+         IF QI='X' THEN
+            GOSUB 8100                   ; * Display screen
+            BACK.FLAG=1
+            GOTO 1250
+         END
+         IF QI='EX' THEN STOP
+         GOSUB 8100
+      END
+      BACK.FLAG=0
+      
+************************************************************************
+1400:* Expense distributions
+************************************************************************
+      IF CL.EXP.DIST.VER='Y' & DTAB NE '' THEN
+         QI='V'
+         VIN=0
+         VIN<2>=USER
+         CALL FB.2.1.DIST.NEW(VIN,VOUT,F.DIV,F.EXP,ACTUAL.CHG,DTAB,QI)
+         CC+=VOUT<1> ; GOSUB PRINT.CC
+         IF QI='X' THEN
+            BACK.FLAG=1
+            GOTO 1300
+         END
+      END ELSE
+         IF BACK.FLAG THEN GOTO 1300
+      END
+
+************************************************************************
+1500:* Variance distributions
+************************************************************************
+      QI=''
+      IF CL.VAR.FLAG='Y' & VERSION=0 THEN
+         IF CL.LOG.VER='Y' & VAR.ARR<3> NE 0 THEN
+            BACK.FLAG=0
+            QI='V'
+            VIN=0
+            VIN<2>=USER
+            CALL FB.2.1.VAR.DIST.NEW(VIN,VOUT,F.VAR,VAR.ARR<3>,VAR.REC,QI)
+            CC+=VOUT<1> ; GOSUB PRINT.CC
+            IF QI='X' THEN
+               BACK.FLAG=1
+               GOTO 1400
+            END
+            IF QI='EX' THEN STOP
+         END ELSE
+            IF BACK.FLAG THEN GOTO 1400
+         END
+      END ELSE
+         IF BACK.FLAG THEN GOTO 1400
+      END
+
+************************************************************************
+1600:* Verify air shipment pieces
+************************************************************************
+      IF T.MODE='AIR' & CL.AIR.VER='Y' THEN
+         BACK.FLAG=0
+         HELP='Enter the number of air pieces. [X]=Back [EX]=Exit'
+         CALL GEN.IN(0,21,SPACE(7),'',Q,1,7,'','',2,-7,21,0,QI,HELP,0,23)
+         CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='X'
+               CRT @(0,21):'       ':
+               BACK.FLAG=1
+               GOTO 1500
+            CASE QI='EX'
+               STOP
+            CASE NUM(QI)
+               Q=QI
+            CASE 1
+               GOTO 1600
+         END CASE
+         AIR.PIECES=Q
+         IF AIR.PIECES NE PRO.REC<57> THEN
+            MSG='Invalid Air Pieces.' ; GOSUB CB
+            GOTO 1600
+         END
+      END ELSE
+         IF BACK.FLAG THEN GOTO 1500
+      END
+      CRT @(0,21):AIR.PIECES'R#7'
+
+************************************************************************
+ENTER.DUTY:*
+************************************************************************
+      IF PRO.REC<3> MATCH('1A1N1A1N1A1N')  OR PRO.REC<4> MATCH('1A1N1A1N1A1N') THEN
+         QI='V'
+         VIN=0
+         VIN<2>=USER
+         VIN<3>=IN.OUT
+         VIN<4>=ACTUAL.CHG
+         VIN<5>=CLIENT.ID
+         VIN<6>=ORIG.ZIP
+         VIN<7>=DEST.ZIP
+         CALL FB.2.1.DUTY(VIN,VOUT,DIDUTY,DODUTY,QI)
+         CC+=VOUT<1> ; GOSUB PRINT.CC
+         IF QI='X' THEN
+            BACK.FLAG=1
+            GOTO 1500
+         END
+      END ELSE
+         IF BACK.FLAG THEN GOTO 1500
+      END
+      
+************************************************************************
+4900:* Update?
+************************************************************************
+      BILL.VERIFIED = 1 ; * NKH01
+      HELP='Enter Y to update. N=No update. [X]=Back. [EX]=Exit.'
+      BEGIN CASE
+         CASE PRO.REC<68>='1'
+            TEXT.LINE='Stack 1 - This bill does NOT need to go to an auditor.'
+         CASE PRO.REC<68>='2'
+            TEXT.LINE='Stack 2 - This bill was audited but class needs to be verified by audit.'
+         CASE PRO.REC<68>='3'
+            TEXT.LINE='Stack 3 - This bill audited. But the amount did not match.'
+         CASE PRO.REC<68>='4'
+            TEXT.LINE='Stack 3 - This bill did not audit. An auditor needs to approve it.'
+         CASE 1
+            TEXT.LINE='This bill did not have a status CALL PROGRAMMING.'
+      END CASE
+      CRT @(0,21):TEXT.LINE:@(-3)
+      CALL GEN.IN(0,22,'Verified? Y ','',Q,0,2,'','',2,-2,22,1,QI,HELP,0,23)
+      CC+=LEN(QI)+1 ; GOSUB PRINT.CC
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='N'
+            GOSUB 8100                   ; * Display screen
+         CASE QI='X'
+            BACK.FLAG=1
+            GOTO ENTER.DUTY
+         CASE QI='Y' ! QI=''
+            BILL.STATUS=PRO.REC<68>
+            IF BILL.STATUS='1' THEN
+               BILL.STATUS='O'
+               IF CLIENT.ID='00574' THEN
+                  IF DATE() LE CLIENT.REC(82) THEN
+                     PRO.REC<30>=CLIENT.REC(82)+1
+                  END ELSE
+                     PRO.REC<30>=DATE()
+                  END
+               END
+            END
+            PRO.REC<39>=BILL.STATUS
+            PRO.REC<54>=USER
+            PRO.REC<84,-1>=USER          ; * Update Each Time bill is Filed
+            PRO.REC<85,-1>=TIME()        ; * Update Each Time bill is Filed
+            PRO.REC<86,-1>=DATE()        ; * Update Each Time bill is Filed
+            PRO.REC<98>=PRO.REC<8>
+            WRITE PRO.REC ON F.BILLS,PRO.ID
+            WRITE PRO.REC ON F.HIST,PRO.ID
+            WRITEV BILL.STATUS ON F.CRX,PRO.ID,39
+
+            IF CLIENT.ID[1,2]#'99' THEN
+               TVIN=''
+               TVOUT=''
+               TVIN<1>=CLIENT.ID
+               TVIN<2>=PRO.ID
+               TVIN<3>=USER
+               TVIN<4>=USER.DPT
+               TVIN<5>=DATE()
+               TVIN<6>=TIME()
+               TVIN<7>='1'
+               TVIN<8>=PROG.NAME
+               TVIN<9>=PROG.DESC
+               TVIN<10>=PACK.NAME
+               TVIN<11>=CO.NAME
+               TVIN<12>="VER"              ;* Reason for touch is Verify
+               CALL UPD.FB.BILLS.ACCESS(TVIN,TVOUT,CLIENT.ITM,CARRIER.REC,PRO.REC,F.ACCESS,F.TABLES)
+            END                             
+
+            VIN=USER                     ; * User 'MCU' That Gets Credit
+            VIN<2>=TIME()                ; * Current Time
+            VIN<3>=DATE()                ; * Bill Date (Use Today)
+            VIN<4>='V'                   ; * "V"erified
+            VIN<5>=CLIENT.ID
+            VIN<6>=CC
+            VIN<7>=1                     ; * New Bill Verified
+            VIN<8>=LAST.CLIENT.KEYED
+            VIN<9>=CLIENT.START.TIME
+            VIN<10>=CHR.START.TIME       ; * JMK02
+            VIN<11>=TIME()               ; * JMK02
+            CALL EMP.PERF.UPDATE(VIN,VOUT,F.EMP.HR.PERF,F.EMP.DY.PERF)
+            LAST.CLIENT.KEYED=VOUT
+            CC=0
+            CHR.START.TIME=TIME()        ; * JMK02
+            GOSUB 8100                   ; * Display screen
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            CC+=1 ; GOSUB PRINT.CC
+            GOTO 4900
+      END CASE
+      GOTO 310
+
+************************************************************************
+8000:* Initialize data
+************************************************************************
+      PRO='' ; BILL.DATE='' ; DUE.DATE='' ; IN.OUT='' ; DIVISION=''
+      EXP.CODE='' ; CONSIGN.DESC='' ; EXP.CODE.DESC='' ; BOL='' ; BOL.DIST=''    ; * JMK04
+      WEIGHT='' ; CARRIER.CHG='' ; ACTUAL.CHG='' ; MISROUTING='' ; VARIANCE=''
+      VAR.ARR='' ; DTAB='' ; CHECK.NUM='' ; CHECK.AMT='' ; CHECK.DATE=''
+      ORIG.ZIP='' ; DEST.ZIP='' ; ORIG.CITY='' ; DEST.CITY=''
+      ORIG.STATE='' ; DEST.STATE='' ; VOID.DESC=''
+      DISC.DET='' ; DISC.PERC=0 ; VAR.REC='' ; CLASS='' ; AIR.PIECES=''
+      DIDUTY='' ; DODUTY=''
+      DIV.REC=''
+      VC.DESC=''
+      VC.CODE=''
+      RETURN
+
+************************************************************************
+8100:* Display screen
+************************************************************************
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,3):'Client number  ':CLIENT.ID:' ':HLB:CL.NAME:HLA:@(-4)     ;* NPR01
+      CRT @(70,3):' Stack ':BILL.MODE'R#2'
+      CRT @(0,4):'Carrier number ':CARRIER.ID:' ':CARRIER.NAME:' ':CARRIER.CITY:', ':CARRIER.STATE:@(-4):
+      CRT @(0,5):STR('-',79)
+      CRT @(0,6):'Pro..'
+      CRT @(0,7):'Date.'
+      CRT @(0,8):'IOT..'
+      CRT @(0,9):'Div..'
+      CRT @(0,10):'Orig.'
+      CRT @(0,11):'Dest.'
+      CRT @(0,12):'Exp..'
+      CRT @(0,14):'Clas.'
+      CRT @(0,15):'Mile.'
+      CRT @(0,16):'        Carrier  Actual'
+      CRT @(0,17):'  Wgt   Charges  Charges   Var  '
+      CRT @(0,18):' ----- -------- -------- -------'
+      CRT @(0,20):'Air Pcs'
+      IF BAL.DUE THEN CRT @(25,16):'Bal Due'
+      RETURN
+
+************************************************************************
+8300:* Assign data
+************************************************************************
+      BILL.DATE=PRO.REC<1> ; DUE.DATE=PRO.REC<38> ; IN.OUT=PRO.REC<2>
+      ORIG.ZIP=PRO.REC<3> ; DEST.ZIP=PRO.REC<4> ; EXP.CODE=PRO.REC<5>
+      WEIGHT=PRO.REC<6> ; CARRIER.CHG=PRO.REC<7> ; ACTUAL.CHG=PRO.REC<8>
+      MISROUTING=PRO.REC<63>
+      DIVISION=PRO.REC<9> ; VAR.ARR<1>=-PRO.REC<10> ; VAR.ARR<2>=-PRO.REC<11>
+      VAR.ARR<3>=-PRO.REC<12> ; BOL=PRO.REC<16> ; CONSIGN.DESC=PRO.REC<17>
+      ORIG.STATE=PRO.REC<25> ; DEST.STATE=PRO.REC<26>
+      ORIG.CITY=PRO.REC<27> ; DEST.CITY=PRO.REC<28> ; CLASS=PRO.REC<50>
+      AIR.PIECES=PRO.REC<57>
+      BOL.DIST=PRO.REC<205>              ; * JMK04
+
+      DTAB=PRO.REC<31>:CHAR(254):CHAR(254):PRO.REC<33>
+      DIDUTY<2>=PRO.REC<124>:CHAR(253):PRO.REC<125>:CHAR(253):PRO.REC<126>:CHAR(253):PRO.REC<127>:CHAR(253):PRO.REC<128>
+      DODUTY<2>=PRO.REC<125>:CHAR(253):PRO.REC<126>:CHAR(253):PRO.REC<127>:CHAR(253):PRO.REC<128>
+      VAR.ARR<4>=-PRO.REC<34> ; VAR.ARR<5>=-PRO.REC<35> ; VAR.ARR<6>=-PRO.REC<36>
+      VAR.ARR<7>=PRO.REC<41,1> ; VAR.ARR<8>=PRO.REC<41,2>
+      VAR.ARR<9>=PRO.REC<41,3> ; VOID.DESC=PRO.REC<42>
+      VAR.REC<1>=PRO.REC<51> ; VAR.REC<2>=PRO.REC<52>
+      VARIANCE=CARRIER.CHG-ACTUAL.CHG
+      IF VARIANCE=0 THEN VAR.ARR=''
+
+      X=DCOUNT(PRO.REC<22>,CHAR(253))
+      FOR I=1 TO X
+         DISC.DET<I,1>=PRO.REC<22,I>
+         DISC.DET<I,2>=PRO.REC<23,I>
+      NEXT I
+      DISC.PERC=PRO.REC<24>
+      IF VOID.DESC NE '' THEN VOIDED=1 ELSE VOIDED=0
+      
+      RETURN
+      
+************************************************************************      
+CB:* Change Bill Error Message & Routine
+************************************************************************
+      PRINT @(0,22):@(-3):CHAR(7):MSG[1,79]:
+      PRINT @(0,23):"Press any key to continue":
+      LOOP
+         INPUT INPUTBUFFER,-1
+      UNTIL INPUTBUFFER=0
+         INPUT JUNK,1:
+      REPEAT
+      INPUT NUL:
+      CC+=1 ; GOSUB PRINT.CC
+
+      RETURN
+      
+************************************************************************      
+SEND.DATA:* Execute DATA stmt and reduce CC
+************************************************************************
+      CC-=(LEN(SND.DATA)+1)
+      DATA SND.DATA
+      RETURN
+      
+************************************************************************      
+PRINT.CC:
+************************************************************************
+      IF USER#'OWEN' AND USER#'DAVID' THEN RETURN
+      PRINT @(0,0):@(-4):'Characters: ':CC'R#4':
+      RETURN
+      
+* Begin NKH02
+*****************************************************************
+PRO.COMPARE:
+*****************************************************************
+      * Begin NKH11
+      PRO.MATCH = 1
+      IF OCR.ENTRY THEN
+         CHECK.ENTER.PRO = PRO[1,2]
+         CHECK.IMAGE.PRO = T.ARRAY<4,OCR.COUNT>[1,2]
+         READ PRO.OVERRIDE.REC FROM PRO.OVERRIDE, CARRIER.ID THEN
+            PRO.ORIDE = 1
+         END ELSE
+            PRO.ORIDE = 0
+         END
+         BEGIN CASE
+            CASE NOT(NUM(CHECK.ENTER.PRO))
+            CASE NOT(NUM(CHECK.IMAGE.PRO))
+            CASE USER = 'MARY'
+            CASE PRO = "303882579810"     
+            CASE PRO.ORIDE                
+            CASE CHECK.ENTER.PRO[1,1] = 0 
+            CASE 1
+               IF CHECK.ENTER.PRO # CHECK.IMAGE.PRO THEN
+                  CALL ELINE('Entered Pro does not match Image Pro')
+                  PRO.MATCH = 0
+                  GOTO 300
+               END
+         END CASE
+      END
+      
+      RETURN
+      
+* End NKH02      
+      

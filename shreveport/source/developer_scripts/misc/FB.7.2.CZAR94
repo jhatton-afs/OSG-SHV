@@ -1,0 +1,583 @@
+* PROGRAM: FB.7.2
+* PROGRAM TO PROCESS BILLS THROUGH BLITE
+*
+*  THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS.
+*
+* FREIGHT BILLING PACKAGE
+*
+*  AUTHOR       : Owen
+*  DATE CREATED : 03/15/95
+*  DESCRIPTION  : This program select the bills entered between the dates
+*                 specified and builds a CZAR-LITE formatted text file.
+*                 CZAR-LITE is then executed (base rate data is added).
+*                 The program then extracts the base rate data and
+*                 updates the FB.BILL.HIST file with the base rate data.
+*
+* FORMATTING MODS:
+* Cody Henderson - Oct. 15, 1996
+*
+***********************************************************************
+*
+*
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Initialize variables.
+*
+*
+      ESC=CHAR(27)
+      AM=CHAR(254)
+      PROMPT''
+      ERRMSG=''
+      ERRORS=''
+      VIA=0 ; * Set to 1 if Using Via Duct File Transfer
+      PROG.NAME='FB.7.2'
+      PROG.DESC="Process CZAR Base Rates to Freight Bills"
+      PACK.NAME="Freight Billing"
+      CLASSES=50:@VM:55:@VM:60:@VM:65:@VM:70:@VM:77.5:@VM:85:@VM:92.5:@VM:100:@VM:110:@VM:125:@VM:150:@VM:175:@VM:200:@VM:250:@VM:300:@VM:400:@VM:500
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.7.2.CZAR94' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+*
+* Open general files
+*
+      CALL CHANNEL(CH.NUM)
+      OPEN '','TEMP' TO F.TEMP ELSE
+        CALL OPEN.ABORT('TEMP',PROG.NAME)
+      END
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+        EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+        OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+          CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+        END
+      END
+      IF VIA=0 THEN
+        OPEN '','PCIN' TO F.PCIN ELSE
+          CALL OPEN.ABORT('PCIN',PROG.NAME)
+        END
+        OPEN '','PCOUT' TO F.PCOUT ELSE
+          CALL OPEN.ABORT('PCOUT',PROG.NAME)
+        END
+      END
+      CLEARFILE F.WORK
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+*
+* Enter client number.
+*
+100:  CALL AFS.SCR.HEAD(CO.ID, FILE.ID, '', PROG.NAME, PROG.DESC,
+         PACK.NAME, CO.NAME, TIME.DATE, 1)
+      HELP="Enter client number. Word of name for search. X=Exit. EX=Exit."
+      CALL GEN.IN(0,3,'Enter client number #####','',Q,0,20,'','',2,-5,3,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='' ! QI='EX' ! QI='X'
+            STOP
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 100
+            CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+              GOTO 100
+            CASE ITEM.LIST NE ''
+              IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO 100
+            END CASE
+         CASE NUM(QI)
+            Q=QI'R%5'
+         CASE 1
+            GOTO 100
+      END CASE
+*
+      CLIENT=Q
+      IF CLIENT[1,2]#99 THEN
+        CALL ELINE('Invalid entry. Client Number must begin with 99.')
+        GOTO 100
+      END
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT ELSE
+         CALL ELINE('ERROR - Client ':CLIENT:' not on file.')
+         GOTO 100
+      END
+*
+      CLIENT.NAME=CLIENT.REC<2>
+      FAK.POS=INDEX(CLIENT.NAME,'FAK',1)
+      IF FAK.POS#0 AND FAK.POS<LEN(CLIENT.NAME)-8 THEN
+        CALL ELINE('FAK Description Error!!! Call Programming')
+        ABORT
+      END
+      IF FAK.POS THEN
+        FAK=TRIM(CLIENT.NAME[FAK.POS+4,999])
+      END ELSE
+        FAK=''
+      END
+      CRT @(0,3):'Enter Client Number ':CLIENT'R%5':
+      CRT ' ':CLIENT.NAME:@(-4):
+*
+* Open client's files.
+*
+      OPEN '','FB.BILLS.HIST,':CLIENT TO F.HIST ELSE
+         CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT,PROG.NAME)
+      END
+      OPEN '','FB.BILLS,':CLIENT TO F.BILLS ELSE
+         CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT,PROG.NAME)
+      END
+      IF NOT(VIA) THEN GO 180
+*
+* Enter beginning date.
+*
+160:  HELP="Enter beginning date. nn=Day. nn/nn=Month & Day. X=Back to file. EX=Exit."
+      LN='Enter the beginning date of the report. ':DATE()'D2/'
+      CALL GEN.IN(0,5,LN,'DATE',Q,0,8,'','',0,-8,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,5):@(-3):
+            GOTO 100
+         CASE QI='EX'
+            STOP
+      END CASE
+      BEG.DATE=Q
+      CRT @(40,5):BEG.DATE'D2/'
+*
+* Enter ending date.
+*
+170:  HELP="Enter ending date. nn=Day. nn/nn=Month & Day. X=Back to Beg Date. EX=Exit."
+      LN='Enter the ending date of the report.    ':DATE()'D2/'
+      CALL GEN.IN(0,7,LN,'DATE',Q,0,7,'','',0,-8,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,7):@(-3):
+            GOTO 160
+         CASE QI='EX'
+            STOP
+      END CASE
+      END.DATE=Q
+      IF BEG.DATE GT END.DATE THEN
+          CALL ELINE('Beginning date cannot exceed ending date.')
+         GOTO 170
+      END
+      DAYS=END.DATE-BEG.DATE+1
+      CRT @(40,9):END.DATE'D2/'
+*
+* Get FAK If ANY
+*
+180  HELP="Enter FAK or <Return> for Actual Class"
+      LN="Enter the FAK or <Return> for None: "
+      CALL GEN.IN(0,9,LN,'',Q,0,6,'','',1,36,9,0,QI,HELP,0,23)
+      Q=OCONV(Q,'MCU')
+      BEGIN CASE
+        CASE Q = 'X'
+          IF NOT(VIA) THEN GO 180
+          GO 170
+        CASE Q = 'EX'
+          STOP
+        CASE Q = ''
+          NULL
+        CASE 1
+          LOCATE Q IN CLASSES<1> SETTING SOMEWHERE ELSE
+            CALL ELINE(Q:' is not a valid class!')
+            GO 180
+          END
+        END CASE
+        FAK=Q
+        NEW.CLIENT.NAME=CLIENT.NAME
+        IF FAK.POS#0 THEN NEW.CLIENT.NAME=CLIENT.NAME[1,FAK.POS-2]
+        IF FAK#'' THEN NEW.CLIENT.NAME:=' FAK ':FAK
+*
+* Verify selection criteria is correct.
+*
+300:  HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            GO 180
+         CASE QI='EX'
+            STOP
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO 300
+      END CASE
+      IF NEW.CLIENT.NAME#CLIENT.NAME THEN
+        WRITEV NEW.CLIENT.NAME ON F.CLIENTS,CLIENT,2
+      END
+*
+* Start processing
+*
+      PASS=0
+400:***
+      PASS=PASS+1
+      BEGIN CASE
+        CASE PASS=1
+          TEXT="Selecting US Bills to Process - Please Wait."
+          CANADIAN=0
+        CASE PASS=2
+          CANADIAN=1
+          TEXT="Selecting Canadian Bills to Process - Please Wait."
+        CASE 1
+          GO 800
+      END CASE
+      IF PASS > 2 THEN GO 800
+      CALL CENTER(TEXT,80)
+      CRT @(0,15):@(-3):TEXT
+*
+* Select bills to process.
+*
+      IF PASS=1 THEN
+        STMT='SSELECT FB.BILLS.HIST,':CLIENT:' WITH NO 87'
+        IF VIA THEN
+          STMT:=' AND WITH 30 GE "':OCONV(BEG.DATE,'D2/')
+          STMT:='" AND WITH 30 LE "':OCONV(END.DATE,'D2/'):'"'
+        END
+        STMT=STMT:' BY 20 BY PRO ' ; ** By Carrier Number by Pro Number
+        EXECUTE STMT PASSLIST CAPTURING OUTPUT
+        IF SYSTEM(11) ELSE
+           CALL ELINE('No transactions on file.')
+           GOTO 100
+        END
+        EXECUTE 'SAVE-LIST ':CH.NUM PASSLIST CAPTURING OUTPUT
+        EXECUTE 'GET-LIST ':CH.NUM PASSLIST CAPTURING OUTPUT
+        NUM.ITEMS = @SELECTED
+        TEXT="Building Record to Send to CZAR"
+      END ELSE
+        STMT='SSELECT FBWORK':CH.NUM
+        EXECUTE STMT PASSLIST CAPTURING OUTPUT
+        TEXT="Building Record to Send to SMC519"
+      END
+      CALL CENTER(TEXT,80)
+      BLITE.RECORD=''
+      CRT @(0,15):@(-3):TEXT
+500   READNEXT BILL.ID ELSE
+        IF VIA THEN
+          WRITE BLITE.RECORD ON F.WORK,'TO.BLITE'
+          GO 600
+        END ELSE
+          GO 650
+        END
+      END
+      IF BILL.ID='TO.BLITE' THEN GO 500 ; ** Skip record if Via used
+      READ DBILL FROM F.HIST,BILL.ID ELSE ABORT
+ *** Remove All TMIN's with No Corresponding Carrier Charge ***
+      LOCATE 'TMIN' IN DBILL<70> SETTING POS THEN
+        IF DBILL<77,POS>+0=0 THEN
+          FOR REMTMIN = 70 TO 80
+            DEL DBILL<REMTMIN,POS>
+          NEXT REMTMIN
+          WRITE DBILL ON F.HIST,BILL.ID
+          READV NUL FROM F.BILLS,BILL.ID,1 THEN
+            WRITE DBILL ON F.BILLS,BILL.ID
+          END
+        END
+      END
+      BLITE.HEAD=STR(' ',262)
+      BLITE.BLANK.DETAIL=STR(' ',27)
+      BLITE.HEAD[1,2]='01' ; * Record Code
+      ORIG.ZIP=DBILL<3>
+      DEST.ZIP=DBILL<4>
+      IF PASS=1 THEN
+        IF NOT(NUM(ORIG.ZIP)) OR NOT(NUM(DEST.ZIP)) THEN
+          WRITEV '' ON F.WORK,BILL.ID,1
+          GO 500
+        END
+      END ELSE
+        BLITE.HEAD[11,8]='SMC51901'
+      END
+      BLITE.HEAD[30,6]=DBILL<3>
+      INTRA.STATE=DBILL<87>
+      IF INTRA.STATE='N' THEN
+*       ERRMSG='Bill ':BILL.ID:' Selected but Intra-State Flag is ':INTRA.STATE:' skipping'
+*       ERRLINE=ERRMSG
+*       GOSUB 1000
+        GO 500
+      END
+      BLITE.HEAD[55,6]=DBILL<4>
+      LINE.ITEM.CODES=DBILL<70>
+      BLITE.HEAD[213,50]=BILL.ID'L#50'
+      DETAIL.RECORDS=''
+      NUM.DETAILS=DCOUNT(DBILL<70>,CHAR(253))
+      CZAR.DET=0
+      FOR X = 1 TO NUM.DETAILS
+        CODE=DBILL<70,X>
+        IF FAK='' THEN
+          CLASS=DBILL<74,X>
+        END ELSE
+          CLASS=FAK
+        END
+        WEIGHT=DBILL<75,X>
+        IF WEIGHT > 20000 THEN
+          CZAR.WEIGHT=20000
+        END ELSE
+          CZAR.WEIGHT=WEIGHT
+        END
+        IF CODE='FRT' OR (CODE='TMIN' & CLASS#'' AND WEIGHT#'') THEN
+          DETAIL=BLITE.BLANK.DETAIL
+          DETAIL[1,2]='02'
+          DETAIL[3,3]=FIELD(CLASS,'.',1)'L#3'
+          DETAIL[6,6]=CZAR.WEIGHT'L#6'
+          CZAR.DET=CZAR.DET+1
+          DETAIL.RECORDS<CZAR.DET>=DETAIL
+          DBILL<81,X>=CZAR.DET ; * Cross Reference to Place Returned #s
+        END
+      NEXT X
+      IF CZAR.DET=0 THEN GO 500 ; * CZAR has nothing to do
+      BLITE.HEAD[80,2]=CZAR.DET'R#2'
+*OH   LOCATE 'SS' IN DBILL<70> SETTING NUL THEN
+*OH     BLITE.HEAD[177,1]='Y'
+*OH   END
+      BLITE.HEAD[177,1]='N' ; ** Always NO Per Brian 4/19/95
+*
+      BLITE.RECORD<-1>=BLITE.HEAD
+      BLITE.RECORD<-1>=DETAIL.RECORDS
+      READV NUL FROM F.BILLS,BILL.ID,1 THEN
+        WRITE DBILL ON F.BILLS,BILL.ID
+      END
+      WRITE DBILL ON F.HIST,BILL.ID
+*
+      GO 500
+******** Setup Transfer Parameters ********
+600 ***
+      EXECUTE 'PTERM CASE INVERT'
+      PCCMD = CHAR(27):CHAR(8)
+      ENDCMD = CHAR(0)
+******** Transfer to PC ********
+      PREC = PCCMD:'KEY /P <ALT+F>I':'FBWORK':CH.NUM:'<CR>TO.BLITE'
+      PREC := '<CR>*'
+      PREC := '<CR>C:\BLITE.DTA'
+      PREC := '<CR>R13,10 I O'
+      PREC := '<CR><CR><ALT>':ENDCMD
+      PRINT PREC:
+      EXECUTE 'PCCTRL'
+******** Process ********
+605 ***
+      EXECUTE 'PC C:\LITE4\BLITE C:\BLITE.DTA'
+      EXECUTE 'SLEEP 1'
+******** Transfer back from PC ********
+610 ***
+      PREC = PCCMD:'KEY /P <ALT+F>E':'C:\BLITE.DTA'
+      PREC := '<CR>FBWORK':CH.NUM
+      PREC := '<CR>FROM.BLITE'
+      PREC := '<CR>*'
+      PREC := '<CR>O M200'
+      PREC := '<CR><CR><ALT>':ENDCMD
+      PREC := '<CR><CR><ALT>':ENDCMD
+      PRINT PREC:
+      EXECUTE 'PCCTRL'
+******** Return Port to "Normal" ********
+      EXECUTE 'PTERM CASE NOINVERT'
+******** Process Information and add to Bill ********
+615 ***
+      READ CZAR.DATA FROM F.WORK,'FROM.BLITE' ELSE
+        BEG=0
+        CZAR.DATA=''
+620     BEG=BEG+1
+        READ TEMP.BLITE FROM F.WORK,'FROM.BLITE.':BEG THEN
+          CZAR.DATA:=TEMP.BLITE
+          GO 620
+        END ELSE
+          IF BEG=1 THEN
+            CALL ELINE('Cannot Find CZAR Data on Mainframe')
+            ABORT
+          END
+        END
+      END
+      GO 700
+650 *** Send Information to Taskman
+     IF BLITE.RECORD='' THEN GO 800 ; ** No Bills to Process
+     IF PASS=1 THEN
+       TEXT="Bills being Processed by CZAR on Taskman"
+     END ELSE
+       TEXT="Bills being Processed by SMC519 on Taskman"
+     END
+     CALL CENTER(TEXT,80)
+     CRT @(0,15):@(-3):TEXT
+     WAD='FORM WAD':CHAR(13)
+     CALL GET.USER(USER)
+*     CHUNK.DATA='USER: ':OCONV(@LOGNAME,'MCU')
+     CHUNK.DATA='USER: ':USER
+     CHUNK.DATA<-1>='HOSTPROGRAM: ':PROG.NAME
+     CHUNK.DATA<-1>='SUBMIT TIME: ':OCONV(TIME(),'MTHS')
+     CHUNK.DATA<-1>='Processing CZAR for Client ':CLIENT
+     CHUNK.ID='DESC' ; GOSUB BUILD.CHUNK
+     IF CANADIAN THEN
+       CHUNK.DATA='EXECUTE C:\SMC519\BSMC519 TEMP\':CH.NUM:'.tmp'
+     END ELSE
+       CHUNK.DATA='EXECUTE C:\LITE4\BLITE TEMP\':CH.NUM:'.tmp'
+     END
+     CHUNK.ID = 'HEAD' ; GOSUB BUILD.CHUNK
+     CHUNK.DATA=BLITE.RECORD
+*    WRITE CHUNK.DATA ON F.TEMP,'CZAR':PASS
+     CHUNK.ID = 'BODY' ; GOSUB BUILD.CHUNK
+     GOSUB PROCESS.WAD
+*    WRITE WAD.OUT ON F.TEMP,'OWEN':PASS; PRINT 'WRITING WAD.OUT ON TEMP OWEN'
+     CZAR.DATA=WAD.OUT
+*********************************************************************
+700 *** Process CZAR Information
+      IF PASS=1 THEN
+        TEXT="Now Posting CZAR Information To Freight Bill File"
+      END ELSE
+        TEXT="Now Posting SMC519 Information To Freight Bill File"
+      END
+      CALL CENTER(TEXT,80)
+      CRT @(0,15):@(-3):TEXT
+      MAX.TIMES=DCOUNT(CZAR.DATA,AM)
+      CNTR=0
+      ERRCODE=''
+705 ***
+      CZAR.CHK.TOTAL=0
+      CNTR=CNTR+1
+      IF CNTR > MAX.TIMES THEN GO 800
+      LINE=CZAR.DATA<1>
+      DEL CZAR.DATA<1>
+      TYPE=LINE[1,2]
+      IF TYPE # 01 THEN
+        IF ERRLINE#'' THEN GO 705 ; * Skip to next 01 Record
+        ERRLINE='Invalid Record Code on Line ':CNTR:' [1,2] s/b 01   Bill ':BILL.ID
+        GOSUB 1000
+        GO 705
+      END
+      BILL.ID=TRIM(LINE[213,50])
+*IF BILL.ID='00212*76724*0' THEN
+*PRINT 'PRESS BREAK ':; INPUT NUL
+*END
+      ERRLINE=''
+      ERRCODE=TRIM(LINE[3,4])
+      IF ERRCODE#'' THEN
+        ERRLINE='Error ':ERRCODE+0:' on bill ':BILL.ID
+        GOSUB 1000
+        GO 705
+      END
+      TAR.AUTH=TRIM(LINE[3,4])
+      NUMB.DETAILS=TRIM(LINE[80,2])
+      RATE.BASIS=TRIM(LINE[96,5])
+      ACTUAL.WEIGHT=TRIM(LINE[101,6])
+      BILLED.WEIGHT=TRIM(LINE[107,6])
+      MINIMUM.CHARGE=TRIM(LINE[113,7])
+      IF MINIMUM.CHARGE#'' THEN MINIMUM.CHARGE=ICONV(MINIMUM.CHARGE,'MR2')
+      DEFICIT.RATE=TRIM(LINE[120,7])
+      IF DEFICIT.RATE#'' THEN DEFICIT.RATE=ICONV(DEFICIT.RATE,'MR2')
+      DEFICIT.WEIGHT=TRIM(LINE[127,6])
+      DEFICIT.CHARGE=TRIM(LINE[133,9])
+      IF DEFICIT.CHARGE#'' THEN DEFICIT.CHARGE=ICONV(DEFICIT.CHARGE,'MR2')
+      TOTAL.CHARGE=TRIM(LINE[142,9])
+      IF TOTAL.CHARGE#'' THEN TOTAL.CHARGE=ICONV(TOTAL.CHARGE,'MR2')
+      TAR.EFF.DATE=TRIM(LINE[151,10])
+      IF TAR.EFF.DATE#'' THEN TAR.EFF.DATE=ICONV(TAR.EFF.DATE,'D')
+      SSFLAG=TRIM(LINE[177,1])
+      READ DBILL FROM F.HIST,BILL.ID ELSE
+        ERRLINE='BILL ':BILL.ID:' is missing from Bill File'
+        GOSUB 1000
+        GO 705
+      END
+      IF DEFICIT.CHARGE+0 # 0 THEN
+        LOCATE 'DEF' IN DBILL<70> SETTING VAL THEN
+          DBILL<79,VAL>=DEFICIT.CHARGE
+        END ELSE
+*OH       ERRLINE='DEF code missing from bill ':BILL.ID:' Skipping bill'
+*OH       GOSUB 1000
+*OH       GO 705
+          POS=DCOUNT(DBILL<70>,CHAR(253))+1
+          DBILL<70,POS>='DEF'
+          DBILL<79,POS>=DEFICIT.CHARGE
+        END
+        CZAR.CHK.TOTAL+= DEFICIT.CHARGE
+      END
+      IF TOTAL.CHARGE < MINIMUM.CHARGE THEN
+        LOCATE 'TMIN' IN DBILL<70> SETTING POS THEN
+            DBILL<79,POS>=MINIMUM.CHARGE
+            ERRLINE='SKIP' ; * To Skip Detail lines
+          END ELSE
+            POS=DCOUNT(DBILL<70>,CHAR(253))+1
+            DBILL<70,POS>='TMIN'
+            DBILL<79,POS>=MINIMUM.CHARGE
+            ERRLINE='SKIP' ; * To Skip Detail lines
+*OH         ERRLINE='Bill ':BILL.ID:' Should have a TMIN .. Bill Total is Less than Tariff Minimum'
+*OH         GOSUB 1000
+*OH         GO 705
+          END
+      END ELSE
+        FOR X = 1 TO NUMB.DETAILS
+          CNTR=CNTR+1
+          LINE=CZAR.DATA<1>
+          DEL CZAR.DATA<1>
+          IF CNTR> MAX.TIMES THEN
+            ERRLINE='Error Record Truncated.... Not enough detail lines'
+            GOSUB 1000
+            ABORT
+          END
+          TYPE=LINE[1,2]
+          IF TYPE # 02 THEN
+            ERRLINE='Invalid Record Code on Line ':CNTR:' [1,2] s/b 02   Bill ':BILL.ID
+            GOSUB 1000
+            ABORT
+          END
+          DETAIL.RATE=TRIM(LINE[12,7])
+          IF DETAIL.RATE#'' THEN DETAIL.RATE=ICONV(DETAIL.RATE,'MR2')
+          DETAIL.CHARGE=TRIM(LINE[19,9])
+          IF DETAIL.CHARGE#'' THEN DETAIL.CHARGE=ICONV(DETAIL.CHARGE,'MR2')
+          DETAIL.WEIGHT=TRIM(LINE[6,6])
+          LOCATE X IN DBILL<81> SETTING VAL ELSE
+            ERRLINE='CZAR XREF MISSING FROM ATT 81 OF ':BILL.ID
+            GOSUB 1000
+            ABORT
+          END
+          DBILL<78,VAL>=DETAIL.RATE
+          IF DBILL<75,VAL>=DETAIL.WEIGHT THEN
+            DBILL<79,VAL>=DETAIL.CHARGE
+            CZAR.CHK.TOTAL+= DETAIL.CHARGE
+          END ELSE
+            TEMP.CHARGE=OCONV(DETAIL.RATE*DBILL<75,VAL>/100,'MR0')
+            DBILL<79,VAL>=TEMP.CHARGE
+            CZAR.CHK.TOTAL+= DETAIL.CHARGE; ** Fake Chk Ttl Out
+          END
+        NEXT X
+  * Verify that all of CZAR's Charges were added to the Freight Bill
+  ***   IF CZAR.CHK.TOTAL # TOTAL.CHARGE THEN
+        IF CZAR.CHK.TOTAL-TOTAL.CHARGE > 1 THEN ; ** Allow For CZAR Error
+          ERRLINE='Bill ':BILL.ID:' all charges were not distributed'
+          GOSUB 1000
+          GO 705
+        END
+      END
+      READV NUL FROM F.BILLS,BILL.ID,1 THEN
+        WRITE DBILL ON F.BILLS,BILL.ID
+      END
+      WRITE DBILL ON F.HIST,BILL.ID
+      GO 705
+800 * Finished processing
+      IF PASS < 2 THEN GO 400
+      IF TRIM(ERRORS)#'' THEN WRITE ERRORS ON F.TEMP,'ERRORS'
+*
+* Finished Updating Bills
+*
+    STOP
+1000 ***
+      ERRORS<-1>=ERRLINE
+      CALL ELINE(ERRLINE)
+      RETURN
+PROCESS.WAD:***
+     DELETE F.PCIN,CH.NUM:'.fin'
+     DELETE F.PCOUT,CH.NUM:'.dat'
+     WRITE WAD ON F.PCIN,CH.NUM:'.wad'
+     WRITE 1 ON F.PCIN,CH.NUM:'.flg'
+READ.WAD:***
+     READ NUL FROM F.PCIN,CH.NUM:'.fin' THEN
+       READ WAD.OUT FROM F.PCOUT,CH.NUM:'.dat' ELSE
+         PRINT 'Serious error.... .fin there but .dat is not!!!!'
+         ABORT
+       END
+       DELETE F.PCIN,CH.NUM:'.fin'
+       DELETE F.PCOUT,CH.NUM:'.dat'
+       RETURN
+     END
+     GO READ.WAD
+BUILD.CHUNK:***
+     CHUNK.DATA=CHANGE(CHUNK.DATA:AM,AM,CHAR(13):AM)
+     WAD<-1>=CHUNK.ID'L#4':(OCONV((LEN(CHUNK.DATA)),'MCD'))'R%8':CHAR(13)
+     WAD<-1>=CHUNK.DATA
+     RETURN

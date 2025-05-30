@@ -1,0 +1,807 @@
+***********************************************************************
+*
+* PROGRAM TO PROCESS THE PRECENTAGES OF REVENUE EACH CLIENT REPRESENTS
+*
+*
+* AUTHOR: Jim T. Row
+*
+*                           EDIT HISTORY
+*                           ------------
+*    DATE  : NAME : DESCRIPTION
+*  ---------------------------------------------------
+* 05/19/98 : JTR  : Project started ...
+*          :      :
+* 110102 - JMK01 - INCLUDE LEAST COST MISROUTES FOR PROCESS
+* 042506 - JCW01 - Add FB.PROC.DATE.XREF for performance
+* 050806 - JCW02 - CHANGES TO '@SELECTED', 'CLEARSELECT', AND 'STMT<X>'
+* 031208 - JMK02 - T080799 - Remove duplicates in FB History Reporting
+***********************************************************************
+*
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*$INCLUDE FILE.DEFS INC_CLIENTS
+*
+* Initialize variables
+*
+*
+      * WORK FILE CONSISTS OF ITEMS WITH THE FOLLOWING DETAIL
+      *   Description............      ATR
+      EQU IN.MISROUTE.AMT TO 1
+      EQU OUT.MISROUTE.AMT TO 2
+      EQU THIRD.MISROUTE.AMT TO 3
+      EQU IN.OVERCHG.AMT TO 4            ; *3
+      EQU OUT.OVERCHG.AMT TO 5           ; *4
+      EQU THIRD.OVERCHG.AMT TO 6
+      EQU IN.BILL.CNT TO 7               ; *5
+      EQU OUT.BILL.CNT TO 8              ; *6
+      EQU THIRD.BILL.CNT TO 9
+      EQU DM.AMT TO 10
+
+      COPIES=1
+      PROMPT''
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)
+      STATUS=''
+      PROG.NAME='FB.3.19.6'
+      PROG.DESC='Least Cost Carrier Revenue Analysis'
+      PACK.NAME='Freight Billing'
+      NO.DIV.FLAG=0
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.3.19.6' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      ERRMSG=''
+      REC.COUNT=''
+      CLIENT.NAME =''
+      DATE=''
+      SAVE.CLIENT.ID=''
+
+*
+* Open files
+*
+      OPEN '','FB.LOGISTICS' TO F.LOGS ELSE
+         CALL OPEN.ABORT("FB.LOGISTICS",PROG.NAME)
+      END
+
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+         END
+      END
+      OPEN 'DICT','FBWORK':CH.NUM TO F.DICT.WORK ELSE
+         CALL OPEN.ABORT('DICT FBWORK':CH.NUM,PROG.NAME)
+      END
+      OPEN 'FB.BILLS.CRX' TO F.CRX ELSE
+         CALL OPEN.ABORT('FB.BILLS.CRX',PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+*
+* Create work file dictionary items
+*
+      TEMP=''
+      TEMP<1>='S'
+      TEMP<2>=1
+      TEMP<3>='In MisRt $'
+      TEMP<7>='MR2'
+      TEMP<8>=''
+      TEMP<9>='R'
+      TEMP<10>=10
+      WRITE TEMP ON F.DICT.WORK,1
+      TEMP<2>=2
+      TEMP<3>='Out MisRt $'
+      WRITE TEMP ON F.DICT.WORK,2
+      TEMP<2>=3
+      TEMP<3>='T/P MisRt $'
+      WRITE TEMP ON F.DICT.WORK,3
+      TEMP<2>=4
+      TEMP<3>='In OvrChg $'
+      WRITE TEMP ON F.DICT.WORK,4
+      TEMP<2>=5
+      TEMP<3>='Out OvrChg $'
+      WRITE TEMP ON F.DICT.WORK,5
+      TEMP<2>=6
+      TEMP<3>='T/P OvrChg $'
+      WRITE TEMP ON F.DICT.WORK,6
+      TEMP<2>=7
+      TEMP<3>='In Cnt'
+      TEMP<7>=''
+      WRITE TEMP ON F.DICT.WORK,7
+      TEMP<2>=8
+      TEMP<3>='Out Cnt'
+      WRITE TEMP ON F.DICT.WORK,8
+      TEMP<2>=9
+      TEMP<3>='T/P Cnt'
+      WRITE TEMP ON F.DICT.WORK,9
+      TEMP<2>=10
+      TEMP<3>='DM Cnt'
+      WRITE TEMP ON F.DICT.WORK,10
+      TEMP<2>=11
+      TEMP<3>='DM Amt'
+      WRITE TEMP ON F.DICT.WORK,11
+
+
+      TEMP='S'
+      TEMP<2>=0
+      TEMP<3>='Client Name'
+      TEMP<8>='F;0(G0*1);(TCLIENTS;X;;2)'
+      TEMP<9>='L'
+      TEMP<10>='30'
+      WRITE TEMP ON F.DICT.WORK,'CLIENT.NAME'
+
+      TEMP='A'
+      TEMP<2>=0
+      TEMP<3>='Client'
+      TEMP<8>='G0*1'
+      TEMP<9>='R'
+      TEMP<10>='5'
+      WRITE TEMP ON F.DICT.WORK,'CLIENT#'
+
+      TEMP='A'
+      TEMP<2>=0
+      TEMP<3>='DATE'
+      TEMP<8>='G1*1'
+      TEMP<9>='L'
+      TEMP<10>='1'
+      WRITE TEMP ON F.DICT.WORK,'DATE'
+
+*
+* Display screen heading
+*
+30:
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+
+*
+* Get current period beginning and ending dates
+*
+100:
+      HELP='Enter the data processed beginning date. [EX]=Exit'
+      CALL GEN.IN(0,5,'Data processed beginning date.  ':DATE()'D2/','DATE',BEG.DATE,0,8,'','',1,-8,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN STOP
+      IF QI='EX' THEN STOP
+      IF QI='' THEN BEG.DATE=DATE()
+      CRT @(32,5):BEG.DATE'D2/'
+*
+* Get current period ending date
+*
+200:
+      HELP='Enter the data processed ending date. [X]=Back [EX]=Exit'
+      CALL GEN.IN(0,7,'Data processed ending date.     ':DATE()'D2/','DATE',END.DATE,0,8,'','',1,-8,7,0,QI,HELP,0,23)
+      IF QI='X' THEN GOTO 100
+      IF QI='EX' THEN STOP
+      IF QI='' THEN END.DATE=DATE()
+      IF END.DATE LT BEG.DATE THEN
+         CALL ELINE('Invalid ending date.')
+         GOTO 200
+      END
+      CRT @(32,7):END.DATE'D2/'
+
+*
+* Ask for a client or all..
+*
+250:
+      HELP = "Enter client name/number or ALL to process. [X]=Back [EX] = Exit"
+      MASK = 'ALL'
+      CRT @(12,10):@(-4)
+      CRT @(12,11):@(-4)
+
+255:
+      CRT @(0, 9):'Client ID :':@(-4)
+      CALL GEN.IN(12,9,MASK,'',Q,0,20,'','',2,-3,9,1,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = '' OR QI='ALL'
+            CLIENT.ID = 'ALL'
+            SAVE.CLIENT.ID=CLIENT.ID
+            GOTO 260
+         CASE QI='X'
+            GOTO 200
+         CASE QI='EX'
+            STOP
+         CASE NUM(QI) AND QI # ''
+            CLIENT.ID = QI'R%5'
+         CASE NOT(QI MATCHES "0N") AND QI # ''
+            CALL SOUNDEX.DISPLAY(QI,'CLIENTS','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            BEGIN CASE
+               CASE ITEM.LIST = ''
+                  GOTO 250               ; * START OVER
+               CASE DCOUNT(ITEM.LIST,@AM) GT 1
+                  GOTO 250               ; * START OVER
+               CASE 1
+                  DATA ITEM.LIST
+                  GOTO 250               ; * START OVER
+            END CASE
+         CASE 1
+            CALL ELINE('Invalid Client Name, Try Again.')
+            GOTO 255
+      END CASE
+
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         CALL ELINE("Client number ":CLIENT.ID:" is not a valid client #")
+         GOTO 255
+      END
+
+
+260:
+      IF CLIENT.ID = 'ALL' THEN
+         CRT @(12, 9):'ALL CLIENTS'
+      END ELSE
+         CRT @(12, 9):CLIENT.ID:', ':CLIENT.REC<2>:@(-4)
+         CRT @(12,10):CLIENT.REC<3>:@(-4)
+         CRT @(12,11):CLIENT.REC<4>:', ':CLIENT.REC<5>:' ':CLIENT.REC<6>:@(-4)
+      END
+
+*
+*  Verify date entry range
+*
+300:
+      HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            GO 250
+         CASE QI='EX'
+            STOP
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO 300
+      END CASE
+
+*
+* Start processing
+*
+400:
+      TEXT="Processing Date Range - Please Wait ..."
+      IF CLIENT.ID ='ALL' THEN TEXT:=' May Take Several Hours.'
+      CALL CENTER(TEXT,80)
+      CRT @(0,14):@(-3):TEXT
+
+
+      CLEARFILE F.WORK
+
+      IF CLIENT.ID ='ALL' THEN
+         GOSUB BUILD.ALL.CLIENTS
+      END ELSE
+         GOSUB BUILD.SINGLE.CLIENT
+      END
+
+      *
+      * Print report
+      *
+      * Set-up printer
+      *
+      WIDTH=191
+      EXECUTE "TERM ,,,,,,":WIDTH:",59"
+      CTR=INT(WIDTH/2)
+
+      ESC=CHAR(27)
+      LASER.STR=''
+      LASER.STR:= ESC:'E'
+      LASER.STR:= ESC:'&l1O'             ; * Portrait
+      LASER.STR:= ESC:'&l8D'
+      LASER.STR:= ESC:'&l88F'            ; ** 88 Lines on a Page
+      LASER.STR:= ESC:'(8U'
+      LASER.STR:= ESC:'(s0p'
+      LASER.STR:= '19h'
+      LASER.STR:= '0s'
+      LASER.STR:= '0b'
+      LASER.STR:= '4102T'
+      PRINTER ON
+      PRINT LASER.STR                    ; * Configure Laser Printer
+*
+** Get next division code
+*
+      L.TAB=CTR-(LEN(PROG.DESC)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):PROG.DESC
+      R.TAB=WIDTH-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE())
+      HEAD1=PROG.NAME:SPACE(L.TAB):PROG.DESC:SPACE(R.TAB):TIMEDATE():"'L'"
+
+      TITLE='Bills processed from ':BEG.DATE'D2/':' to ':END.DATE'D2/'
+      L.TAB=CTR-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+      R.TAB=(WIDTH-LEN(TEMP))-9
+      HEAD2=TEMP:SPACE(R.TAB):"PAGE 'PL'"
+      R.TAB=(WIDTH-LEN(TEMP))-20
+      HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )':"PAGE 'PL'"
+      HEAD3="'L'"
+
+      HEAD4=""
+      HEAD5=STR('-',WIDTH):"'L'"
+
+      HEAD6 =SPACE(1):'Client Name''L#20'
+      HEAD7 =SPACE(1):' ''L#20'
+
+      HEAD6:=SPACE(2):'Date ''L#8'
+      HEAD7:=SPACE(2):' ''L#8'
+
+      HEAD6:=SPACE(2):'     In''L#8'
+      HEAD7:=SPACE(2):'  Bills ''L#8'
+
+      HEAD6:=SPACE(2):' Out''L#6'
+      HEAD7:=SPACE(2):'Bills ''L#6'
+
+      HEAD6:=SPACE(2):' 3rd''L#6'
+      HEAD7:=SPACE(2):'Bills  ''L#6'
+
+      HEAD6:=SPACE(2):' Inbound ''L#10'
+      HEAD7:=SPACE(2):'App Chrgs''L#10'
+
+      HEAD6:=SPACE(2):'Outbound ''L#10'
+      HEAD7:=SPACE(2):'App Chrgs''L#10'
+
+      HEAD6:=SPACE(2):'3rd Party ''L#10'
+      HEAD7:=SPACE(2):'App Chrgs''L#10'
+
+      HEAD6:=SPACE(2):'  Total  ''L#10'
+      HEAD7:=SPACE(2):'App Chrgs''L#10'
+
+      HEAD6:=SPACE(2):'   YTD   ''L#10'
+      HEAD7:=SPACE(2):'App Chrgs''L#10'
+
+      HEAD6:=SPACE(2):'  Inbound ''L#10'
+      HEAD7:=SPACE(2):'Overcharge''L#10'
+
+      HEAD6:=SPACE(2):' Outbound ''L#10'
+      HEAD7:=SPACE(2):'Overcharge''L#10'
+
+      HEAD6:=SPACE(2):'3rd Party ''L#10'
+      HEAD7:=SPACE(2):'Overcharge''L#10'
+
+      HEAD6:=SPACE(2):'   Total  ''L#10'
+      HEAD7:=SPACE(2):'Overcharge''L#10'
+
+      HEAD6:=SPACE(2):'    YTD   ''L#10'
+      HEAD7:=SPACE(2):'Overcharge''L#10'
+
+      HEAD6:=SPACE(2):'  TOTAL ''L#10'
+      HEAD7:=SPACE(2):'DM Amount''L#10'
+
+
+      HEAD6:="'L'"
+      HEAD7:="'L'"
+
+      HEAD8=STR('-',WIDTH)
+
+      HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6:HEAD7:HEAD8
+      HEADING HED
+*     PAGE 0
+*
+** Select data
+*
+      COUNTER=0
+      SUB5=0
+      SUB6=0
+      YTD.MISROUTE=0
+      YTD.OVERCHARGE=0
+      PREC='SSELECT FBWORK':CH.NUM
+      PREC:=' BY CLIENT.NAME'
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+      READ GRAND.TOTAL.REC FROM F.WORK,'TOTAL*ALL' ELSE
+         GRAND.TOTAL.REC=''
+      END
+      LAST.CLIENT=0
+
+      NUM.DET.CLIENT.LINES=0
+      DONE = 0
+      LOOP
+         READNEXT REC.ID THEN
+            ID=FIELD(REC.ID,'*',1)
+            TYPE=FIELD(REC.ID,'*',2)
+            IF TYPE = 'ALL' THEN
+               DATE='TOTAL'
+               IF NUM.DET.CLIENT.LINES <2 THEN
+                  NUM.DET.CLIENT.LINES=0
+                  PRINT
+                  GOTO SKIP.TOTAL.LINE
+               END
+               NUM.DET.CLIENT.LINES=0
+            END ELSE
+               DATE=OCONV(TYPE,'D2/')
+               NUM.DET.CLIENT.LINES=NUM.DET.CLIENT.LINES+1
+            END
+         END ELSE
+            DONE = 1
+         END
+      UNTIL DONE = 1 DO
+         IF ID#'TOTAL' OR TYPE#'ALL' THEN
+            *
+            * READ CLIENT MONTH RECORD..
+            *
+            READ REC FROM F.WORK,REC.ID ELSE REG.REC=''
+            *
+            * READ CLIENT TOTAL RECORD IF FIRST RECORD READ OR CLIENT ID CHANGED
+            *
+            IF LAST.CLIENT # ID THEN
+               READ NEW.TOTAL.REC FROM F.WORK,ID:'*ALL' ELSE NEW.TOTAL.REC=''
+               LAST.CLIENT = ID
+               YTD.OVERCHARGE=0
+               YTD.MISROUTE=0
+               T.DM.AMT = 0
+               SUB5=0
+               SUB6=0
+            END
+
+            *
+            * READ CLIENT NAME
+            *
+            READV CLIENT.NAME FROM F.CLIENTS,ID,2 ELSE
+               CLIENT.NAME="'":ID:"' ** Not On File **"
+            END
+            *
+            * PRINT CLIENT RECORD FOR CURRENT DATE.
+            *
+            IF REC # '' THEN
+               IF DATE = 'TOTAL' THEN
+                  PRINT STR('-',WIDTH)
+                  YTD.OVERCHARGE=0
+                  YTD.MISROUTE=0
+               END
+               TOTAL.REC=NEW.TOTAL.REC
+               GOSUB BUILD.DET.LINE
+               PRINT LINE
+               IF DATE = 'TOTAL' THEN PRINT
+            END
+         END
+SKIP.TOTAL.LINE:***
+      REPEAT
+
+      IF SAVE.CLIENT.ID = 'ALL' THEN
+         *
+         ** Print total line
+         *
+         PRINT STR('=',WIDTH)
+         CLIENT.NAME='TOTAL'
+         REC=GRAND.TOTAL.REC
+         TOTAL.REC=GRAND.TOTAL.REC
+         COUNTER=''
+         SUB5=REC<5>
+         SUB6=REC<6>
+         YTD.MISROUTE=0
+         YTD.OVERCHARGE=0
+         GOSUB BUILD.DET.LINE
+         PRINT LINE
+      END
+
+      *
+      ** END OF APPLICATION'
+      *
+      EXECUTE "TERM ,,,,,,,60"
+
+      STOP
+
+*----------------------------------------------------------------------
+*BUILD.ALL.CLIENTS:
+*----------------------------------------------------------------------
+BUILD.ALL.CLIENTS:
+
+      TEXT='Selecting Clients.'
+      CALL CENTER(TEXT,80)
+      CRT @(0,10):TEXT
+      EXECUTE "SELECT VOC 'FB.BILLS.HIST' *A7" RTNLIST CLIENT.LIST CAPTURING OUTPUT
+      ITEMS = @SELECTED
+      IF @SELECTED < 1 THEN ; * JCW02
+         CALL ELINE('ERROR - No clients on file.')
+         STOP
+      END
+      COUNTER.1=0
+      PER=0
+      LOOP
+         READNEXT CLIENT.ID FROM CLIENT.LIST ELSE CLIENT.ID='DONE'
+      UNTIL CLIENT.ID='DONE' DO
+         COUNTER.1=COUNTER.1+1
+         IF CLIENT.ID='FB.BILLS.HIST' OR CLIENT.ID[1,2]='99' ELSE
+            GOSUB BUILD.SINGLE.CLIENT
+            CALL PROG.BAR(20,COUNTER.1,ITEMS,PER.1)
+         END
+      REPEAT
+
+      RETURN
+
+
+*----------------------------------------------------------------------
+* BUILD.SINGLE.CLIENT:
+*----------------------------------------------------------------------
+BUILD.SINGLE.CLIENT:
+
+*   READV CLIENT.NAME FROM F.CLIENTS,CLIENT.ID,2 ELSE
+*     CLIENT.NAME='*** Not On File ***'
+*   END
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID THEN
+         CLIENT.NAME = CLIENT.REC<2>
+         COMMS = CLIENT.REC<85>
+      END ELSE
+         CLIENT.NAME='*** Not On File ***'
+         COMMS = ''
+      END
+
+
+
+      CRT @(0,17):CLIENT.ID:" ":CLIENT.NAME:" - Now selecting freight bills":@(-4):
+*
+* Calculate current manual logistics fees
+*
+
+      PREC='SELECT FB.LOGISTICS WITH 1 GE "':BEG.DATE'D2/'
+      PREC=PREC:'" AND WITH 1 LE "':END.DATE'D2/'
+      PREC=PREC:'" AND WITH CLIENT# = "':CLIENT.ID:'"'
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+      NUM.ITMS = @SELECTED
+      DM.AMOUNT = 0
+      TOTAL.DM.AMOUNT = 0
+      IF SYSTEM(11) THEN
+         LOG.DONE = 0
+         LOOP
+            READNEXT LOG.ID ELSE LOG.DONE = 1
+         UNTIL LOG.DONE = 1 DO
+            READ LOG.REC FROM F.LOGS, LOG.ID THEN
+
+               LOCATE LOG.REC<1> IN CLIENT.REC<84> BY 'AR' SETTING POS ELSE POS = POS - 1
+               DM.COMM = COMMS<1,POS>
+
+               DATE = OCONV(LOG.REC<1>,'D2/')
+               DATE = FIELD(DATE,'/',1):'/1/':FIELD(DATE,'/',3)
+               DATE = ICONV(DATE,'D2/')
+               WORK.ID=CLIENT.ID:'*':DATE
+               READ WORK.REC FROM F.WORK,WORK.ID ELSE WORK.REC=''
+
+               TOT.WORK.ID=CLIENT.ID:'*ALL'
+               READ TOT.WORK.REC FROM F.WORK,TOT.WORK.ID ELSE TOT.WORK.REC=''
+
+               TOT.WORK.ID.ALL='TOTAL*ALL'
+               READ TOT.WORK.REC.ALL FROM F.WORK,TOT.WORK.ID.ALL ELSE TOT.WORK.REC.ALL=''
+               DM.AMOUNT = LOG.REC<2>
+               IF DM.COMM GT 0 THEN
+                  TOTAL.DM.AMOUNT = DM.AMOUNT/(DM.COMM/100)
+               END ELSE
+                  TOTAL.DM.AMOUNT = DM.AMOUNT
+               END
+               ATT=DM.AMT ; VALUE=TOTAL.DM.AMOUNT ; GOSUB UPDATE.COUNTS
+            END
+            WRITE WORK.REC ON F.WORK,WORK.ID
+            WRITE TOT.WORK.REC ON F.WORK,TOT.WORK.ID
+            WRITE TOT.WORK.REC.ALL ON F.WORK,TOT.WORK.ID.ALL
+
+         REPEAT
+      END
+
+
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS THEN
+
+         STMT='SSELECT FB.PROC.DATE.XREF,':CLIENT.ID:' WITH DATE >= "':OCONV(BEG.DATE,'D2/'):'"'
+         STMT = STMT:' AND WITH DATE <= "':OCONV(END.DATE,'D2/'):'"'          ; * JCW 01
+         EXECUTE STMT RTNLIST CAPTURING RESULTS  ; * JCW 01
+         IF @SELECTED > 0 THEN  ; * JCW01
+           STMT = 'QSELECT FB.PROC.DATE.XREF,':CLIENT.ID  ; * JCW01
+           EXECUTE STMT PASSLIST RTNLIST CAPTURING RESULTS  ; * JCW01
+         END ELSE  ; * JCW01
+           RETURN; * JCW01
+         END  ; * JCW01
+
+         STMT='SELECT FB.BILLS.HIST,':CLIENT.ID
+         STMT:=' WITH VERSION = "0"'
+         STMT:=' AND WITH 39 # "R"'
+*        STMT:=' AND WITH 63 GT 0'       ; * JMK01
+         STMT:=' AND WITH 143 GT ""'     ; * JMK01
+         IF CLIENT.ID # '00891' THEN STMT:= ' AND MR.OVG.AMT GT "0"'
+*        STMT:=' SAVING UNIQUE @ID'      ; * JMK02
+         EXECUTE STMT PASSLIST RTNLIST BILLS.LIST CAPTURING OUTPUT
+         NUM.BILLS = @SELECTED
+         CRT @(0,17):CLIENT.ID:" ":CLIENT.NAME:" - Now processing ":NUM.BILLS:" Freight Bills":@(-4):
+         COUNTER.2=0
+         LOOP
+            DONE=0
+            READNEXT PRO.ID FROM BILLS.LIST ELSE DONE=1
+         UNTIL DONE=1 DO
+            COUNTER.2=COUNTER.2+1
+            IF NUM.BILLS>0 THEN CALL PROG.BAR(22,COUNTER.2,NUM.BILLS,PER.2)
+            READ DBILL FROM F.BILLS,PRO.ID THEN
+               IF DBILL<143>#'' THEN     ; * JMK01
+                  *
+                  * Convert Day of Month to 1st of month and convert back to PICK
+                  *
+                  DATE = OCONV(DBILL<37>,'D2/')
+                  DATE = FIELD(DATE,'/',1):'/1/':FIELD(DATE,'/',3)
+                  DATE = ICONV(DATE,'D2/')
+
+                  WORK.ID=CLIENT.ID:'*':DATE
+                  READ WORK.REC FROM F.WORK,WORK.ID ELSE WORK.REC=''
+
+                  TOT.WORK.ID=CLIENT.ID:'*ALL'
+                  READ TOT.WORK.REC FROM F.WORK,TOT.WORK.ID ELSE
+                     TOT.WORK.REC=''
+                  END
+
+                  TOT.WORK.ID.ALL='TOTAL*ALL'
+                  READ TOT.WORK.REC.ALL FROM F.WORK,TOT.WORK.ID.ALL ELSE
+                     TOT.WORK.REC.ALL=''
+                  END
+                  *
+                  * Update CLIENT total record in work file
+                  *
+                  BEGIN CASE
+                        *
+                        * Inbound Misroute
+                        *
+                     CASE DBILL<2>='I'
+                        ATT=IN.BILL.CNT ; VALUE=1 ; GOSUB UPDATE.COUNTS
+                        ATT=IN.MISROUTE.AMT ; VALUE=DBILL<63> ; GOSUB UPDATE.COUNTS
+                        ATT=IN.OVERCHG.AMT ; VALUE=DBILL<8>+0-DBILL<63>+0 ; GOSUB UPDATE.COUNTS
+                        *
+                        * Outbound Misroute
+                        *
+                     CASE DBILL<2>='O'
+                        ATT=OUT.BILL.CNT ; VALUE=1 ; GOSUB UPDATE.COUNTS
+                        ATT=OUT.MISROUTE.AMT ; VALUE=DBILL<63> ; GOSUB UPDATE.COUNTS
+                        ATT=OUT.OVERCHG.AMT ; VALUE=DBILL<8>+0-DBILL<63>+0 ; GOSUB UPDATE.COUNTS
+                        *
+                        * Third Party Misroute
+                        *
+                     CASE DBILL<2>='T'
+                        ATT=THIRD.BILL.CNT ; VALUE=1 ; GOSUB UPDATE.COUNTS
+                        ATT=THIRD.MISROUTE.AMT ; VALUE=DBILL<63> ; GOSUB UPDATE.COUNTS
+                        ATT=THIRD.OVERCHG.AMT ; VALUE=DBILL<8>+0-DBILL<63>+0 ; GOSUB UPDATE.COUNTS
+
+
+                  END CASE
+
+                  *
+                  * Update totals
+                  *
+                  WRITE WORK.REC ON F.WORK,WORK.ID
+                  WRITE TOT.WORK.REC ON F.WORK,TOT.WORK.ID
+                  WRITE TOT.WORK.REC.ALL ON F.WORK,TOT.WORK.ID.ALL
+               END                       ; * JMK01
+            END
+         REPEAT
+      END
+      RETURN
+
+
+*----------------------------------------------------------------------
+* UPDATE.COUNTS
+*----------------------------------------------------------------------
+UPDATE.COUNTS:
+
+      WORK.REC<ATT> +=VALUE
+      TOT.WORK.REC<ATT> +=VALUE
+      TOT.WORK.REC.ALL<ATT>+=VALUE
+
+
+      RETURN
+
+
+*----------------------------------------------------------------------
+* BUILD.DET.LINE
+*----------------------------------------------------------------------
+BUILD.DET.LINE:***
+
+      LINE=''
+      *
+      * CLIENT NAME
+      *
+      LINE:=CLIENT.NAME'L#20':'  '
+
+      *
+      * CLIENT NAME
+      *
+      LINE:=DATE'L#8':' '
+
+      *
+      * INBOUND BILL COUNT
+      *
+      LINE:=REC<7>'R04,#8':' '
+
+
+*tbs   *
+*tbs   * PRECENTAGE OF INBOUND BILLS
+*tbs   *
+*tbs   IF TOTAL.REC<7>+0=0 THEN VAR=0 ELSE
+*tbs      VAR=(REC<5>*100/TOTAL.REC<5>)
+*tbs   END
+*tbs   LINE:=VAR'R24,#6':'  '
+*tbs   *
+*tbs   * Accuml % OF INBOUND
+*tbs   *
+*tbs   IF TYPE#'ALL' THEN
+*tbs      SUB5+=REC<5>
+*tbs   END
+*tbs   IF TOTAL.REC<5>+0=0 THEN VAR=0 ELSE
+*tbs      VAR=SUB5*100/TOTAL.REC<5>
+*tbs   END
+*tbs   LINE:=VAR'R24,#6':'  '
+
+      *
+      * OUTBOUND BILL COUNT
+      *
+      LINE:=REC<8>'R04,#8':' '
+
+
+*tbs   *
+*tbs   * PRECENTAGE OF OUTBOUND BILLS
+*tbs   *
+*tbs   IF TOTAL.REC<6>+0=0 THEN VAR=0 ELSE
+*tbs      VAR=(REC<6>*100/TOTAL.REC<6>)
+*tbs   END
+*tbs   LINE:=VAR'R24,#6':' '
+*tbs   *
+*tbs   * Accuml % OF OUTBOUND
+*tbs   *
+*tbs   IF TYPE#'ALL' THEN
+*tbs      SUB6+=REC<6>
+*tbs   END
+*tbs   IF TOTAL.REC<6>+0=0 THEN VAR=0 ELSE
+*tbs      VAR=SUB6*100/TOTAL.REC<6>
+*tbs   END
+*tbs   LINE:=VAR'R24,#6':'  '
+
+      *
+      * THIRD PARTY BILL COUNT
+      *
+      LINE:=REC<9>'R04,#8':' '
+
+      *
+      * INBOUND MISROUTES
+      *
+      LINE:=REC<1>'R26,#10':'  '
+      *
+      * OUTBOUND MISROUTES
+      *
+      LINE:=REC<2>'R26,#10':'  '
+      *
+      * THIRD PARTY MISROUTES
+      *
+      LINE:=REC<3>'R26,#10':'  '
+      *
+
+      * TOTAL MISROUTES
+      *
+      VAR=REC<1>+REC<2>+REC<3>
+      LINE:=VAR'R26,#10':'  '
+      *
+      * YTD MISROUTE
+      *
+      YTD.MISROUTE+=VAR
+      LINE:=YTD.MISROUTE'R26,#10':'  '
+
+      *
+      * INBOUND OVERCHARGE
+      *
+      LINE:=REC<4>'R26,#10':'  '
+      *
+      * OUTBOUND OVERCHARGE
+      *
+      LINE:=REC<5>'R26,#10':'  '
+      *
+      * THIRD PARTY OVERCHARGE
+      *
+      LINE:=REC<6>'R26,#10':'  '
+      *
+
+      * TOTAL OVERCHARGE
+      *
+      VAR=REC<4>+REC<5>+REC<6>
+      LINE:=VAR'R26,#10':'  '
+      *
+      * YTD OVERCHARGE
+      *
+      YTD.OVERCHARGE+=VAR
+      LINE:=YTD.OVERCHARGE'R26,#10':'  '
+
+      *
+      * TOTAL DM Amount
+      *
+      LINE:=REC<10>'R26,#10'
+
+      RETURN
+
+*
+*
+*

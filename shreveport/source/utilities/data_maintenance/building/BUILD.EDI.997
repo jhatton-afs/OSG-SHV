@@ -1,0 +1,247 @@
+* Program BUILD.CARRIER.PROFILE
+* Program to Download a Carrier Profile
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: Tami Seago
+* DATE: January 11, 2001
+*
+* 042606 - JCW01 - Add FB.PROC.DATA.XREF for performance
+* 031108 - JMK01 - T080799 - Remove duplicates in FB History Reporting
+*
+***************************************************************
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Initialize variables
+*
+*CH   COPIES=1
+*
+      PROMPT''
+      CALL CHANNEL(CH.NUM)
+      CALL GET.USER(USER.NAME)
+      STATUS=''
+      CALL CHANNEL(CH.NUM)
+
+      TAB=CHAR(9)
+      WIDTH=132
+      PROMPT''
+      ERRMSG=''
+      PROG.NAME = 'BUILD.CARRIER.PROFILE'
+      PROG.DESC="Build a Carrier Profile File"
+      PACK.NAME="Freight Billing"
+      BACK.FLAG = 0
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'BUILD.CARRIER.PROFILE' ; UPL.VOUT = ''                    ;* NPR_UPL 04/22/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/22/2010
+      CLIENT = ""
+      BEG.DATE = ""
+      END.DATE = ""
+      NUM.OF.ITEM=''
+
+      ESC=CHAR(27)
+
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+         CALL OPEN.ABORT("FB.TRANSPORT",PROG.NAME)
+      END
+      OPEN '','EDI.997' TO F.EDI.997 ELSE
+         CALL OPEN.ABORT("FB.EDI.997",PROG.NAME)
+      END
+
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      BILLDATA.REC = ''
+
+      OPEN '','VOC' TO F.VOC ELSE
+         CALL ELINE('UNABLE TO OPEN VOC FILE')
+         STOP
+      END
+
+      READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE
+         CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')
+         STOP
+      END
+
+*DF      USER.NAME='QLIKVIEW\EDI_FILE'
+      BILLDATA.REC<2>:='\':USER.NAME
+      WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER.NAME ELSE
+         CALL ELINE("YOUR USER NAME '":USER.NAME:"' IS NOT IN THE BILLDATA FOLDER - PLEASE SEE OWEN/TAMI/DAVID")
+         STOP
+      END
+      OPEN '','BILLDATA.':USER.NAME TO BILLDATA ELSE
+         CALL ELINE('UNABLE TO OPEN "BILLDATA.":USER')
+         STOP
+      END
+
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+         END
+      END
+      OPEN 'DICT','FBWORK':CH.NUM TO F.DICT.WORK ELSE
+         CALL OPEN.ABORT('DICT FBWORK':CH.NUM,PROG.NAME)
+      END
+
+
+
+
+***********************************************************************
+* Clear work file
+*
+      CLEARFILE F.WORK
+*
+
+* Verify selection criteria is correct.
+*
+VERIFY.SELECTION:***
+      HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+*DF            BACK.FLAG = 1
+*DF            GOTO ENTER.END.DATE
+            STOP
+         CASE QI='EX'
+            STOP
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO VERIFY.SELECTION
+      END CASE
+      GOSUB SETUP.COLUMN.HEADER
+
+
+      GOSUB DOWNLOAD.PROFILE
+      BILLDATA.ID='TRENDSET_EDI_997.XLS'
+      PROFILE.REC = CHANGE(PROFILE.REC,@VM,TAB)
+      WRITE PROFILE.REC ON BILLDATA,BILLDATA.ID
+      STOP
+
+DOWNLOAD.PROFILE:***
+
+      STMT='SSELECT EDI.997'
+
+      EXECUTE STMT PASSLIST RTNLIST BILLS.LIST CAPTURING OUTPUT
+      BILLS.ITEMS = @SELECTED
+*DFCALL ELINE('PRESS BREAK')
+
+      PER = 0
+      IF BILLS.ITEMS=0 THEN RETURN
+      PROFILE.REC=HEADER.LINE
+      COUNTER = 0
+      TOTAL.REC = ''
+      LOOP
+         READNEXT BILL.ID FROM BILLS.LIST ELSE BILL.ID='DONE'
+      UNTIL BILL.ID='DONE' DO
+         COUNTER=COUNTER+1
+         READ BILL.REC FROM F.EDI.997,BILL.ID ELSE GO SKIP.BILL
+         CALL PROG.BAR(22,COUNTER,BILLS.ITEMS,PER)
+         ST.CONTROL.NUM = FIELD(BILL.ID,'*',1)
+         GS.DATE= FIELD(BILL.ID,'*',2)
+         GS.DATE=OCONV(GS.DATE,'D2/')
+         VERSION=FIELD(BILL.ID,'*',3)
+         NUM.OF.AK3=DCOUNT(BILL.REC<5>,@VM)
+         NUM.OF.AK4=DCOUNT(BILL.REC<13>,@VM)
+         IF NUM.OF.AK3 > NUM.OF.AK4 THEN
+            NUM.OF.ITEM=NUM.OF.AK3+0
+         END ELSE
+            NUM.OF.ITEM=NUM.OF.AK4+0
+         END
+         IF NUM.OF.ITEM=0 THEN NUM.OF.ITEM=1
+         FOR X = 1 TO NUM.OF.ITEM
+             GOSUB BUILD.PROFILE
+         NEXT X
+SKIP.BILL:***
+      REPEAT
+
+      RETURN
+
+SETUP.COLUMN.HEADER:***
+      HEADER.LINE=''
+      HEADER.LINE<1,1>="ST CNTL NUM"
+      HEADER.LINE<1,2>="GS Date"
+      HEADER.LINE<1,3>="Version"
+      HEADER.LINE<1,4>="AK101"
+      HEADER.LINE<1,5>="AK102"
+      HEADER.LINE<1,6>="AK201"
+      HEADER.LINE<1,7>="AK202"
+      HEADER.LINE<1,8>="AK301"
+      HEADER.LINE<1,9>="AK302"
+      HEADER.LINE<1,10>="AK303"
+      HEADER.LINE<1,11>="AK304"
+      HEADER.LINE<1,12>="AK305"
+      HEADER.LINE<1,13>="AK306"
+      HEADER.LINE<1,14>="AK307"
+      HEADER.LINE<1,15>="AK308"
+      HEADER.LINE<1,16>="AK401"
+      HEADER.LINE<1,17>="AK402"
+      HEADER.LINE<1,18>="AK403"
+      HEADER.LINE<1,19>="AK404"
+      HEADER.LINE<1,20>="AK501"
+      HEADER.LINE<1,21>="AK502"
+      HEADER.LINE<1,22>="AK503"
+      HEADER.LINE<1,23>="AK504"
+      HEADER.LINE<1,24>="AK505"
+      HEADER.LINE<1,25>="AK506"
+      HEADER.LINE<1,26>="AK901"
+      HEADER.LINE<1,27>="AK902"
+      HEADER.LINE<1,28>="AK903"
+      HEADER.LINE<1,29>="AK904"
+      HEADER.LINE<1,30>="AK905"
+      HEADER.LINE<1,31>="AK906"
+      HEADER.LINE<1,32>="AK907"
+      HEADER.LINE<1,33>="AK908"
+      HEADER.LINE<1,34>="AK909"
+      RETURN
+
+
+BUILD.PROFILE:***
+         LINE = ''
+         LINE<1,1> = ST.CONTROL.NUM
+         LINE<1,2> = GS.DATE
+         LINE<1,3> = VERSION
+         LINE<1,4> = BILL.REC<1>
+         LINE<1,5> = BILL.REC<2>
+         LINE<1,6> = BILL.REC<3>
+         LINE<1,7> = BILL.REC<4>
+         LINE<1,8> = BILL.REC<5,X>
+         LINE<1,9> = BILL.REC<6,X>
+         LINE<1,10> = BILL.REC<7,X>
+         LINE<1,11> = BILL.REC<8,X>
+         LINE<1,12> = BILL.REC<9,X>
+         LINE<1,13> = BILL.REC<10,X>
+         LINE<1,14> = BILL.REC<11,X>
+         LINE<1,15> = BILL.REC<12,X>
+         LINE<1,16> = BILL.REC<13,X>
+         LINE<1,17> = BILL.REC<14,X>
+         LINE<1,18> = BILL.REC<15,X>
+         LINE<1,19> = BILL.REC<16,X>
+         LINE<1,20> = BILL.REC<17>
+         LINE<1,21> = BILL.REC<18>
+         LINE<1,22> = BILL.REC<19>
+         LINE<1,23> = BILL.REC<20>
+         LINE<1,24> = BILL.REC<21>
+         LINE<1,25> = BILL.REC<22>
+         LINE<1,26> = BILL.REC<23>
+         LINE<1,27> = BILL.REC<24>
+         LINE<1,28> = BILL.REC<25>
+         LINE<1,29> = BILL.REC<26>
+         LINE<1,30> = BILL.REC<27>
+         LINE<1,31> = BILL.REC<28>
+         LINE<1,32> = BILL.REC<29>
+         LINE<1,33> = BILL.REC<30>
+         LINE<1,34> = BILL.REC<31>
+         PROFILE.REC<-1> = LINE
+
+
+      RETURN

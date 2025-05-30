@@ -1,0 +1,1180 @@
+****************************************************
+* Program name : FB.TEM.EMAILS
+* Author       : TAMI SEAGO
+* Date written : AUGUST 2, 1999
+* Library      : FBBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* build email groups for (TEM) Transportation Expense Management
+*
+* Last updated by afs (AFSLOGISTICS\gbino) at 08:52:04 on 02/24/2020.
+*
+* Start modification history
+* 113009 - JMK01 - C091421 - Change information on Debit Memo emails from Michael Statos to Sydney Bird
+* 012610 - NPR999 - Change email recipients for Debit Memos.
+* 083012 - JMK02 - SysAid#3784 - Debit Memo emails
+* 092612 - SWB01 - Proj 203 - Syntax errors to get Cache to compile
+* 050514 - DRF01 - SysAid 9590 Remove AHicks and add NKelly to the Debit Memo
+* 052814 - JMK03 - SysAid#9716 - Lou Cervone
+* 111516 - GRB01 - SysAid 28481 Excessive freight charge change
+* 080217 - GRB02 - SysAid 5398 Send RSD processing emails
+* 012918 - GRB03 - ME 9884 - Include jmason for lundinter 02275
+* 040319 - NKH01 - ACCU-316 Modified CREATE-FILE file sizes
+* 021920 - GRB03 - ACCU-480 Automated processing
+* End modification history
+*
+************************************************************
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_DIVISION.CODES
+
+* Initialize variables
+
+      PROG.NAME='FB.TEM.EMAILS'
+      PROG.DESC='WEEKLY TEM EMAILS'
+      PACK.NAME='FREIGHT PAYMENT'
+      CALL GET.USER.NEW(USER,CH.NUM)
+
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.TEM.EMAILS' ; UPL.VOUT = ''  ; * NPR_UPL 04/23/2010
+      UPL.VIN<3> = USER
+      UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      GOSUB INITIALIZE.VARIABLES
+
+      INPUT PGM.MODE
+      PROCESS.TYPE=FIELD(PGM.MODE,'-',1)
+      ONCE=0
+      IF PROCESS.TYPE='ONCE' THEN
+         PROCESS.TYPE='STD'
+         ONCE=1
+      END
+      LOC.POS=''
+      MR.UPD=0
+      PROGRAM.MODE=FIELD(PGM.MODE,'-',2)
+      PROCESS.END.DATE=FIELD(PGM.MODE,'-',3)
+      IF PROCESS.END.DATE='' THEN PROCESS.END.DATE=LTR.DATE
+      IF PROGRAM.MODE='FROM.PROCESS' THEN FROM.PROCESS=1 ELSE FROM.PROCESS=0
+
+* Open Files
+
+      OPEN '','EMAILDATA' TO EMAILDATA ELSE
+         CALL OPEN.ABORT("EMAILDATA",PROG.NAME)
+      END
+      TODAY=DATE()
+      PATH.ID='E:\ARDENT\PUBLIC\EMAILDATA\'
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','FB.BILLS.YTD' TO F.YTD ELSE
+         CALL OPEN.ABORT("FB.BILLS.YTD",PROG.NAME)
+      END
+      OPEN '','FB.LOGISTICS' TO F.LOGS ELSE
+         CALL OPEN.ABORT("FB.LOGISTICS",PROG.NAME)
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+         CALL OPEN.ABORT("ZIPS",PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+         CALL OPEN.ABORT('FB.TRANSPORT',PROG.NAME)
+      END
+      OPEN '','FB.TEM.EMAIL' TO F.TEM.EMAIL ELSE
+         CALL OPEN.ABORT('FB.TEM.EMAIL',PROG.NAME)
+      END
+      OPEN '','AR.SLSMAN.1000.1' TO F.SLSMAN ELSE
+         CALL OPEN.ABORT('AR.SLSMAN.1000.1',PROG.NAME)
+      END
+
+      IF FROM.PROCESS THEN
+         INPUT CLIENT
+         GO START.EMAILS
+      END
+
+****************************************************************
+100:* Enter client number.
+****************************************************************
+      CALL AFS.SCR.HEAD(CO.ID, FILE.ID, '', PROG.NAME, PROG.DESC, PACK.NAME, CO.NAME, TIME.DATE, 1)
+      HELP="Enter client number. Word of name for search. X=Exit. EX=Exit."
+      CALL GEN.IN(0,3,'Enter client number #####','',Q,0,20,'','',2,-5,3,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='' ! QI='EX' ! QI='X'
+            STOP
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 100
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 100
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO 100
+            END CASE
+         CASE NUM(QI)
+            Q=QI'R%5'
+         CASE 1
+            GOTO 100
+      END CASE
+      CLIENT=Q
+
+***************************************************************
+300:* Verify selection criteria is correct.
+***************************************************************
+      HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            GO 100
+         CASE QI='EX'
+            STOP
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO 300
+      END CASE
+****************************************************************
+START.EMAILS:***
+****************************************************************
+      OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS.HIST ELSE
+         CALL OPEN.ABORT('FB.BILLS.HIST,':CLIENT,PROG.NAME)
+      END
+      OPEN '','VEND.CUST,':CLIENT TO F.VC ELSE
+         CALL OPEN.ABORT('VEND.CUST,':CLIENT,PROG.NAME)
+      END
+      OPEN '','FB.UNPROCESS,':CLIENT TO F.UP ELSE
+         EXECUTE 'CREATE-FILE DATA FB.UNPROCESS,':CLIENT:' 1009,2' CAPTURING OUTPUT        ; * NKH01
+         OPEN '','FB.UNPROCESS,':CLIENT TO F.UP ELSE
+            CALL OPEN.ABORT('FB.UNPROCESS,':CLIENT,PROG.NAME)
+         END
+      END
+
+      DATA PGM.MODE
+      DATA CLIENT
+      EXECUTE "FB.TEM.EMAIL.COMBINE"
+
+* Read Client Information
+
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT ELSE
+         ERROR = 'ERROR - Client ':CLIENT:' not on file.'
+         IF FROM.PROCESS THEN
+            ERROR.ARRAY<-1> = ERROR
+            GO EXIT.PROGRAM
+         END ELSE
+            CALL ELINE(ERROR)
+         END
+         GOTO 100
+      END
+      PROCESS.MR.EMLS = CLIENT.REC<171>
+      DIVISIONS = CLIENT.REC<12>
+
+      IF PROCESS.MR.EMLS = 'N' THEN
+         ERROR='NO TEM EMAILS PROCESSED ON CLIENT ':CLIENT
+         IF FROM.PROCESS THEN
+            ERROR.ARRAY<-1> = ERROR
+         END ELSE
+            CALL ELINE(ERROR)
+         END
+         GO EXIT.PROGRAM
+      END
+
+      SLSMAN.ID=CLIENT.REC<115>
+      RSD = CLIENT.REC<114>              ; * GRB02
+      READ SLSMAN.REC FROM F.SLSMAN,SLSMAN.ID ELSE SLSMAN.REC=''
+      SLSMAN.EMAIL=SLSMAN.REC<8>
+      IF OCONV(SLSMAN.EMAIL,'MCL')='none' THEN SLSMAN.EMAIL=''
+      READ RSD.REC FROM F.SLSMAN,RSD ELSE RSD.REC=''         ; * GRB02
+      RSD.EMAIL=RSD.REC<8>               ; * GRB02
+      IF OCONV(RSD.EMAIL,'MCL')='none' THEN RSD.EMAIL=''     ; * GRB02
+
+      LOG.ST.DT = CLIENT.REC<149>
+      COMPANY.NAME='AFS Logistics, LLC'
+      CLIENT.NAME=CLIENT.REC<2>
+      IF DIVISIONS = 'Y' THEN
+         OPEN '','DIVISION.CODES,':CLIENT TO F.DIV ELSE
+            ERROR="Cannot open DIVISION.CODES for client ":CLIENT'R%5'
+            IF FROM.PROCESS THEN
+               ERROR.ARRAY<-1> = ERROR
+               GO EXIT.PROGRAM
+            END ELSE
+               CALL ELINE(ERROR)
+            END
+            GO 100                       ; * START OVER
+         END
+      END
+      DATE.POS = DCOUNT(CLIENT.REC<84>,@VM)
+      CONSULTING.COMM = CLIENT.REC<85,DATE.POS>
+      NUM.WARNINGS = CLIENT.REC<140>
+      MIN.DM.AMT = CLIENT.REC<141>
+      TYPE.DM = CLIENT.REC<142>
+      THROW.AWAY.AMT = CLIENT.REC<143>
+
+* Start Processing the TEM EMAILs.
+
+      STMT='SSELECT FB.TEM.EMAIL BY CLIENT WITH CLIENT = "':CLIENT:'"'
+      EXECUTE STMT RTNLIST TEM.LIST CAPTURING OUTPUT
+      NUM.ITMS = @SELECTED
+      IF NUM.ITMS = 0 THEN
+         ERROR = 'NO ITEMS SELECTED FOR TEM EMAILS'
+         IF FROM.PROCESS THEN
+            ERROR.ARRAY<-1> = ERROR
+         END ELSE
+            CALL ELINE(ERROR)
+         END
+      END
+      CC.LIST=''
+      CC.LIST<1,-1>='TEM@afs.net'
+
+      BCC.LIST=''
+      IF SLSMAN.EMAIL#'' THEN
+         ***  CC.LIST<1,-1>=OCONV(SLSMAN.EMAIL,'MCL')    ; * GRB01
+         BCC.LIST<1,-1>=OCONV(SLSMAN.EMAIL,'MCL')  ; * GRB01
+      END
+      IF RSD.EMAIL#'' THEN               ; * GRB02
+         ***  CC.LIST<1,-1>=OCONV(SLSMAN.EMAIL,'MCL')    ; * GRB01
+         BCC.LIST<1,-1>=OCONV(RSD.EMAIL,'MCL')     ; * GRB01   ;* GRB02
+      END                                ; * GRB02
+      ****   BCC.LIST<1,-1>='gbino@afs.net'
+      ACC.LIST=''
+      ACC.LIST<1,-1>='bbarker@afs.net'
+      BCC.LIST=''
+      DCC.LIST=''
+
+      EOF=0
+      LOOP
+         READNEXT TEM.EMAIL.ID FROM TEM.LIST ELSE EOF=1
+      UNTIL EOF DO
+         READ EMAIL.SHELL FROM F.TEM.EMAIL,TEM.EMAIL.ID ELSE
+            GO SKIP.EMAIL
+         END
+*
+         EMAIL.ORG=EMAIL.SHELL
+         COMB.EMAIL=''
+         BEG.DATE=FIELD(TEM.EMAIL.ID,'|',2)
+         END.DATE=FIELD(TEM.EMAIL.ID,'|',3)
+****************************************************************
+* PASS 1 - CONSOLIDATE ALL EMAIL ADDRESSES
+****************************************************************
+         NVAL=DCOUNT(EMAIL.SHELL<30>,@VM)
+         FOR VAL=1 TO NVAL
+            PROLIST=''
+            IF EMAIL.SHELL<8,VAL>#'' THEN
+               PROLIST<1,1,-1>=EMAIL.SHELL<8,VAL>  ; * MISROUTES
+            END
+            IF EMAIL.SHELL<31,VAL>#'' THEN
+               PROLIST<1,1,-1>=EMAIL.SHELL<31,VAL>           ; * LCC
+            END
+            ADD=EMAIL.SHELL<30,VAL>
+            IF ADD='' THEN
+               FOR ATT=1 TO 35
+                  DEL EMAIL.SHELL<ATT,VAL>
+               NEXT ATT
+               NVAL-=1
+               VAL-=1
+            END ELSE
+               LOCATE(PROLIST,COMB.EMAIL,1;PPOS) THEN        ; * COMBINE IF PROLISTS MATCH
+                  COMB.VAL=COMB.EMAIL<2,PPOS>
+                  EMAIL.SHELL<30,COMB.VAL>:=';':ADD
+                  FOR ATT=1 TO 35
+                     DEL EMAIL.SHELL<ATT,VAL>
+                  NEXT ATT
+                  NVAL-=1
+                  VAL-=1
+               END ELSE
+                  * Begin GRB03
+                  X = INDEX(EMAIL.SHELL<30>,"bbarker@afs.net",1)
+                  Y = INDEX(EMAIL.SHELL<30>,"jmason@lundinter.com",1)
+                  Z = INDEX(ADD,"jmason@lundinter.com",1)
+                  IF X AND Y THEN
+****                     IF COMB.EMAIL # "" THEN
+                     IF COMB.EMAIL # "" AND Z = 0 THEN
+                        ADD = "jmason@lundinter.com;": ADD
+                        EMAIL.SHELL<30,VAL>:=";jmason@lundinter.com"
+                     END
+                  END ELSE
+                     SPEC = 0
+                  END
+                  * End GRB03
+                  COMB.EMAIL<1,-1>=PROLIST
+                  COMB.EMAIL<2,-1>=VAL
+               END
+            END
+         NEXT VAL
+****************************************************************
+* PASS 2 - DISTRIBUTE EMAIL ADDRESSES TO TO:, CC: AND BCC:
+****************************************************************
+         NVAL=DCOUNT(EMAIL.SHELL<30>,@VM)
+         FOR VAL=1 TO NVAL
+            TO.ADD=''
+            CC.ADD=''
+            BCC.ADD=''
+            ADD.LIST=EMAIL.SHELL<30,VAL>
+            TOT.OVERCHARGE=SUM(EMAIL.SHELL<7,VAL>)
+            NVAL1=DCOUNT(ADD.LIST,';')
+            FOR VAL1=1 TO NVAL1
+               ADD=FIELD(ADD.LIST,';',VAL1)
+               ADD.TEST=OCONV(ADD,'MCL')
+               LOCATE(ADD.TEST,CC.LIST,1;CPOS) ELSE CPOS=0
+               LOCATE(ADD.TEST,ACC.LIST,1;APOS) ELSE APOS=0
+               LOCATE(ADD.TEST,BCC.LIST,1;BPOS) ELSE BPOS=0
+               LOCATE(ADD.TEST,DCC.LIST,1;DPOS) ELSE DPOS=0
+               BEGIN CASE
+                  CASE CPOS
+                  CASE APOS
+                     IF TOT.OVERCHARGE>=50000 THEN
+                        IF BCC.ADD='' THEN
+                           BCC.ADD=ADD
+                        END ELSE
+                           BCC.ADD:=';':ADD
+                        END
+                     END
+                  CASE DPOS
+                     IF TOT.OVERCHARGE>=30000 THEN
+                        IF BCC.ADD='' THEN
+                           BCC.ADD=ADD
+                        END ELSE
+                           BCC.ADD:=';':ADD
+                        END
+                     END
+                  CASE BPOS
+                     IF BCC.ADD='' THEN
+                        BCC.ADD=ADD
+                     END ELSE
+                        BCC.ADD:=';':ADD
+                     END
+                  CASE 1
+                     IF TO.ADD='' THEN
+                        TO.ADD=ADD
+                     END ELSE
+                        TO.ADD:=';':ADD
+                     END
+               END CASE
+            NEXT VAL1
+            CC.ADD=''
+            CC.ADD=CHANGE(CC.LIST<1>,@VM,';')
+            BCC.ADD=''
+            BCC.ADD=CHANGE(BCC.LIST<1>,@VM,';')
+            IF TO.ADD='' AND CC.ADD#'' THEN
+               TO.ADD=CC.ADD
+               CC.ADD=''
+            END
+            IF TO.ADD='' AND CC.ADD='' AND BCC.ADD#'' THEN
+               TO.ADD=BCC.ADD
+               CC.ADD=''
+               BCC.ADD=''
+            END
+            EMAIL.SHELL<30,VAL>=TO.ADD:'|':CC.ADD:'|':BCC.ADD
+         NEXT VAL
+         VCID=''
+         VCID=TRIM(VCID)
+         IF VCID='' THEN SUMMARY=1 ELSE SUMMARY=0
+         NADDS=DCOUNT(EMAIL.SHELL<30>,@VM)
+         FOR ADDS=1 TO NADDS
+            EMAIL.IDS=EMAIL.SHELL<30,ADDS>
+            EMAIL.REC=''
+            EMAIL.NATT=DCOUNT(EMAIL.SHELL,@AM)
+            FOR ATT=1 TO EMAIL.NATT
+               EMAIL.REC<ATT>=EMAIL.SHELL<ATT,ADDS>
+            NEXT ATT
+            EMAIL.REC=CHANGE(EMAIL.REC,@SVM,@VM)
+            LCC.LIST=EMAIL.REC<31>
+            LCC.OVERCHARGE=SUM(EMAIL.REC<32>)
+            NATT=DCOUNT(EMAIL.REC,@AM)
+            NVAL=DCOUNT(EMAIL.REC<1>,@VM)
+            FOR VAL=1 TO NVAL
+               PRO.ID=EMAIL.REC<8,VAL>
+               READ PRO.REC FROM F.BILLS.HIST,PRO.ID ELSE
+                  GO SKIP.PRO
+               END
+               SHIP.DATE = PRO.REC<1>
+               IF LOG.ST.DT # "" THEN
+                  IF SHIP.DATE < LOG.ST.DT THEN
+                     GO SKIP.PRO
+                  END
+               END
+               IOT = PRO.REC<2>
+               NEW.VC.ID = VCID
+               IF NEW.VC.ID MATCHES "5N" ELSE
+                  IF SUMMARY=0 THEN
+                     GO SKIP.PRO
+                  END
+               END
+               PREV.VC.ID = VC.ID
+               PREV.LOC.ZIP = LOC.ZIP
+               NEW.LOC.ZIP = PRO.REC<4>
+               NEW.DIV.ID = PRO.REC<9>
+               NEW.VC = 0
+               NEW.DIV.LOC = 0
+
+* Check division
+
+               IF SUMMARY=0 THEN
+                  IF NEW.LOC.ZIP # PREV.LOC.ZIP THEN
+                     NEW.DIV.LOC = 1
+                  END
+               END
+
+* Check Vendor/Customer
+
+               IF SUMMARY=0 THEN
+                  IF NEW.VC.ID # PREV.VC.ID THEN
+                     NEW.VC = 1
+                  END
+               END
+
+* Check for New Division/Location or New Vendor Customer
+
+               IF NEW.DIV.LOC OR NEW.VC THEN
+                  IF SHIPMENT.ARRAY # '' THEN
+                     GOSUB PRINT.STORE.LTR
+                  END
+                  VC.ID = NEW.VC.ID
+                  LOC.ZIP = NEW.LOC.ZIP
+                  DIV.ID = NEW.DIV.ID
+                  READ VC.REC FROM F.VC,VC.ID ELSE
+                     ERROR = 'ERROR - Vendor Customer ':VC.ID:' for ':CLIENT:' not on file.'
+                     IF FROM.PROCESS THEN
+                        ERROR.ARRAY<-1> = ERROR
+                     END ELSE
+                        CALL ELINE(ERROR)
+                     END
+                     GO SKIP.PRO
+                  END
+                  IF FROM.PROCESS THEN
+                     UP.ARRAY=VC.REC
+                     UP.ID='VEND.CUST,':CLIENT:'*':VC.ID ; GOSUB UPDATE.UP.FILE
+                  END
+                  IF NEW.VC THEN
+                     GOSUB CHANGE.VENDORS
+                  END ELSE
+                     GOSUB CHANGE.LOC.DIV
+                  END
+               END
+
+* Set values and shipment info
+
+               SHIP.DATE = PRO.REC<1>
+               IOT = PRO.REC<2>
+               PRO.NUM=FIELD(PRO.ID,'*',2)
+               TOTAL.FREIGHT = PRO.REC<8>+PRO.REC<44>
+               CORRECT.FREIGHT = PRO.REC<63>
+               PO.BOL = PRO.REC<16>
+               OVERCHARGE = TOTAL.FREIGHT-CORRECT.FREIGHT
+               IF OVERCHARGE LE 0 THEN GO SKIP.PRO
+
+* Get Carrier Information
+
+               CARRIER.ID=FIELD(PRO.ID,'*',1)
+               READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE
+                  ERROR="ERROR - Carrier ":CARRIER.ID:" not on file."
+                  IF FROM.PROCESS THEN
+                     ERROR.ARRAY<-1> = ERROR
+                  END ELSE
+                     CALL ELINE(ERROR)
+                  END
+                  GO SKIP.PRO
+               END
+               UNAPPR.CARRIER.NAME = CARRIER.REC<1>
+
+               APPR.CARRIER = PRO.REC<69>
+               READ CARRIER.REC FROM F.CARRIERS,APPR.CARRIER ELSE
+                  ERROR="ERROR - Carrier ":APPR.CARRIER:" not on file."
+                  IF FROM.PROCESS THEN
+                     ERROR.ARRAY<-1> = ERROR
+                  END ELSE
+                     CALL ELINE(ERROR)
+                  END
+                  GO SKIP.PRO
+               END
+               APPR.CARRIER.NAME = CARRIER.REC<1>
+               IF PREV.APPR.CARRIER = '' OR PREV.APPR.CARRIER = '00000' THEN
+                  PREV.APPR.CARRIER = APPR.CARRIER
+               END
+
+               APPR.CARRIER.ARRAY = PRO.REC<23>
+               APPR.CARR.AMT.ARRAY = PRO.REC<22>
+               NUM.APPR.CARRIERS = DCOUNT(APPR.CARRIER.ARRAY,@VM)
+               IF NUM.APPR.CARRIERS GT 1 THEN
+                  FOR X = 2 TO NUM.APPR.CARRIERS
+                     APPR.CARRIER.ID = APPR.CARRIER.ARRAY<1,X>
+                     READV CARRIER.NAME FROM F.CARRIERS,APPR.CARRIER.ID,1 ELSE CARRIER.NAME = ''
+                     APPR.CARRIER.NAME<1,1,-1> = CARRIER.NAME
+                     CORRECT.FREIGHT<1,1,-1> = APPR.CARR.AMT.ARRAY<1,X>
+                     OVERCHARGE<1,1,-1> = TOTAL.FREIGHT-APPR.CARR.AMT.ARRAY<1,X>
+                  NEXT X
+               END
+
+* Check to see if approved carriers have changed
+
+               IF APPR.CARRIER # PREV.APPR.CARRIER AND PREV.APPR.CARRIER#'' AND PREV.APPR.CARRIER#'00000' AND APPR.CARRIER # '' AND APPR.CARRIER#'00000' THEN
+                  CARR.CHG.FLAG = 1
+                  PREV.APPR.CARRIER = APPR.CARRIER
+                  NEXT.EVENT = ''
+                  NEXT.EVENT.DATE = ''
+               END
+               IF PRO.NUM='999-999999-9' THEN CALL ELINE('PRESS BREAK')
+
+* Check Vendor/Customer and Division to see if waived or new
+
+               IF VC.WAIVED = 'Y' OR DIV.WAIVED = 'Y' OR OVERCHARGE<1,1,1> < THROW.AWAY.AMT THEN
+                  IF IOT='I' THEN
+                     LOCATE PRO.ID IN VC.REC<16,LOC.POS> SETTING TEST ELSE
+                        VC.REC<11,LOC.POS,1> = LOC.ZIP
+                        IF VC.WAIVED = 'Y' OR DIV.WAIVED = 'Y' THEN
+                           VC.REC<15,LOC.POS,-1> = 'WV'
+                        END ELSE
+                           VC.REC<15,LOC.POS,-1> = 'TA'
+                        END
+                        VC.REC<16,LOC.POS,-1> = PRO.ID
+                        VC.REC<17,LOC.POS,-1> = LTR.DATE
+                        VC.REC<19,LOC.POS,-1> = 0
+                     END
+                  END ELSE
+                     LOCATE PRO.ID IN VC.REC<47,LOC.POS> SETTING TEST ELSE
+                        VC.REC<42,LOC.POS,1> = LOC.ZIP
+                        IF VC.WAIVED = 'Y' OR DIV.WAIVED = 'Y' THEN
+                           VC.REC<46,LOC.POS,-1> = 'WV'
+                        END ELSE
+                           VC.REC<46,LOC.POS,-1> = 'TA'
+                        END
+                        VC.REC<47,LOC.POS,-1> = PRO.ID
+                        VC.REC<48,LOC.POS,-1> = LTR.DATE
+                        VC.REC<50,LOC.POS,-1> = 0
+                     END
+                  END
+                  IF VC.ID#'' THEN
+                     WRITE VC.REC ON F.VC,VC.ID
+                  END
+                  PREV.APPR.CARRIER = ''
+                  GO SKIP.PRO
+               END
+* Stores shipment information for later use
+
+               NXVAL=DCOUNT(SHIPMENT.ARRAY<1>,@VM)+1
+               FOR ATT=1 TO NATT
+                  SHIPMENT.ARRAY<ATT,NXVAL> = EMAIL.REC<ATT,VAL>
+               NEXT ATT
+               TOTAL.MR.FRT = TOTAL.MR.FRT + TOTAL.FREIGHT
+               TOTAL.CORRECT.FRT = TOTAL.CORRECT.FRT + CORRECT.FREIGHT<1,1,1>
+               TOTAL.OVERCHARGE = TOTAL.OVERCHARGE + OVERCHARGE<1,1,1>
+               IF TYPE.DM = 'T' THEN
+                  DM.AMT = DM.AMT + TOTAL.FREIGHT
+               END ELSE
+                  DM.AMT = DM.AMT + OVERCHARGE<1,1,1>
+               END
+SKIP.PRO:      ***
+            NEXT VAL
+            IF SHIPMENT.ARRAY='' AND LCC.OVERCHARGE+0#0 THEN
+               NXVAL=DCOUNT(SHIPMENT.ARRAY<1>,@VM)+1
+               EMAIL.NATT=DCOUNT(EMAIL.REC,@AM)
+               FOR ATT=1 TO EMAIL.NATT
+                  SHIPMENT.ARRAY<ATT,NXVAL> = EMAIL.REC<ATT,VAL>
+               NEXT ATT
+               GOSUB SEND.TEM.EMAIL
+            END
+            IF SHIPMENT.ARRAY # '' THEN
+               GOSUB PRINT.STORE.LTR
+            END
+         NEXT ADDS
+         IF SHIPMENT.ARRAY # '' THEN
+            GOSUB PRINT.STORE.LTR
+         END
+SKIP.EMAIL:***
+         DELETE F.TEM.EMAIL,TEM.EMAIL.ID
+      REPEAT
+*****************************************************************
+EXIT.PROGRAM:***
+*****************************************************************
+      IF FROM.PROCESS THEN
+         IF @TTY # "phantom" THEN        ; *GRB03
+            CRT @(0,0):@(-3)
+         END
+         ECOUNT = DCOUNT(ERROR.ARRAY,@FM)          ; * SWB01
+         FOR X = 1 TO ECOUNT
+            IF @TTY = "phantom" THEN     ; *GRB03
+               DISPLAY ERROR.ARRAY<X>
+            END ELSE
+               CRT @(0,X+5):ERROR.ARRAY<X>         ; * SWB01
+            END
+         NEXT X
+         IF LCC.OVERCHARGE+0#0 THEN
+            VC.NAME=''
+            VC.ADDR1=''
+            VC.ADDR2=''
+            VC.CITY=''
+            VC.ST=''
+            VC.ZIP=''
+            DM.TOTAL=''
+            LOC.DESC=''
+            VCI=''
+            CONF.LINE=''
+            EMAIL.IDS=''
+            EMAIL.SHELL=''
+            GOSUB PRINT.STORE.LTR
+         END
+         RETURN
+      END ELSE
+         IF LCC.OVERCHARGE+0#0 THEN
+            VC.NAME=''
+            VC.ADDR1=''
+            VC.ADDR2=''
+            VC.CITY=''
+            VC.ST=''
+            VC.ZIP=''
+            DM.TOTAL=''
+            LOC.DESC=''
+            VCI=''
+            CONF.LINE=''
+            EMAIL.IDS=''
+            EMAIL.SHELL=''
+            GOSUB PRINT.STORE.LTR
+         END
+         STOP
+      END
+
+*****************************************************************
+CHANGE.VENDORS:***
+*****************************************************************
+      VC.NAME = VC.REC<1>
+      VC.ADDR1 = VC.REC<3,1>
+      VC.ADDR2 = VC.REC<3,2>
+      VC.CITY = VC.REC<5>
+      VC.ST = VC.REC<6>
+      VC.ZIP = VC.REC<7>
+      VC.WAIVED = OCONV(VC.REC<10>,'MCU')
+      VCI = VC.REC<4>
+      IF VCI='R' THEN VCI='V'
+      NEW.VC=0
+      LOC.ZIP=VC.ZIP
+
+*****************************************************************
+CHANGE.LOC.DIV:***
+*****************************************************************
+
+      IF DIVISIONS = 'Y' THEN
+         MATREAD DIV.REC FROM F.DIV,DIV.ID THEN
+            DIV.ZIP = DIV.REC(1,1)
+         END
+      END ELSE
+         DIV.ZIP = PRO.REC<4>
+      END
+
+      READ ZIP.REC FROM F.ZIPS,DIV.ZIP THEN
+         DIV.DESC = ZIP.REC<1> :', ':ZIP.REC<2>:' ': DIV.ZIP
+      END ELSE
+         DIV.DESC = ''
+      END
+
+      READ ZIP.REC FROM F.ZIPS,LOC.ZIP THEN
+         LOC.DESC = ZIP.REC<1> :', ':ZIP.REC<2>:' ':LOC.ZIP
+      END ELSE
+         LOC.DESC = ''
+      END
+
+      PREV.LOC.ZIP = LOC.ZIP
+*
+*CHECK DIVISIONAL INFORMATION
+*
+      IF IOT='I' THEN
+         LOCATE LOC.ZIP IN VC.REC<11> BY 'AL' SETTING LOC.POS ELSE
+            INS LOC.ZIP BEFORE VC.REC<11,LOC.POS>
+            INS '' BEFORE VC.REC<12,LOC.POS>
+            INS '' BEFORE VC.REC<13,LOC.POS>
+            INS '' BEFORE VC.REC<14,LOC.POS>
+            INS '' BEFORE VC.REC<15,LOC.POS>
+            INS '' BEFORE VC.REC<16,LOC.POS>
+            INS '' BEFORE VC.REC<17,LOC.POS>
+            INS '' BEFORE VC.REC<19,LOC.POS>
+            INS '' BEFORE VC.REC<20,LOC.POS>
+            INS 'N' BEFORE VC.REC<21,LOC.POS>
+            IF VC.ID#'' THEN
+               WRITE VC.REC ON F.VC,VC.ID
+            END
+         END
+         DIV.WAIVED = VC.REC<21,LOC.POS,1>
+         NEXT.EVENT = VC.REC<12,LOC.POS,1>
+         NEXT.EVENT.DATE = VC.REC<13,LOC.POS,1>
+         NEXT.EVENT.OVERIDE = VC.REC<14,LOC.POS,1>
+         LOCATE PRO.ID IN VC.REC<16,LOC.POS> SETTING PRO.POS THEN
+            LTR.TYPE=VC.REC<15,LOC.POS,PRO.POS>
+            MR.UPD=0
+         END ELSE
+            MR.UPD=1
+         END
+      END ELSE
+         LOCATE LOC.ZIP IN VC.REC<42> BY 'AL' SETTING LOC.POS ELSE
+            INS LOC.ZIP BEFORE VC.REC<42,LOC.POS>
+            INS '' BEFORE VC.REC<43,LOC.POS>
+            INS '' BEFORE VC.REC<44,LOC.POS>
+            INS '' BEFORE VC.REC<45,LOC.POS>
+            INS '' BEFORE VC.REC<46,LOC.POS>
+            INS '' BEFORE VC.REC<47,LOC.POS>
+            INS '' BEFORE VC.REC<48,LOC.POS>
+            INS '' BEFORE VC.REC<50,LOC.POS>
+            INS '' BEFORE VC.REC<51,LOC.POS>
+            INS 'N' BEFORE VC.REC<52,LOC.POS>
+            IF VC.ID#'' THEN
+               WRITE VC.REC ON F.VC,VC.ID
+            END
+         END
+         DIV.WAIVED = VC.REC<52,LOC.POS,1>
+         NEXT.EVENT = VC.REC<43,LOC.POS,1>
+         NEXT.EVENT.DATE = VC.REC<44,LOC.POS,1>
+         NEXT.EVENT.OVERIDE = VC.REC<45,LOC.POS,1>
+         LOCATE PRO.ID IN VC.REC<47,LOC.POS> SETTING PRO.POS THEN
+            LTR.TYPE=VC.REC<46,LOC.POS,PRO.POS>
+            MR.UPD=0
+         END ELSE
+            MR.UPD=1
+         END
+      END
+      IF NEXT.EVENT.OVERIDE # '' THEN
+         NEXT.EVENT = NEXT.EVENT.OVERIDE
+         NEXT.EVENT.DATE = LTR.DATE
+      END
+      IF IOT='I' THEN
+         LTRS.SENT = VC.REC<15,LOC.POS>
+         MR.PROS = VC.REC<16,LOC.POS>
+         NUM.SHIPS = DCOUNT(MR.PROS,@SVM)
+         LTR.DATES = VC.REC<17,LOC.POS>
+         LAST.PRO = MR.PROS<1,1,NUM.SHIPS>
+      END ELSE
+         LTRS.SENT = VC.REC<46,LOC.POS>
+         MR.PROS = VC.REC<47,LOC.POS>
+         NUM.SHIPS = DCOUNT(MR.PROS,@SVM)
+         LTR.DATES = VC.REC<48,LOC.POS>
+         LAST.PRO = MR.PROS<1,1,NUM.SHIPS>
+      END
+      READV PREV.APPR.CARRIER FROM F.BILLS.HIST,LAST.PRO,69 ELSE PREV.APPR.CARRIER = ''
+      CARR.CHG.FLAG = 0
+      TOTAL.MR.FRT = 0
+      TOTAL.CORRECT.FRT = 0
+      TOTAL.OVERCHARGE = 0
+      DM.AMT = 0
+      SHIPMENT.ARRAY = ''
+      TEM.ARRAY = ''
+      NEW.DIV.LOC = 0
+      CONF.NUM = LTR.DATE:'*':CLIENT:'*':VC.ID:'*':LOC.ZIP
+      CONF.LINE = SPACES(10):CONF.NUM
+      RETURN
+
+*****************************************************************
+PRINT.STORE.LTR:***
+*****************************************************************
+* DECIDE.LTR.TYPE
+
+      IF TOT.OVERCHARGE+0#0 THEN
+         IF MR.UPD=1 THEN
+            BEGIN CASE
+               CASE VCI = 'C' OR VCI = 'I' OR NUM.WARNINGS = 'N'
+                  BEGIN CASE
+                     CASE NEXT.EVENT = '' OR NEXT.EVENT = 'LTR1'
+                        LTR.TYPE = 'LTR1'
+                        NEW.EVENT = 'LTR2'
+                        NEXT.EVENT.DATE = LTR.DATE + LTR2.DAYS
+                     CASE NEXT.EVENT = 'LTR2' AND NEXT.EVENT.DATE = ''
+                        LTR.TYPE = 'LTR1'
+                        NEW.EVENT = 'LTR2'
+                        NEXT.EVENT.DATE = LTR.DATE + LTR2.DAYS
+                     CASE NEXT.EVENT = 'LTR2' AND SHIP.DATE LT NEXT.EVENT.DATE
+                        LTR.TYPE = 'LTR1'
+                        NEW.EVENT = 'LTR2'
+                     CASE NEXT.EVENT = 'LTR2' AND SHIP.DATE GE NEXT.EVENT.DATE
+                        LTR.TYPE = 'LTR2'
+                        NEW.EVENT = 'LTR3'
+                        NEXT.EVENT.DATE = LTR.DATE + LTR2.DAYS
+                     CASE NEXT.EVENT = 'LTR3' AND SHIP.DATE LT NEXT.EVENT.DATE
+                        LTR.TYPE = 'LTR2'
+                        NEW.EVENT = 'LTR3'
+                     CASE NEXT.EVENT = 'LTR3' AND SHIP.DATE GE NEXT.EVENT.DATE
+                        LTR.TYPE = 'LTR3'
+                        NEW.EVENT = 'LTR4'
+                        NEXT.EVENT.DATE = LTR.DATE + LTR2.DAYS
+                     CASE NEXT.EVENT = 'LTR4' AND SHIP.DATE LT NEXT.EVENT.DATE
+                        LTR.TYPE = 'LTR3'
+                        NEW.EVENT = 'LTR4'
+                     CASE NEXT.EVENT = 'LTR4' AND SHIP.DATE GE NEXT.EVENT.DATE
+                        LTR.TYPE = 'LTR4'
+                        NEW.EVENT = 'LTR5'
+                        NEXT.EVENT.DATE = LTR.DATE + LTR2.DAYS
+                     CASE NEXT.EVENT = 'LTR5' AND SHIP.DATE LT NEXT.EVENT.DATE
+                        LTR.TYPE = 'LTR4'
+                        NEW.EVENT = 'LTR5'
+                     CASE NEXT.EVENT = 'LTR5' AND SHIP.DATE GE NEXT.EVENT.DATE
+                        LTR.TYPE = 'LTR5'
+                        NEW.EVENT = 'LTR6'
+                        NEXT.EVENT.DATE = LTR.DATE + LTR2.DAYS
+                     CASE NEXT.EVENT = 'LTR6' AND SHIP.DATE LT NEXT.EVENT.DATE
+                        LTR.TYPE = 'LTR5'
+                        NEW.EVENT = 'LTR6'
+                     CASE NEXT.EVENT = 'LTR6' AND SHIP.DATE GE NEXT.EVENT.DATE
+                        LTR.TYPE = 'LTR6'
+                        NEW.EVENT = 'LTR6'
+                     CASE NEXT.EVENT = 'DM'
+                        LTR.TYPE = 'LTR3'
+                        NEW.EVENT = 'LTR4'
+                        NEXT.EVENT.DATE = LTR.DATE + LTR2.DAYS
+                  END CASE
+               CASE NUM.WARNINGS = 2
+                  BEGIN CASE
+                     CASE NEXT.EVENT = '' OR NEXT.EVENT = 'LTR1'
+                        LTR.TYPE = 'LTR1'
+                        NEW.EVENT = 'LTR2'
+                        NEXT.EVENT.DATE = LTR.DATE + LTR2.DAYS
+                     CASE NEXT.EVENT = 'LTR2' AND NEXT.EVENT.DATE = ''
+                        LTR.TYPE = 'LTR1'
+                        NEW.EVENT = 'LTR2'
+                        NEXT.EVENT.DATE = LTR.DATE + LTR2.DAYS
+                     CASE NEXT.EVENT = 'LTR2' AND SHIP.DATE LT NEXT.EVENT.DATE
+                        LTR.TYPE = 'LTR1'
+                        NEW.EVENT = 'LTR2'
+                     CASE NEXT.EVENT = 'LTR2' AND SHIP.DATE GE NEXT.EVENT.DATE
+                        LTR.TYPE = 'LTR2'
+                        NEW.EVENT = 'DM'
+                        NEXT.EVENT.DATE = LTR.DATE + DM.DAYS
+                     CASE NEXT.EVENT = 'LTR3' AND SHIP.DATE LT NEXT.EVENT.DATE
+                        LTR.TYPE = 'LTR2'
+                        NEW.EVENT = 'DM'
+                     CASE NEXT.EVENT = 'LTR3' AND SHIP.DATE GE NEXT.EVENT.DATE
+                        LTR.TYPE = 'DM'
+                        NEW.EVENT = 'DM'
+                     CASE NEXT.EVENT = 'LTR4' OR NEXT.EVENT = 'LTR5' OR NEXT.EVENT = 'LTR6'
+                        LTR.TYPE = 'DM'
+                        NEW.EVENT = 'DM'
+                     CASE NEXT.EVENT = 'DM' AND SHIP.DATE LT NEXT.EVENT.DATE
+                        LTR.TYPE = 'LTR2'
+                        NEW.EVENT = 'DM'
+                     CASE NEXT.EVENT = 'DM' AND SHIP.DATE GE NEXT.EVENT.DATE
+                        LTR.TYPE = 'DM'
+                        NEW.EVENT = 'DM'
+                  END CASE
+               CASE NUM.WARNINGS = 1
+                  BEGIN CASE
+                     CASE NEXT.EVENT = '' OR NEXT.EVENT = 'LTR2'
+                        LTR.TYPE = 'LTR2'
+                        NEW.EVENT = 'DM'
+                        NEXT.EVENT.DATE = LTR.DATE + DM.DAYS
+                     CASE NEXT.EVENT = 'LTR1'
+                        LTR.TYPE = 'LTR2'
+                        NEW.EVENT = 'DM'
+                        NEXT.EVENT.DATE = LTR.DATE +DM.DAYS
+                     CASE NEXT.EVENT = 'LTR3' AND SHIP.DATE LT NEXT.EVENT.DATE
+                        LTR.TYPE = 'LTR2'
+                        NEW.EVENT = 'DM'
+                     CASE NEXT.EVENT = 'LTR3' AND SHIP.DATE GE NEXT.EVENT.DATE
+                        LTR.TYPE = 'DM'
+                        NEW.EVENT = 'DM'
+                     CASE NEXT.EVENT = 'LTR4' OR NEXT.EVENT = 'LTR5' OR NEXT.EVENT = 'LTR6'
+                        LTR.TYPE = 'DM'
+                        NEW.EVENT = 'DM'
+                     CASE NEXT.EVENT = 'DM' AND SHIP.DATE LT NEXT.EVENT.DATE
+                        LTR.TYPE = 'LTR2'
+                        NEW.EVENT = 'DM'
+                     CASE NEXT.EVENT = 'DM' AND SHIP.DATE GE NEXT.EVENT.DATE
+                        LTR.TYPE = 'DM'
+                        NEW.EVENT = 'DM'
+                  END CASE
+               CASE NUM.WARNINGS = 0
+                  LTR.TYPE = 'DM'
+                  NEW.EVENT = 'DM'
+               CASE 1
+                  LTR.TYPE = 'LTR1'
+                  NEW.EVENT = 'LTR2'
+            END CASE
+         END
+         IF DM.AMT LT MIN.DM.AMT THEN
+            DM.TOTAL = MIN.DM.AMT
+         END ELSE
+            DM.TOTAL = DM.AMT
+         END
+         IF IOT='I' THEN
+            LOCATE PRO.ID IN VC.REC<16,LOC.POS> SETTING TEST ELSE
+               VC.REC<11,LOC.POS,1> = LOC.ZIP
+               VC.REC<12,LOC.POS,1> = NEW.EVENT
+               VC.REC<13,LOC.POS,1> = NEXT.EVENT.DATE
+               VC.REC<14,LOC.POS,1> = ''
+               IF LTR.TYPE = 'DM' THEN
+                  IF FROM.PROCESS THEN
+                     UP.ARRAY<1> = '*NEW*'
+                     UP.ID='FB.LOGISTICS*':CONF.NUM ; GOSUB UPDATE.UP.FILE
+                  END
+                  DM.REC<1> = PROCESS.END.DATE+1
+                  DM.COMM = DM.TOTAL*(CONSULTING.COMM/10000)'R0'
+                  IF DM.COMM<2000 THEN DM.COMM=2000
+                  DM.REC<2> = DM.COMM
+                  DM.REC<3> = DIV.ID
+                  DM.COMM = (DM.TOTAL*(CONSULTING.COMM/10000))'R0'
+                  IF DM.COMM<2000 THEN DM.COMM=2000
+                  DM.REC<4> = DM.COMM
+                  DM.REC<5> = VC.ID
+                  DM.REC<6> = LOC.ZIP
+               END
+               SHIP.COUNT = DCOUNT(SHIPMENT.ARRAY<1>,@VM)
+               FOR X = 1 TO SHIP.COUNT
+                  VC.REC<15,LOC.POS,-1> = LTR.TYPE
+                  VC.REC<16,LOC.POS,-1> = SHIPMENT.ARRAY<8,X>          ; *PRO.ID
+                  VC.REC<17,LOC.POS,-1> = LTR.DATE
+                  IF LTR.TYPE = 'DM' THEN
+                     IF X = 1 THEN
+                        VC.REC<19,LOC.POS,-1> = DM.TOTAL
+                     END ELSE
+                        VC.REC<19,LOC.POS,-1> = 0  ; * Only report the Full Amount Once
+                     END
+                     DM.REC<7,-1> = SHIPMENT.ARRAY<8,X>      ; *PRO.ID
+                     DM.REC<8,-1> = SHIPMENT.ARRAY<7,X>      ; *OVERCHAGE AMT
+                     DM.AMT = SHIPMENT.ARRAY<7,X>
+                  END ELSE
+                     VC.REC<19,LOC.POS,-1> = 0
+                  END
+               NEXT X
+               IF LTR.TYPE = 'DM' THEN
+                  MVIN = ''
+                  WRITE DM.REC ON F.LOGS,CONF.NUM
+                  SUBJ='Debit Memo'
+                  TEXT='The following is a notification of a debit memo that will be added to your Invoice next week.'
+                  TEXT<1,-1>='You will need to reduce your payment to this vendor in the amount of ':DM.TOTAL'R26,$':', and enclose a'
+                  TEXT<1,-1>='copy of the debit memo when remitting your payment to the vendor.'
+                  TEXT<1,-1>=' '
+                  TEXT<1,-1>='This Vendor has been notified a minimum of three times instructing them to change their'
+                  TEXT<1,-1>='routing on shipments to you, and they have failed to comply.'
+                  TEXT<1,-1>='These misroutes have resulted in excess freight charges to your company.'
+                  TEXT<1,-1>=' '
+                  TEXT<1,-1> = 'The following debit memo was sent out on :':DATE()'D2/'
+                  TEXT<1,-1> = ' '
+                  TEXT<1,-1> = 'Client            : ':CLIENT:' - ':CLIENT.REC<2>
+                  TEXT<1,-1> = 'Vendor            : ':VC.ID:' - ':VC.NAME
+                  TEXT<1,-1> = 'Debit Memo Amt    : ':DM.TOTAL'R26,$'
+                  TEXT<1,-1> = 'Confirmation #    : ':CONF.NUM
+                  TEXT<1,-1> = 'Carrier used      : ':CARRIER.ID: ' - ':UNAPPR.CARRIER.NAME
+                  NUM.APPR.CARRIERS = DCOUNT(APPR.CARRIER.ARRAY,@VM)
+                  FOR X = 1 TO NUM.APPR.CARRIERS
+                     IF X = 1 THEN LINE = 'Approved carriers : ' ELSE LINE = SPACE(20)
+                     LINE := APPR.CARRIER.ARRAY<1,X>:' - ':APPR.CARRIER.NAME<1,1,X>
+                     TEXT<1,-1> = LINE
+                  NEXT X
+
+* Begin GRB01
+                  TEXT<1,-1> = ' '
+                  TEXT<1,-1>='If you have any questions, please call (877)531-2796 option 2.'
+                  TEXT<1,-1>=' '
+                  TEXT<1,-1>='Sincerely,'
+                  TEXT<1,-1>=' '
+                  TEXT<1,-1>='Customer Service Department'
+                  TEXT<1,-1>='AFS Logistics, LLC'
+                  TEXT<1,-1>='877-531-2796 option 2'
+                  TEXT<1,-1>='FAX: 318-841-9286'
+                  TEXT<1,-1>='CustomerService@afs.net'
+
+                  MVIN<4>='AFS'
+                  * End GRB01
+                  MVIN<5>=SUBJ
+                  MVIN<6>=TEXT
+                  CALL SENDMAIL(MVIN,MVOUT)
+               END
+            END
+         END ELSE
+            LOCATE PRO.ID IN VC.REC<47,LOC.POS> SETTING TEST ELSE
+               VC.REC<42,LOC.POS,1> = LOC.ZIP
+               VC.REC<43,LOC.POS,1> = NEW.EVENT
+               VC.REC<44,LOC.POS,1> = NEXT.EVENT.DATE
+               VC.REC<45,LOC.POS,1> = ''
+               SHIP.COUNT = DCOUNT(SHIPMENT.ARRAY<1>,@VM)
+               FOR X = 1 TO SHIP.COUNT
+                  VC.REC<46,LOC.POS,-1> = LTR.TYPE
+                  VC.REC<47,LOC.POS,-1> = SHIPMENT.ARRAY<8,X>          ; *PRO.ID
+                  VC.REC<48,LOC.POS,-1> = LTR.DATE
+                  VC.REC<50,LOC.POS,-1> = 0
+               NEXT X
+            END
+         END
+         IF VC.ID#'' THEN
+            WRITE VC.REC ON F.VC,VC.ID
+         END
+         IF LTR.TYPE # '' AND LTR.TYPE # 'LTR1' THEN
+            IF IOT='I' THEN
+               NSVAL=DCOUNT(VC.REC<16,LOC.POS>,@SVM)
+               FOR SVAL=1 TO NSVAL
+                  IF VC.REC<17,LOC.POS,SVAL> < LTR.DATE THEN
+                     PRV.PRO.ID=VC.REC<16,LOC.POS,SVAL>
+                     READ PRV.FBH.REC FROM F.BILLS.HIST,PRV.PRO.ID THEN
+                        PRV.UNAPPR.CARRIER.ID=FIELD(PRV.PRO.ID,'*',1)
+                        READ PRV.UNAPPR.CARRIER.REC FROM F.CARRIERS,PRV.UNAPPR.CARRIER.ID ELSE PRV.UNAPPR.CARRIER.REC=''
+                        PRV.UNAPPR.CARRIER.NAME=PRV.UNAPPR.CARRIER.REC<1>
+                        PRV.APPR.CARRIER.ID=PRV.FBH.REC<69>
+                        READ PRV.APPR.CARRIER.REC FROM F.CARRIERS,PRV.APPR.CARRIER.ID ELSE PRV.APPR.CARRIER.REC=''
+                        PRV.APPR.CARRIER.NAME=PRV.APPR.CARRIER.REC<1>
+                        PRV.PRO.NUM=FIELD(PRV.PRO.ID,'*',2)
+                        PRV.SHIP.DATE=PRV.FBH.REC<1>
+                        PRV.TOTAL.FREIGHT=PRV.FBH.REC<8>+PRV.FBH.REC<44>
+                        PRV.CORRECT.FREIGHT=PRV.FBH.REC<63>
+                        PRV.OVERCHARGE=PRV.TOTAL.FREIGHT-PRV.CORRECT.FREIGHT
+                        PRV.PO.BOL=PRV.FBH.REC<16>
+                        IF PRV.OVERCHARGE+0#0 THEN
+                           MISROUTE.ARRAY<1,-1> = PRV.UNAPPR.CARRIER.NAME
+                           MISROUTE.ARRAY<2,-1> = PRV.PRO.NUM
+                           MISROUTE.ARRAY<3,-1> = PRV.SHIP.DATE
+                           MISROUTE.ARRAY<4,-1> = PRV.TOTAL.FREIGHT
+                           MISROUTE.ARRAY<5,-1> = PRV.APPR.CARRIER.NAME
+                           MISROUTE.ARRAY<6,-1> = PRV.CORRECT.FREIGHT
+                           MISROUTE.ARRAY<7,-1> = PRV.OVERCHARGE
+                           MISROUTE.ARRAY<8,-1> = PRV.PRO.ID
+                           MISROUTE.ARRAY<9,-1> = PRV.APPR.CARRIER.ID
+                           MISROUTE.ARRAY<10,-1> = PO.BOL
+                        END
+                     END
+                  END
+               NEXT SVAL
+            END ELSE
+               NSVAL=DCOUNT(VC.REC<47,LOC.POS>,@SVM)
+               FOR SVAL=1 TO NSVAL
+                  IF VC.REC<48,LOC.POS,SVAL> < LTR.DATE THEN
+                     PRV.PRO.ID=VC.REC<47,LOC.POS,SVAL>
+                     READ PRV.FBH.REC FROM F.BILLS.HIST,PRV.PRO.ID THEN
+                        PRV.UNAPPR.CARRIER.ID=FIELD(PRV.PRO.ID,'*',1)
+                        READ PRV.UNAPPR.CARRIER.REC FROM F.CARRIERS,PRV.UNAPPR.CARRIER.ID ELSE PRV.UNAPPR.CARRIER.REC=''
+                        PRV.UNAPPR.CARRIER.NAME=PRV.UNAPPR.CARRIER.REC<1>
+                        PRV.APPR.CARRIER.ID=PRV.FBH.REC<69>
+                        READ PRV.APPR.CARRIER.REC FROM F.CARRIERS,PRV.APPR.CARRIER.ID ELSE PRV.APPR.CARRIER.REC=''
+                        PRV.APPR.CARRIER.NAME=PRV.APPR.CARRIER.REC<1>
+                        PRV.PRO.NUM=FIELD(PRV.PRO.ID,'*',2)
+                        PRV.SHIP.DATE=PRV.FBH.REC<1>
+                        PRV.TOTAL.FREIGHT=PRV.FBH.REC<8>+PRV.FBH.REC<44>
+                        PRV.CORRECT.FREIGHT=PRV.FBH.REC<63>
+                        PRV.OVERCHARGE=PRV.TOTAL.FREIGHT-PRV.CORRECT.FREIGHT
+                        PRV.PO.BOL=PRV.FBH.REC<16>
+                        IF PRV.OVERCHARGE+0#0 THEN
+                           MISROUTE.ARRAY<1,-1> = PRV.UNAPPR.CARRIER.NAME
+                           MISROUTE.ARRAY<2,-1> = PRV.PRO.NUM
+                           MISROUTE.ARRAY<3,-1> = PRV.SHIP.DATE
+                           MISROUTE.ARRAY<4,-1> = PRV.TOTAL.FREIGHT
+                           MISROUTE.ARRAY<5,-1> = PRV.APPR.CARRIER.NAME
+                           MISROUTE.ARRAY<6,-1> = PRV.CORRECT.FREIGHT
+                           MISROUTE.ARRAY<7,-1> = PRV.OVERCHARGE
+                           MISROUTE.ARRAY<8,-1> = PRV.PRO.ID
+                           MISROUTE.ARRAY<9,-1> = PRV.APPR.CARRIER.ID
+                           MISROUTE.ARRAY<10,-1> = PRV.PO.BOL
+                        END
+                     END
+                  END
+               NEXT SVAL
+            END
+         END
+         IF SUMMARY=1 THEN
+            VC.NAME=''
+            VC.ADDR1=''
+            VC.ADDR2=''
+            VC.CITY=''
+            VC.ST=''
+            VC.ZIP=''
+            DM.TOTAL=''
+            LOC.DESC=''
+            VCI=''
+            CONF.LINE=''
+         END
+      END
+*****************************************************************
+SEND.TEM.EMAIL:*
+*****************************************************************
+      VIN=''
+      IF TOTAL.OVERCHARGE+LCC.OVERCHARGE#0 THEN
+         VIN<1> = VC.NAME
+         VIN<2> = VC.ADDR1
+         VIN<3> = VC.ADDR2
+         VIN<4> = VC.CITY
+         VIN<5> = VC.ST
+         VIN<6> = VC.ZIP
+         VIN<7> = CLIENT.NAME
+         VIN<8> = DIV.ID
+         VIN<9> = DIV.DESC
+         VIN<10> = CARR.CHG.FLAG
+         VIN<11> = DM.TOTAL
+         VIN<12> = LOC.DESC
+         VIN<13> = TOTAL.OVERCHARGE
+         VIN<14> = CONF.LINE
+         VIN<15> = LTR.DATE
+         VIN<16> = LTR.TYPE
+         VIN<17> = VCI
+         VIN<18> = CLIENT
+         VIN<19> = MIN.DM.AMT
+         VIN<20> = EMAIL.IDS
+         VIN<21>=USER
+         VIN<22>=CH.NUM
+         VIN<23>=EMAIL.SHELL<30>
+         VIN<24>=ONCE
+         VIN<25>=LCC.OVERCHARGE
+         VIN<26>=LCC.LIST
+         VIN<27>=BEG.DATE
+         VIN<28>=END.DATE
+         CALL FB.SEND.TEM.EMAILS(VIN,SHIPMENT.ARRAY,MISROUTE.ARRAY,F.CLIENTS,F.CARRIERS,F.TRANSPORT,F.TABLES)
+*
+      END
+      LTR.TYPE=''
+      SHIPMENT.ARRAY=''
+      TOTAL.OVERCHARGE=0
+      RETURN
+
+*****************************************************************
+UPDATE.UP.FILE:*
+*****************************************************************
+      READV DUMMY FROM F.UP,UP.ID,1 ELSE
+         WRITE UP.ARRAY ON F.UP,UP.ID
+      END
+      RETURN
+
+*****************************************************************
+INITIALIZE.VARIABLES:**
+*****************************************************************
+      APPR.CARRIER = ''
+      CARR.CHG.FLAG = 0
+      CONF.LINE=''
+      DIV.DESC=''
+      DIV.ID=''
+      DIV.WAIVED='N'
+      DM.AMT=0
+      DM.DAYS = 13
+      DM.REC = ''
+      DM.TOTAL=''
+      EMAIL.IDS=''
+      EMAIL.SHELL=''
+      ERROR.ARRAY = ''
+      LCC.OVERCHARGE = 0
+      LOC.ZIP = ''
+      LOC.DESC=''
+      LINE.NUM=0
+      LTR.DATE = DATE()
+      LTR.TYPE=''
+      LTR2.DAYS = 6
+      NEW.VC.ID = ''
+      NEW.LOC.ZIP = ''
+      NEW.DIV.LOC = 0
+      NEW.EVENT=''
+      NEW.VC = 0
+      NEW.VC.ID=''
+      NEXT.EVENT.DATE = ''
+      PREV.APPR.CARRIER = ''
+      PREV.LOC.ZIP = ''
+      PREV.VC.ID = ''
+      SHIPMENT.ARRAY=''
+      TOTAL.CORRECT.FRT = ''
+      TOTAL.MR.FRT = ''
+      TOTAL.OVERCHARGE = ''
+      VC.ID =''
+      VC.REC = ''
+      VC.WAIVED='N'
+      VC.NAME=''
+      VC.ADDR1=''
+      VC.ADDR2=''
+      VC.CITY=''
+      VC.ST=''
+      VC.ZIP=''
+      VCI=''
+
+      RETURN

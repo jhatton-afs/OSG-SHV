@@ -1,0 +1,395 @@
+      SUBROUTINE NEW.GET.DIVISION(VIN,CLIENT.ID,CARRIER,EDI.REC,F.DIV,VOUT)
+****************************************************
+* Program name : NEW.GET.DIVISION
+* Author       : Nicole Hennick
+* Date written : February 14, 2025
+* Library      : FBBP
+* COPYRIGHT (C) 2025 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* Get division codes from table
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 13:47:23 on 02/14/2025.
+*
+* Start modification history
+* 021425 : NKH00 : ACCU-1971 New program
+* End modification history
+****************************************************
+*
+* VIN<1> IS CUSTOMER/VENDER NAME
+
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'NEW.GET.DIVISION' ; UPL.VOUT = ''         
+      CALL GET.USER.NEW(USER,CH.NUM)
+      UPL.VIN<3> = USER
+      UPL.VIN<4> = CH.NUM
+***      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)      
+
+      $OPTIONS HEADER.EJECT
+      $OPTIONS EXEC.EQ.PREF
+      $OPTIONS INFO.ABORT
+
+      VOUT=''
+      PRO.NUM=VIN<5>
+
+      SADDR=''
+      CADDR='' 
+      SNAME=''
+      CNAME=''
+
+      OPEN '','FB.DIVISION' TO F.FB.DIVISION ELSE
+         CALL OPEN.ABORT('FB.DIVISION',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+
+      READ DIVISION.FIELDS FROM F.TABLES,'DIVISION.FIELDS' ELSE DIVISION.FIELDS=''  
+      DIVISION.ID = CLIENT.ID:'*':CARRIER
+      READ DIVISION.REC FROM F.FB.DIVISION, DIVISION.ID THEN
+         GOSUB CHECK.FOR.DIVISION
+         IF VOUT#'' THEN RETURN
+      END
+      DIVISION.ID = CLIENT.ID:'*ALL'
+      READ DIVISION.REC FROM F.FB.DIVISION,DIVISION.ID THEN
+         GOSUB CHECK.FOR.DIVISION
+         IF VOUT#'' THEN RETURN
+      END
+      DIVISION.ID = 'ALL*':CARRIER
+      READ DIVISION.REC FROM F.FB.DIVISION,DIVISION.ID THEN
+         GOSUB CHECK.FOR.DIVISION
+         IF VOUT#'' THEN RETURN
+      END
+
+      RETURN
+****************************************************************      
+CHECK.FOR.DIVISION: ***
+**************************************************************** 
+      NUM.DIVISIONS = DCOUNT(DIVISION.REC<6>,@VM)
+**********************************************
+* BUILD SPECIAL OVERCHARGE ARRAY
+* Attributes represent a single Rule Group
+* Each Value of the Attr represents an AND statement
+* Each Sub-Value of a value represents an OR statement
+* The data stored in the array is the Value Number of the DIVISION RULES
+* In other words
+* The Rule Value Number from the DIVISION file are stored in the array
+**********************************************
+      OVER.ARR=''
+      ATT=0                              ; * Start at 0 the 1st (initial) group change will make it 1
+      VAL=1
+      LAST.GROUP='FIRST'
+      LAST.SUBGROUP='FIRST'
+      FOR X = 1 TO NUM.DIVISIONS
+         GROUP=DIVISION.REC<6,X>
+         SUBGROUP=DIVISION.REC<14,X>
+         IF SUBGROUP='' THEN SUBGROUP=X  ; * Keep it unique for now
+         IF GROUP#LAST.GROUP THEN
+            ATT+=1
+            VAL=1
+            LAST.GROUP=GROUP
+            LAST.SUBGROUP=SUBGROUP
+         END
+         IF SUBGROUP#LAST.SUBGROUP THEN
+            LAST.SUBGROUP=SUBGROUP
+            VAL+=1
+         END
+         OVER.ARR<ATT,VAL,-1>=X
+      NEXT X
+
+      OLD.GROUP = ''
+      SHIP.DATE = EDI.REC<5>
+      NEXT.GROUP = 0
+      RULES = ''
+
+**********************************************
+* LOOP THRU SPECIAL OVERCHARGE ARRAY
+* to evaluate the rules in order
+**********************************************
+      RULE.TIMES=DCOUNT(OVER.ARR,@AM)
+      FOR RULE=1 TO RULE.TIMES
+         RULE.INDEX=OVER.ARR<RULE>
+         RULES=''                        ; * List of Valid Rules
+         GROUP.TIMES=DCOUNT(RULE.INDEX<1>,@VM)
+         FOR GROUP=1 TO GROUP.TIMES
+            GROUP.INDEX=RULE.INDEX<1,GROUP>
+            SUBGROUP.TIMES=DCOUNT(GROUP.INDEX<1,1>,@SVM)
+            SUBGROUP.DA=''
+            RESULT=0
+            FOR SUBGROUP=1 TO SUBGROUP.TIMES
+               RULE.VAL=GROUP.INDEX<1,1,SUBGROUP>
+               FIELD = DIVISION.REC<3,RULE.VAL>
+               OPERATOR = DIVISION.REC<4,RULE.VAL>
+               INFO = DIVISION.REC<5,RULE.VAL>
+               DIVISION.CODE = DIVISION.REC<7,RULE.VAL>        ; * Should ALWAYS be the same within Groups
+               LOCATE FIELD IN DIVISION.FIELDS<1> SETTING POS ELSE GO SKIP.RULE
+               FIELD.NUM = DIVISION.FIELDS<3,POS>
+               FIELD.INFO = EDI.REC<FIELD.NUM>
+               FIELD.INFO = OCONV(FIELD.INFO,'MCU')
+               
+               BEGIN CASE
+                  CASE FIELD='ALL'
+                     RULES<1,-1>='ALL BILLS'
+                     RULES<2,-1>='TRUE'
+                     RULES<3,-1>='TRUE'
+                     GO FOUND.DIVISION
+
+                  CASE OPERATOR = 'AP' 
+                     BEGIN CASE
+                        CASE FIELD = 'SADDR'       
+                           SPECIAL.FLAG=1          
+                        CASE FIELD = 'CADDR'       
+                           SPECIAL.FLAG=1 
+                        CASE FIELD = 'SNAME'       
+                           SPECIAL.FLAG=1          
+                        CASE FIELD = 'CNAME'       
+                           SPECIAL.FLAG=1                                              
+                        CASE 1
+                           SPECIAL.FLAG=0
+                     END CASE
+                     NUM.ITEMS = DCOUNT(FIELD.INFO,@VM)
+                     FOUND.OCC=0
+                     FOR Y = 1 TO NUM.ITEMS
+                        INFO.DAT.LEN = LEN(INFO)
+                        FIRST.CHAR = INFO[1,1]
+                        LAST.CHAR = INFO[INFO.DAT.LEN,1]
+                        INFO.DATA=FIELD.INFO<1,Y>
+                        BEGIN CASE
+                           CASE FIRST.CHAR ='[' & LAST.CHAR =']' & SPECIAL.FLAG
+                              TEMP.INFO.DAT = INFO[2,9999]
+                              TEMP.INFO.DAT = TEMP.INFO.DAT[1,LEN(INFO)-2]
+                              IF INDEX(INFO.DATA,TEMP.INFO.DAT,1) THEN FOUND.OCC=1
+                           CASE FIRST.CHAR ='[' & SPECIAL.FLAG
+                              TEMP.LEN = INFO.DAT.LEN-1
+                              INFO.LEN = LEN(INFO.DATA)
+                              IF INFO[2,TEMP.LEN] = INFO.DATA[INFO.LEN-TEMP.LEN+1,TEMP.LEN] THEN FOUND.OCC=1
+                           CASE LAST.CHAR =']' & SPECIAL.FLAG
+                              TEMP.LEN = INFO.DAT.LEN-1
+                              IF INFO[1,TEMP.LEN] = INFO.DATA[1,TEMP.LEN] THEN FOUND.OCC=1
+                           CASE 1
+                              IF OCONV(INFO,'MCU')='NULL' THEN
+                                 IF INFO.DATA='' THEN FOUND.OCC=1
+                              END ELSE
+                                 IF INFO.DATA EQ INFO THEN FOUND.OCC=1
+                              END
+                        END CASE
+                     NEXT Y
+                     IF OPERATOR = 'AP' THEN
+                        IF FOUND.OCC THEN
+                           RULES<1,-1>=FIELD
+                           RULES<2,-1>=OPERATOR
+                           RULES<3,-1>=INFO
+                           RESULT=1
+                        END
+                     END
+
+                  CASE 1
+                     NUM.ITEMS = DCOUNT(FIELD.INFO,@VM)
+                     FOR Y = 1 TO NUM.ITEMS
+
+*ADD SUBGROUP.DA UPDATE HERE
+*SUBGROUP.DA<1>=FIELD (mv)
+*SUBGROUP.DA<2>=FIELD.INFO (SV Positionally dependant on <1>) DATA FROM PRO.REC
+*SUBGROUP.DA<3>='Y/N' Y-Passed ONE of the test, N-Failed ALL of the tests SV Tied to #2
+*SUBGROUP.DA<4>=Operator of the test (For the Rules Output SV NOT TIED TO SV of #2)
+*SUBGROUP.DA<5>=Operand (Number that the Bill Data was Tested Against Output SV NOT TIED TO SV of #2)
+
+                        INFO.DATA=FIELD.INFO<1,Y>
+                        LOCATE FIELD IN SUBGROUP.DA<1> BY 'AL' SETTING FIELD.POS THEN
+                           INS OPERATOR BEFORE SUBGROUP.DA<4,FIELD.POS,-1>
+                           INS INFO BEFORE SUBGROUP.DA<5,FIELD.POS,-1>
+                        END ELSE
+                           INS FIELD BEFORE SUBGROUP.DA<1,FIELD.POS>
+
+                           TEMP=" ":INFO.DATA      ; * Add a space to prevent the NULL Thing
+                           INS TEMP BEFORE SUBGROUP.DA<2,FIELD.POS>
+                           SUBGROUP.DA<2,FIELD.POS>=SUBGROUP.DA<2,FIELD.POS>[2,999]        ; * Remove the Space
+                           INS "N" BEFORE SUBGROUP.DA<3,FIELD.POS>     ; * Default to No
+                           INS OPERATOR BEFORE SUBGROUP.DA<4,FIELD.POS>
+                           INS INFO BEFORE SUBGROUP.DA<5,FIELD.POS>
+                        END
+                        FIELD.TRUE=0
+
+                        BEGIN CASE
+                           CASE FIELD = 'SADDR'       
+                              SPECIAL.FLAG=1          
+                           CASE FIELD = 'CADDR'       
+                              SPECIAL.FLAG=1    
+                           CASE FIELD = 'SNAME'       
+                              SPECIAL.FLAG=1          
+                           CASE FIELD = 'CNAME'       
+                              SPECIAL.FLAG=1                                              
+                           CASE 1
+                              SPECIAL.FLAG=0
+                        END CASE
+                        BEGIN CASE
+                           CASE OPERATOR = 'EQ'
+                              INFO.DAT.LEN = LEN(INFO)
+                              FIRST.CHAR = INFO[1,1]
+                              LAST.CHAR = INFO[INFO.DAT.LEN,1]
+                              BEGIN CASE
+                                 CASE FIRST.CHAR ='[' & LAST.CHAR =']' & SPECIAL.FLAG
+                                    TEMP.INFO.DAT = INFO[2,9999]
+                                    TEMP.INFO.DAT = TEMP.INFO.DAT[1,LEN(INFO)-2]
+
+                                    IF INDEX(INFO.DATA,TEMP.INFO.DAT,1) THEN FIELD.TRUE=1
+                                 CASE FIRST.CHAR ='[' & SPECIAL.FLAG
+
+                                    TEMP.LEN = INFO.DAT.LEN-1
+                                    INFO.LEN = LEN(INFO.DATA)
+                                    IF INFO[2,TEMP.LEN] = INFO.DATA[INFO.LEN-TEMP.LEN+1,TEMP.LEN] THEN FIELD.TRUE=1
+                                 CASE LAST.CHAR =']' & SPECIAL.FLAG
+                                    TEMP.LEN = INFO.DAT.LEN-1
+
+                                    IF INFO[1,TEMP.LEN] = INFO.DATA[1,TEMP.LEN] THEN FIELD.TRUE=1
+                                 CASE 1
+
+                                    IF OCONV(INFO,'MCU')='NULL' THEN
+                                       IF INFO.DATA='' THEN FIELD.TRUE=1
+                                    END ELSE
+                                       IF INFO.DATA EQ INFO THEN FIELD.TRUE=1
+                                    END
+                              END CASE
+                        END CASE
+                        LOCATE INFO.DATA IN SUBGROUP.DA<2,FIELD.POS> BY 'AR' SETTING INFO.POS THEN
+                           IF FIELD.TRUE THEN
+                              SUBGROUP.DA<3,FIELD.POS,INFO.POS>='Y'
+                           END
+                        END ELSE
+                           TEMP=" ":INFO.DATA      ; * Add a space to prevent the NULL Thing
+                           INS TEMP BEFORE SUBGROUP.DA<2,FIELD.POS,INFO.POS>
+                           SUBGROUP.DA<2,FIELD.POS,INFO.POS>=SUBGROUP.DA<2,FIELD.POS,INFO.POS>[2,999]          ; * Remove the Space
+                           IF FIELD.TRUE THEN
+                              INS 'Y' BEFORE SUBGROUP.DA<3,FIELD.POS,INFO.POS>
+                           END ELSE
+                              INS 'N' BEFORE SUBGROUP.DA<3,FIELD.POS,INFO.POS>
+                           END
+                        END
+                     NEXT Y
+               END CASE
+            NEXT SUBGROUP
+            IF SUBGROUP.DA#'' THEN
+               FIELD.TIMES=DCOUNT(SUBGROUP.DA<1>,@VM)
+               FOR X = 1 TO FIELD.TIMES
+                  ALL.YES=1
+                  INFO.TIMES=DCOUNT(SUBGROUP.DA<2,X>,@SVM)
+                  FOR Y = 1 TO INFO.TIMES
+                     IF SUBGROUP.DA<3,X,Y>='N' THEN ALL.YES=0
+                  NEXT Y
+                  IF ALL.YES=1 THEN
+*               Flag this "OR" as passing
+*               Add all of the rules associated with this rule to the Rules array
+                     RESULT=1
+                     REASON.TIMES=DCOUNT(SUBGROUP.DA<4,X>,@SVM)
+                     FOR Y = 1 TO REASON.TIMES
+                        RULES<1,-1>=SUBGROUP.DA<1,X>         ; * Field Name
+                        RULES<2,-1>=SUBGROUP.DA<4,X,Y>       ; * Operator
+                        RULES<3,-1>=SUBGROUP.DA<5,X,Y>       ; * Operand (From DIVISIONs)
+                     NEXT Y
+                  END
+               NEXT X
+            END
+            IF RESULT=0 THEN GO SKIP.RULE
+         NEXT GROUP
+
+*****************************************
+*If you made it this far do the "rule"
+*****************************************
+
+         GO FOUND.DIVISION
+
+SKIP.RULE: ***
+      NEXT RULE
+
+** NO.DIVISION Found
+      VOUT=''
+      GO EXIT.PROGRAM
+      
+**************************************************************** 
+FOUND.DIVISION:
+**************************************************************** 
+      VOUT = ''
+      IF INDEX(DIVISION.CODE,"~",1) THEN
+         DUMMY.DIVISION.CODE=CHANGE(DIVISION.CODE,"~",@AM)
+         DIVISION.CODE=''
+         NUM.OF.ITEMS=DCOUNT(DUMMY.DIVISION.CODE,@AM)
+         ACTUAL=1
+         FOR XX = 1 TO NUM.OF.ITEMS
+            IF ACTUAL THEN
+               DIVISION.CODE=DIVISION.CODE:DUMMY.DIVISION.CODE<XX>
+               ACTUAL=0
+            END ELSE
+               IF INDEX(DUMMY.DIVISION.CODE<XX>,"[",1) THEN
+                  CODE.ID=FIELD(DUMMY.DIVISION.CODE<XX>,"[",1)
+               END ELSE
+                  CODE.ID=DUMMY.DIVISION.CODE<XX>
+               END
+               LOCATE CODE.ID IN DIVISION.FIELDS<1> SETTING XX.POS THEN
+                  CODE.FIELD.NUM = DIVISION.FIELDS<3,XX.POS>
+                  CODE.FIELD.INFO = EDI.REC<CODE.FIELD.NUM>
+                  CODE.FIELD.INFO = OCONV(CODE.FIELD.INFO,'MCU')
+               END
+               IF INDEX(DUMMY.DIVISION.CODE<XX>,"[",1) THEN
+                  RANGE=FIELD(DUMMY.DIVISION.CODE<XX>,"[",2)
+                  RANGE=RANGE[1,LEN(RANGE)-1]
+                  DIVISION.CODE=DIVISION.CODE:CODE.FIELD.INFO:"[":RANGE
+               END ELSE
+                  DIVISION.CODE=DIVISION.CODE:CODE.FIELD.INFO
+               END
+               ACTUAL=1
+            END
+         NEXT XX
+      END
+      LOOP                               
+      WHILE INDEX(DIVISION.CODE,'{',1) DO           
+         CALC=0                          
+         IF INDEX(DIVISION.CODE,'{',1) THEN         
+            DUMMY.DIVISION.CODE=FIELD(DIVISION.CODE,'{',2)     
+            DUMMY.DIVISION.CODE=FIELD(DUMMY.DIVISION.CODE,'}',1)         
+            IF INDEX(DUMMY.DIVISION.CODE,"[",1) THEN          
+               CODE.ID=FIELD(DUMMY.DIVISION.CODE,"[",1)       
+               RANGE=FIELD(DUMMY.DIVISION.CODE,"[",2)         
+               RANGE=FIELD(RANGE,"]",1)  
+               BRANGE=FIELD(RANGE,",",1)           
+               ERANGE=FIELD(RANGE,",",2)           
+            END ELSE                     
+               CODE.ID=DUMMY.DIVISION.CODE          
+               BRANGE=0                  
+               ERANGE=0                  
+            END                          
+            LOCATE CODE.ID IN DIVISION.FIELDS<1> SETTING XX.POS THEN    
+               BEGIN CASE                
+                  CASE CODE.ID='DIV'     
+                     ADD.IN=EDI.REC<116>   
+                  CASE 1                 
+                     ADD.IN=''           
+               END CASE                  
+               IF BRANGE#0 THEN          
+                  ADD.IN=ADD.IN[BRANGE,ERANGE]     
+               END                       
+               DIVISION.CODE=FIELD(DIVISION.CODE,'{',1):ADD.IN:FIELD(DIVISION.CODE,'}',2)     
+               READ TEMP FROM F.DIV,DIVISION.CODE ELSE        
+                  TEMP=DIVISION.CODE      
+                  WRITE TEMP ON F.DIV,DIVISION.CODE           
+               END
+            END                          
+         END                             
+      REPEAT                             
+      READ TEMP FROM F.DIV,DIVISION.CODE THEN
+         IF TEMP<5>='I' THEN
+            DIVISION.CODE=''
+         END
+      END ELSE
+         DIVISION.CODE=''
+      END
+      VOUT<1>=DIVISION.CODE
+      IF RULES # '' THEN
+         VOUT<2> = RULES<1>
+         VOUT<3> = RULES<2>
+         VOUT<4> = RULES<3>
+      END
+      
+      GO EXIT.PROGRAM
+      
+**************************************************************** 
+EXIT.PROGRAM: ***
+**************************************************************** 
+      RETURN

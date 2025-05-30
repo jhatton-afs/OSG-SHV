@@ -1,0 +1,1484 @@
+******      SUBROUTINE UPD.SQL.FBHIST.SUB(VIN,VOUT,CLIENT.REC,DIV.REC,VC.REC,BILL.REC,EDI.REC)
+****************************************
+* Program name : UPD.SQL.FBHIST.SUB
+* Author       : Owen Holman
+* Date written : January 2002
+* Library      : FBBP
+* COPYRIGHT (c) : AFS, LLC 2016, All Rights Reserved.
+*
+* FB BILLS HIST sql push
+* Last updated by afs (gbino) at 08:48:26 on 09/28/2018.
+*
+* Start modification history
+* Mod nn  mm/dd/yy, init, req #, description
+* 040908 - JMK01 - C080617 - TL FSC estimation
+* 042408 - JMK02 - Send UPS Bills without any amounts for payment matching
+* 042708 - JMK03 - Send Cleared Date for Service Evaluation
+* 050808 - JMK04 - C081128 - Modilfy BLS new filed 'FedEx Num of Pcs' to include all modes piece count
+* 102208 - JMK05 - C082320 - Miles for LTL AD/BD should be captured and recorded from the original invoice
+*                            and should not be recaptured and reported on either the AD/BD records.
+* 012209 - JMK06 - Bray USA ; no billed weights in V2 but showing in SS report
+* 012709 - JMK07 - Add core carrier flag to the shipment record
+* 012010 - JMK08 - T100052 - Amounts on SS report for H&K do not match
+* 111711 - JMK09 - Project#113 - Inconsistent data from v2 for EDI vs. ppr
+* 032612 - DFP01 - PROJECT 187 - PREVENT UPDATING FB.STATUS WHEN FREIGHT BILL IS REJECTED OR MODIFIED.
+* 061912 - JMK10 - Choose development SQL server if not production server AFS
+* 082113 - JMK11 - SysAid#6826 - SS Reports - carrier type 11
+* 101414 - JMK12 - SysAid#12737 - Set up carriers as truckload carriers
+* End modification history
+*
+*******************************************
+$INCLUDE UNIVERSE.INCLUDE ODBC.H
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'UPD.SQL.FBHIST.SUB' ; UPL.VOUT = ''       ; * NPR_UPL 04/23/2010
+      CALL GET.USER.NEW(USER,CH.NUM)
+      UPL.VIN<3> = USER
+      UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      CALL GET.SERVER.INFO(SVR.VIN,SVR.VOUT)       ; * JMK10
+      SVR.NAME=SVR.VOUT<1>               ; * JMK10
+      BEGIN CASE
+         CASE USER='DAVID'
+         CASE USER = "GBINO"
+         CASE USER = "NMEDDAUGH"         ; * NKH01
+         CASE USER='SV.UVAUTO'
+         CASE USER='UVTASKS'
+         CASE 1
+            CRT "YOU ARE NOT AUTHORIZED TO USE THIS PROGRAM"
+            STOP
+      END CASE
+
+      VIN1=""
+      VIN1<1> = "UPD.SQL.FBHIST.T"
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "S"
+      CALL PROGTRACK(VIN1,VOUT1)
+
+      CRT @(0,0):@(-1):@(0,3):'UPD.SQL.FBHIST.T - Processing Clients from ':BEG.DATE'D2/':' to ':END.DATE'D2/':'...'
+      GOSUB OPEN.FILES
+
+      GET (ARG.,1) OBEG.DATE THEN
+         BEG.DATE=ICONV(OBEG.DATE,'D')
+      END ELSE
+         BEG.DATE=DATE()
+      END
+      GET (ARG.,2) OEND.DATE THEN
+         END.DATE=ICONV(OEND.DATE,'D')
+      END ELSE
+         END.DATE=DATE()
+      END
+      GET (ARG.,3) CLIENT.LIST.NAME ELSE CLIENT.LIST.NAME=''
+      GET (ARG.,4) OPT.LIST ELSE OPT.LIST=''
+      GET (ARG.,5) START.TIME ELSE START.TIME=''
+      IF START.TIME#'' THEN
+         CRT "Waiting until ":START.TIME
+         STMT="SLEEP ":START.TIME
+         EXECUTE STMT CAPTURING TIME.RESULTS
+      END
+*
+      GOSUB SETUP.SQL
+      GOSUB SETUP.PARAMETERS
+*
+      IF CLIENT.LIST.NAME#'' AND CLIENT.LIST.NAME#'ALL' THEN
+         STMT='GET-LIST ':CLIENT.LIST.NAME
+      END ELSE
+         STMT='SSELECT CLIENTS WITH @ID # "9]" AND WITH STATUS # "I"'
+      END
+      EXECUTE STMT RTNLIST CLIENT.LIST CAPTURING RESULTS
+      NUM.CLIENTS=@SELECTED
+
+      UPD.SHIP=1
+      UPD.CINV=1
+      UPD.CIDTL=1
+      UPD.EXP=1
+      UPD.STOP=1                         ; * JMK12
+      UPD.PYMT=1
+      IF UPD.FLAGS#'' THEN
+         UPD.SHIP=UPD.FLAGS[1,1]
+         UPD.CINV=UPD.FLAGS[2,1]
+         UPD.CIDTL=UPD.FLAGS[3,1]
+         UPD.EXP=UPD.FLAGS[4,1]
+         UPD.STOP=UPD.FLAGS[5,1]
+         UPD.PYMT=UPD.FLAGS[6,1]
+      END
+
+      FORM = "T##########"
+      DASH = "----------"
+      EXPECT = ""
+      NULL=""
+      TOT.NUM.BILLS=0
+      ERROR.CNT=0
+10:   ERRORS=''
+
+      CLIENT.EOF=0
+      CLIENT.CNT=0
+      CLIENT.PER=0
+      LOOP
+         READNEXT CLIENT.ID FROM CLIENT.LIST ELSE CLIENT.EOF=1
+      UNTIL CLIENT.EOF DO
+      CLIENT.ID = '01015'	
+         CLIENT.CNT+=1
+         CLIENT.PCT=ICONV(CLIENT.CNT/NUM.CLIENTS*100,'MR2')
+         READ CLIENT.REC FROM F.CLIENT,CLIENT.ID THEN
+            CRT @(0,5):@(-4):CLIENT.CNT'R#4':' - ':CLIENT.PCT'R26#6':'% ':CLIENT.ID:' - ':CLIENT.REC<2>
+*****            CALL PROG.BAR(8,CLIENT.CNT,NUM.CLIENTS,CLIENT.PER)
+            OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILL THEN
+
+               EDI.FOUND=0
+               VC.FOUND=0
+               DIV.FOUND=0
+
+               OPEN '','EDI.BILLS.HIST,':CLIENT.ID TO F.EDI THEN EDI.FOUND=1
+               OPEN '','VEND.CUST,':CLIENT.ID TO F.VC THEN VC.FOUND=1
+               OPEN '','DIVISION.CODE,':CLIENT.ID TO F.DIV THEN DIV.FOUND=1
+
+               STMT = 'SELECT FB.PROC.DATE.XREF,':CLIENT.ID
+               STMT:=' WITH DATE GE "':OCONV(BEG.DATE,'D2/'):'"'
+               STMT:=' AND WITH DATE LE "':OCONV(END.DATE,'D2/'):'"'
+               EXECUTE STMT RTNLIST DT.LIST CAPTURING OUTPUT
+*****
+*****               IF @SELECTED < 1 AND CLIENT.ID # "00000" THEN GOTO SKIP.CLIENT    ; * JMK01
+               STMT = 'QSELECT FB.PROC.DATE.XREF,':CLIENT.ID
+               EXECUTE STMT PASSLIST DT.LIST RTNLIST NDX.LIST CAPTURING OUTPUT
+
+  *****             IF @SELECTED < 1 AND CLIENT.ID # "00000" THEN GOTO SKIP.CLIENT    ; * JMK01
+               IF CLIENT.ID="00000" THEN           ; * JMK01
+                  STMT='SELECT FB.BILLS.HIST,':CLIENT.ID
+                  STMT:=' WITH VERSION = "0"'
+                  STMT:=' AND WITH 39 # "R"'
+                  STMT:=' AND WITH 39 # "P"'
+                  STMT:=' AND WITH 30 GE "':OCONV(BEG.DATE,'D2/'):'"'
+                  STMT:=' AND WITH 30 LE "':OCONV(END.DATE,'D2/'):'"'
+                  EXECUTE STMT RTNLIST BILL.LIST CAPTURING OUTPUT      ; * JMK01
+               END ELSE                  ; * JMK01
+                  STMT='SELECT FB.BILLS.HIST,':CLIENT.ID
+                  STMT:=' WITH VERSION = "0"'
+                  STMT:=' AND WITH 39 # "R"'
+                  STMT:=' AND WITH 39 # "P"'
+                  STMT:=' AND WITH 37 GE "':OCONV(BEG.DATE,'D2/'):'"'
+                  STMT:=' AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'
+                  EXECUTE STMT PASSLIST NDX.LIST RTNLIST BILL.LIST CAPTURING OUTPUT
+               END                       ; * JMK01
+               NUM.BILLS=@SELECTED
+               TOT.NUM.BILLS+=NUM.BILLS
+*****               CRT @(0,10):@(-3):' #Bills - ':NUM.BILLS'R#12':' - ':TOT.NUM.BILLS'R#15'
+               BILL.EOF=0
+               BILL.CNT=0
+               BILL.PER=0
+               LOOP
+                  READNEXT BILL.ID FROM BILL.LIST ELSE BILL.EOF=1
+           BILL.ID = '00015*434531383588*0'
+ BILL.ID = '02441*4152663A*0'
+DEBUG
+BILL.EOF=0
+NUM.BILLS = 1
+BILL.CNT = 1       	
+               UNTIL BILL.EOF DO
+                  BILL.CNT+=1
+                  BILL.PCT=ICONV(BILL.CNT/NUM.BILLS*100,'MR2')
+                  IF NOT(REM(BILL.CNT,10)) THEN
+                     CRT @(0,10):@(-3):' #Bills - ':NUM.BILLS'R#12':' - ':BILL.CNT'R#15'
+                  END
+                  ******                CALL PROG.BAR(13,BILL.CNT,NUM.BILLS,BILL.PER)
+                  SEQ=FIELD(BILL.ID,'*',3)
+                  IF SEQ#0 THEN CONTINUE
+                  CARRIER.ID=FIELD(BILL.ID,'*',1)
+                  PRO=FIELD(BILL.ID,'*',2)
+                  READ BILL.REC FROM F.BILL,BILL.ID THEN
+                     EDI.REC=''
+                     IF EDI.FOUND THEN
+                        READ EDI.REC FROM F.EDI,BILL.ID ELSE EDI.REC=''
+                     END
+* DEFINE FIELDS TO UPDATE FROM CLIENT.REC HERE
+                     CARRIER.ID=FIELD(BILL.ID,'*',1)
+                     PRO=FIELD(BILL.ID,'*',2)
+                     DIV.REC=''
+                     IF DIV.FOUND THEN
+                        DIV.ID=BILL.REC<9>
+                        READ DIV.REC FROM F.DIV,DIV.ID ELSE DIV.REC=''
+                     END
+                     VC.REC=''
+                     IF VC.FOUND THEN
+                        VC.ID=BILL.REC<17>
+                        READ VC.REC FROM F.VC,VC.ID ELSE VC.REC=''
+                     END
+                     IF BILL.REC<37>='' THEN
+                        ERRORS<-1>='Missing Process Date for ':BILL.ID
+                        ****       RETURN TO THE.END
+                     END
+                     ****************************8
+                     * DEFINE FIELDS TO UPDATE FROM CLIENT.REC HERE
+                     UPS.EBILL=0
+                     PRO=FIELD(BILL.ID,'*',2)
+                     UPS.FDATE=ICONV(PRO[8,2]:'/':PRO[10,2]:'/':PRO[12,2],'D')
+                     BEGIN CASE
+                        CASE CLIENT.ID='00244' AND UPS.FDATE < ICONV('01/26/08','D')
+                        CASE CLIENT.ID='00841' AND UPS.FDATE < ICONV('01/26/08','D')
+                        CASE CLIENT.ID='00857' AND UPS.FDATE < ICONV('01/26/08','D')
+                        CASE CLIENT.ID='00962' AND UPS.FDATE < ICONV('02/02/08','D')
+                        CASE CLIENT.ID='01292' AND UPS.FDATE < ICONV('01/26/08','D')
+                        CASE CLIENT.ID='01310' AND UPS.FDATE < ICONV('02/02/08','D')
+                        CASE CLIENT.ID='01352' AND UPS.FDATE < ICONV('02/02/08','D')
+                        CASE CLIENT.ID='01393' AND UPS.FDATE < ICONV('01/26/08','D')
+                        CASE CLIENT.ID='01640' AND UPS.FDATE < ICONV('03/24/08','D')
+                        CASE 1
+                           UPS.EBILL=(BILL.REC<53>="EBILL.IMPORT.NEW")
+                     END CASE
+
+                     IF UPS.EBILL THEN
+                        UPD.SHIP=0
+                        UPD.CINV=0
+                        UPD.CIDTL=0
+                        UPD.EXP=1
+                        UPD.STOP=0
+                        UPD.PYMT=0
+                        ****    GOSUB THE.END
+                        ****   GOSUB SETUP.SQL
+                        CONTINUE
+                     END ELSE
+                        IF UPD.FLAGS#'' THEN
+                           UPD.SHIP=UPD.FLAGS[1,1]
+                           UPD.CINV=UPD.FLAGS[2,1]
+                           UPD.CIDTL=UPD.FLAGS[3,1]
+                           UPD.EXP=UPD.FLAGS[4,1]
+                           UPD.STOP=UPD.FLAGS[5,1]
+                           UPD.PYMT=UPD.FLAGS[6,1]
+                        END
+                     END
+
+
+                     ********************************
+                     *****         SQLVIN=''
+                     *****          SQLVIN<1>=USER
+                     *****           SQLVIN<2>=CLIENT.ID
+                     *****          SQLVIN<3>=BILL.ID
+                     *****          SQLVIN<4>='111111'
+                     *****          IF OPT.LIST#'' THEN
+                     *****             SQLVIN<4>=OPT.LIST
+                     *****         END
+                     *****         SQLVIN<5>=LI.CODE.REC<1>
+                     *****         SQLVIN<6>=LI.CODE.REC<3>
+                     *****          SQLVOUT=''
+                     ******                CALL UPD.SQL.FBHIST.SUB(SQLVIN,SQLVOUT,CLIENT.REC,DIV.REC,VC.REC,BILL.REC,EDI.REC)
+                     GOSUB DO.IT
+                     IF MOD(BILL.CNT,10)=0 THEN
+                        **        CRT @(0,22):'Sleeping...zzz...zzz...':
+                        CRT @(0,22):@(-4):
+                     END
+                  END
+SKIP.BILL:        *
+               REPEAT
+               WKENDLOAD=0
+               IF CLIENT.LIST.NAME='CLIENTFBHIST1' THEN WKENDLOAD=1
+               IF CLIENT.LIST.NAME='CLIENTFBHIST2' THEN WKENDLOAD=1
+               IF CLIENT.LIST.NAME='CLIENTFBHIST3' THEN WKENDLOAD=1
+               IF CLIENT.LIST.NAME='CLIENTFBHIST4' THEN WKENDLOAD=1
+               IF WKENDLOAD THEN
+                  MVIN=''
+                  MVIN<1,-1>='nmeddaugh@afs.net'
+                  MVIN<4>='AFS_UPD.SQL.FBHIST.SUB'
+                  MVIN<5>='SQL Shipment Update by Client'
+                  TEXT='On ':DATE()'D2/':' ':OCONV(TIME(),'MTHS'):', ':USER:' updated '
+                  TEXT<1,-1>='Client ':CLIENT.ID:' ':CLIENT.REC<2>:' completed the SQL update for the processing period from ':OCONV(BEG.DATE,'D4/'):' to ':OCONV(END.DATE,'D4/'):' with ':NUM.BILLS:' shipments loaded.'
+                  TEXT<1,-1>=' '
+                  MVIN<6>=TEXT
+                  MVIN<7>=1
+                  CALL SENDMAIL(MVIN,MVOUT)
+               END
+               IF TOT.NUM.BILLS+0#0 THEN
+                  CRT @(0,22):@(-3):
+               END
+            END
+         END
+SKIP.CLIENT:*
+      REPEAT
+*****************************************************************
+THE.END:***
+****************************************************************
+
+* NOW JUST CLEAN UP THE ENVIRONMENT AND LEAVE
+*
+      FN = "SQLFreeStmt"
+      STATUS = SQLFREESTMT(STMTENV, SQL.DROP)
+      GOSUB CKSTMTENV
+
+      FN = "SQLDisconnect"
+      STATUS = SQLDISCONNECT(CONENV)
+      GOSUB CKCONENV
+
+      FN = "SQLFreeConnect"
+      STATUS = SQLFREECONNECT(CONENV)
+      GOSUB CKCONENV
+
+      FN = "SQLFreeEnv"
+      STATUS = SQLFREEENV(DBCENV)
+      IF STATUS <> SQL.SUCCESS THEN
+         ERRORS<1,-1>="Failed to release ODBC environment"
+      END
+
+      IF ERRORS#'' THEN
+         ERROR.CNT+=1
+         IF ERROR.CNT>3 THEN
+            MVIN=''
+            MVIN<1>='UPD.SQL.Group@afs.net'
+            MVIN<4>='AFS_UPD.SQL.FBHIST.SUB'
+            MVIN<5>='SQL Client Update Errors'
+            TEXT='On ':DATE()'D2/':' ':OCONV(TIME(),'MTHS'):', ':USER:' updated '
+            TEXT<1,-1>='Client ':CLIENT.ID:', Bill ':BILL.ID:', but did not succeed in updating SQL due to:'
+            TEXT<1,-1>=' '
+            TEXT<1,-1>=ERRORS
+            MVIN<6>=TEXT
+            MVIN<7>=1
+            CALL SENDMAIL(MVIN,MVOUT)
+         END ELSE
+            GO 10
+         END
+      END
+
+      VIN1=''
+      VIN1<1> = "UPD.SQL.FBHIST.T"
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "E"
+      CALL PROGTRACK(VIN1,VOUT1)
+
+      STOP
+*********************************************************************
+DO.IT:
+*******************************************************************8
+      IF BILL.REC<21>=6 AND INDEX(BILL.REC<151>,'FSC',1)=0 AND INDEX(BILL.REC<151>,'FUEL',1)=0 AND BILL.REC<8>+0#0 AND BILL.REC<3> # '99999' AND BILL.REC<4> # '99999' THEN          ; * JMK01 ; * JMK08
+         TL.VIN=''                       ; * JMK01
+         TL.VIN<1>=BILL.REC<1>           ; * JMK01
+         TL.VIN<2>=BILL.REC<6>           ; * JMK01
+         TL.VIN<5>=0                     ; * JMK01
+         TL.VIN<6>=BILL.REC<8>           ; * JMK01
+         TL.VIN<7>=BILL.REC<3>           ; * JMK01
+         TL.VIN<8>=BILL.REC<4>           ; * JMK01
+         TL.VIN<9>=CLIENT.ID             ; * JMK01
+         TL.VIN<10>=CARRIER.ID           ; * JMK01
+         TL.VOUT=''                      ; * JMK01
+         CALL CALC.TL.FSC(TL.VIN,TL.VOUT,F.NFSC,F.TABLES,F.TL.FSC,F.PCIN,F.PCOUT,F.MILEAGE,F.ZIPS,F.CAN.ZIPS)  ; * JMK01
+         EST.FSC.PERC=TL.VOUT<1>+0       ; * JMK01
+         EST.FSC.AMT=TL.VOUT<2>+0        ; * JMK01
+         EST.FRT.AMT=TL.VOUT<3>+0        ; * JMK01
+GO 666
+         ***************************************************************8
+         *   1 = FRT
+         *   4 = FSC
+
+         IF BILL.REC<151>='' THEN        ; * JMK01
+            BILL.REC<151,1>='FRT'        ; * JMK01
+            BILL.REC<152,1>=EST.FRT.AMT  ; * JMK01
+            BILL.REC<151,2>='EFS'        ; * JMK01
+            BILL.REC<152,2>=EST.FSC.AMT  ; * JMK01
+         END ELSE                        ; * JMK01
+            LOCATE 'FRT' IN BILL.REC<151> SETTING FRTPOS THEN          ; * JMK01
+               BILL.REC<152,FRTPOS>=EST.FRT.AMT    ; * JMK01
+            END ELSE                     ; * JMK01
+               LOCATE 'BASE' IN BILL.REC<151> SETTING FRTPOS THEN      ; * JMK08
+                  BILL.REC<152,FRTPOS>=EST.FRT.AMT           ; * JMK08
+               END ELSE                  ; * JMK08
+                  INS 'FRT' BEFORE BILL.REC<151,FRTPOS>      ; * JMK01
+                  INS EST.FRT.AMT BEFORE BILL.REC<152,FRTPOS>          ; * JMK01
+               END                       ; * JMK01
+            END                          ; * JMK08
+            LOCATE 'FSC' IN BILL.REC<151> SETTING FSCPOS THEN          ; * JMK01
+               BILL.REC<152,FSCPOS>=EST.FSC.AMT    ; * JMK01
+            END ELSE                     ; * JMK01
+               LOCATE 'FUEL' IN BILL.REC<151> SETTING FSCPOS THEN      ; * JMK08
+                  BILL.REC<152,FSCPOS>=EST.FSC.AMT           ; * JMK08
+               END ELSE                  ; * JMK08
+                  INS 'EFS' BEFORE BILL.REC<151,FSCPOS>      ; * JMK01
+                  INS EST.FSC.AMT BEFORE BILL.REC<152,FSCPOS>          ; * JMK01
+               END                       ; * JMK01
+            END                          ; * JMK08
+         END                             ; * JMK01
+666:
+         FRT.ARRAY=''                    ; * JMK01
+         MIS.ARRAY=''                    ; * JMK01
+         NVAL=DCOUNT(BILL.REC<151>,@VM)  ; * JMK01
+         FOR VAL=1 TO NVAL               ; * JMK01
+            TRAN.TYPE=BILL.REC<151,VAL>  ; * JMK01
+            BEGIN CASE                   ; * JMK01
+               CASE TRAN.TYPE='FRT' OR TRAN.TYPE='MIN' OR TRAN.TYPE='DEF' OR TRAN.TYPE='BASE'        ; * JMK01
+                  NXT.VAL=DCOUNT(FRT.ARRAY<1>,@VM)+1         ; * JMK01
+                  FOR ATT=1 TO 2         ; * JMK01
+                     FRT.ARRAY<ATT,NXT.VAL>=BILL.REC<150+ATT,VAL>      ; * JMK01
+                  NEXT ATT               ; * JMK01
+               CASE 1                    ; * JMK01
+                  LOCATE(TRAN.TYPE,MIS.ARRAY,1;MPOS) THEN    ; * JMK01
+                     MIS.ARRAY<2,MPOS>+=BILL.REC<152,VAL>+0  ; * JMK01
+                  END ELSE               ; * JMK01
+                     NXT.VAL=DCOUNT(MIS.ARRAY<1>,@VM)+1      ; * JMK01
+                     FOR ATT=1 TO 2      ; * JMK01
+                        MIS.ARRAY<ATT,NXT.VAL>=BILL.REC<150+ATT,VAL>   ; * JMK01
+                     NEXT ATT            ; * JMK01
+                  END                    ; * JMK01
+            END CASE                     ; * JMK01
+         NEXT VAL                        ; * JMK01
+         BILL.REC<153>=FRT.ARRAY<1>      ; * JMK01
+         BILL.REC<157>=FRT.ARRAY<2>      ; * JMK01
+         BILL.REC<159>=MIS.ARRAY<1>      ; * JMK01
+         BILL.REC<163>=MIS.ARRAY<2>      ; * JMK01
+      END                                ; * JMK01
+      PROC.DT=BILL.REC<37>'D4/'
+      SQL.UNIQUEKEY=CLIENT.ID:CARRIER.ID:PRO:PROC.DT[7,4]:PROC.DT[1,2]:PROC.DT[4,2]
+      SQL.CLIENTNO=CLIENT.ID+0
+      SQL.DIVNO=BILL.REC<9>
+      SQL.CARRIERNO=CARRIER.ID+0
+      SQL.IOT=TRIM(BILL.REC<2>)[1,1]
+      FB.ORIG.ZIP=BILL.REC<3>
+      FB.DEST.ZIP=BILL.REC<4>
+      IF EDI.REC#'' THEN                 ; * EDI Bills
+         SQL.SENDERNAME=TRIM(EDI.REC<19>:' ':EDI.REC<20>)[1,50]
+         SQL.SENDERADDR1=TRIM(EDI.REC<21>)[1,50]
+         SQL.SENDERADDR2=TRIM(EDI.REC<22>)[1,50]
+         SQL.SENDERCITY=TRIM(EDI.REC<23>)[1,50]
+         SQL.SENDERSTATE=TRIM(EDI.REC<24>)[1,20]
+         SQL.SENDERZIP=TRIM(CHANGE(EDI.REC<25>,'-',''))[1,20]
+         SQL.SENDERCOUNTRY=TRIM(EDI.REC<26>)[1,20]
+         SQL.RECEIVERNAME=TRIM(EDI.REC<28>:' ':EDI.REC<29>)[1,50]
+         SQL.RECEIVERADDR1=TRIM(EDI.REC<30>)[1,50]
+         SQL.RECEIVERADDR2=TRIM(EDI.REC<31>)[1,50]
+         SQL.RECEIVERCITY=TRIM(EDI.REC<32>)[1,50]
+         SQL.RECEIVERSTATE=TRIM(EDI.REC<33>)[1,20]
+         SQL.RECEIVERZIP=TRIM(CHANGE(EDI.REC<34>,'-',''))[1,20]
+         SQL.RECEIVERCOUNTRY=TRIM(EDI.REC<35>)[1,20]
+      END ELSE                           ; * PPR Bills
+         SQL.SENDERNAME=''
+         SQL.SENDERADDR1=''
+         SQL.SENDERADDR2=''
+         SQL.SENDERCITY=TRIM(BILL.REC<27>)[1,50]
+         SQL.SENDERSTATE=TRIM(BILL.REC<25>)[1,20]
+         SQL.SENDERZIP=TRIM(CHANGE(BILL.REC<3>,'-',''))[1,20]
+         SQL.SENDERCOUNTRY=TRIM(BILL.REC<222>)
+         SQL.RECEIVERNAME=''
+         SQL.RECEIVERADDR1=''
+         SQL.RECEIVERADDR2=''
+         SQL.RECEIVERCITY=TRIM(BILL.REC<28>)[1,50]
+         SQL.RECEIVERSTATE=TRIM(BILL.REC<26>)[1,20]
+         SQL.RECEIVERZIP=TRIM(CHANGE(BILL.REC<4>,'-',''))[1,20]
+         SQL.RECEIVERCOUNTRY=TRIM(BILL.REC<223>)
+
+         BEGIN CASE
+            CASE SQL.IOT='I' OR SQL.IOT='T'
+               IF VC.REC<7>=FB.ORIG.ZIP THEN
+                  SQL.SENDERNAME=TRIM(VC.REC<1>)[1,50]
+                  SQL.SENDERADDR1=TRIM(VC.REC<3,1>)[1,50]
+                  SQL.SENDERADDR2=TRIM(VC.REC<3,2>)[1,50]
+               END
+               IF DIV.REC<1>=FB.DEST.ZIP THEN
+                  SQL.RECEIVERNAME=TRIM(DIV.REC<11>)[1,50]
+                  SQL.RECEIVERADDR1=TRIM(DIV.REC<14,1>)[1,50]
+                  SQL.RECEIVERADDR2=TRIM(DIV.REC<14,2>)[1,50]
+               END
+            CASE SQL.IOT='O'
+               IF DIV.REC<1>=FB.ORIG.ZIP THEN
+                  SQL.SENDERNAME=TRIM(DIV.REC<11>)[1,50]
+                  SQL.SENDERADDR1=TRIM(DIV.REC<14,1>)[1,50]
+                  SQL.SENDERADDR2=TRIM(DIV.REC<14,2>)[1,50]
+               END
+               IF VC.REC<7>=FB.DEST.ZIP THEN
+                  SQL.RECEIVERNAME=TRIM(VC.REC<1>)[1,50]
+                  SQL.RECEIVERADDR1=TRIM(VC.REC<3,1>)[1,50]
+                  SQL.RECEIVERADDR2=TRIM(VC.REC<3,2>)[1,50]
+               END
+         END CASE
+      END
+      SQL.THIRDPARTYNAME=''
+      SQL.THIRDPARTYADDR1=''
+      SQL.THIRDPARTYADDR2=''
+      SQL.THIRDPARTYCITY=''
+      SQL.THIRDPARTYSTATE=''
+      SQL.THIRDPARTYZIP=''
+      SQL.THIRDPARTYCOUNTRY=''
+      SQL.CONSCODE=TRIM(BILL.REC<90>)[1,50]
+      SQL.VCNAME=TRIM(BILL.REC<101>)[1,50]
+      SQL.VCADDR1=TRIM(BILL.REC<102,1>)[1,50]
+      SQL.VCADDR2=TRIM(BILL.REC<102,2>)[1,50]
+      SQL.VCCITY=TRIM(BILL.REC<103>)[1,50]
+      SQL.VCSTATE=TRIM(BILL.REC<104>)[1,20]
+      SQL.VCZIP=TRIM(CHANGE(BILL.REC<105>,'-',''))[1,20]
+      SQL.VCCOUNTRY=''
+      SQL.PYMTMETHOD=TRIM(EDI.REC<72>)[1,2]
+      SQL.SHIPMENTMETHOD=TRIM(EDI.REC<90>)[1,2]
+      FB.TMODE.ID=TRIM(BILL.REC<21>)
+      SQL.TRANSMODE=TRIM(OCONV(FB.TMODE.ID,'TFB.TRANSPORT;X;;1'))[1,50]
+      SQL.DELIVERYSCHEDULECODE=TRIM(EDI.REC<91>)[1,2]
+      SQL.TRACKINGNO=TRIM(EDI.REC<135>)[1,50]
+      SQL.PRONO=PRO[1,50]
+      SQL.BOL=TRIM(CHANGE(BILL.REC<16>,@VM,'|'))[1,50]
+      SQL.INVNO=TRIM(BILL.REC<94>)[1,50]
+      SQL.CUSTOMERREFERENCENO=TRIM(EDI.REC<9>)[1,50]
+      SQL.CUSTOMERREFERENCENO2=TRIM(EDI.REC<137>)[1,50]
+      SQL.CUSTOMERREFERENCENO3=TRIM(EDI.REC<138>)[1,50]
+      SQL.CUSTOMERREFERENCENO4=TRIM(EDI.REC<139>)[1,50]
+      SQL.SHIP.WT=TRIM(BILL.REC<6>)      ; * JMK06
+      IF SQL.SHIP.WT=' ' THEN SQL.SHIP.WT=0        ; * JMK06
+      SQL.CARRIERCHRG=BILL.REC<7>'R26'
+      SQL.ACTUALCHRG=BILL.REC<8>'R26'
+      SQL.APPROVEDCARRIERNO=''
+      SQL.MISROUTEAMT=''
+      IF BILL.REC<63>+0#0 THEN
+         SQL.MISROUTEAMT=BILL.REC<63>'R26'
+         SQL.APPROVEDCARRIERNO=BILL.REC<69>+0
+      END
+      SQL.DISTANCE=BILL.REC<19>[1,20]
+
+      MILE.MODE=0                        ; * JMK11
+      IF BILL.REC<21>='1' THEN MILE.MODE=1         ; * JMK11
+      IF BILL.REC<21>='6' THEN MILE.MODE=1         ; * JMK11
+      IF BILL.REC<21>='11' THEN MILE.MODE=1        ; * JMK11
+      IF MILE.MODE=0 THEN SQL.DISTANCE=''          ; * JMK11
+      IF PRO[LEN(PRO)-1,2]='AD' THEN SQL.DISTANCE=''         ; * JMK05
+      IF PRO[LEN(PRO)-1,2]='BD' THEN SQL.DISTANCE=''         ; * JMK05
+      SQL.LCCID=''
+      SQL.LCCAMT=''
+      IF BILL.REC<143>+0#0 THEN
+         SQL.LCCID=BILL.REC<147>+0
+         SQL.LCCAMT=BILL.REC<143>'R26'
+      END
+      EDI.PPR='PPR'
+      IF BILL.REC<88>#'' OR BILL.REC<53>[1,12]='EBILL.IMPORT' THEN
+         EDI.PPR='EDI'
+      END
+
+      SQL.FREIGHTBILLSOURCE=EDI.PPR[1,10]
+      SQL.DELIVERYNAME=TRIM(EDI.REC<43>)[1,50]
+      SQL.USERDEFINED1=TRIM(BILL.REC<183>)[1,100]
+      SQL.USERDEFINED2=TRIM(BILL.REC<184>)[1,100]
+      SQL.USERDEFINED3=TRIM(BILL.REC<185>)[1,100]
+      SQL.USERDEFINED4=TRIM(BILL.REC<186>)[1,100]
+      SQL.USERDEFINED5=TRIM(BILL.REC<187>)[1,100]
+      SQL.USERDEFINED6=TRIM(BILL.REC<188>)[1,100]
+      SQL.PICKUPDATE=EDI.REC<39>'D4/'
+      SQL.DELIVERYDATE=EDI.REC<41>'D4/'
+      SQL.PROCESSDATE=BILL.REC<37>'D4/'
+      SQL.BILLDATE=BILL.REC<1>'D4/'
+
+      IF SQL.PICKUPDATE='' THEN
+         SQL.PICKUPDATE=SQL.BILLDATE
+      END
+      IF SQL.DELIVERYDATE='' THEN
+         SQL.DELIVERYDATE=SQL.BILLDATE
+      END
+      SQL.EDIACCTNO=EDI.REC<18>          ; * JMK03
+      SQL.PIECES=SUM(EDI.REC<56>)+SUM(EDI.REC<103>)          ; * JMK04
+      SQL.CORE.CARRIER=TRIM(BILL.REC<197>)         ; * JMK07
+
+      IF UPD.SHIP THEN
+         FN = "SQLExecute"
+         STATUS = SQLEXECUTE(UPDSHIPENV)
+         STMTENV=UPDSHIPENV
+         GOSUB CKSTMTENV
+      END
+
+      IF UPD.CINV THEN
+         FN = "SQLExecute"
+         STATUS = SQLEXECUTE(UPDCINVENV)
+         STMTENV=UPDCINVENV
+         GOSUB CKSTMTENV
+      END
+
+      IF UPD.CIDTL THEN
+         FN = "SQLExecute"
+         STATUS = SQLEXECUTE(DELCIDTLENV)
+         STMTENV=DELCIDTLENV
+         GOSUB CKSTMTENV
+
+         SQL.LI.ARRAY=''
+
+         BEGIN CASE
+
+            CASE (BILL.REC<153>#'' OR BILL.REC<159>#'') AND ((SUM(BILL.REC<157>)+SUM(BILL.REC<163>))=BILL.REC<8>)
+               NVAL=DCOUNT(BILL.REC<153>,@VM)
+               FOR VAL=1 TO NVAL
+                  SQL.RATINGCODE=BILL.REC<153,VAL>
+                  SQL.NMFC=BILL.REC<154,VAL>
+                  SQL.WEIGHT=BILL.REC<155,VAL>+0
+                  SQL.WEIGHT=INT(SQL.WEIGHT)+(INT(SQL.WEIGHT)#SQL.WEIGHT)
+                  SQL.CHRGAMT=BILL.REC<157,VAL>'R26'
+                  GOSUB CHECK.SQL.WEIGHT
+
+                  LI.VAL=DCOUNT(SQL.LI.ARRAY<1>,@VM)+1
+                  SQL.LI.ARRAY<1,LI.VAL>=SQL.RATINGCODE
+                  SQL.LI.ARRAY<2,LI.VAL>=SQL.NMFC
+                  SQL.LI.ARRAY<3,LI.VAL>=SQL.WEIGHT
+                  SQL.LI.ARRAY<4,LI.VAL>=SQL.CHRGAMT
+                  SQL.LI.ARRAY<5,LI.VAL>=LI.CODE.TYPE
+                  SQL.LI.ARRAY<6,LI.VAL>=SQL.WEIGHT
+
+               NEXT VAL
+               NVAL=DCOUNT(BILL.REC<159>,@VM)
+               FOR VAL=1 TO NVAL
+                  SQL.RATINGCODE=BILL.REC<159,VAL>
+                  SQL.NMFC=BILL.REC<160,VAL>
+                  SQL.WEIGHT=BILL.REC<161,VAL>+0
+                  SQL.WEIGHT=INT(SQL.WEIGHT)+(INT(SQL.WEIGHT)#SQL.WEIGHT)
+                  SQL.CHRGAMT=BILL.REC<163,VAL>'R26'
+                  GOSUB CHECK.SQL.WEIGHT
+
+                  LI.VAL=DCOUNT(SQL.LI.ARRAY<1>,@VM)+1
+                  SQL.LI.ARRAY<1,LI.VAL>=SQL.RATINGCODE
+                  SQL.LI.ARRAY<2,LI.VAL>=SQL.NMFC
+                  SQL.LI.ARRAY<3,LI.VAL>=SQL.WEIGHT
+                  SQL.LI.ARRAY<4,LI.VAL>=SQL.CHRGAMT
+                  SQL.LI.ARRAY<5,LI.VAL>=LI.CODE.TYPE
+                  SQL.LI.ARRAY<6,LI.VAL>=SQL.WEIGHT
+
+               NEXT VAL
+            CASE BILL.REC<151>#''
+               NVAL=DCOUNT(BILL.REC<151>,@VM)
+               FOR VAL=1 TO NVAL
+                  SQL.RATINGCODE=BILL.REC<151,VAL>
+                  SQL.NMFC=BILL.REC<74,VAL>
+                  SQL.WEIGHT=BILL.REC<75,VAL>+0
+                  SQL.WEIGHT=INT(SQL.WEIGHT)+(INT(SQL.WEIGHT)#SQL.WEIGHT)
+                  SQL.CHRGAMT=BILL.REC<152,VAL>'R26'
+                  IF SQL.CHRGAMT='CWT' THEN
+                     LOCATE SQL.RATINGCODE IN BILL.REC<159> SETTING RPOS THEN
+                        SQL.CHRGAMT=BILL.REC<163,RPOS>
+                     END
+                     IF SQL.CHRGAMT='CWT' THEN SQL.CHRGAMT=''
+                  END
+                  GOSUB CHECK.SQL.WEIGHT
+
+                  LI.VAL=DCOUNT(SQL.LI.ARRAY<1>,@VM)+1
+                  SQL.LI.ARRAY<1,LI.VAL>=SQL.RATINGCODE
+                  SQL.LI.ARRAY<2,LI.VAL>=SQL.NMFC
+                  SQL.LI.ARRAY<3,LI.VAL>=SQL.WEIGHT
+                  SQL.LI.ARRAY<4,LI.VAL>=SQL.CHRGAMT
+                  SQL.LI.ARRAY<5,LI.VAL>=LI.CODE.TYPE
+                  SQL.LI.ARRAY<6,LI.VAL>=SQL.WEIGHT
+
+               NEXT VAL
+
+            CASE BILL.REC<70>#''
+               NVAL=DCOUNT(BILL.REC<70>,@VM)
+               FOR VAL=1 TO NVAL
+                  SQL.RATINGCODE=BILL.REC<70,VAL>
+                  SQL.NMFC=BILL.REC<74,VAL>
+                  SQL.WEIGHT=BILL.REC<75,VAL>+0
+                  SQL.WEIGHT=INT(SQL.WEIGHT)+(INT(SQL.WEIGHT)#SQL.WEIGHT)
+                  SQL.CHRGAMT=BILL.REC<79,VAL>'R26'
+                  IF SQL.CHRGAMT='CWT' THEN
+                     LOCATE SQL.RATINGCODE IN BILL.REC<151> SETTING RPOS THEN
+                        SQL.CHRGAMT=BILL.REC<152,RPOS>
+                     END ELSE
+                        LOCATE SQL.RATINGCODE IN BILL.REC<159> SETTING RPOS THEN
+                           SQL.CHRGAMT=BILL.REC<163,RPOS>
+                        END
+                     END
+                     IF SQL.CHRGAMT='CWT' THEN SQL.CHRGAMT=''
+                  END
+                  GOSUB CHECK.SQL.WEIGHT
+
+                  LI.VAL=DCOUNT(SQL.LI.ARRAY<1>,@VM)+1
+                  SQL.LI.ARRAY<1,LI.VAL>=SQL.RATINGCODE
+                  SQL.LI.ARRAY<2,LI.VAL>=SQL.NMFC
+                  SQL.LI.ARRAY<3,LI.VAL>=SQL.WEIGHT
+                  SQL.LI.ARRAY<4,LI.VAL>=SQL.CHRGAMT
+                  SQL.LI.ARRAY<5,LI.VAL>=LI.CODE.TYPE
+                  SQL.LI.ARRAY<6,LI.VAL>=SQL.WEIGHT
+               NEXT VAL
+            CASE 1
+               SQL.RATINGCODE='FRT'
+               SQL.NMFC=''
+               SQL.WEIGHT=BILL.REC<6>+0
+               SQL.WEIGHT=INT(SQL.WEIGHT)+(INT(SQL.WEIGHT)#SQL.WEIGHT)
+               SQL.CHRGAMT=BILL.REC<8>'R26'
+               GOSUB CHECK.SQL.WEIGHT
+               LI.VAL=DCOUNT(SQL.LI.ARRAY<1>,@VM)+1
+               SQL.LI.ARRAY<1,LI.VAL>=SQL.RATINGCODE
+               SQL.LI.ARRAY<2,LI.VAL>=SQL.NMFC
+               SQL.LI.ARRAY<3,LI.VAL>=SQL.WEIGHT
+               SQL.LI.ARRAY<4,LI.VAL>=SQL.CHRGAMT
+               SQL.LI.ARRAY<5,LI.VAL>=LI.CODE.TYPE
+               SQL.LI.ARRAY<6,LI.VAL>=SQL.WEIGHT
+         END CASE
+          LI.NVAL=DCOUNT(SQL.LI.ARRAY<1>,@VM)
+          
+          GO 888
+         WT.MIN=BILL.REC<6>*.98
+         WT.MAX=BILL.REC<6>*1.02
+         SQL.WT.SUMM=SUM(SQL.LI.ARRAY<3>)
+        
+         IF SQL.WT.SUMM<WT.MIN OR SQL.WT.SUMM>WT.MAX THEN
+            TTL.CHG=0
+            FOR LI.VAL=1 TO LI.NVAL
+               IF SQL.LI.ARRAY<5,LI.VAL>='F' THEN
+                  TTL.CHG+=SQL.LI.ARRAY<4,LI.VAL>
+               END
+            NEXT LI.VAL
+            FOR LI.VAL=1 TO LI.NVAL
+               IF SQL.LI.ARRAY<5,LI.VAL>='F' THEN
+                  IF TTL.CHG=0 THEN
+                     SQL.WEIGHT=0
+                  END ELSE
+                     SQL.WEIGHT=BILL.REC<6>*SQL.LI.ARRAY<4,LI.VAL>/TTL.CHG
+                  END
+                  SQL.WEIGHT=INT(SQL.WEIGHT)+(INT(SQL.WEIGHT)#SQL.WEIGHT)
+                  SQL.LI.ARRAY<6,LI.VAL>=SQL.WEIGHT
+               END
+            NEXT LI.VAL
+         END
+         888:
+         FOR LI.VAL=1 TO LI.NVAL
+            SQL.RATINGCODE=SQL.LI.ARRAY<1,LI.VAL>
+            SQL.NMFC=SQL.LI.ARRAY<2,LI.VAL>
+            SQL.WEIGHT=SQL.LI.ARRAY<6,LI.VAL>
+            SQL.CHRGAMT=SQL.LI.ARRAY<4,LI.VAL>
+DEBUG
+            FN = "SQLExecute"
+            STATUS = SQLEXECUTE(UPDCIDTLENV)
+            STMTENV=UPDCIDTLENV
+            GOSUB CKSTMTENV
+         NEXT LI.VAL
+      END
+
+      IF UPD.EXP THEN
+         FN = "SQLExecute"
+         STATUS = SQLEXECUTE(DELEXPENV)
+         STMTENV=DELEXPENV
+         GOSUB CKSTMTENV
+
+         NVAL=DCOUNT(BILL.REC<31>,@VM)
+         FOR VAL=1 TO NVAL
+            SQL.EXPCODE=BILL.REC<31,VAL>[1,50]
+            SQL.EXPAMT=BILL.REC<33,VAL>'R26'
+            SQL.COSTCTR=BILL.REC<236,VAL>
+            SQL.PROJECT=BILL.REC<237,VAL>
+
+            FN = "SQLExecute"
+            STATUS = SQLEXECUTE(UPDEXPENV)
+            STMTENV=UPDEXPENV
+            GOSUB CKSTMTENV
+         NEXT VAL
+      END
+
+      IF UPD.STOP THEN
+         FN = "SQLExecute"
+         STATUS = SQLEXECUTE(DELSTOPENV)
+         STMTENV=DELSTOPENV
+         GOSUB CKSTMTENV
+         SQL.STOP1=''
+         SQL.STOP2=''
+         SQL.STOP3=''
+         SQL.STOP4=''
+         SQL.STOP5=''
+         SQL.STOP6=''
+         SQL.STOP7=''
+         SQL.STOP8=''
+         SQL.STOP9=''
+         SQL.STOP10=''
+         IF BILL.REC<18>#'' THEN
+            STOP.SEND=0
+            IF BILL.REC<18,1>#'' THEN
+               SQL.STOP1=BILL.REC<18,1>
+               STOP.SEND=1
+            END
+            IF BILL.REC<18,2>#'' THEN
+               SQL.STOP2=BILL.REC<18,2>
+               STOP.SEND=1
+            END
+            IF BILL.REC<18,3>#'' THEN
+               SQL.STOP3=BILL.REC<18,3>
+               STOP.SEND=1
+            END
+            IF BILL.REC<18,4>#'' THEN
+               SQL.STOP4=BILL.REC<18,4>
+               STOP.SEND=1
+            END
+            IF BILL.REC<18,5>#'' THEN
+               SQL.STOP5=BILL.REC<18,5>
+               STOP.SEND=1
+            END
+            IF BILL.REC<18,6>#'' THEN
+               SQL.STOP6=BILL.REC<18,6>
+               STOP.SEND=1
+            END
+            IF BILL.REC<18,7>#'' THEN
+               SQL.STOP7=BILL.REC<18,7>
+               STOP.SEND=1
+            END
+            IF BILL.REC<18,8>#'' THEN
+               SQL.STOP8=BILL.REC<18,8>
+               STOP.SEND=1
+            END
+            IF BILL.REC<18,9>#'' THEN
+               SQL.STOP9=BILL.REC<18,9>
+               STOP.SEND=1
+            END
+            IF BILL.REC<18,10>#'' THEN
+               SQL.STOP10=BILL.REC<18,10>
+               STOP.SEND=1
+            END
+            IF STOP.SEND THEN
+               FN = "SQLExecute"
+               STATUS = SQLEXECUTE(UPDSTOPENV)
+               STMTENV=UPDSTOPENV
+               GOSUB CKSTMTENV
+            END
+         END
+      END
+
+      SQL.CHECKNO=BILL.REC<14>
+      SQL.CHECKAMT=BILL.REC<13>'R26'
+      SQL.CHECKDATE=BILL.REC<15>'D2/'
+      SQL.AUDITOR=BILL.REC<89>[1,50]
+      SQL.DISCOUNTCOMMISSION=BILL.REC<42>'R26'
+      SQL.OVERCHRGCOMMISSION=BILL.REC<43>'R26'
+      SQL.CONSULTINGCOMMISSION=BILL.REC<44>'R26'
+      SQL.DISCOUNTVARIANCE=BILL.REC<10>'R26'
+      SQL.OVERCHRGVARIANCE=BILL.REC<11>'R26'
+      SQL.CONSULTINGVARIANCE=BILL.REC<12>'R26'
+      SQL.BALDUEDISCOUNT=BILL.REC<34>'R26'
+      SQL.BALDUEOVERCHRG=BILL.REC<35>'R26'
+      SQL.BALDUECONSULTING=BILL.REC<36>'R26'
+      SQL.CUTBACKCODE=BILL.REC<41>[1,50]
+      SQL.FUNDSCLEARED=''
+      IF SQL.CHECKNO#'' THEN
+         READ CHECK.REC FROM F.CK.HDR,SQL.CHECKNO ELSE CHECK.REC=''
+         IF CHECK.REC<5>#'' THEN
+            SQL.FUNDSCLEARED=CHECK.REC<5>'D2/'
+         END
+      END
+
+      IF UPD.PYMT THEN
+         FN = "SQLExecute"
+         STATUS = SQLEXECUTE(UPDPYMTENV)
+         STMTENV=UPDPYMTENV
+         GOSUB CKSTMTENV
+      END
+      RETURN
+*********************************************
+SETUP.PARAMETERS:*
+*********************************************
+*
+* NOW ALLOCATE AN SQL STATEMENT ENVIRONMENT
+* TO BE USED FOR EXECUTING SQL STATEMENTS
+*
+      FN = "SQLAllocStmt"
+      STATUS = SQLALLOCSTMT(CONENV,UPDSHIPENV)
+      GOSUB CKCONENV
+*
+* NOTE THAT WE ARE USING PARAMETER MARKERS IN THE SQL STATEMENT TO FACILITATE
+* LOADING MULTIPLE ROWS OF DATA EFFICIENTLY
+*
+      OPT.STR = STR(' ?,',63)            ; * JMK03 ; * JMK04 ; * JMK06 ;  JMK07
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_UpdShipment (":OPT.STR:")}"          ; * 64 PLACEHOLDERS
+      ROWNUM = 0
+      FN = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*
+      STATUS = SQLSETPARAM(UPDSHIPENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UNIQUEKEY) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 2, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.CLIENTNO) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 3, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.DIVNO) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 4, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.CARRIERNO) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 5, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.SENDERNAME) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 6, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.SENDERADDR1) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 7, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.SENDERADDR2) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 8, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.SENDERCITY) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 9, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.SENDERSTATE) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 10, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.SENDERZIP) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 11, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.SENDERCOUNTRY) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 12, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.RECEIVERNAME) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 13, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.RECEIVERADDR1) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 14, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.RECEIVERADDR2) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 15, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.RECEIVERCITY) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 16, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.RECEIVERSTATE) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 17, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.RECEIVERZIP) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 18, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.RECEIVERCOUNTRY) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 19, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.THIRDPARTYNAME) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 20, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.THIRDPARTYADDR1) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 21, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.THIRDPARTYADDR2) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 22, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.THIRDPARTYCITY) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 23, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.THIRDPARTYSTATE) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 24, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.THIRDPARTYZIP) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 25, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.THIRDPARTYCOUNTRY) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 26, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CONSCODE) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 27, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.VCNAME) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 28, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.VCADDR1) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 29, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.VCADDR2) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 30, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.VCCITY) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 31, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.VCSTATE) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 32, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.VCZIP) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 33, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.VCCOUNTRY) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 34, SQL.B.BASIC, SQL.VARCHAR, 2, 0, SQL.PYMTMETHOD) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 35, SQL.B.BASIC, SQL.VARCHAR, 2, 0, SQL.SHIPMENTMETHOD) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 36, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.TRANSMODE) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 37, SQL.B.BASIC, SQL.VARCHAR, 2, 0, SQL.DELIVERYSCHEDULECODE) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 38, SQL.B.BASIC, SQL.CHAR, 1, 0, SQL.IOT) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 39, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.TRACKINGNO) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 40, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.PRONO) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 41, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.BOL) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 42, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.INVNO) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 43, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CUSTOMERREFERENCENO) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 44, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.DISTANCE) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 45, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.FREIGHTBILLSOURCE) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 46, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.DELIVERYNAME) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 47, SQL.B.BASIC, SQL.VARCHAR, 100, 0, SQL.USERDEFINED1) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 48, SQL.B.BASIC, SQL.VARCHAR, 100, 0, SQL.USERDEFINED2) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 49, SQL.B.BASIC, SQL.VARCHAR, 100, 0, SQL.USERDEFINED3) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 50, SQL.B.BASIC, SQL.VARCHAR, 100, 0, SQL.USERDEFINED4) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 51, SQL.B.BASIC, SQL.VARCHAR, 100, 0, SQL.USERDEFINED5) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 52, SQL.B.BASIC, SQL.VARCHAR, 100, 0, SQL.USERDEFINED6) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 53, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.PICKUPDATE) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 54, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.DELIVERYDATE) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 55, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.PROCESSDATE) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 56, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.BILLDATE) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 57, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.EDIACCTNO) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV  ; * JMK03
+      STATUS = SQLSETPARAM(UPDSHIPENV, 58, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.PIECES) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV     ; * JMK04
+      STATUS = SQLSETPARAM(UPDSHIPENV, 59, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.SHIP.WT) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV    ; * JMK06
+      STATUS = SQLSETPARAM(UPDSHIPENV, 60, SQL.B.BASIC, SQL.VARCHAR, 1, 0, SQL.CORE.CARRIER) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV          ; * JMK07
+      STATUS = SQLSETPARAM(UPDSHIPENV, 61, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CUSTOMERREFERENCENO2) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 62, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CUSTOMERREFERENCENO3) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSHIPENV, 63, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CUSTOMERREFERENCENO4) ; STMTENV=UPDSHIPENV ; GOSUB CKSTMTENV
+
+      FN = "SQLPrepare"
+      STATUS = SQLPREPARE(UPDSHIPENV, INST1)
+      STMTENV=UPDSHIPENV
+      ENVSRC='UPDSHIP'
+      GOSUB CKSTMTENV
+*********************************************
+DELETE.SQL.SHIPMENT:*
+*********************************************
+*
+* NOW ALLOCATE AN SQL STATEMENT ENVIRONMENT
+* TO BE USED FOR EXECUTING SQL STATEMENTS
+*
+      FN = "SQLAllocStmt"
+      STATUS = SQLALLOCSTMT(CONENV,DELSHIPENV)
+      GOSUB CKCONENV
+*
+* NOTE THAT WE ARE USING PARAMETER MARKERS IN THE SQL STATEMENT TO FACILITATE
+* LOADING MULTIPLE ROWS OF DATA EFFICIENTLY
+*
+      OPT.STR = STR(' ?,',1)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_DelShipment (":OPT.STR:")}"          ; * 64 PLACEHOLDERS
+      ROWNUM = 0
+      FN = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*
+      STATUS = SQLSETPARAM(DELSHIPENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UNIQUEKEY) ; STMTENV=DELSHIPENV ; GOSUB CKSTMTENV
+
+      FN = "SQLPrepare"
+      STATUS = SQLPREPARE(DELSHIPENV, INST1)
+      STMTENV=DELSHIPENV
+      ENVSRC='DELSHIP'
+      GOSUB CKSTMTENV
+
+*********************************************
+UPDATE.SQL.EXPENSE.CODE:*
+*********************************************
+*
+* NOW ALLOCATE AN SQL STATEMENT ENVIRONMENT
+* TO BE USED FOR EXECUTING SQL STATEMENTS
+*
+      FN = "SQLAllocStmt"
+      STATUS = SQLALLOCSTMT(CONENV,UPDEXPENV)
+      GOSUB CKCONENV
+*
+* NOTE THAT WE ARE USING PARAMETER MARKERS IN THE SQL STATEMENT TO FACILITATE
+* LOADING MULTIPLE ROWS OF DATA EFFICIENTLY
+*
+      OPT.STR = STR(' ?,',5)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_UpdShipmentExpenseCode (":OPT.STR:")}"         ; * 3 PLACEHOLDERS
+      ROWNUM = 0
+      FN = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*
+      STATUS = SQLSETPARAM(UPDEXPENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UNIQUEKEY) ; STMTENV=UPDEXPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDEXPENV, 2, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.EXPCODE) ; STMTENV=UPDEXPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDEXPENV, 3, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.EXPAMT) ; STMTENV=UPDEXPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDEXPENV, 4, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.COSTCTR) ; STMTENV=UPDEXPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDEXPENV, 5, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.PROJECT) ; STMTENV=UPDEXPENV ; GOSUB CKSTMTENV
+
+      FN = "SQLPrepare"
+      STATUS = SQLPREPARE(UPDEXPENV, INST1)
+      STMTENV=UPDEXPENV
+      ENVSRC='UPDEXP'
+      GOSUB CKSTMTENV
+*********************************************
+DELETE.SQL.EXPENSE.CODE:*
+*********************************************
+*
+* NOW ALLOCATE AN SQL STATEMENT ENVIRONMENT
+* TO BE USED FOR EXECUTING SQL STATEMENTS
+*
+      FN = "SQLAllocStmt"
+      STATUS = SQLALLOCSTMT(CONENV,DELEXPENV)
+      GOSUB CKCONENV
+*
+* NOTE THAT WE ARE USING PARAMETER MARKERS IN THE SQL STATEMENT TO FACILITATE
+* LOADING MULTIPLE ROWS OF DATA EFFICIENTLY
+*
+      OPT.STR = STR(' ?,',1)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_DelShipmentExpenseCode (":OPT.STR:")}"         ; * 3 PLACEHOLDERS
+      ROWNUM = 0
+      FN = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*
+      STATUS = SQLSETPARAM(DELEXPENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UNIQUEKEY) ; STMTENV=DELEXPENV ; GOSUB CKSTMTENV
+
+      FN = "SQLPrepare"
+      STATUS = SQLPREPARE(DELEXPENV, INST1)
+      STMTENV=DELEXPENV
+      ENVSRC='DELEXP'
+      GOSUB CKSTMTENV
+
+*********************************************
+UPDATE.SQL.STOPS:*
+*********************************************
+*
+* NOW ALLOCATE AN SQL STATEMENT ENVIRONMENT
+* TO BE USED FOR EXECUTING SQL STATEMENTS
+*
+      FN = "SQLAllocStmt"
+      STATUS = SQLALLOCSTMT(CONENV,UPDSTOPENV)
+      GOSUB CKCONENV
+*
+* NOTE THAT WE ARE USING PARAMETER MARKERS IN THE SQL STATEMENT TO FACILITATE
+* LOADING MULTIPLE ROWS OF DATA EFFICIENTLY
+*
+      OPT.STR = STR(' ?,',11)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_UpdShipmentStop (":OPT.STR:")}"      ; * 2 PLACEHOLDERS
+      ROWNUM = 0
+      FN = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*
+      STATUS = SQLSETPARAM(UPDSTOPENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UNIQUEKEY) ; STMTENV=UPDSTOPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSTOPENV, 2, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.STOP1) ; STMTENV=UPDSTOPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSTOPENV, 3, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.STOP2) ; STMTENV=UPDSTOPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSTOPENV, 4, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.STOP3) ; STMTENV=UPDSTOPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSTOPENV, 5, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.STOP4) ; STMTENV=UPDSTOPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSTOPENV, 6, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.STOP5) ; STMTENV=UPDSTOPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSTOPENV, 7, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.STOP6) ; STMTENV=UPDSTOPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSTOPENV, 8, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.STOP7) ; STMTENV=UPDSTOPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSTOPENV, 9, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.STOP8) ; STMTENV=UPDSTOPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSTOPENV, 10, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.STOP9) ; STMTENV=UPDSTOPENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDSTOPENV, 11, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.STOP10) ; STMTENV=UPDSTOPENV ; GOSUB CKSTMTENV
+
+      FN = "SQLPrepare"
+      STATUS = SQLPREPARE(UPDSTOPENV, INST1)
+      STMTENV=UPDSTOPENV
+      ENVSRC='UPDSTOP'
+      GOSUB CKSTMTENV
+*********************************************
+DELETE.SQL.STOPS:*
+*********************************************
+*
+* NOW ALLOCATE AN SQL STATEMENT ENVIRONMENT
+* TO BE USED FOR EXECUTING SQL STATEMENTS
+*
+      FN = "SQLAllocStmt"
+      STATUS = SQLALLOCSTMT(CONENV,DELSTOPENV)
+      GOSUB CKCONENV
+*
+* NOTE THAT WE ARE USING PARAMETER MARKERS IN THE SQL STATEMENT TO FACILITATE
+* LOADING MULTIPLE ROWS OF DATA EFFICIENTLY
+*
+      OPT.STR = STR(' ?,',1)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_DelShipmentStop (":OPT.STR:")}"      ; * 2 PLACEHOLDERS
+      ROWNUM = 0
+      FN = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*
+      STATUS = SQLSETPARAM(DELSTOPENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UNIQUEKEY) ; STMTENV=DELSTOPENV ; GOSUB CKSTMTENV
+      FN = "SQLPrepare"
+      STATUS = SQLPREPARE(DELSTOPENV, INST1)
+      STMTENV=DELSTOPENV
+      ENVSRC='DELSTOP'
+      GOSUB CKSTMTENV
+
+*********************************************
+UPDATE.SQL.CARRIER.INV:*
+*********************************************
+*
+* NOW ALLOCATE AN SQL STATEMENT ENVIRONMENT
+* TO BE USED FOR EXECUTING SQL STATEMENTS
+*
+      FN = "SQLAllocStmt"
+      STATUS = SQLALLOCSTMT(CONENV,UPDCINVENV)
+      GOSUB CKCONENV
+*
+* NOTE THAT WE ARE USING PARAMETER MARKERS IN THE SQL STATEMENT TO FACILITATE
+* LOADING MULTIPLE ROWS OF DATA EFFICIENTLY
+*
+      OPT.STR = STR(' ?,',5)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_UpdCarrierInvoice (":OPT.STR:")}"    ; * 5 PLACEHOLDERS
+      ROWNUM = 0
+      FN = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*
+      STATUS = SQLSETPARAM(UPDCINVENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UNIQUEKEY) ; STMTENV=UPDCINVENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDCINVENV, 2, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.INVNO) ; STMTENV=UPDCINVENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDCINVENV, 3, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.CARRIERNO) ; STMTENV=UPDCINVENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDCINVENV, 4, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.PROCESSDATE) ; STMTENV=UPDCINVENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDCINVENV, 5, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.ACTUALCHRG) ; STMTENV=UPDCINVENV ; GOSUB CKSTMTENV
+
+      FN = "SQLPrepare"
+      STATUS = SQLPREPARE(UPDCINVENV, INST1)
+      STMTENV=UPDCINVENV
+      ENVSRC='UPDCINV'
+      GOSUB CKSTMTENV
+*********************************************
+DELETE.SQL.CARRIER.INV:*
+*********************************************
+*
+* NOW ALLOCATE AN SQL STATEMENT ENVIRONMENT
+* TO BE USED FOR EXECUTING SQL STATEMENTS
+*
+      FN = "SQLAllocStmt"
+      STATUS = SQLALLOCSTMT(CONENV,DELCINVENV)
+      GOSUB CKCONENV
+*
+* NOTE THAT WE ARE USING PARAMETER MARKERS IN THE SQL STATEMENT TO FACILITATE
+* LOADING MULTIPLE ROWS OF DATA EFFICIENTLY
+*
+      OPT.STR = STR(' ?,',3)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_DelCarrierInvoice (":OPT.STR:")}"    ; * 5 PLACEHOLDERS
+      ROWNUM = 0
+      FN = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*
+      STATUS = SQLSETPARAM(DELCINVENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UNIQUEKEY) ; STMTENV=DELCINVENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(DELCINVENV, 2, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.CARRIERNO) ; STMTENV=DELCINVENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(DELCINVENV, 3, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.INVNO) ; STMTENV=DELCINVENV ; GOSUB CKSTMTENV
+
+      FN = "SQLPrepare"
+      STATUS = SQLPREPARE(DELCINVENV, INST1)
+      STMTENV=DELCINVENV
+      ENVSRC='DELCINV'
+      GOSUB CKSTMTENV
+
+*********************************************
+UPDATE.SQL.CARRIER.INV.DETAIL:*
+*********************************************
+*
+* NOW ALLOCATE AN SQL STATEMENT ENVIRONMENT
+* TO BE USED FOR EXECUTING SQL STATEMENTS
+*
+      FN = "SQLAllocStmt"
+      STATUS = SQLALLOCSTMT(CONENV,UPDCIDTLENV)
+      GOSUB CKCONENV
+*
+* NOTE THAT WE ARE USING PARAMETER MARKERS IN THE SQL STATEMENT TO FACILITATE
+* LOADING MULTIPLE ROWS OF DATA EFFICIENTLY
+*
+      OPT.STR = STR(' ?,',8)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_UpdCarrierInvoiceDetail (":OPT.STR:")}"        ; * 8 PLACEHOLDERS
+      ROWNUM = 0
+      FN = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*
+      STATUS = SQLSETPARAM(UPDCIDTLENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UNIQUEKEY) ; STMTENV=UPDCIDTLENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDCIDTLENV, 2, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.INVNO) ; STMTENV=UPDCIDTLENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDCIDTLENV, 3, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.CARRIERNO) ; STMTENV=UPDCIDTLENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDCIDTLENV, 4, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.TRACKINGNO) ; STMTENV=UPDCIDTLENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDCIDTLENV, 5, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.RATINGCODE) ; STMTENV=UPDCIDTLENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDCIDTLENV, 6, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.NMFC) ; STMTENV=UPDCIDTLENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDCIDTLENV, 7, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.WEIGHT) ; STMTENV=UPDCIDTLENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDCIDTLENV, 8, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.CHRGAMT) ; STMTENV=UPDCIDTLENV ; GOSUB CKSTMTENV
+
+      FN = "SQLPrepare"
+      STATUS = SQLPREPARE(UPDCIDTLENV, INST1)
+      STMTENV=UPDCIDTLENV
+      ENVSRC='UPDCIDTL'
+      GOSUB CKSTMTENV
+*********************************************
+DELETE.SQL.CARRIER.INV.DETAIL:*
+*********************************************
+*
+* NOW ALLOCATE AN SQL STATEMENT ENVIRONMENT
+* TO BE USED FOR EXECUTING SQL STATEMENTS
+*
+      FN = "SQLAllocStmt"
+      STATUS = SQLALLOCSTMT(CONENV,DELCIDTLENV)
+      GOSUB CKCONENV
+*
+* NOTE THAT WE ARE USING PARAMETER MARKERS IN THE SQL STATEMENT TO FACILITATE
+* LOADING MULTIPLE ROWS OF DATA EFFICIENTLY
+*
+      OPT.STR = STR(' ?,',3)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_DelCarrierInvoiceDetail (":OPT.STR:")}"        ; * 8 PLACEHOLDERS
+      ROWNUM = 0
+      FN = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*
+      STATUS = SQLSETPARAM(DELCIDTLENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UNIQUEKEY) ; STMTENV=DELCIDTLENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(DELCIDTLENV, 2, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.CARRIERNO) ; STMTENV=DELCIDTLENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(DELCIDTLENV, 3, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.INVNO) ; STMTENV=DELCIDTLENV ; GOSUB CKSTMTENV
+      FN = "SQLPrepare"
+      STATUS = SQLPREPARE(DELCIDTLENV, INST1)
+      STMTENV=DELCIDTLENV
+      ENVSRC='DELCIDTL'
+      GOSUB CKSTMTENV
+
+*********************************************
+UPDATE.SQL.PYMT:*
+*********************************************
+*
+* NOW ALLOCATE AN SQL STATEMENT ENVIRONMENT
+* TO BE USED FOR EXECUTING SQL STATEMENTS
+*
+      FN = "SQLAllocStmt"
+      STATUS = SQLALLOCSTMT(CONENV,UPDPYMTENV)
+      GOSUB CKCONENV
+*
+* NOTE THAT WE ARE USING PARAMETER MARKERS IN THE SQL STATEMENT TO FACILITATE
+* LOADING MULTIPLE ROWS OF DATA EFFICIENTLY
+*
+      OPT.STR = STR(' ?,',25)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_UpdPayment (":OPT.STR:")}"
+      ROWNUM = 0
+      FN = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*
+      STATUS = SQLSETPARAM(UPDPYMTENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UNIQUEKEY) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 2, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.CARRIERNO) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 3, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.INVNO) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 4, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CHECKNO) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 5, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.CHECKAMT) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 6, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.CHECKDATE) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 7, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.AUDITOR) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 8, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.DISCOUNTCOMMISSION) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 9, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.OVERCHRGCOMMISSION) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 10, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.CONSULTINGCOMMISSION) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 11, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.DISCOUNTVARIANCE) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 12, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.OVERCHRGVARIANCE) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 13, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.CONSULTINGVARIANCE) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 14, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.BALDUEDISCOUNT) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 15, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.BALDUEOVERCHRG) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 16, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.BALDUECONSULTING) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 17, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CUTBACKCODE) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 18, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.PRONO) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 19, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.CARRIERCHRG) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 20, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.ACTUALCHRG) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 21, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.APPROVEDCARRIERNO) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 22, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.MISROUTEAMT) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 23, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.LCCID) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 24, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.LCCAMT) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(UPDPYMTENV, 25, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.FUNDSCLEARED) ; STMTENV=UPDPYMTENV ; GOSUB CKSTMTENV
+
+      FN = "SQLPrepare"
+      STATUS = SQLPREPARE(UPDPYMTENV, INST1)
+      STMTENV=UPDPYMTENV
+      ENVSRC='UPDPYMT'
+      GOSUB CKSTMTENV
+*********************************************
+DELETE.SQL.PYMT:*
+*********************************************
+*
+* NOW ALLOCATE AN SQL STATEMENT ENVIRONMENT
+* TO BE USED FOR EXECUTING SQL STATEMENTS
+*
+      FN = "SQLAllocStmt"
+      STATUS = SQLALLOCSTMT(CONENV,DELPYMTENV)
+      GOSUB CKCONENV
+*
+* NOTE THAT WE ARE USING PARAMETER MARKERS IN THE SQL STATEMENT TO FACILITATE
+* LOADING MULTIPLE ROWS OF DATA EFFICIENTLY
+*
+      OPT.STR = STR(' ?,',2)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_DelPayment (":OPT.STR:")}"
+      ROWNUM = 0
+      FN = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*
+      STATUS = SQLSETPARAM(DELPYMTENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UNIQUEKEY) ; STMTENV=DELPYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(DELPYMTENV, 2, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.CARRIERNO) ; STMTENV=DELPYMTENV ; GOSUB CKSTMTENV
+
+      FN = "SQLPrepare"
+      STATUS = SQLPREPARE(DELPYMTENV, INST1)
+      STMTENV=DELPYMTENV
+      ENVSRC='DELPYMT'
+      GOSUB CKSTMTENV
+      RETURN
+*********************************************
+CKCONENV:
+*********************************************
+      COUNT = -1
+      IF STATUS EQ -2 THEN
+         ERRORS<1,-1>="INVALID CONNECTION HANDLE"
+         STMT='BBSEND MIKE UPD.SQL.FBHIST.SUB INVALID CONNECTION HANDLE ABORT'
+         EXECUTE STMT CAPTURING RESULTS
+         ABORT
+      END
+      IF STATUS NE 0 THEN
+201:     *
+         ST = SQLERROR(-1,CONENV,-1,STATE,NATCODE,ERRTXT)
+         IF ST <> SQL.NO.DATA.FOUND
+         THEN
+            COUNT = 1
+            IF EXPECT NE 0 AND STATE = EXPECT AND ST <> SQL.NO.DATA.FOUND THEN
+               ERRORS<1,-1>="Allowed error of ":STATE:" returned for func ":FN
+               GOTO 299
+            END ELSE
+               ERRORS<1,-1>="Status for ":FN:" call is: ":STATUS
+               ERRORS<1,-1>="SQLSTATE,NATCOD are:" : STATE:"  ":NATCODE
+               ERRORS<1,-1>="Error text is"
+               ERRORS<1,-1>="    " : ERRTXT
+            END
+            IF ST = SQL.SUCCESS THEN GOTO 201
+         END
+         IF STATUS = -1 AND COUNT = 1 THEN
+            ERRORS<1,-1>="EXITING CKCONENV"
+            RETURN TO THE.END
+         END
+      END
+299:  *
+      RETURN
+*********************************************
+CKSTMTENV:
+*********************************************
+      IF STATUS EQ -2 THEN
+         ERRORS<1,-1>="INVALID STATEMENT HANDLE"
+         STMT='BBSEND GREGB UPD.SQL.FBHIST.SUB INVALID STATEMENT HANDLE ABORT'
+         EXECUTE STMT CAPTURING RESULTS
+         ABORT
+      END
+
+      IF STATUS EQ 100 THEN RETURN
+      IF STATUS NE 0 THEN
+301:     *
+         ST = SQLERROR(-1,-1,STMTENV,STATE,NATCODE,ERRTXT)
+         IF ST <> SQL.NO.DATA.FOUND
+         THEN
+            COUNT = 1
+            IF EXPECT NE 0 AND STATE = EXPECT AND ST <> SQL.NO.DATA.FOUND THEN
+               ERRORS<1,-1>="Allowed error of ":STATE:" returned for func ":FN
+               GOTO 399
+            END ELSE
+               ERRORS<1,-1>="Status for ":FN:" call is: ":STATUS
+               ERRORS<1,-1>="SQLSTATE,NATCOD are:" : STATE:"  ":NATCODE
+               ERRORS<1,-1>="Error text is"
+               ERRORS<1,-1>="    " : ERRTXT
+            END
+            IF ST = 0 THEN GOTO 301
+         END
+         IF STATUS = -1 AND COUNT = 1 THEN
+            ERRORS<1,-1>="EXITING CKSTMTENV"
+            RETURN TO THE.END
+         END
+      END
+399:  *
+      RETURN
+*********************************************
+CHECK.SQL.WEIGHT:*
+*********************************************
+      LI.CODE.TYPE=''
+      IF SQL.RATINGCODE='' THEN SQL.RATINGCODE='FRT'
+      IF LI.CODES<1>#'' THEN
+         LOCATE SQL.RATINGCODE IN LI.CODES<1> SETTING RPOS THEN
+            LI.CODE.TYPE=LI.CODES<2,RPOS>
+            IF LI.CODE.TYPE#'F' THEN
+               SQL.WEIGHT=0
+            END
+         END
+      END
+      RETURN
+*********************************************
+SETUP.SQL:*
+*********************************************
+* CREATE AN ODBC ENVIRONMENT & A CONNECTION ENVIRONMENT. USE THE
+* SSQLSETCONNECTOPTION TO SPECIFY THE OPERATING SYSTEM USER ID AND
+* PASSWORD.
+
+      STATUS = SQLALLOCENV(DBCENV)
+      IF STATUS <> SQL.SUCCESS THEN
+         ERRORS<1,-1>="Failed to allocate an ODBC environment"
+         RETURN TO THE.END
+      END
+
+      STATUS = SQLALLOCCONNECT(DBCENV,CONENV)
+      IF STATUS <> SQL.SUCCESS THEN
+         ERRORS<1,-1>="Failed to allocate a CONNECT environment"
+         RETURN TO THE.END
+      END
+*
+* GATHER THE DATA SOURCE NAME, USERID AND PASSWORD FOR THE SERVER O/S AND
+* INFORMATION FOR THE DBMS AT THE SERVER.
+*
+      BEGIN CASE                         ; * JMK10
+         CASE SVR.NAME='AFS'             ; * JMK10
+            SOURCE='PRODODS'             ; * JMK10
+            UID="uv_sql"                 ; * JMK10
+            PWD="4@gAbreg"               ; * JMK10
+         CASE 1                          ; * JMK10
+            SOURCE='DEVODS'              ; * JMK10
+            UID="uv_sql"                 ; * JMK10
+            PWD="4@gAbreg"               ; * JMK10
+      END CASE                           ; * JMK10
+*
+* ESTABLISH A SESSION TO THE SPECIFIED DATA SOURCE
+*
+*     PRINT "Connecting to data source: ": SOURCE
+      FN = "SQLConnect"
+      STATUS = SQLCONNECT(CONENV,SOURCE,UID,PWD)
+      GOSUB CKCONENV
+      RETURN
+******************************************************
+OPEN.FILES:
+********************************************************
+      OPEN '','FB.TL.FSC' TO F.TL.FSC ELSE         ; * JMK01
+         CALL OPEN.ABORT("FB.TL.FSC",PROG.NAME)    ; * JMK01
+      END                                ; * JMK01
+      OPEN '','PCIN' TO F.PCIN ELSE      ; * JMK01
+         CALL OPEN.ABORT("PCIN",PROG.NAME)         ; * JMK01
+      END                                ; * JMK01
+      OPEN '','PCOUT' TO F.PCOUT ELSE    ; * JMK01
+         CALL OPEN.ABORT("PCOUT",PROG.NAME)        ; * JMK01
+      END                                ; * JMK01
+      OPEN '','FB.MILEAGE' TO F.MILEAGE ELSE       ; * JMK01
+         CALL OPEN.ABORT("FB.MILEAGE",PROG.NAME)   ; * JMK01
+      END                                ; * JMK01
+      OPEN '','FB.BC.FSC' TO F.NFSC ELSE           ; * JMK01
+         CALL OPEN.ABORT("FB.BC.FSC",PROG.NAME)    ; * JMK01
+      END                                ; * JMK01
+      OPEN '','FB.TABLES' TO F.TABLES ELSE         ; * JMK01
+         CALL OPEN.ABORT("FB.TABLES",PROG.NAME)    ; * JMK01
+      END                                ; * JMK01
+      OPEN '','FB.CHECKS.HDR' TO F.CK.HDR ELSE
+         CALL OPEN.ABORT("FB.CHECKS.HDR",PROG.NAME)
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE          ; * JMK01
+         CALL OPEN.ABORT("ZIPS.CODES",PROG.NAME)   ; *JMK01
+      END                                ; * JMK01
+      OPEN '','CAN.ZIP.CODES' TO F.CAN.ZIPS ELSE   ; * JMK01
+         CALL OPEN.ABORT("CAN.ZIP.CODES",PROG.NAME)          ; *JMK01
+      END                                ; * JMK01
+      OPEN '','CLIENTS' TO F.CLIENT ELSE ABORT 201,'CLIENTS'
+      OPEN '','FB.TABLES' TO F.TABLES ELSE ABORT 201,'FB.TABLES'
+      READ LI.CODE.REC FROM F.TABLES,'LI.CODES' ELSE LI.CODE.REC=''
+      LI.CODES=''
+      LI.CODES<1>=LI.CODE.REC<1>
+      LI.CODES<2>=LI.CODE.REC<3>
+      UPD.FLAGS='111111'
+
+      RETURN
+   END

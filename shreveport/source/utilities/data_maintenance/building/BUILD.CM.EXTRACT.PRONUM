@@ -1,0 +1,657 @@
+******************************************************************
+* Program : BUILD.CM.EXTRACT.SQL
+* Desc    : Extract for CM AFS Analytics
+* Author  : TOM GORTON
+* Date    : 05/31/2017
+* Copyright (c) 2016 by AFS Logistics, LLC. - All Rights Reserved
+* This extract will pull the required data needed for AFS Analytics for
+* those customers listed in the FB.TABLES item CM.EXTRACTS.CLIENT
+* To Add/Delete clients, just edit this record.*
+* Last updated by afs (AFSLOGISTICS\gbino) at 08:01:23 on 08/30/2017.
+*
+* Start modification history
+* End modification history
+
+*******************************************************************
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+      PROG.NAME='BUILD.CM.EXTRACT.SQL'
+      CARRIERS.LIST='UPSDTL':@VM:'FEDEX'
+      BEG.DATE=FIELD(@SENTENCE,' ',2)
+      END.DATE=FIELD(@SENTENCE,' ',3)
+      VERSION='900'
+      VERSION.DESC = ""
+      SORT=1
+      ROW.MAX=1040000
+      CALL GET.USER.NEW(USER,CH.NUM)
+*
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'BUILD.CM.EXTRACT.SQL' ; UPL.VOUT = ''
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+* Track Program
+      VIN1=""
+      VIN1<1> = UPL.VIN<2>
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "S"
+      CALL PROGTRACK(VIN1,VOUT1)
+*
+      DIM CLIENT.REC(350),PRO.REC(350),TEMP.REC(350),DSPECS(25)
+      PRFX='FMT'
+      ALL.RPT=1
+*
+* Initialize variables
+*
+      TAB=CHAR(9)
+      DIVS=''
+      VOUT=''
+*
+* Open general files
+*
+      OPEN '','FB.BUILD.SPEC' TO F.BUILD.SPEC ELSE
+         CALL OPEN.ABORT2("FB.BUILD.SPEC",PROG.NAME)
+         GOTO EXIT.PROGRAM
+      END
+      OPEN '','UPSDATA' TO F.UPSDATA ELSE
+         CALL OPEN.ABORT2('F.UPSDATA',PROG.NAME)
+         GOTO EXIT.PROGRAM
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT2('FB.TABLES',PROG.NAME)
+         GOTO EXIT.PROGRAM
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT2("CLIENTS",PROG.NAME)
+         GOTO EXIT.PROGRAM
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT2("CARRIERS",PROG.NAME)
+         GOTO EXIT.PROGRAM
+      END
+      OPEN '','SHV.FRT.DATA.TEST' TO F.SHV.FRT.DATA ELSE
+         CALL OPEN.ABORT2("SHV.FRT.DATA.IMPORT",PROG.NAME)
+         GOTO EXIT.PROGRAM
+      END
+****      OPEN '','SHV.FRT.DATA.HIST' TO F.SHV.FRT.DATA.HIST ELSE
+****         CALL OPEN.ABORT2("SHV.FRT.DATA.HIST",PROG.NAME)
+****         GOTO EXIT.PROGRAM
+****      END
+      OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE
+         CALL OPEN.ABORT2("BILLDATA.":USER,PROG.NAME)
+         GOTO EXIT.PROGRAM
+      END
+*
+      READ CL.LIST FROM F.TABLES,'CM.EXTRACT.CLIENTS' ELSE
+         CALL ELINE('Cannot read CM.EXTRACT.CLIENTS from FB.TABLES')
+         GOTO EXIT.PROGRAM
+      END
+*
+
+
+*
+      EXECUTE 'CREATE-FILE DATA TEMP.SORT.FILE_':CH.NUM:' DYNAMIC' CAPTURING OUTPUT
+      OPEN '','TEMP.SORT.FILE_':CH.NUM TO F.TEMP.SORT.FILE ELSE
+         CALL OPEN.ABORT2('TEMP.SORT.FILE_':CH.NUM,PROG.NAME)
+         GOTO EXIT.PROGRAM
+      END
+
+* Set the build version and pull the necessary information
+*
+      MAT DSPECS = ""
+      ID=PRFX:'**':VERSION
+      MATREAD DSPECS FROM F.BUILD.SPEC,ID ELSE
+         CALL ELINE('An ERROR occurred in BUILD.DF.SUB. Failed on DSPEC read. ID=':ID)
+         GOTO EXIT.PROGRAM
+      END
+      VERSION.DESC = DSPECS(1)
+      ID='DF.SORT*':SORT
+      READ D.SORT FROM F.TABLES,ID ELSE
+         CALL ELINE('Sort Version ':SORT:' has not been setup.')
+         GOTO EXIT.PROGRAM
+      END
+      ITEM.COUNT=DCOUNT(DSPECS(2),@VM)
+************************************************************************
+START.BUILD:**** Select data for current client
+***********************************************************************
+
+      NUM.CLIENTS = DCOUNT(CL.LIST,@AM)
+      NUM.CARRIERS = DCOUNT(CARRIERS.LIST,@VM)
+      FOR CTR = 1 TO NUM.CLIENTS
+         MAT CLIENT.REC = '' ; MAT PRO.REC = '' ; MAT TEMP.REC = ''
+         IF CTR GT 1 THEN
+            CLOSESEQ OUTSEQ.FILE
+            CLOSE F.TEMP.SORT.FILE
+            READ CMEXT.REC FROM F.BILLDATA,RECORD.NAME ELSE CMEXT.REC=''
+            IF CMEXT.REC THEN
+               WRITE CMEXT.REC TO F.SHV.FRT.DATA,RECORD.NAME
+****         WRITE CMEXT.REC TO F.SHV.FRT.DATA.HIST,RECORD.NAME
+            END
+         END
+         CLIENT.ID=CL.LIST<CTR>
+         GOSUB SETUP.FILES
+         GOSUB DO.HEADINGS
+         MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE MAT CLIENT.REC=''
+         IF CLIENT.REC(30)#"A" THEN CONTINUE
+         IF CLIENT.ID[1,2]='99' THEN CONTINUE
+         IF CLIENT.ID[1,2]='98' THEN CONTINUE
+         CLIENT.LAST.PROCESSED=CLIENT.REC(82)
+         IF CLIENT.LAST.PROCESSED='' THEN CONTINUE           ; ** No need to look if no bills were processed
+         IF BEG.DATE > CLIENT.LAST.PROCESSED THEN CONTINUE   ; ** No need to look for Bills if BEG.DATE is Later than last processed
+         ****      FOR CARR.CTR = 1 TO NUM.CARRIERS
+*
+**       CARR.ID = CARRIERS.LIST<1,CARR.CTR>
+         NO.EDI.FILE=1
+         OPEN '','EDI.BILLS.HIST,':CLIENT.ID TO EDI.BILLS.HIST ELSE NO.EDI.FILE=0
+         NO.FB.BILLS.HIST.FILE=1
+         OPEN '','FB.BILLS.HIST,':CLIENT.ID TO FB.BILLS.HIST ELSE NO.FB.BILLS.HIST.FILE=0
+         NO.UPSDTL.FILE=0
+         OPEN '','UPSDTLCM,':CLIENT.ID TO F.UPSDATA ELSE NO.UPSDTL.FILE=1
+         GOSUB SELECT.BILLS
+         ****      NEXT CARR.CTR
+      NEXT CTR
+************************************************************************
+EXIT.PROGRAM:***
+************************************************************************
+      CLOSESEQ OUTSEQ.FILE
+      CLOSE F.TEMP.SORT.FILE
+      STMT = 'DELETE-FILE TEMP.SORT.FILE_':CH.NUM
+      EXECUTE STMT CAPTURING OUTPUT
+      READ CMEXT.REC FROM F.BILLDATA,RECORD.NAME ELSE CMEXT.REC=''
+      IF CMEXT.REC THEN
+         WRITE CMEXT.REC TO F.SHV.FRT.DATA,RECORD.NAME
+****         WRITE CMEXT.REC TO F.SHV.FRT.DATA.HIST,RECORD.NAME
+      END
+      VIN1=''
+      VIN1<1> = UPL.VIN<2>
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "E"
+      CALL PROGTRACK(VIN1,VOUT1)
+      RETURN
+*
+***********************************************************************
+SELECT.BILLS:***
+************************************************************************
+      ****    IF CARR.ID= 'UPSDTL' THEN GOSUB BUILD.UPS.INFO
+*****      IF NOT(NO.UPSDTL.FILE) THEN GOSUB BUILD.UPS.INFO
+      IF NOT(NO.FB.BILLS.HIST.FILE) THEN RETURN
+      STMT='SSELECT FB.BILLS.HIST,':CLIENT.ID:' WITH 37 GE "':OCONV(BEG.DATE,'D2/')
+      STMT=STMT:'" AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'
+      STMT=STMT:' AND WITH CARRIER# = "00015" "01075" "00041"'
+      STMT=STMT:' AND WITH VERSION = "0" '
+      STMT=STMT:' BY CARRIER BY 94 '
+      IF D.SORT<1>#'' THEN
+         IF NUM(D.SORT<1>) THEN
+            LN = 'BY ':D.SORT<1>
+            STMT=STMT:LN
+         END
+      END
+      STMT=STMT:' BY CARRIER BY CARRIER# BY 2 BY 1 BY PRO'
+      EXECUTE STMT PASSLIST RTNLIST BILLS.LIST CAPTURING OUTPUT
+      IF NOT(@SELECTED) THEN RETURN
+      NUM.BILLS = @SELECTED
+      ITEM=''
+*
+* Get next item to process
+*
+      LOOP WHILE READNEXT PRO.ID FROM BILLS.LIST DO
+         LINE=''
+         NO.EDI=0
+         MATREAD PRO.REC FROM FB.BILLS.HIST,PRO.ID THEN
+*
+            SUM.CARRIER.CHG=0
+            SUM.DISCOUNT.COMM=0
+            SUM.OVERCHG.COMM=0
+            SUM.CONSULTING.COMM=0
+            SUM.DISCOUNT.VAR=0
+            SUM.OVERCHG.VAR=0
+            SUM.CONSULTING.VAR=0
+*
+            PRV.PRO.REC=''
+            CARRIER.NO=FIELD(PRO.ID,'*',1)
+            PRO.NO=FIELD(PRO.ID,'*',2)
+            SEQ.NO=FIELD(PRO.ID,'*',3)
+            PRV.PRO.ID=CARRIER.NO:'*':PRO.NO[1,LEN(PRO.NO)-2]:'*':SEQ.NO
+            READ PRV.PRO.REC FROM FB.BILLS.HIST,PRV.PRO.ID ELSE PRV.PRO.REC=''
+*
+            ORIG.EDI.ID = PRO.REC(88)
+*
+            IF ORIG.EDI.ID # '' AND NO.EDI.FILE=0 THEN
+               CALL PARSE.EDI.ID(ORIG.EDI.ID, CLIENT.ID, EDI.HIST.ID)
+               READ EDI.REC FROM EDI.BILLS.HIST, EDI.HIST.ID ELSE NO.EDI = 1
+            END ELSE
+               EDI.REC=''
+            END
+*
+            CARRIER.ID=CARRIER.NO
+            IF EDI.REC<135> # "" THEN
+               TRACKING.NUM=EDI.REC<135>
+            END ELSE
+               IF CARRIER.ID # "00041" THEN TRACKING.NUM=PRO.NO ELSE TRACKING.NUM="N/A"
+******               IF CARRIER.ID = '00015' OR CARRIER.ID = '01075' THEN CONTINUE
+******               IF PRO.REC(53) = 'EBILL.IMPORT.NEW' THEN CONTINUE
+            END
+            INVOICE.NUM=PRO.REC(94)
+            BILL.DATE=OCONV(PRO.REC(1),'D4/')
+            PROC.DATE=OCONV(PRO.REC(37),'D4/')
+            ***  SUM.CARRIER.CHG=OCONV(PRO.REC(7)+0,'MR2')
+            SUM.CARRIER.CHG=OCONV(PRO.REC(8)+0,'MR2')
+****            SUM.DISCOUNT.COMM=OCONV(PRO.REC(42)+0,'MR2')'R26'
+****            SUM.OVERCHG.COMM=OCONV(PRO.REC(43)+0,'MR2')'R26'
+            ***    SUM.CONSULTING.COMM=OCONV(PRO.REC(44)+0,'MR2')'R26'
+            SUM.CONSULTING.COMM=OCONV(PRO.REC(44)+0,'MR2')
+****            SUM.CONSULTING.COMM=OCONV(PRO.REC(44)+0,'MR2') * 100
+            SUM.DISCOUNT.COMM=OCONV(PRO.REC(42)+0,'MR2') * 100
+            SUM.OVERCHG.COMM=OCONV(PRO.REC(43)+0,'MR2') * 100
+            SUM.DISCOUNT.VAR=OCONV(PRO.REC(10)+0,'MR2')
+            SUM.OVERCHG.VAR=OCONV(PRO.REC(11)+0,'MR2')
+            SUM.CONSULTING.VAR=OCONV(PRO.REC(12)+0,'MR2')
+            DIV.NUM=PRO.REC(9)
+            GOSUB WRITE.LINE
+         END
+      REPEAT
+      RETURN
+
+******************************************************************
+BUILD.UPS.INFO:***
+******************************************************************
+      IF NO.UPSDTL.FILE = 1 THEN RETURN
+      STMT='SELECT UPSDTLCM,':CLIENT.ID:' WITH CLI.NUM = "':CLIENT.ID'R%5':'" AND WITH DIV.NUM = "" AND WITH PROC.DT >= "':BEG.DATE'D2/':' " AND WITH PROC.DT <= "':END.DATE'D2/':'"'
+      EXECUTE STMT RTNLIST EBILL.RECS CAPTURING OUTPUT
+      IF NOT(@SELECTED) THEN RETURN
+      NUM.EBILL=@SELECTED
+      CARRIER.ID="00041"
+      EBILL.PER=''
+* Create File So Information Can be summarized By Tracking Number
+      STMT='CLEAR-FILE DATA TEMP.SORT.FILE_':CH.NUM
+      EXECUTE STMT CAPTURING OUTPUT
+      LOOP WHILE READNEXT EBILL.ID FROM EBILL.RECS DO
+         READ EBILL.REC FROM F.UPSDATA,EBILL.ID THEN
+            NUM.OF.REC=DCOUNT(EBILL.REC,@AM)
+            FOR TRACK.SORT = 2 TO NUM.OF.REC
+               TRACKING.NUM=EBILL.REC<TRACK.SORT,7>
+               IF TRACKING.NUM='' THEN TRACKING.NUM='N/A'
+               READ SORT.RECORD FROM F.TEMP.SORT.FILE,TRACKING.NUM ELSE SORT.RECORD = ""
+               SORT.RECORD<-1> = EBILL.REC<TRACK.SORT>
+               WRITE SORT.RECORD ON F.TEMP.SORT.FILE,TRACKING.NUM
+            NEXT TRACK.SORT
+         END
+      REPEAT
+      STMT='SELECT USING DICT UPSDTL TEMP.SORT.FILE_':CH.NUM
+      EXECUTE STMT RTNLIST SORTED.BILLS CAPTURING OUTPUT
+      EBILL.REC=""
+      LOOP WHILE READNEXT SORTED.ID FROM SORTED.BILLS DO
+         READ SORT.REC FROM F.TEMP.SORT.FILE,SORTED.ID ELSE CONTINUE
+         NUM.SORT.RECS = DCOUNT(SORT.REC,@AM)
+         FOR SORT.CTR = 1 TO NUM.SORT.RECS
+            EBILL.REC<-1> = SORT.REC<SORT.CTR>
+         NEXT SORT.CTR
+      REPEAT
+      PRV.SHIPPER=''
+      LAST.TRACK.NUM=''
+      FIRST.PASS=1
+      NUM.OF.REC = DCOUNT(EBILL.REC,@AM)
+      FOR I = 1 TO NUM.OF.REC
+****      FOR I = 2 TO NUM.OF.REC
+         IF FIRST.PASS THEN
+            SUM.CARRIER.CHG=0
+            SUM.DISCOUNT.COMM=0
+            SUM.CONSULTING.COMM=0
+            SUM.OVERCHG.COMM=0
+            SUM.DISCOUNT.VAR=0
+            SUM.OVERCHG.VAR=0
+            SUM.CONSULTING.VAR=0
+         END
+         TRAK.NUM = EBILL.REC<I,7>
+         GB1 = EBILL.REC<I>
+         BEGIN CASE
+            CASE 1
+               BEGIN CASE
+                  CASE I <= 2
+                     PRV.UPS.SHIPPER=''
+                  CASE EBILL.REC<I-1,3>[1,1]="'"
+                     PRV.UPS.SHIPPER=EBILL.REC<I-1,3>[2,6]
+                  CASE LEN(EBILL.REC<I-1,3>)=6
+                     PRV.UPS.SHIPPER=EBILL.REC<I-1,3>
+                  CASE 1
+                     PRV.UPS.SHIPPER=EBILL.REC<I-1,3>[5,6]
+               END CASE
+               BEGIN CASE
+                  CASE EBILL.REC<I,3>[1,1]="'"
+                     UPS.SHIPPER=EBILL.REC<I,3>[2,6]
+                  CASE LEN(EBILL.REC<I,3>)=6
+                     UPS.SHIPPER=EBILL.REC<I,3>
+                  CASE 1
+                     UPS.SHIPPER=EBILL.REC<I,3>[5,6]
+               END CASE
+               BEGIN CASE
+                  CASE I+1 > NUM.OF.REC
+                     NXT.UPS.SHIPPER=''
+                     NXT.SVC.DESC=''
+                  CASE EBILL.REC<I+1,3>[1,1]="'"
+                     NXT.UPS.SHIPPER=EBILL.REC<I+1,3>[2,6]
+                     NXT.SVC.DESC=TRIM(EBILL.REC<I+1,21>)
+                  CASE LEN(EBILL.REC<I+1,3>)=6
+                     NXT.UPS.SHIPPER=EBILL.REC<I+1,3>
+                     NXT.SVC.DESC=TRIM(EBILL.REC<I+1,21>)
+                  CASE 1
+                     NXT.UPS.SHIPPER=EBILL.REC<I+1,3>[5,6]
+                     NXT.SVC.DESC=TRIM(EBILL.REC<I+1,21>)
+               END CASE
+               FILE.DATE=EBILL.REC<I,5>
+               PRO.NUMBER=UPS.SHIPPER[1,3]:'-':UPS.SHIPPER[4,3]
+               PRO.NUMBER:=FILE.DATE[1,2]:FILE.DATE[3,2]:FILE.DATE[7,2]
+               READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE CARRIER.REC=''
+****               PROC.DATE = ''
+               IF UPS.SHIPPER#PRV.UPS.SHIPPER THEN
+                  COMM.ARRAY=''
+                  TEST.ID=CARRIER.ID:'*':PRO.NUMBER:'-O*0'   ; * Same ID used for Bills, Bills Hist, and CRX
+                  READ TEST.REC FROM FB.BILLS.HIST,TEST.ID THEN
+                     NEXT.PROC.DATE = OCONV(TEST.REC<37>,'D4/')
+                     LOCATE TEST.ID IN COMM.ARRAY<1> SETTING BPOS ELSE
+                        COMM.ARRAY<1,-1>=TEST.ID
+                        COMM.ARRAY<2>+=TEST.REC<10>
+                        COMM.ARRAY<3>+=TEST.REC<11>
+                        COMM.ARRAY<4>+=TEST.REC<12>
+                        COMM.ARRAY<5>+=TEST.REC<42>
+                        COMM.ARRAY<6>+=TEST.REC<43>
+                        COMM.ARRAY<7>+=TEST.REC<44>
+                     END
+                  END
+                  TEST.ID=CARRIER.ID:'*':PRO.NUMBER:'-I*0'   ; * Same ID used for Bills, Bills Hist, and CRX
+                  READ TEST.REC FROM FB.BILLS.HIST,TEST.ID THEN
+                     NEXT.PROC.DATE = OCONV(TEST.REC<37>,'D4/')
+                     LOCATE TEST.ID IN COMM.ARRAY<1> SETTING BPOS ELSE
+                        COMM.ARRAY<1,-1>=TEST.ID
+                        COMM.ARRAY<2>+=TEST.REC<10>
+                        COMM.ARRAY<3>+=TEST.REC<11>
+                        COMM.ARRAY<4>+=TEST.REC<12>
+                        COMM.ARRAY<5>+=TEST.REC<42>
+                        COMM.ARRAY<6>+=TEST.REC<43>
+                        COMM.ARRAY<7>+=TEST.REC<44>
+                     END
+                  END
+                  TEST.ID=CARRIER.ID:'*':PRO.NUMBER:'-T*0'   ; * Same ID used for Bills, Bills Hist, and CRX
+                  READ TEST.REC FROM FB.BILLS.HIST,TEST.ID THEN
+                     NEXT.PROC.DATE = OCONV(TEST.REC<37>,'D4/')
+                     LOCATE TEST.ID IN COMM.ARRAY<1> SETTING BPOS ELSE
+                        COMM.ARRAY<1,-1>=TEST.ID
+                        COMM.ARRAY<2>+=TEST.REC<10>
+                        COMM.ARRAY<3>+=TEST.REC<11>
+                        COMM.ARRAY<4>+=TEST.REC<12>
+                        COMM.ARRAY<5>+=TEST.REC<42>
+                        COMM.ARRAY<6>+=TEST.REC<43>
+                        COMM.ARRAY<7>+=TEST.REC<44>
+                     END
+                  END
+               END
+               IF COMM.ARRAY<5>+0=0 THEN
+                  EBILL.REC<I,92>=0
+               END
+               IF COMM.ARRAY<6>+0=0 THEN
+                  EBILL.REC<I,93>=0
+               END
+               IF COMM.ARRAY<7>+0=0 THEN
+                  EBILL.REC<I,94>=0
+               END
+               BEGIN CASE
+                  CASE CLIENT.ID='01322' AND PRO.NUMBER='X76-0F0113013'
+                     IOT='T'
+                  CASE EBILL.REC<I,22>='1' OR EBILL.REC<I,22>='4'
+                     IOT='O'
+                  CASE EBILL.REC<I,22>='2'
+                     IOT='I'
+                  CASE EBILL.REC<I,22>='3'
+                     IOT='T'
+                  CASE EBILL.REC<I,22>=''
+                     IOT='O'
+               END CASE
+               BILLS.ID=CARRIER.ID:'*':PRO.NUMBER:'-':IOT:'*0'         ; * Same ID used for Bills, Bills Hist, and CRX
+               READ BILLS.REC FROM FB.BILLS.HIST,BILLS.ID ELSE BILLS.REC=''
+               DIV.NOS=BILLS.REC<9>
+               CARRIER.CHG=EBILL.REC<I,37>-EBILL.REC<I,92>-EBILL.REC<I,93>-EBILL.REC<I,94>
+               NEXT.PROC.DATE = OCONV(BILLS.REC<37>,'D4/')
+               ACTUAL.CHG=EBILL.REC<I,37>
+               IF BILLS.REC<8>+0=0 AND EBILL.REC<I,6> < 0 THEN
+
+                  IF CARRIER.CHG<=0 THEN
+                     CARRIER.CHG=0
+                  END
+               END
+*
+               UPS.BILL.REC=BILLS.REC
+               CVIN=BILLS.ID
+               CVIN<2>=CLIENT.REC(84)
+               CVIN<3>=CLIENT.REC(34)
+               CVIN<4>=CLIENT.REC(33)
+               CVIN<5>=CLIENT.REC(85)
+               CVIN<6>=CLIENT.REC(88)
+               CVIN<7>=CARRIER.ID
+               CVIN<8>=CLIENT.ID
+               CVIN<9>=USER
+               CVIN<10>=CLIENT.REC(131)
+               CVIN<11>=CLIENT.REC(177)
+               CVIN<12>=CLIENT.REC(178)
+               CVIN<13>=CLIENT.REC(187)
+               CVIN<14>=CLIENT.REC(200)
+               CVIN<15>=CLIENT.REC(208)
+               CVIN<16>=CLIENT.REC(209)
+               CVIN<17>=CLIENT.REC(210)
+               CVIN<18>=CLIENT.REC(211)
+               CVIN<19>=CLIENT.REC(212)
+               CVIN<20>=CLIENT.REC(213)
+               CVIN<21>=CLIENT.REC(214)
+               CVIN<22>=CLIENT.REC(215)
+               CVIN<23>=CLIENT.REC(216)
+               CVIN<24>=CLIENT.REC(217)
+               CVIN<25>=CLIENT.REC(218)
+               CVIN<26>=CLIENT.REC(219)
+               CVIN<28>=CLIENT.REC(268)
+***               UPS.BILL.REC<7>=ICONV(EBILL.REC<I,37>-EBILL.REC<I,92>-EBILL.REC<I,93>-EBILL.REC<I,94>,'MR2')
+               UPS.BILL.REC<7> = ACTUAL.CHG
+               UPS.BILL.REC<8>=ICONV(EBILL.REC<I,37>,'MR2')
+               UPS.BILL.REC<10>=ICONV(EBILL.REC<I,92>,'MR2')
+               UPS.BILL.REC<11>=ICONV(EBILL.REC<I,93>,'MR2')
+               UPS.BILL.REC<12>=ICONV(EBILL.REC<I,94>,'MR2')
+               IF BILLS.REC<8>+0=0 AND EBILL.REC<I,6> < 0 THEN
+                  IF CARRIER.CHG<=0 THEN
+                     UPS.BILL.REC<7>=0
+                  END
+                  IF ACTUAL.CHG<=0 THEN
+                     UPS.BILL.REC<8>=0
+                  END
+                  UPS.BILL.REC<12>=UPS.BILL.REC<8>-UPS.BILL.REC<7>
+               END
+               CVOUT=''
+               DISCOUNT.COMM=0
+               OVERCHG.COMM=0
+               CONSULTING.COMM=0
+               SUM.CONSULTING.VAR = 0
+               EXPENSE.DIST.COMM=0
+               MGMT.SVC.COMM=0
+               MISR.CONS.COMM=0
+               OVERCHG.PERC=0
+               LOG.COMM.PERC=0
+****               CALL CALC.COMMISSION.GB(UPS.BILL.REC,CVIN,CVOUT)
+               CALL CALC.COMMISSION(UPS.BILL.REC,CVIN,CVOUT)
+               DISCOUNT.COMM=CVOUT<1>
+               OVERCHG.COMM=CVOUT<2>
+               CONSULTING.COMM=CVOUT<3>
+               CONSULTING.COMM = OCONV(CONSULTING.COMM,"MR2")
+               CONSULTING.COMM1=CVOUT<3>'R26'
+*****CRT CONSULTING.COMM:SPACE(5):CONSULTING.COMM1
+               EXPENSE.DIST.COMM=CVOUT<4>
+               MGMT.SVC.COMM=CVOUT<5>
+               MISR.CONS.COMM=CVOUT<6>
+               OVERCHG.PERC=CVOUT<7>
+               LOG.COMM.PERC = CVOUT<8>
+               IF COMM.ARRAY<5>+0#0 THEN
+                  COMM.ARRAY<5>-=DISCOUNT.COMM
+               END
+               IF COMM.ARRAY<6>+0#0 THEN
+                  COMM.ARRAY<6>-=OVERCHG.COMM
+                  IF COMM.ARRAY<7>+0#0 THEN        ; * JMK75
+                  END
+                  COMM.ARRAY<7>-=CONSULTING.COMM
+               END
+               NEXT.PROC.DATE = OCONV(UPS.BILL.REC<37>,'D4/')
+
+               IF UPS.SHIPPER#NXT.UPS.SHIPPER OR (CLIENT.ID='01825' AND NXT.SVC.DESC='SERVICE CHARGE') THEN
+                  IF COMM.ARRAY<5>+0#0 THEN
+*****                     DISCOUNT.COMM+=COMM.ARRAY<5>
+                     COMM.ARRAY<5>=0
+                  END
+                  IF COMM.ARRAY<6>+0#0 THEN
+*****                     OVERCHG.COMM+=COMM.ARRAY<6>
+                     COMM.ARRAY<6>=0
+                  END
+                  IF COMM.ARRAY<7>+0#0 THEN
+*****                     CONSULTING.COMM+=COMM.ARRAY<7>
+                     COMM.ARRAY<7>=0
+                  END
+               END
+         END CASE
+         IF DIV.NOS = "" THEN
+            INVOICE.NUM = EBILL.REC<I,4>[2,9999]
+            SEL.STMT = 'SELECT FB.BILLS.HIST,':CLIENT.ID:' WITH 94 = ':DQUOTE(INVOICE.NUM):' SAVING 9'
+            EXECUTE SEL.STMT CAPTURING OUTPUT RETURNING ERRNUM
+            IF @SELECTED THEN
+               READLIST DIV.NOS ELSE DIV.NOS = ""
+            END ELSE
+               DIV.NOS=""
+            END
+         END
+         TRACK.NUM=EBILL.REC<I,7>
+         IF TRACK.NUM="" THEN TRACK.NUM="N/A"
+* Sum Charges If Tracking Number Is The Same
+*****         IF NOT(FIRST.PASS) AND LAST.TRACK.NUM <> TRACK.NUM THEN
+*****            TRACKING.NUM=LAST.TRACK.NUM
+         FIRST.PASS=0
+         SUM.CARRIER.CHG = ACTUAL.CHG
+         SUM.DISCOUNT.COMM=DISCOUNT.COMM
+         SUM.OVERCHG.COMM=OVERCHG.COMM
+         SUM.CONSULTING.COMM=CONSULTING.COMM
+         SUM.DISCOUNT.VAR=EBILL.REC<I,92>+0
+         SUM.OVERCHG.VAR=EBILL.REC<I,93>+0
+         SUM.CONSULTING.VAR=EBILL.REC<I,94>+0
+         GB2 = EBILL.REC<I>
+         GB3 = EBILL.REC<I,94>
+****TRAK.NUM = EBILL.REC<I,7>
+         PROC.DATE = NEXT.PROC.DATE
+         TRACKING.NUM=TRACK.NUM
+         INVOICE.NUM=EBILL.REC<I,4>[2,9999]
+         BILL.DATE=EBILL.REC<I,5>
+         BILL.DATE=BILL.DATE[1,2]:"/":BILL.DATE[3,2]:"/":BILL.DATE[5,4]
+         DIV.NUM=DIV.NOS<1>
+         LAST.TRACK.NUM=TRACK.NUM
+         GOSUB WRITE.LINE
+      NEXT I
+*****      GOSUB WRITE.LINE                   ; * Write Last Line Entry
+      STMT='CLEAR-FILE DATA TEMP.SORT.FILE_':CH.NUM
+      EXECUTE STMT CAPTURING OUTPUT
+      RETURN
+**************************************************************************
+WRITE.LINE:
+**************************************************************************
+      LINE=''
+      LINE<1,1>=CLIENT.ID
+      LINE<1,2>=CARRIER.ID
+      IF TRACKING.NUM = 'N/A' THEN
+         BD1 = FIELD(BILL.DATE,"/",1)"R%2"
+         BD2 = FIELD(BILL.DATE,"/",2)"R%2"
+         BD3 = FIELD(BILL.DATE,"/",3)"R%4"
+         IF LEN(INVOICE.NUM) = 9 THEN
+            TRACKING.NUM = INVOICE.NUM[1,3]:"-":INVOICE.NUM[4,3]:BD1:BD2:BD3[3,2]
+         END ELSE
+            TRACKING.NUM = INVOICE.NUM[7,3]:"-":INVOICE.NUM[10,3]:BD1:BD2:BD3[3,2]
+         END
+      END
+      LINE<1,3>=TRACKING.NUM             ; * Tracking Number
+      LINE<1,4>=INVOICE.NUM              ; * Invoice Number
+      LINE<1,5>=BILL.DATE                ; * Bill Date
+      LINE<1,6>=SUM.CARRIER.CHG          ; * Carrier Charge
+      LINE<1,7>=SUM.DISCOUNT.COMM'R26'   ; * Discount Comm
+      LINE<1,8>=SUM.OVERCHG.COMM'R26'    ; * Overcharge Comm
+***      LINE<1,7>=(SUM.DISCOUNT.COMM * 100)'R26'     ; * Discount Comm
+***      LINE<1,8>=(SUM.OVERCHG.COMM * 100)'R26'      ; * Overcharge Comm
+      IF SUM.CONSULTING.COMM > 0 THEN
+         LINE<1,9>=(SUM.CONSULTING.COMM*100)'R26'  ; * Consulting Comm
+      END ELSE
+         LINE<1,9>=0
+      END
+      LINE<1,10>=SUM.DISCOUNT.VAR        ; * Discount Var
+      LINE<1,11>=SUM.OVERCHG.VAR         ; * Overcharge Var
+      IF SUM.CONSULTING.VAR < 0 THEN
+         LINE<1,12>=SUM.CONSULTING.VAR   ; * Consulting Var
+      END ELSE
+         LINE<1,12>=SUM.CONSULTING.VAR
+         ********   LINE<1,12>=0
+      END
+      LINE<1,13>=DIV.NUM                 ; * Division ID
+      LINE<1,14> = PROC.DATE
+      LINE=CHANGE(LINE,@VM,TAB)
+      WRITESEQ LINE ON OUTSEQ.FILE ELSE NULL
+      RETURN
+*
+**************************************************************
+ASSIGN.TEMP.REC:***
+****************************************************************
+      TEMP.ID=PRO.REC(94)
+      MAT TEMP.REC=MAT PRO.REC
+      TEMP.REC(88)=''
+      TEMP.REC(2)='O'
+      TEMP.REC(3)='99999'
+      TEMP.REC(4)='99999'
+      TEMP.REC(6)=0
+      TEMP.REC(17)='01897'
+      TEMP.REC(25)='ZZ'
+      TEMP.REC(26)='ZZ'
+      TEMP.REC(27)='FedEx Ground'
+      TEMP.REC(28)='FedEx Ground'
+      TEMP.REC(16)=EDI.REC<18>[1,4]:'-':EDI.REC<18>[5,4]:'-':EDI.REC<18>[9,999]
+      TEMP.REC(100)='01897'
+      TEMP.REC(7)=0
+      TEMP.REC(8)=0
+      TEMP.REC(10)=0
+      TEMP.REC(11)=0
+      TEMP.REC(12)=0
+      TEMP.REC(13)=0
+      TEMP.REC(42)=0
+      TEMP.REC(43)=0
+      TEMP.REC(44)=0
+      TEMP.REC(32)=0
+      TEMP.REC(33)=0
+
+      TEMP.REC(151)='FSC'
+      TEMP.REC(152)=0
+
+      RETURN
+************************************************************************
+DO.HEADINGS:***
+*********************************************************************
+      LINE='For ALL Parcel Carriers Between ':BEG.DATE'D2/':' and ':END.DATE'D2/'
+      LINE:='Using Version ': VERSION : ' - ':VERSION.DESC :' on ':DATE()'D2/'
+      WRITESEQ LINE ON OUTSEQ.FILE ELSE NULL
+      LINE=''
+      WRITESEQ LINE ON OUTSEQ.FILE ELSE NULL
+      LINE=OCONVS(DSPECS(2),'MCU')
+      LINE=CHANGE(LINE,@VM,TAB)
+      WRITESEQ LINE ON OUTSEQ.FILE ELSE NULL
+      RETURN
+      ************************************************************************
+SETUP.FILES:***
+*********************************************************************
+      RECORD.NAME=CLIENT.ID:"-"
+      D=BEG.DATE'D2/'
+      RECORD.NAME:=D[1,2]:D[4,2]
+      D=END.DATE'D2/'
+      RECORD.NAME:=D[1,2]:D[4,2]
+      RECORD.NAME:='CMEXT'
+      RECORD.NAME:='.XLS'
+      OUTSEQ.REC=""
+      WRITE OUTSEQ.REC TO F.BILLDATA,RECORD.NAME
+      OPENSEQ 'BILLDATA.':USER, RECORD.NAME TO OUTSEQ.FILE ELSE
+         CREATE OUTSEQ.FILE ELSE
+         END
+      END
+      RETURN
+   END

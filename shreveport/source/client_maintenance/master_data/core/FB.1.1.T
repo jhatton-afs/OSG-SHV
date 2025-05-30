@@ -1,0 +1,2803 @@
+*******************************************************************************
+*
+* PROGRAM FB.1.1
+* PROGRAM TO CREATE OR MODIFY CLIENT MASTER
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: BRIAN M. QUEEN
+* DATE: NOVEMBER 13, 1990
+
+* PICK COMPILER INFORMATION
+* ~~~~~~~~~~~~~~~~~~~~~~~~~
+*  ~PICK-FILE: FBBP
+*  ~PICK-RECORD: FB.1.1
+*  ~ PICK-FILE: BP
+*  ~ PICK-RECORD: JIM
+*  ~COMPILE-REC: YES
+*  ~AUTO-ANSWER: NO
+*  ~RUN-REC: NO
+*
+* Initialize variables
+*
+* Last updated by AFS (nmeddaugh) at 17:00:01 on 03/26/2019.
+*
+*      Removed PHONE Mask from FAX Number
+* 121102 - JMK01 - ADDED SHIPPING EMAILS WITH GENERIC EMAIL PROCESS
+* 040203 - JMK02 - CHANGE SHIPPING TO MISROUTING AND ADDED FIELDS
+* 080803 - JMK03 - UPDATE MISROUTE EMAIL FLAG WHEN CHANGING MISROUTE EMAIL
+* 081203 - JMK04 - ADD PCL PER BILL RATE TO CHARGE.LIST
+* 081203 - JMK05 - CHECK FOR LOGISTICS INCONSISTANCIES
+* 090803 - JMK06 - CHECK FOR EMAIL INCONSISTANCIES
+* 091003 - JMK07 - ADD PARENT INDEX TO FIELD 175
+* 011204 - JMK08 - ADD MGMT SVC FEE FIELDS TO CHARGE LIST
+* 021004 - JMK09 - ADD TROUBLESHOOTING EMAILS FOR PROCESSING
+* 101104 - JMK10 - ADD IMPORT INDEX FOR EXTERNAL PROCESSING
+* 110404 - JMK11 - ADD NEW FIELDS IN CHARGES TO LIST
+* 110504 - JMK12 - ADD COMPANY CODE TO FAILSAFE LIST FOR SCOTT TRAFFIC BANK CODES
+* 111104 - JMK13 - ADD FEDEX GROUND FIELD IN CHARGES TO LIST
+* 111504 - JMK14 - CREATE CHARGE SCREEN TO SEND IN EMAIL NOTIFICATION
+* 111604 - JMK15 - CHANGE SALESMAN.ID FROM INITIAL TO SERVICING
+* 113004 - JMK16 - ADD CARRIER FSC OVERRIDE TO NOTIFICATION EMAIL
+* 113004 - JMK17 - ADD COMPLETE CHARGE SCREEN TO NOTIFICATION EMAIL
+* 120304 - JMK18 - ADD PRO RATED PER BILL FEE TO NOTIFICATION EMAIL
+* 011405 - JMK19 - ADD UPS TRACKING NUMBER FEE TO NOTIFICATION EMAIL
+* 012605 - JMK20 - ADD FEDX AIR OVERCHG % TO NOTIFICATION EMAIL
+* 030305 - JMK21 - DISABLE EMAIL NOTIFICATION FOR "99" TRAFFIC SURVEY CLIENT
+* 042605 - JMK22 - MAKE PHONE NUMBER REQUIRED FIELD
+* 060605 - JMK23 - ADD SECONDARY INDEXING TO FB.BILLS.HIST FILE
+* 072205 - JMK24 - CHANGE CLAIMS CLIENTS RECORDS WHEN CONTACTS ARE UPDATED
+* 072205 - JMK25 - RE-STRUCTURE AND PASS CHARGE.LIST TO FB.1.1.CHARGES.NEW
+* 072205 - JMK26 - ADD FIELDS FOR LOGISTICS COMMISSION CONFIGURATION
+* 100705 - JMK27 - DISABLE SECONDARY INDEXING
+* 102105 - JMK28 - ADD TRIGGER FOR LOGISTICS FSC EMAIL WARNINGS
+* 032306 - JMK29 - FORMAT EMAIL FOR MULTIPLE LOGISTICS INFORMATION
+* 061906 - JMK30 - ADD COLLECTION EMAILS TO CLIENTS RECORD
+* 082806 - JMK31 - MAKE ALL MISROUTE EMAILS IN THE TO: CATEGORY
+* 012907 - JCW01 - CREATE VEND.CUST.NAMES FILES FOR NEW CLIENT
+* 013107 - JCW02 - T200611010013 CORRECTIONS TO CHARGE PAGE CHANGE EMAIL ALERTS
+* 022307 - JCW03 - MORE CORRECTIONS TO CHARGE PAGE CHANGE EMAIL ALERTS
+* 030707 - JMK32 - C200610250003 / Freight Bill lookup - Add ALIAS (dba)
+* 060207 - JMK33 - C200704240003 /  ASAP  /   FW: New Request - FB Inquiry Alert / Audit Date Storage
+* 091107 - JMK34 - C070504 - grant access to client charge page
+* 101807 - NPR01 - Send email out if Client status changed to Inactive
+* 111607 - JMK35 - T070443 - Create process to update SQL data tables from Universe
+* 113007 - NPR02 - Added email logic if Company flag CLIENT.REC<92> changes
+* 123107 - NPR03 - Added to email description of FSC if FSC CLIENT.REC<189> changes
+* 061308 - NPR04 - T081341 - Added ability to put a cutoff date to disallow keying
+* 072208 - NPR05 - Added process to generate New clients in Brokerage systems and update to GLOBAL.CLIENT.XREF
+* 091008 - NPR06 - Send email if Bank code changes from 'F' to 'V'.
+* 110508 - NPR07 - Change ALPHA check on Client Name to Non MATCHES 0N - So that the SOUNDEX routine will be called.
+* 011609 - NPR08 - T090030 Added Initiating, Lead salesman and Process DT to Inactive Email.
+* 012309 - JMK36 - C090112 - Provide access to Cprocell to traffic surverys
+* 012309 - NPR09 - T090241 - Ranking to be set to 'E" if not set.
+* 012309 - NPR10 - T090241 - For logistics Clients default to Freight Bill Details.
+* 032009 - JMK37 - C090371 - Need to add explanation note for accounts on troubleshoot mode
+* 042309 - JMK38 - C090112 - Provide access to CYNTHIA to traffic surverys
+* 060309 - JMK39 - C090732 - Grant access to procomm items for Jennifer Peters new position
+* 070909 - JMK40 - ADD QUOTE % AND FSC FLAG TO DEFAULTS
+* 072709 - JMK41 - C090983 - Grant access to Client Maintenance
+* 081809 - NPR11 - T091057 - Replace Sandra Long with Stacy Rittenbach wherever the former occurs
+* 100509 - JMK42 - C091212 - Grant Brian Smith permission to make modifications in Client Maintenance
+* 120809 - NPR12 - T091391 - Add screen for setting up fileds to be used in the BOL matching process
+* 121709 - NPR13 - Send email if CLIENT'S NAME CHANGES
+* 030410 - NPR14 - Re-Instated option NT for entering New traffic survey clients as per Owen
+* 062110 - NPR15 - Modified wording on email sent out if clients company changes - As per Owen.
+* 081110 - JMK43 - REMOVE CLIENT UPDATE MESSAGE IF VIEW ONLY.
+* 090310 - NPR16 - Validate Process Day not NULL if client has been processed once already.
+* 101810 - NPR17 - T100953 - Add email address option for remittance email.
+* 102810 - NPR18 - T101055 - Send email for when client transitions from Logistics Client "N"  to "Y" or vic versa
+* 120310 - NPR19 - T101163 - Send email if Bank code changed to 'C'anada .
+* 021511 - JMK44 - ADD DEFAULT DUE DATE FLG
+* 032311 - NPR20 - Add email address option for emailing voucher files
+* 061411 - JMK45 - R110681 - Garrett Curiole should have the same procomm access as Jennifer Peters
+* 061511 - JMK46 - ADD ZIP.DIV.XREF FILE TO CREATE LIST
+* 100511 - RLM01 - PROJECT 80 - Update CLIENT record with Account Manager AR.SLSMAN.1000.1 file ID. Create new ADMIN subscreen to update employee-related data.
+* 102111 - PKB01 - sys115 - per Owen, grant access to charge page for BSMITH, SSMITH, and WPETTIGREW
+* 121611 - JMK47 - SysAid#998 - Client Maintenance
+* 012612 - PKB02 - sYSaID #952 - Set client division default to Yes
+* 020212 - PKB03 - SYSAID #1643 - Grant Sandeep and Lee the same access as Amy and Donna.
+* 020212 - PKB04 - SYSAID #1660  - Grant Brigette Rose access to Charge Page.
+* 061912 - JMK48 - SysAid#XXXX - Set TCR Report to default on ("0") and FB Detail to on ("Y")
+* 070312 - JMK49 - SysAid#3074 - Set Logistics Client field 93 to "N"
+* 072312 - RLM02 - Sysaid #3073 - Replace former employees' email addresses with those of current employees
+* 021213 - JMK50 - SysAid#5230 - Accuterm - View Charge page
+* 031813 - JMK51 - Add Client Type validation for Parcel Audit
+* 041913 - JMK52 - Add special block of clients for parcel audit
+* 042513 - JMK53 - SHV/SLC Integration
+* 042913 - JMK54 - Cleanup AFS_ODS when deleting client divisions
+* 090913 - JMK55 - SysAid#6959 - Client Maintenance - Charge Page
+* 092413 - JMK56 - SysAid#7120 - Email from Alert for Company code changes (sent Mike email yesterday)
+* 102513 - JMK57 - Change New Client Block Message per Mary
+* 121913 - JMK58 - SysAid#8033 - Account Owner file for QlikView - Mike Kerbow
+* 012814 - JMK59 - SysAid#8426 - Add automatic Company number for Shreveport.
+* 012814 - DRF01 - SysAid 8428 - Added email for clients when an end date for Pre-Audit is set or changed
+* 021114 - JMK60 - SysAid#8475 - I need access to the client maintenace
+* 021714 - JMK61 - SysAid#8619 - Josh Clark Position Change
+* 040114 - DRF02 - SysAid 9123 - Charnell Peoples doing some reports from Alan Hicks
+* 041014 - DRF03 - SysAid 9327 - Default Terms to 5 Due on Receipt
+* 050614 - JMK62 - Add Max Overcharge Commission to CHARGE.LIST
+* 070214 - DRF04 - Gave CPEOPLES the same access as DRABORN
+* 070814 - DRF05 - Added attribute 268 to be treated like 131 on charge
+*                  page so it will be null instead of zero
+* 073014 - DRF06 - SysAid 11023 - Added Ron Boehnlein to have access to
+*                  view the charge page.
+* 081314 - JMK63 - SysAid#11359 - Mary Ann Rose access
+* 081514 - DRF07 - SysAid 11416 - Gave KMCQUISTON the same access as DRABORN
+* 090814 - DRF08 - Gave TGREEN the same access as DRABORN
+* 102414 - DRF09 - Changed the email address from JNewman to EDITeam
+* 120314 - DRF10 - Gave NTAYLOR the same access as DRABORN
+* 010715 - DRF11 - Gave LaJuanyka access to added new client but not to
+*                  change the charge page
+* 012215 - DRF12 - SysAid 14856 Gave Ken access similar to Cynthia
+* 012615 - JMK64 - SysAid#14916 - Add Universe access for Kealey Barnes
+* 031615 - DRF13 - SysAid 15959 - Gave April the same access as Cynthia
+* 031715 - DRF14 - SysAid 16042 - Gave CBulger the same email information
+*                  that JDarnell gets.
+* 042415 - SWB02 - SysAid#13519 - Make Business Development and Bank (code) mandatory for Sage compatibility
+* 050515 - DRF15 - SysAid 10652 - Update client list of changes for SAGE export
+* 072215 - DRF16 - SysAid 18836 - AM should have access to view charge page
+* 081115 - DRF17 - SysAid 19293 - Gave Cynthia the same access as Sandeep
+* 093015 - DRF18 - SysAid 20301 - Gave Robbie the same access as Randy
+*                  to view the charge page
+* 120215 - DRF19 - SysAid 21364 Added GVL Parcel Flag
+* 011516 - DRF20 - SysAid 22000 Added Allison to be able to creat a new client
+* 012116 - GRB01 - SysAid 22029 Added Greenville parcel flag as required field
+* 042116 - DRF21 - SysAid 24082 Added Mingshu access to the charge page
+* 051816 - GRB02 - SysAid 24592 Change ranking to tier
+* 051816 - GRB03 - SysAid 24720 Add kpercivalle to charge page
+* 060216 - DRF22 - SysAid 24619 Added kpercivalle to view charge page if
+*                  he is the PM otherwise he does not have access
+* 061316 - GRB04 - SysAid 25018 Add jshivers
+* 070516 - GRB05 - SysAid 25575 - add operator table
+* 070616 - DRF23 - SysAid 25683 - add Samantha to the charge page
+* 031819 - NKH01 - ACCU-316 Modified CREATE-FILE file sizes
+*******************************************************************************
+$OPTIONS HEADER.EJECT
+      ERRMSG=''
+*
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+*     EXECUTE 'AUTOLOGOUT 3' ; ** Only Allow Someone in for 3 Minutes
+      PROMPT''
+      ADD.FLAG=0
+      PROG.NAME='FB.1.1'
+      PROG.DESC='CLIENT MAINTENANCE'
+      PACK.NAME='FREIGHT BILLING'
+      PLACE.HOLDER='!@#$%^&*()'
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.1.1' ; UPL.VOUT = ''         ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+*
+* Open files
+*
+      OPEN '','BCUST' TO F.CLIENT ELSE CALL OPEN.ABORT("BCUST",PROG.NAME)
+      OPEN 'DICT','CLIENTS' TO F.DICT.CLIENT ELSE CALL OPEN.ABORT("DICT CLIENTS",PROG.NAME)
+      OPEN '','AR.CUST' TO F.AR.CUST ELSE CALL OPEN.ABORT("AR.CUST",PROG.NAME)
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE CALL OPEN.ABORT("ZIPS",PROG.NAME)
+*DF      OPEN '','CAN.ZIP.CODES' TO F.CAN.ZIPS ELSE CALL OPEN.ABORT("CAN.ZIPS",PROG.NAME)
+*DF      OPEN '','MEX.ZIP.CODES' TO F.MEX.ZIPS ELSE CALL OPEN.ABORT("MEX.ZIPS",PROG.NAME)
+      OPEN '','FB.TABLES' TO F.FB.TABLES ELSE CALL OPEN.ABORT("FB.TABLES",PROG.NAME)
+      OPEN '','FB.ADJUST.CLIENT' TO F.ADJUST.CLIENT ELSE CALL OPEN.ABORT("FB.ADJUST.CLIENT",PROG.NAME)
+      READ TARIFF.REC FROM F.FB.TABLES,'TARIFF.DATE.XREF' ELSE TARIFF.REC=''
+      OPEN '','AR.SLSMAN.1000.1' TO F.SLSMAN ELSE
+         CALL OPEN.ABORT('AR.SLSMAN.1000.1',PROG.NAME)
+      END
+      OPEN '','SDX.CLIENTS,IMPORT' TO F.INDEX ELSE CALL OPEN.ABORT("SDX.CLIENTS,IMPORT",PROG.NAME)   ; * JMK10
+      OPEN '','BCTRL' TO F.BCTRL ELSE CALL OPEN.ABORT("BCTRL",PROG.NAME)         ; * NPR01
+      OPEN '','FB.CAR.CTRL' TO F.CAR.CTRL ELSE CALL OPEN.ABORT("FB.CAR.CTRL",PROG.NAME)
+*
+* NPR05
+      OPEN 'VOC' TO F.VOC ELSE CALL OPEN.ABORT('VOC',PROG.NAME)        ; * NPR05
+*      OPEN '','GLOBAL.AR.CUST' TO F.AR.CUST ELSE CALL OPEN.ABORT("GLOBAL.AR.CUST",PROG.NAME)
+      OPEN '','GLOBAL.AF.CUST' TO F.AF.CUST ELSE CALL OPEN.ABORT("GLOBAL.AF.CUST",PROG.NAME)
+      OPEN '','GLOBAL.BR.CUST' TO F.BR.CUST ELSE CALL OPEN.ABORT("GLOBAL.BR.CUST",PROG.NAME)
+      OPEN '','GLOBAL.INT.CUST' TO F.INT.CUST ELSE CALL OPEN.ABORT("GLOBAL.INT.CUST",PROG.NAME)
+      OPEN '','GLOBAL.CLIENT.XREF' TO F.GLOBAL.XREF ELSE CALL OPEN.ABORT('GLOBAL.CLIENT.XREF',PROG.NAME)
+* NPR05
+*
+      OPEN '','FB.COMPANY' TO F.FB.COMPANY ELSE CALL OPEN.ABORT("FB.COMPANY",PROG.NAME)    ; * NPR15
+      OPEN '','FB.REPORT' TO F.REPORT ELSE CALL OPEN.ABORT('FB.REPORT',PROG.NAME)          ; * JMK55
+      OPEN '','&SAVEDLISTS&' TO F.SL ELSE          ; * DRF15
+         CALL OPEN.ABORT("&SAVEDLISTS&",PROG.NAME)           ; * DRF15
+      END                                ; * DRF15
+        OPEN '','OPERATOR' TO F.OP ELSE CALL OPEN.ABORT("OPERATOR",PROG.NAME)      ; * GRB05
+*      USER=OCONV(SYSTEM(19),'MCU')
+      CALL GET.USER(USER)
+
+*DF      IF USER='DAVID' THEN USER='KPERCIAVALLE'
+
+      DISPLAY.MODE=1
+      SUPER.USER=0
+      VIN=USER
+      CALL SUPER.USER(VIN,VOUT)
+      SUPER.USER=VOUT<1>
+      
+        * Begin GRB05
+         READV OP.FLG FROM F.OP,USER,18 ELSE
+         OP.FLG<1,1> = "N"    ; * super user
+         OP.FLG<1,2> = "N"    ; * add client
+          OP.FLG<1,3> = "N"   ; * add ts
+         OP.FLG<1,4> = "N"    ; * charge page
+         END 
+         IF OP.FLG<1,1> = "Y" THEN
+           SUPER.USER = 1
+         END
+     
+* Begin GRB01
+      IF USER = 'GALLISON' THEN SUPER.USER = 0
+      IF USER = 'SCROSS' THEN SUPER.USER = 0
+      IF USER = 'SCRALL' THEN SUPER.USER = 0
+      IF USER = 'LJAY' THEN SUPER.USER = 0
+* End GRB01
+      GOSUB GET.CHARGE.LIST              ; * JMK25
+*
+* Display page heading
+*
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+* Enter mode VIEW or CHANGE
+*
+50:   IF SUPER.USER THEN
+         HELP="Enter [V]iew for View only or [C]hange to make changes/additions."
+         CALL GEN.IN(0,22,'Enter mode V','',Q,0,1,'','',0,-1,22,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='X' OR QI='EX'
+               STOP
+            CASE QI='V' OR QI=''
+               DISPLAY.MODE=1
+            CASE QI='C'
+               DISPLAY.MODE=0
+            CASE 1
+               CALL ELINE("Invalid Entry")
+               GOTO 50
+         END CASE
+      END
+      IF DISPLAY.MODE THEN
+         PROG.DESC=PROG.DESC:' - View'
+      END ELSE
+         PROG.DESC=PROG.DESC:' - Change'
+      END
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+* Enter client number. If not on file then create if desired.
+*
+100:  CRT @(0,2):@(-3)
+      IF DISPLAY.MODE THEN
+         HELP="Enter client number or name to search. [EX]=Exit"
+      END ELSE
+*DF      HELP="Enter client number or name to search. [N]=New [NT]=New-Traf-Surv [EX]=Exit"
+         HELP="Enter client number or name to search. [N]=New [NT]=New-Traf-Surv [EX]=Exit"          ; * NPR14
+      END
+      CALL GEN.IN(0,3,'Enter Client Number : #####','',Q,0,20,'','',2,-5,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X' OR QI='EX' OR QI=''
+            STOP
+
+*DF         CASE QI='N' OR QI='NT' AND NOT(DISPLAY.MODE)
+         CASE QI='NT' AND NOT(DISPLAY.MODE)
+            ID=99000
+            LOOP
+               ID=ID+1
+               READ XX FROM F.CLIENT,ID'R%5' ELSE
+                  READ XX FROM F.AR.CUST,ID'R%12' ELSE XX='**'
+               END
+            UNTIL XX='**' DO REPEAT
+            IF ID GT '99999' THEN
+               CALL ELINE("Unable to determine a valid Traffic Survey client number")      ; *NPR14
+               GOTO 100                  ; *NPR14
+            END                          ; *NPR14
+            Q=ID'R%5'
+         CASE QI='NP' AND NOT(DISPLAY.MODE)        ; * JMK52
+            ID=98100                     ; * JMK52
+            LOOP                         ; * JMK52
+               ID=ID+1                   ; * JMK52
+               READ XX FROM F.CLIENT,ID'R%5' ELSE  ; * JMK52
+                  READ XX FROM F.AR.CUST,ID'R%12' ELSE XX='**'         ; * JMK52
+               END                       ; * JMK52
+            UNTIL XX='**' DO REPEAT      ; * JMK52
+            IF ID GT '98600' THEN        ; * JMK52
+               CALL ELINE("Unable to determine a valid parcel test client number")         ; * JMK52
+               GOTO 100                  ; * JMK52
+            END                          ; * JMK52
+            Q=ID'R%5'                    ; * JMK52
+         CASE QI='N' AND NOT(DISPLAY.MODE)
+*NPR14            IF QI='N' THEN ID=700 ELSE ID=99000                                     ; *NPR14
+            ID=1800                      ; *NPR14
+            LOOP
+               ID=ID+1
+               READ XX FROM F.CLIENT,ID'R%5' ELSE
+                  READ XX FROM F.AR.CUST,ID'R%12' ELSE XX='**'
+               END
+            UNTIL XX='**' DO REPEAT
+            IVIN = "S" ; IVIN<2> = ID    ; *NPR05
+            IVIN<3> = USER ; IVIN<4> = 1           ; *NPR05
+            IVOUT = "" ; FB.CUST = ""    ; *NPR05
+            CALL BUILD.GLOBAL.CUST.NOS(IVIN,IVOUT,F.CLIENT,FB.CUST)    ; *NPR05
+            ID = IVOUT<1>                ; *NPR05
+            BF.ERR = IVOUT<2>            ; *NPR05
+            IF BF.ERR NE "" THEN         ; *NPR05
+               CALL ELINE(BF.ERR)        ; *NPR05
+               GOTO 100                  ; *NPR05
+            END                          ; *NPR05                                                                              ;*NPR05
+            IF ID = "" THEN              ; *NPR05
+               CALL ELINE("Could not find an unused number across AR, FP and all Brokerages Systems")          ; *NPR05
+               GOTO 100                  ; *NPR05
+            END                          ; *NPR05
+            IF ID GT '98099' THEN        ; * JMK52
+               CALL ELINE("Unable to determine an unused valid client number")   ; * JMK52
+               GOTO 100                  ; * JMK52
+            END                          ; * JMK52
+            Q=ID'R%5'
+
+         CASE NOT(QI MATCHES "0N")       ; *NPR07
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            IF ITEM.LIST='' ! DCOUNT(ITEM.LIST<1>,@VM) > 1 THEN GOTO 100
+            IF NOT(NUM(ITEM.LIST<1,1>)) THEN GOTO 100
+            Q=ITEM.LIST<1,1>'R%5'
+         CASE NUM(QI)
+            Q = QI'R%5'                  ; *NPR05
+            IF NOT(DISPLAY.MODE) THEN    ; *NPR05
+               READ CLIENT.REC FROM F.CLIENT,Q ELSE          ; *NPR05
+                  IF Q[1,1] = "8" OR Q[1,1] = "9" OR Q[1,1] = "7" THEN           ; *NPR05
+                     NULL                ; *NPR05
+                  END ELSE               ; *NPR05
+                     IVIN = "S" ; IVIN<2> = QI     ; *NPR05
+                     IVIN<3> = USER ; IVIN<4> = 1  ; *NPR05
+                     IVOUT = "" ; FB.CUST = ""     ; *NPR05
+
+                     CALL BUILD.GLOBAL.CUST.NOS(IVIN,IVOUT,F.CLIENT,FB.CUST)     ; *NPR05
+
+                     ID = IVOUT<1>       ; *NPR05
+                     BF.ERR = IVOUT<2>   ; *NPR05
+**                     IVIN<3> = USER ; IVIN<4> = 1  ; *NPR05                                                                         ;*NPR05
+                     IF BF.ERR NE "" THEN          ; *NPR05
+                        CALL ELINE(BF.ERR)         ; *NPR05
+                        GOTO 100         ; *NPR05
+                     END                 ; *NPR05
+*
+                     IF ID = "" THEN     ; *NPR05
+                        CALL ELINE("Unable to determine a valid client number")  ; *NPR05
+                        GOTO 100         ; *NPR05
+                     END                 ; *NPR05
+                     Q = ID'R%5'         ; *NPR05
+                  END                    ; *NPR05
+               END                       ; *NPR05
+            END                          ; *NPR05
+         CASE 1
+            GOTO 100
+      END CASE
+*
+* Read client item
+*
+      CLIENT.ID=Q
+      IF DISPLAY.MODE THEN
+         READ CLIENT.REC FROM F.CLIENT,Q ELSE
+            CALL ELINE("Cannot find client ":Q:" in the CLIENT file.")
+            GOTO 100
+         END
+      END ELSE
+         READU CLIENT.REC FROM F.CLIENT,Q ELSE
+*
+            ADD.TS=0
+            ADD.CLIENT=0
+        * Begin GRB 05
+         IF OP.FLG<1,2> = "Y" THEN
+         ADD.CLIENT = 1
+         END
+         IF OP.FLG<1,3> = "Y" THEN
+         ADD.TS = 1
+         END
+                        
+            *****IF USER = 'AMY' THEN ADD.CLIENT=1
+            *****IF USER = 'ARSEXTONAUDIT' THEN ADD.TS=1  ; * DRF13
+            *****IF USER = 'ATAYLOR' THEN ADD.CLIENT=1    ; * DRF20
+            *****IF USER = 'JSHIVERS' THEN ADD.CLIENT = 1         ; * GRB04
+            *****IF USER = 'BRIAN' THEN ADD.CLIENT=1 ; ADD.TS=1
+            *****IF USER = 'BRIANP' THEN ADD.TS=1
+            *****IF USER = 'BROSE' THEN ADD.CLIENT=1      ; * PKB04
+            *****IF USER = 'BSMITH' THEN ADD.CLIENT=1     ; * JMK42
+            *****IF USER = 'CCOX' THEN ADD.TS=1           ; *  Ticket 3522 - DRF 08/09/12
+            *****IF USER = 'CYNTHIA' THEN ADD.CLIENT=1    ; * DRF17
+            *****IF USER = 'CWARD' THEN ADD.CLIENT=1      ; * PKB04
+            *****IF USER = 'DAVID' THEN ADD.CLIENT=1 ; ADD.TS=1
+            *****IF USER = 'DONNA' THEN ADD.TS=1
+            *****IF USER = 'FPMGR' THEN ADD.CLIENT=1
+            *****IF USER = 'GCASSADA' THEN ADD.TS=1
+            *****IF USER = 'JCLARK' THEN ADD.CLIENT=1     ; * JMK61
+            *****IF USER = 'JPETERS' THEN ADD.CLIENT=1    ; * JMK60
+            *****IF USER = 'KHOSKINS' THEN ADD.TS=1       ; * DRF12
+            *****IF USER = 'KRISTY' THEN ADD.CLIENT=1
+            *****IF USER = 'KRISTY' THEN ADD.TS=1
+            *****IF USER = 'LCOOK' THEN ADD.CLIENT=1      ; * DRF11
+            *****IF USER = 'MARY' THEN ADD.CLIENT=1
+            *****IF USER = 'SCHUTAI' THEN ADD.CLIENT=1    ; * PKB02
+            *****IF USER = 'SSELMAN' THEN ADD.TS=1
+            *****IF USER = 'SSHAFER' THEN ADD.TS=1        ; * TICKET 3091 - DRF 07/09/12
+            *****IF USER = 'SSMITH' THEN ADD.TS=1         ; * ADDED MATT 1/10/07
+            *****IF USER = 'JSHIVERS' THEN ADD.TS = 1   ; * GRB04
+* End GRB05
+            IF ADD.TS+ADD.CLIENT=0 THEN
+               RELEASE F.CLIENT,Q
+               CALL ELINE("You are not authorized to create a new Client.")
+               GOTO 100
+            END
+            IF Q[1,2]='99' AND ADD.TS=0 THEN
+               RELEASE F.CLIENT,Q
+               CALL ELINE("You are not authorized to create a Traffic Survey Client.")
+               GOTO 100
+            END
+            HELP="Enter either Y for Yes or N for No."
+            LN='Client number ':Q:' not on file.  Do you want to create? N'
+            CALL GEN.IN(0,22,LN,'',ACK,0,1,'','',2,-1,22,1,QI,HELP,0,23)
+            QI=OCONV(QI,'MCU')
+            IF QI='Y' THEN
+               TEXT= 'New Client! Please request Account Manager Review'         ; * JMK57
+               TEXT<2>='NEW'
+               WRITE TEXT ON F.FB.TABLES,'NO-PROCESS*':Q
+               * Begin NKH01
+               EXECUTE 'CREATE-FILE DATA FB.BILLS,':Q:' 1009,2'
+               EXECUTE 'CREATE-FILE DATA FB.BILLS.HIST,':Q:' 1009,2'
+               EXECUTE 'CREATE-FILE DATA EXPENSE.CODES,':Q:' 53,1'
+               EXECUTE 'CREATE-FILE DATA DIVISION.CODES,':Q:' 23,1'
+               EXECUTE 'CREATE-FILE DATA ZIP.DIV.XREF,':Q:' 23,1'         ; * JMK46
+               EXECUTE 'CREATE-FILE DATA REGION.CODES,':Q:' 7,1'
+               EXECUTE 'CREATE-FILE DATA VEND.CUST.ZIPS,':Q:' 131,1'     ; *ADDED 7/25/03 KM
+               EXECUTE 'CREATE-FILE DATA VEND.CUST.XREF,':Q:' 401,1'     ; *ADDED 7/25/03 KM
+               EXECUTE 'CREATE-FILE DATA VEND.CUST,':Q:' 1009,2'           ; * JCW01
+               EXECUTE 'CREATE-FILE DATA VEND.CUST.NAMES,':Q:' 601,1'     ; * JCW01
+               EXECUTE 'CREATE-FILE DATA SDX.VCN,':Q:' 139,1'   ; * JCW01
+               EXECUTE 'CREATE-FILE DATA SDX.VEND.CUST,':Q:' 139,1'
+               * End NKH01
+* Added the above line. DRF 05/23/11
+               IF Q[1,2]#'99' THEN       ; * JMK33
+                  EXECUTE 'CREATE-FILE DATA FB.BILLS.ACCESS,':Q:' 1009,2'           ; * JMK33   NKH01
+               END                       ; * JMK33
+               IF Q[1,2]='99' THEN
+                  CALL ELINE('Copying the template record on to the traffic survey')
+                  READ CLIENT.REC FROM F.CLIENT,'99001' ELSE CLIENT.REC=''
+*DF                  CALL ELINE('Call David so he can check the division setup')
+               END ELSE                  ; * JMK23
+*                 EXECUTE 'CREATE-INDEX FB.BILLS.HIST,':Q:' CARRIER# DIV 37 39 66'         ; * JMK23; * JMK27
+               END
+               CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            END ELSE
+               GOTO 100
+            END
+            IF Q[1,2]#'99' THEN
+               CLIENT.REC=''
+            END
+            CLIENT.REC< 12>='Y'          ; * PKB02 Set Divisions to "Y"
+            CLIENT.REC< 22>=DATE()
+            CLIENT.REC< 30>='I'          ; * JMK48
+            CLIENT.REC< 63>='Y'          ; * Set Verify Pro Numbers to "Y"
+            CLIENT.REC< 70,10>='Y'       ; * JMK48
+            CLIENT.REC< 81>='F'          ; * DEFAULT TO 'F' BANK CODE
+            CLIENT.REC< 92>='00000'      ; * JMK59
+            CLIENT.REC< 93>='N'          ; * JMK49
+            CLIENT.REC< 96>='N'          ; * Set Separate Check Flag to "N"
+            CLIENT.REC<100,15>='0'       ; * JMK48
+            CLIENT.REC<116>='NEW'        ; * Default Excel Macro setting to NEW
+            CLIENT.REC<136>='10000'      ; * JMK40
+            CLIENT.REC<137>='10000'      ; * JMK40
+            CLIENT.REC<138>='10000'      ; * JMK40
+            CLIENT.REC<144>=DATE()       ; * Default New SOC date to today
+            CLIENT.REC<146>='NW'         ; * Default New Clients to New Way
+            CLIENT.REC<147>=CLIENT.ID'R%5'         ; * Default Parent Client to itself
+            CLIENT.REC<186>='N'          ; * JMK44
+            CLIENT.REC<189>='C'          ; * JMK40
+            CLIENT.REC<270>='N'          ; * JMK48
+            CLIENT.REC<282>='5'          ; * DRF03
+            IF Q[1,2]#'99' THEN          ; * JMK55
+               CLIENT.REC< 11>='B'       ; * JMK55
+               CLIENT.REC< 13>='Y'       ; * JMK55
+               CLIENT.REC< 14>='Y'       ; * JMK55
+               CLIENT.REC< 15>='Y'       ; * JMK55
+               CLIENT.REC< 16>='Y'       ; * JMK55
+               CLIENT.REC< 17>='C'       ; * JMK55
+               CLIENT.REC< 18>='Y'       ; * JMK55
+               CLIENT.REC< 19>='Y'       ; * JMK55
+               CLIENT.REC< 20>='Y'       ; * JMK55
+               CLIENT.REC< 21>='Y'       ; * JMK55
+               CLIENT.REC< 24>='O'       ; * JMK55
+               CLIENT.REC< 29>='01.01'   ; * JMK55
+               CLIENT.REC< 38>='7'       ; * JMK55
+               CLIENT.REC< 41>='P'       ; * JMK55
+               CLIENT.REC< 42>='Y'       ; * JMK55
+               CLIENT.REC<100, 1>='0'    ; * JMK55
+               CLIENT.REC<100, 2>='1'    ; * JMK55
+               CLIENT.REC<100, 4>='0'    ; * JMK55
+               CLIENT.REC<100, 5>='0'    ; * JMK55
+               CLIENT.REC<100, 6>='0'    ; * JMK55
+               CLIENT.REC<100, 7>='0'    ; * JMK55
+               CLIENT.REC<125>='LogAudit@afs.net'           ; * Default client email address
+               CLIENT.REC<134>='1'       ; * JMK55
+               CLIENT.REC<135>='1'       ; * JMK55
+            END                          ; * JMK55
+            ADD.FLAG=1
+         END
+      END
+      OLD.CLIENT.REC=CLIENT.REC
+****************************************************************
+* Convert phone numbers
+****************************************************************
+      VAR=CLIENT.REC<31>
+      CALL REMOVE.PUNC(VAR)
+      CALL DEL.CHARACTER(VAR,' ')
+      CLIENT.REC<31>=VAR
+      VAR=CLIENT.REC<45>
+      CALL REMOVE.PUNC(VAR)
+      CALL DEL.CHARACTER(VAR,' ')
+      CLIENT.REC<45>=VAR
+****************************************************************
+* Display menu and client data
+****************************************************************
+      CBVIN=''
+      CBVIN<1>=Q
+      CALL CLIENT.BLOCK(CBVIN,CBVOUT,F.CAR.CTRL)
+      CLIENT.NUMBER.TEXT=CBVOUT<1>:'Client Number ':Q:@(-6)
+      CALL CENTER(CLIENT.NUMBER.TEXT,80)
+      CRT @(0,2):CLIENT.NUMBER.TEXT
+      CRT @(0,3):@(-4):
+      CALL FB.1.1.DISPLAY(CLIENT.REC)
+*
+      SALESMAN.ID=CLIENT.REC<115>        ; * BOH01
+      IF SALESMAN.ID='' THEN
+         LEAD.SALESMAN='No Servicing Salesman on File'       ; * BOH01
+      END ELSE
+         READ SALESMAN.REC FROM F.SLSMAN,SALESMAN.ID THEN
+            LEAD.SALESMAN=SALESMAN.REC<1>:'-':SALESMAN.ID
+         END ELSE
+            LEAD.SALESMAN='Name Not Found-':SALESMAN.ID
+         END
+      END
+      CRT @(25,0):LEAD.SALESMAN:
+*****************************************************************
+* Get selection from operator
+****************************************************************
+200:  IF DISPLAY.MODE THEN
+         HELP="Enter number of information to display: (17, 19, 20, 22 - 27)"    ; * NPR12 ; * RLM01
+      END ELSE
+         HELP="Enter number of information to change: (1 to 27) [D]=Delete"      ; * NPR12 ; * RLM01
+      END
+      HELP:=" [A]=Alias"                 ; * JMK32
+      CALL GEN.IN(0,22,'Enter Selection Number ##','',Q,0,2,'','',2,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN GOTO 99000
+      IF NOT(DISPLAY.MODE) AND QI='D' THEN
+         HELP='Enter Y to delete or N not to delete.'
+         CALL GEN.IN(0,22,'Are you sure? N','',Q,0,1,'','',2,-1,22,1,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+****************************************************************
+* Delete client
+****************************************************************
+         IF QI='Y' THEN
+            IF  USER#'DAVID' THEN
+1234:          CALL ELINE('Cannot delete an account...Call DAVID.')
+               GO 1234
+            END
+            IF CLIENT.ID[1,2]='99' ELSE
+               TEXT = "Looking for active records in file FB.PAY. Step 1 of 9"
+               CALL CENTER(TEXT,80)
+               CRT @(0,14):@(-3):TEXT:
+               EXECUTE 'SELECT FB.PAY WITH CLIENT# = "':CLIENT.ID:'"' PASSLIST CAPTURING OUTPUT
+               IF SYSTEM(11) THEN
+                  CALL ELINE('Client ':CLIENT.ID:' has pros selected for payment. Cannot delete.')
+                  GOTO 200
+               END
+               TEXT = "Selecting records to delete in file FB.OPEN.BILLS. Step 2 of 9"
+               CALL CENTER(TEXT,80)
+               CRT @(0,15):@(-3):TEXT:
+               EXECUTE 'SELECT FB.OPEN.BILLS WITH CLIENT# = "':CLIENT.ID:'"' PASSLIST CAPTURING OUTPUT
+               IF SYSTEM(11) THEN EXECUTE 'DELETE FB.OPEN.BILLS (I'
+               TEXT = "Selecting records to delete in file FB.BILLS.CRX. Step 3 of 9"
+               CALL CENTER(TEXT,80)
+               CRT @(0,16):@(-3):TEXT:
+               EXECUTE 'SELECT FB.BILLS.HIST,':CLIENT.ID RTNLIST FH.LIST CAPTURING FH.OUTPUT
+               FH.CNT=@SELECTED
+               IF FH.CNT>0 THEN
+                  EXECUTE 'SELECT FB.BILLS.CRX WITH CLIENT# = "':CLIENT.ID:'"' PASSLIST FH.LIST RTNLIST FC.LIST CAPTURING FC.OUTPUT
+                  FC.CNT=@SELECTED
+                  IF FC.CNT THEN
+                     EXECUTE 'DELETE FB.BILLS.CRX (I' PASSLIST FC.LIST
+                  END
+               END
+            END
+            TEXT = "Deleting file FB.BILLS,":CLIENT.ID:". Step 4 of 9"
+            CALL CENTER(TEXT,80)
+            CRT @(0,17):@(-3):TEXT:
+            EXECUTE 'DELETE-FILE DATA FB.BILLS,':CLIENT.ID
+            TEXT = "Deleting file FB.OPEN.BILLS.HIST,":CLIENT.ID:". Step 5 of 9"
+            CALL CENTER(TEXT,80)
+            CRT @(0,18):@(-3):TEXT:
+            EXECUTE 'DELETE-FILE DATA FB.BILLS.HIST,':CLIENT.ID
+            TEXT = "Deleting file FB.OPEN.BILLS.ACCESS,":CLIENT.ID:". Step 5 of 9"         ; * JMK33
+            CALL CENTER(TEXT,80)         ; * JMK33
+            CRT @(0,18):@(-3):TEXT:      ; * JMK33
+            EXECUTE 'DELETE-FILE DATA FB.BILLS.ACCESS,':CLIENT.ID      ; * JMK33
+            TEXT = "Deleting file EXPENSE.CODES,":CLIENT.ID:". Step 6 of 9"
+            CALL CENTER(TEXT,80)
+            CRT @(0,19):@(-3):TEXT:
+            EXECUTE 'DELETE-FILE DATA EXPENSE.CODES,':CLIENT.ID
+            EXECUTE 'SSELECT DIVISION.CODES,':CLIENT.ID RTNLIST DIV.LIST         ; * JMK54
+            DIV.TCNT=@SELECTED           ; * JMK54
+            IF DIV.TCNT>0 THEN           ; * JMK54
+               DIV.EOF=0                 ; * JMK54
+               DIV.CNT=0                 ; * JMK54
+               LOOP                      ; * JMK54
+                  READNEXT DIV.ID FROM DIV.LIST ELSE DIV.EOF=1         ; * JMK54
+               UNTIL DIV.EOF DO          ; * JMK54
+                  SQLVIN=''              ; * JMK54
+                  SQLVIN<1>=USER         ; * JMK54
+                  SQLVIN<2>=CLIENT.ID    ; * JMK54
+                  SQLVIN<3>=DIV.ID       ; * JMK54
+                  CALL DEL.SQL.CLIENT.SUB(SQLVIN,SQLVOUT)    ; * JMK54
+               REPEAT                    ; * JMK54
+            END                          ; * JMK54
+            TEXT = "Deleting file DIVISION.CODES,":CLIENT.ID:". Step 7 of 9"
+            CALL CENTER(TEXT,80)
+            CRT @(0,20):@(-3):TEXT:
+            EXECUTE 'DELETE-FILE DATA DIVISION.CODES,':CLIENT.ID
+            PARENT.ID=OLD.CLIENT.REC<147>          ; * JMK07
+            IF PARENT.ID#'' THEN         ; * JMK07
+               READU PARENT.REC FROM F.CLIENT,PARENT.ID THEN           ; * JMK07
+                  PARENT.ORG=PARENT.REC  ; * JMK07
+                  LOCATE(CLIENT.ID,PARENT.REC,175;CPOS) THEN           ; * JMK07
+                     PARENT.REC=DELETE(PARENT.REC,175,CPOS)  ; * JMK07
+                  END                    ; * JMK07
+                  IF PARENT.REC#PARENT.ORG THEN    ; * JMK07
+                     WRITE PARENT.REC ON F.CLIENT,PARENT.ID  ; * JMK07
+                  END                    ; * JMK07
+               END                       ; * JMK07
+               RELEASE F.CLIENT,PARENT.ID          ; * JMK07
+            END                          ; * JMK07
+            TEXT = "Deleting record ":CLIENT.ID:" from file CLIENTS. Step 8 of 9"
+            CALL CENTER(TEXT,80)
+            CRT @(0,21):@(-3):TEXT:
+            DELETE F.CLIENT,CLIENT.ID
+            TEXT = "Deleting file REGION.CODES,":CLIENT.ID:". Step 9 of 9"
+            CALL CENTER(TEXT,80)
+            CRT @(0,22):@(-3):TEXT:
+            EXECUTE 'DELETE-FILE DATA REGION.CODES,':CLIENT.ID
+            SQLVIN=''                    ; * JMK35
+            SQLVIN<1>=USER               ; * JMK35
+            SQLVIN<2>=CLIENT.ID          ; * JMK35
+            CALL DEL.SQL.CLIENT.SUB(SQLVIN,SQLVOUT)          ; * JMK35
+            CALL SOUNDEX.EDIT(OLD.CLIENT.REC<2>,'',CLIENT.ID,'SDX.CLIENTS,NAME')
+            NVAL=DCOUNT(OLD.CLIENT.REC<226>,@VM)   ; * JMK32
+            FOR VAL=1 TO NVAL            ; * JMK32
+               CALL SOUNDEX.EDIT(OLD.CLIENT.REC<226,VAL>,'',CLIENT.ID,'SDX.CLIENTS,NAME')  ; * JMK32
+            NEXT VAL                     ; * JMK32
+            CALL ELINE('Please have this Client information removed from the SQL Server')  ; * JMK35
+            CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            GOTO 100
+         END ELSE
+            GOTO 200
+         END
+      END
+      IF QI='A' THEN                     ; * JMK32
+         CALL FB.1.1.ALIAS(CLIENT.REC,DISPLAY.MODE)          ; * JMK32
+         CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)   ; * JMK32
+         CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+         CRT @(0,2):CLIENT.NUMBER.TEXT
+         CALL FB.1.1.DISPLAY(CLIENT.REC)
+         GOTO 200                        ; * JMK32
+      END                                ; * JMK32
+*     IF DISPLAY.MODE AND NUM(QI) THEN ON QI GOSUB 99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,17000,99999,19000,20000,99999,22000,23000,24000,25000,26000     ; * NPR12
+*DF      IF DISPLAY.MODE AND NUM(QI) THEN ON QI GOSUB 99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,17000,99999,19000,20000,99999,22000,23000,24000,25000,26000,27000         ; * NPR12; * RLM01
+      IF DISPLAY.MODE AND NUM(QI) THEN ON QI GOSUB 99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,99999,17000,99999,19000,20000,99999,22000,23000,24000,25000,26000,27000,99999   ; * NPR12; * RLM01 ; * DRF19
+*     IF NOT(DISPLAY.MODE) AND NUM(QI) THEN ON QI GOSUB 1000,2000,3000,4000,5000,6000,7000,8000,9000,10000,11000,12000,13000,14000,15000,16000,17000,18000,19000,20000,21000,22000,23000,24000,25000,26000         ; * NPR12; * RLM01
+*DF      IF NOT(DISPLAY.MODE) AND NUM(QI) THEN ON QI GOSUB 1000,2000,3000,4000,5000,6000,7000,8000,9000,10000,11000,12000,13000,14000,15000,16000,17000,18000,19000,20000,21000,22000,23000,24000,25000,26000,27000   ; * NPR12; * RLM01
+      IF NOT(DISPLAY.MODE) AND NUM(QI) THEN ON QI GOSUB 1000,2000,3000,4000,5000,6000,7000,8000,9000,10000,11000,12000,13000,14000,15000,16000,17000,18000,19000,20000,21000,22000,23000,24000,25000,26000,27000,28000       ; * NPR12; * RLM01 ; * DRF19
+      GOTO 200
+****************************************************************
+* Change client name
+****************************************************************
+1000: HELP="Enter name. [space]=Clear."
+      MASK=CLIENT.REC<2>:STR('-',30-LEN(CLIENT.REC<2>))
+      CALL GEN.IN(13,3,MASK,'',Q,0,30,'','',2,-30,3,0,QI,HELP,0,23)
+      IF INDEX(Q,"'",1) THEN
+         CALL ELINE("Error!  Client Name Cannot Contain a Single Quote!")
+         GO 1000
+      END
+      IF Q#'' THEN CLIENT.REC<2>=TRIM(Q)
+      IF Q=' ' THEN CLIENT.REC<2>=''
+      CRT @(13,3):CLIENT.REC<2>'L#30'
+      RETURN
+****************************************************************
+* Change client address 1
+****************************************************************
+2000: HELP="Enter addr 1. [space]=Clear"
+      MASK=CLIENT.REC<3,1>:STR('-',30-LEN(CLIENT.REC<3,1>))
+      CALL GEN.IN(13,4,MASK,'',Q,0,30,'','',2,-30,4,0,QI,HELP,0,23)
+      IF Q#'' THEN CLIENT.REC<3,1>=TRIM(Q)
+      IF Q=' ' THEN CLIENT.REC<3,1>=''
+      CRT @(13,4):CLIENT.REC<3,1>'L#30'
+      RETURN
+****************************************************************
+* Change client address 2
+****************************************************************
+3000: HELP="Enter addr 2. [space]=Clear"
+      MASK=CLIENT.REC<3,2>:STR('-',30-LEN(CLIENT.REC<3,2>))
+      CALL GEN.IN(13,5,MASK,'',Q,0,30,'','',2,-30,5,0,QI,HELP,0,23)
+      IF Q#'' THEN CLIENT.REC<3,2>=TRIM(Q)
+      IF Q=' ' THEN CLIENT.REC=DELETE(CLIENT.REC,3,2,0)
+      CRT @(13,5):CLIENT.REC<3,2>'L#30'
+      RETURN
+****************************************************************
+* Change client zip code
+****************************************************************
+4000: HELP="Enter zip code. [space]=Clear"
+      IF CLIENT.REC<6> NE '' THEN
+         MASK=CLIENT.REC<6>:STR('#',10-LEN(CLIENT.REC<6>))
+      END ELSE
+         MASK='#####-####'
+      END
+      CALL GEN.IN(13,6,MASK,'',Q,0,10,'','',2,-10,6,0,QI,HELP,0,23)
+      IF Q#'' THEN CLIENT.REC<6>=TRIM(Q) ELSE Q=CLIENT.REC<6>
+      IF Q=' ' THEN Q=''
+      IF Q MATCHES '5N"-"' THEN
+         Q=CHANGE(Q,'-','M')
+      END
+      CLIENT.REC<6>=TRIM(Q)
+      CODE=FIELD(Q,'-',1)
+*DF      IF LEN(Q)=6 THEN
+*DF         IF Q[6,1]='M' THEN
+*DF            READ ZIP.REC FROM F.MEX.ZIPS,CODE THEN
+*DF               CLIENT.REC<4>=ZIP.REC<1>
+*DF               CLIENT.REC<5>=ZIP.REC<2>
+*DF            END
+*DF         END ELSE
+*DF            READ ZIP.REC FROM F.CAN.ZIPS,CODE THEN
+*DF               CLIENT.REC<4>=ZIP.REC<1>
+*DF               CLIENT.REC<5>=ZIP.REC<2>
+*DF            END
+*DF         END
+*DF      END ELSE
+*DF         IF CODE#'' & NUM(CODE) THEN
+      READ ZIP.REC FROM F.ZIPS,CODE THEN
+         CLIENT.REC<4>=ZIP.REC<1>
+         CLIENT.REC<5>=ZIP.REC<2>
+      END
+*DF         END
+*DF      END
+      CRT @(13,6):CLIENT.REC<6>'L#10'
+      CRT @(32,6):CLIENT.REC<5>'L#2'
+      CRT @(13,7):CLIENT.REC<4>'L#30'
+      RETURN
+****************************************************************
+* Change client state
+****************************************************************
+5000: HELP="Enter state code. [space]=Clear"
+      MASK=CLIENT.REC<5>:STR('-',2-LEN(CLIENT.REC<5>))
+      CALL GEN.IN(32,6,MASK,'',Q,0,2,'','',2,-2,6,0,QI,HELP,0,23)
+      IF Q#'' THEN CLIENT.REC<5>=TRIM(Q)
+      IF Q=' ' THEN CLIENT.REC<5>=''
+      CRT @(32,6):CLIENT.REC<5>'L#2'
+      RETURN
+****************************************************************
+* Change client city
+****************************************************************
+6000: HELP="Enter city. [space]=Clear"
+      MASK=CLIENT.REC<4>:STR('-',30-LEN(CLIENT.REC<4>))
+      CALL GEN.IN(13,7,MASK,'',Q,0,30,'','',2,-30,7,0,QI,HELP,0,23)
+      IF Q#'' THEN CLIENT.REC<4>=TRIM(Q)
+      IF Q=' ' THEN CLIENT.REC<4>=''
+      CRT @(13,7):CLIENT.REC<4>'L#30'
+      RETURN
+****************************************************************
+* Change client fiscal year
+****************************************************************
+7000: HELP="Enter fiscal year beginning month and day. [cr]=Accept"
+      FISCAL.DATE=CLIENT.REC<29>
+      IF FISCAL.DATE NE '' THEN MASK=FISCAL.DATE ELSE MASK='01.01'
+      CALL GEN.IN(13,8,MASK,'',Q,0,30,'','',2,-5,8,0,QI,HELP,0,23)
+      BEGIN CASE
+         CASE Q=' '
+            CLIENT.REC<29>=''
+         CASE QI=''
+            NULL
+         CASE QI NE ''
+            QI=QI:'.1988'
+            FISCAL.DATE=ICONV(Q,'D2.')
+            IF FISCAL.DATE='' THEN
+               CALL ELINE('Invalid date.')
+               GOTO 7000
+            END
+            FISCAL.MONTH=FISCAL.DATE'DM'
+            FISCAL.DAY=FISCAL.DATE'DD'
+            FISCAL.DATE=FISCAL.MONTH'R%2':'.':FISCAL.DAY'R%2'
+         CASE 1
+            GOTO 7000
+      END CASE
+      CLIENT.REC<29>=FISCAL.DATE
+      CRT @(13,8):FISCAL.DATE
+      RETURN
+****************************************************************
+* Change client contact person
+****************************************************************
+8000: HELP="Enter contact name. [space]=Clear"
+      MASK=CLIENT.REC<46>:STR('-',30-LEN(CLIENT.REC<46>))
+      CALL GEN.IN(13,9,MASK,'',Q,0,30,'','',2,-30,9,0,QI,HELP,0,23)
+      IF Q#'' THEN CLIENT.REC<46>=TRIM(Q)
+      IF Q=' ' THEN CLIENT.REC<46>=''
+      CRT @(13,9):CLIENT.REC<46>'L#30'
+      RETURN
+***************************************************************
+* Change client invoice attn
+****************************************************************
+9000: HELP="Enter invoice attention. [space]=Clear"
+      MASK=CLIENT.REC<44>:STR('-',30-LEN(CLIENT.REC<44>))
+      CALL GEN.IN(13,10,MASK,'',Q,0,30,'','',2,-30,10,0,QI,HELP,0,23)
+      IF Q#'' THEN CLIENT.REC<44>=TRIM(Q)
+      IF Q=' ' THEN CLIENT.REC<44>=''
+      CRT @(13,10):CLIENT.REC<44>'L#30'
+      RETURN
+****************************************************************
+* Change client phone number
+****************************************************************
+10000:HELP="Enter client's phone number. [space]=Clear"
+      CALL GEN.IN(13,11,CLIENT.REC<31>'L#13','PHONE',Q,0,13,'','',2,13,11,0,QI,HELP,0,23)
+      BEGIN CASE
+         CASE QI=' '
+            CLIENT.REC<31>=''
+         CASE QI NE ''
+            CLIENT.REC<31>=TRIM(Q)
+         CASE QI=''
+            NULL
+         CASE 1
+            GOTO 10000
+      END CASE
+      CRT @(13,11):'(':CLIENT.REC<31>[1,3]:')':CLIENT.REC<31>[4,3]:'-':CLIENT.REC<31>[7,4]
+      RETURN
+****************************************************************
+* Change client fax number
+****************************************************************
+11000:HELP="Enter client's fax number. [space]=Clear"
+      CALL GEN.IN(13,12,CLIENT.REC<45>'L#13','',Q,0,13,'','',2,13,12,0,QI,HELP,0,23)
+      BEGIN CASE
+         CASE QI=' '
+            CLIENT.REC<45>=''
+         CASE QI NE ''
+            CLIENT.REC<45>=Q
+         CASE QI=''
+            NULL
+         CASE 1
+            GOTO 11000
+      END CASE
+      CRT @(13,12):
+      LFAX=LEN(CLIENT.REC<45>)
+      BEGIN CASE
+         CASE LFAX=10
+            PRINT '(':CLIENT.REC<45>[1,3]:')':CLIENT.REC<45>[4,3]:'-':CLIENT.REC<45>[7,4]
+         CASE LFAX=7
+            PRINT CLIENT.REC<45>[1,3]:'-':CLIENT.REC<45>[4,7]
+         CASE 1
+            PRINT
+      END CASE
+      RETURN
+****************************************************************
+* Change client pre-audit start date
+****************************************************************
+12000:HELP='Enter date Pre-Audit services started. [space]=Clear [cr]=Accept'
+      MASK=CLIENT.REC<27>'D2/'
+      IF MASK='' THEN MASK=DATE()'D2/'
+      CALL GEN.IN(20,13,MASK,'DATE',Q,0,8,'','',2,-8,13,0,QI,HELP,0,23)
+      BEGIN CASE
+         CASE QI=' '
+            CLIENT.REC<27>=''
+            CRT @(20,13):'        '
+            RETURN
+         CASE QI=''
+            NULL
+         CASE QI NE ''
+            CLIENT.REC<27>=Q
+         CASE 1
+            GOTO 12000
+      END CASE
+      CRT @(20,13):CLIENT.REC<27>'D2/'
+*
+12010:HELP='Enter Services Cutoff-date. [space]=Clear [cr]=Accept'
+      MASK=CLIENT.REC<232>'D2/'
+*      IF MASK='' THEN MASK=DATE()'D2/'
+      CALL GEN.IN(34,13,MASK,'DATE',Q,0,8,'','',2,34,13,0,QI,HELP,0,23)
+      BEGIN CASE
+         CASE QI=' '
+            CLIENT.REC<232>=''
+            CRT @(34,13):'        '
+            RETURN
+         CASE QI=''
+            NULL
+         CASE QI NE ''
+            CLIENT.REC<232>=Q
+         CASE 1
+            GOTO 12010
+      END CASE
+      CRT @(34,13):CLIENT.REC<232>'D2/'
+
+*
+      RETURN
+****************************************************************
+* Change client post-audit state date
+****************************************************************
+13000:HELP='Enter date Post-Audit services started. [space]=Clear [cr]=Accept'
+      MASK=CLIENT.REC<28>'D2/'
+      IF MASK='' THEN MASK=DATE()'D2/'
+      CALL GEN.IN(20,14,MASK,'DATE',Q,0,8,'','',2,-8,14,0,QI,HELP,0,23)
+      BEGIN CASE
+         CASE QI=' '
+            CLIENT.REC<28>=''
+            CRT @(20,14):'        '
+            RETURN
+         CASE QI=''
+            NULL
+         CASE QI NE ''
+            CLIENT.REC<28>=Q
+         CASE 1
+            GOTO 13000
+      END CASE
+      CRT @(20,14):CLIENT.REC<28>'D2/'
+      RETURN
+****************************************************************
+* Change client pay frequency
+****************************************************************
+14000:HELP='Enter number of days in billing cycle.'
+      CALL GEN.IN(69,3,CLIENT.REC<38>'R#2','',Q,0,2,'','',1,-2,3,0,QI,HELP,0,23)
+      IF NUM(QI) ELSE GOTO 14000
+      IF Q#'' THEN CLIENT.REC<38>=TRIM(Q)
+      CRT @(69,3):CLIENT.REC<38>'R#2'
+      RETURN
+****************************************************************
+* Change client status
+****************************************************************
+15000:HELP='Enter status. [A]=Active [I]=Inactive [O]=Out Of Business [cr]=Accept'
+      CALL GEN.IN(68,4,CLIENT.REC<30>,'',Q,0,1,'','',2,-1,4,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='' & CLIENT.REC<30> NE ''
+            QI=CLIENT.REC<30>
+         CASE QI='I' ! QI='A'! QI='O'
+            NULL
+         CASE 1
+            GOTO 15000
+      END CASE
+      IF QI='I' THEN STATUS='Inactive'
+      IF QI='A' THEN STATUS='..Active'
+      IF QI='O' THEN STATUS='.Out/Bus'
+      CLIENT.REC<30>=QI
+      CRT @(68,4):STATUS'R#8'
+      RETURN
+****************************************************************
+* Change client stay-out or pre-deposit
+****************************************************************
+16000:HELP='Enter [S]=Stay-out [P]=Pre-deposit [cr]=Accept'
+      MASK=CLIENT.REC<41>[1,1]
+      CALL GEN.IN(74,5,MASK'L#1','',Q,0,1,'','',2,-1,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI=''
+            STATUS=CLIENT.REC<41>
+         CASE QI='P'
+            STATUS='PD'
+         CASE QI='S'
+            STATUS='SO'
+         CASE 1
+            GOTO 16000
+      END CASE
+      CLIENT.REC<41>=STATUS
+      CRT @(74,5):CLIENT.REC<41>
+      RETURN
+****************************************************************
+* Reporting options
+****************************************************************
+17000:IF NOT(DISPLAY.MODE) THEN
+         HELP="Enter [Q]=Quarterly, [M]=Monthly, [cr]=Accept."
+         MASK=CLIENT.REC<98>
+         CALL GEN.IN(75,6,MASK'L#1','',Q,0,1,'','',2,-1,6,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI=''
+               Q=CLIENT.REC<98>
+            CASE QI='Q'
+               NULL
+            CASE QI='M'
+               NULL
+            CASE 1
+               GOTO 17000
+         END CASE
+         CLIENT.REC<98>=OCONV(Q,'MCU')
+         CRT @(75,6):CLIENT.REC<98>
+
+         HELP="[I]In [O]Out [C]Combined [B]Both [A]All [T]Third Party [X]=Back [cr]=Accept."
+         MASK=CLIENT.REC<97>
+         CALL GEN.IN(77,6,MASK'L#1','',Q,0,1,'','',2,-1,6,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI=''
+               Q=CLIENT.REC<97>
+            CASE QI='I'
+               NULL
+            CASE QI='O'
+               NULL
+            CASE QI='C'
+               NULL
+            CASE QI='B'
+               NULL
+            CASE QI='A'
+               NULL
+            CASE QI='T'
+               NULL
+            CASE QI='X'
+               CRT @(77,6):CLIENT.REC<97>
+               GOTO 17000
+            CASE 1
+               GOTO 17000
+         END CASE
+         IF CLIENT.ID[1,2]=99 AND Q # 'T' THEN
+            CALL ELINE('WARNING Traffic Survey Accounts are usually [T]hird party! Consider Changing!')
+         END
+         CLIENT.REC<97>=QI
+      END
+      CRT @(77,6):CLIENT.REC<97>
+
+      CALL FB.1.1.REPORTS.NEW(CLIENT.ID,CLIENT.REC,DISPLAY.MODE,F.CLIENT)
+
+      CALL FB.1.1.DISPLAY(CLIENT.REC)    ; * NPR12
+
+      RETURN
+****************************************************************
+* Change client variance default
+****************************************************************
+18000:HELP="Enter client's default variance:[O,C,D] [space]=Clear [cr]=Accept."
+      MASK=CLIENT.REC<23>'L#1'
+      CALL GEN.IN(75,7,MASK,'',Q,0,1,'','',2,-1,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='' & CLIENT.REC<23> NE ''
+            NULL
+         CASE QI=' '
+            CLIENT.REC<23>=''
+         CASE QI='O' ! QI='C' ! QI='D'
+            CLIENT.REC<23>=QI
+         CASE 1
+            GOTO 18000
+      END CASE
+      CRT @(75,7):CLIENT.REC<23>
+      RETURN
+****************************************************************
+* Change client data entry options
+****************************************************************
+19000:CALL FB.1.1.ENTRY.OPTS.NEW(CLIENT.ID,CLIENT.REC,DISPLAY.MODE)
+      RETURN
+****************************************************************
+* Change client key verification options
+****************************************************************
+20000:* Verification Options
+*DF      IF SUPER.USER THEN
+      CALL FB.1.1.VERIFY.OPTS.NEW(CLIENT.ID,CLIENT.REC,DISPLAY.MODE)
+*DF      END ELSE
+*DF         SUBJ='-s"Security Violation"'
+*DF         TEXT=USER:' attempted to modify Verification Options for client'
+*DF         TEXT<-1>=CLIENT.ID:' ':CLIENT.REC<2>
+*DF         EXECUTE 'mail ':SUBJ:' owen',//IN. < TEXT
+*DF         CALL ELINE('You are not authorized to modify Verification Options!')
+*DF      END
+*
+* Removed the above email as if they are in view no changes can be made.
+* DRF 6/29/04
+*
+      CALL FB.1.1.DISPLAY(CLIENT.REC)    ; * NPR12
+
+      RETURN
+****************************************************************
+* Create invoice for A/R system
+****************************************************************
+21000:***
+*     HELP='Enter Y to create invoice, N not to create invoice or V for voucher customer.'
+      HELP='Enter [Y] to create invoice or [N] not to create invoice.'
+      CALL GEN.IN(75,10,CLIENT.REC<42>'L#1','',Q,0,1,'','',2,-1,10,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI=''
+            Q=CLIENT.REC<42>
+*       CASE QI='N' ! QI='Y' ! QI='V'
+         CASE QI='N' ! QI='Y'
+            Q=QI
+         CASE 1
+            GOTO 21000
+      END CASE
+      CLIENT.REC<42>=Q
+      CRT @(75,10):CLIENT.REC<42>
+      RETURN
+****************************************************************
+* Change client charges
+****************************************************************
+22000:* Charge Page
+*DF      IF SUPER.USER THEN
+*     IF SUPER.USER OR USER='SANDRA' OR USER='KRISTY' OR USER='SSHAFER' OR USER='SSELMAN' OR USER='GCASSADA' OR USER='DOURSLER' OR USER='CYNTHIA' OR USER='MSMITH' OR USER='RCASON' OR USER='KCHAUVIN' OR USER='BJEPPSON' OR USER='CTHOMAS' THEN ; * JMK34
+* Begin GRB05
+   ***   BEGIN CASE                         ; * JMK34
+          CHG.PAGE = 0
+         IF SUPER.USER THEN CHG.PAGE=1    ; * JMK34
+          IF OP.FLG<1,4> = "Y" THEN
+         CHG.PAGE = 1
+         END 
+         *****CASE USER ='AHICKS' ; CHG.PAGE=1           ; * TICKET 3092 - DRF 07/06/12
+         *****CASE USER ='ARSEXTONAUDIT' ; CHG.PAGE=1    ; * DRF13
+         *****CASE USER ='BROSE' ; CHG.PAGE=1  ; * PKB04
+         IF USER  = 'KPERCIAVALLE'     THEN ; * DRF22
+            IF CLIENT.REC<115>='00167' THEN        ; * DRF22
+               CHG.PAGE=1                ; * DRF22
+            END ELSE                     ; * DRF22
+               CHG.PAGE=0                ; * DRF22
+            END                          ; * DRF22
+          END
+         *****CASE USER ='BSMITH' ; CHG.PAGE=1           ; * Ticket #115 pkb01
+         *****CASE USER ='CBEASLEY' ; CHG.PAGE=1
+         *****CASE USER ='CLINDSEY' ; CHG.PAGE=1         ; * JMK55
+         *****CASE USER ='CPEOPLES' ; CHG.PAGE=1         ; * DRF02
+         *****CASE USER ='CYNTHIA' ; CHG.PAGE=1          ; * JMK34
+         *****CASE USER ='EWILHELM' ; CHG.PAGE=1         ; * JMK55
+         *****CASE USER ='GCASSADA' ; CHG.PAGE=1         ; * Matt 11/14/07
+         *****CASE USER ='JCLARK' ; CHG.PAGE=1           ; * JMK61
+         *****CASE USER ='JPETERS' ; CHG.PAGE=1          ; * DRF16
+         *****CASE USER ='KHENDRICKSON' ; CHG.PAGE=1     ; * DRF16
+         *****CASE USER ='KHOSKINS' ; CHG.PAGE=1         ; * DRF12
+         *****CASE USER ='KRISTY' ; CHG.PAGE=1           ; * JMK34
+         *****CASE USER ='MBATES' ; CHG.PAGE=1           ; * DRF21
+         *****CASE USER ='MROSE' ; CHG.PAGE=1  ; * JMK63
+         *****CASE USER ='NKELLY' ; CHG.PAGE=1           ; * TICKET 5817 - DRF 05/03/13
+         *****CASE USER ='PZANMILLER' AND DISPLAY.MODE ; CHG.PAGE=1          ; * Ticket 6009 - DRF 05/21/13
+         *****CASE USER ='RBOEHNLEIN' ; CHG.PAGE=1       ; * DRF06
+         *****CASE USER ='RHOLLIFIELD' ; CHG.PAGE=1      ; * JMK50
+         *****CASE USER ='RJESTER' ; CHG.PAGE=1          ; * DRF18
+         *****CASE USER ='RWHITT' ; CHG.PAGE=1           ; * Ticket 082452 DRF 10/31/08
+         *****CASE USER ='SALBRITTON' ; CHG.PAGE=1         ; * DRF23
+         *****CASE USER ='SCHUTAI' ; CHG.PAGE=1          ; * PKB03
+         *****CASE USER ='SMATTHEWS' ; CHG.PAGE=1        ; * JMK34
+         *****CASE USER ='SSELMAN' ; CHG.PAGE=1          ; * JMK34
+         *****CASE USER ='SSHAFER' ; CHG.PAGE=1          ; * JMK34
+         *****CASE USER ='SSMITH' ; CHG.PAGE=1           ; * TICKET #115 PKB01
+         *****CASE USER ='SWINSTEAD' ; CHG.PAGE=1
+         *****CASE USER ='WPARDUE' ; CHG.PAGE=1          ; * TICKET 5090 - DRF 01/29/13
+         *****CASE USER ='WPETTIGREW' ; CHG.PAGE=1       ; * Ticket #115 pkb01
+       **  CASE 1 ; CHG.PAGE=0             ; * JMK34
+    **  END CASE 
+    * End GRB05                          ; * JMK34
+      IF USER='CWARD' AND NOT(DISPLAY.MODE) THEN
+         CHG.PAGE=0
+      END
+      IF USER='LCOOK' AND NOT(DISPLAY.MODE) THEN   ; * DRF11
+         CHG.PAGE=0                      ; * DRF11
+      END                                ; * DRF11
+      IF CHG.PAGE THEN
+         CALL FB.1.1.CHARGES.NEW(CLIENT.ID,CLIENT.REC,DISPLAY.MODE,CHARGE.LIST)  ; * JMK25
+      END ELSE
+*DF         SUBJ='-s"Security Violation":USER:" - View Charge Page"'
+*DF         TEXT=USER:' attempted to view Charge Page for client'
+*DF         TEXT<-1>=CLIENT.ID:' ':CLIENT.REC<2>
+*DF         EXECUTE 'mail ':SUBJ:' owen',//IN. < TEXT
+         EMAIL.OUT=''
+
+         EMAIL.OUT<5,1>= 'Security Violation ':USER:' - View Charge Page'
+         READV USER.NAME FROM F.BCTRL, USER,13 ELSE USER.NAME = ""
+         IF USER.NAME NE "" THEN USER.STRING = USER:" - ":USER.NAME ELSE USER.STRING = USER
+         EMAIL.OUT<6>=USER.STRING:' attempted to view Charge Page for client'
+         EMAIL.OUT<6,-1>=CLIENT.ID:' ':CLIENT.REC<2>
+         EMAIL.OUT<7>=1                  ; * Auto format (add carriage returns to end of text)
+         VOUT=''
+*        CALL SENDMAIL(EMAIL.OUT,VOUT)   ; * JMK55
+         CALL ELINE('You are not authorized to view Charge Page Information!')
+      END
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):CLIENT.NUMBER.TEXT
+      CALL FB.1.1.DISPLAY(CLIENT.REC)
+      RETURN
+*
+* Change email addresses
+*
+* 23000:CALL FB.1.1.EMAIL.NEW(CLIENT.REC,DISPLAY.MODE)         ; * JMK01
+23000:* ENTER EMAIL INFORMATION ; * JMK01
+
+      HELP='Options:[R]eporting [M]isrouting [T]roubleshooting [C]ollections [X]=Exit'     ; * JMK01; * JMK02 ; * JMK09 ; * JMK30
+
+      HELP='[R]eport [M]isr. [T]roubleshoot [C]ollections [P]Remitt [V]ouch [X]=Exit'      ; * JMK01; * JMK02 ; * JMK09 ; * JMK30 ; *NPR020
+      LN='Enter Report, Misr., Troubleshoot, Collection, Vouchers or Remittance Emails? -'           ; * JMK01; * JMK02 ; * JMK09 ; * NPR020
+*END
+      CALL GEN.IN(0,22,LN,'',Q,1,1,'','',2,-1,22,1,QI,HELP,0,23)       ; * JMK01
+      ETYPE=OCONV(QI,'MCU')              ; * JMK01
+      VIN='' ; VOUT=''                   ; * JMK01
+      BEGIN CASE                         ; * JMK01
+         CASE ETYPE='X'                  ; * JMK01
+            RETURN                       ; * JMK01
+         CASE ETYPE='R'
+            HDG.TXT='Reporting Notification'       ; * JMK01
+            IF CLIENT.REC<179>#'' THEN   ; * JMK09
+               HDG.TXT=HDG.TXT:' Disabled for Troubleshooting'         ; * JMK09
+            END                          ; * JMK09
+            VOUT<1>=CLIENT.REC<125>      ; * JMK01
+            VOUT<2>=CLIENT.REC<126>      ; * JMK01
+            VOUT<3>=CLIENT.REC<127>      ; * JMK01
+*        CASE ETYPE='S'                  ; * JMK01; * JMK02
+*           HDG.TXT='Shipping Notification'        ; * JMK01; * JMK02
+*           VOUT<1>=CLIENT.REC<150>      ; * JMK01; * JMK02
+*           VOUT<2>=CLIENT.REC<151>      ; * JMK01; * JMK02
+*           VOUT<3>=CLIENT.REC<152>      ; * JMK01; * JMK02
+         CASE ETYPE='M'                  ; * JMK01; * JMK02
+            HDG.TXT='Misrouting Notification'      ; * JMK01; * JMK02
+            IF CLIENT.REC<179>#'' THEN   ; * JMK09
+               HDG.TXT=HDG.TXT:' Disabled for Troubleshooting'         ; * JMK09
+            END                          ; * JMK09
+            FOR ATT=1 TO 18              ; * JMK02
+               VOUT<ATT>=CLIENT.REC<152+ATT>       ; * JMK01; * JMK02
+            NEXT ATT                     ; * JMK02
+         CASE ETYPE='T'                  ; * JMK09
+            HDG.TXT='Troubleshooting Notification'           ; * JMK09
+            VOUT<1>=CLIENT.REC<179>      ; * JMK09
+         CASE ETYPE='C'                  ; * JMK30
+            HDG.TXT='Collections Notification'     ; * JMK30
+            IF CLIENT.REC<179>#'' THEN   ; * JMK30
+               HDG.TXT=HDG.TXT:' Disabled for Troubleshooting'         ; * JMK30
+            END                          ; * JMK30
+            VOUT<1>=CLIENT.REC<222>      ; * JMK30
+            VOUT<2>=CLIENT.REC<223>      ; * JMK30
+            VOUT<3>=CLIENT.REC<224>      ; * JMK30
+         CASE ETYPE='P'                  ; * NPR17
+            HDG.TXT='Remittance Notification'      ; * NPR17
+            IF CLIENT.REC<179>#'' THEN   ; * NPR17
+               HDG.TXT=HDG.TXT:' Disabled for Troubleshooting'         ; * NPR17
+            END                          ; * NPR17
+            VOUT<1>=CLIENT.REC<257>      ; * NPR17
+            VOUT<2>=CLIENT.REC<258>      ; * NPR17
+            VOUT<3>=CLIENT.REC<259>      ; * NPR17
+
+         CASE ETYPE='V'                  ; * NPR20
+            HDG.TXT='Vouchers'           ; * NPR20
+            IF CLIENT.REC<179>#'' THEN   ; * NPR20
+               HDG.TXT=HDG.TXT:' Disabled for Troubleshooting'         ; * NPR20
+            END                          ; * NPR20
+            VOUT<1>=CLIENT.REC<260>      ; * NPR20
+         CASE 1                          ; * JMK01
+            GOTO 23000                   ; * JMK01
+      END CASE                           ; * JMK01
+      VIN<1>=PROG.DESC                   ; * JMK01
+      VIN<2>=PACK.NAME                   ; * JMK01
+      VIN<3>=HDG.TXT                     ; * JMK01
+      VIN<4>=DISPLAY.MODE                ; * JMK01
+      VIN<5>=2                           ; * JMK01 PROC LVL 1=TO 2=CC 3=BCC
+      IF ETYPE='T' THEN                  ; * JMK09
+         VIN<5>=1                        ; * JMK09
+      END                                ; * JMK09
+      IF ETYPE='M' THEN                  ; * JMK02
+         VIN<5>=1                        ; * JMK31
+         VIN<6>='Y'                      ; * JMK02
+         VIN<7>='Y'                      ; * JMK02
+         VIN<8>='Y'                      ; * JMK02
+         VIN<9>='Y'                      ; * JMK02
+      END                                ; * JMK02
+
+      IF USER = "XNPRATT" OR USER = "TBURNS" OR USER = "SSHAFER" OR USER = "AHICKS" OR USER = "NKELLY" THEN    ; * NPR17 TICKET 3092 - DRF 07/06/12 TICKET 5817 - DRF 05/03/13
+         VIN<5> = '1'
+         VIN<10> = ETYPE
+         CALL FB.EMAIL.NEW(VIN,VOUT)     ; * NPR17
+      END ELSE                           ; * NPR17
+         CALL FB.EMAIL(VIN,VOUT)         ; * JMK01
+      END                                ; * NPR17
+
+      BEGIN CASE                         ; * JMK01
+         CASE ETYPE='R' AND DISPLAY.MODE=0         ; * JMK01
+            CLIENT.REC<125>=VOUT<1>      ; * JMK01
+            CLIENT.REC<126>=VOUT<2>      ; * JMK01
+            CLIENT.REC<127>=VOUT<3>      ; * JMK01
+*        CASE ETYPE='S' AND DISPLAY.MODE=0         ; * JMK01; * JMK02
+*           CLIENT.REC<150>=VOUT<1>      ; * JMK01; * JMK02
+*           CLIENT.REC<151>=VOUT<2>      ; * JMK01; * JMK02
+*           CLIENT.REC<152>=VOUT<3>      ; * JMK01; * JMK02
+         CASE ETYPE='M' AND DISPLAY.MODE=0         ; * JMK01; * JMK02
+            FOR ATT=1 TO 18              ; * JMK02
+               CLIENT.REC<152+ATT>=VOUT<ATT>       ; * JMK01; * JMK02
+            NEXT ATT                     ; * JMK02
+*           IF OLD.CLIENT.REC<153>#CLIENT.REC<153> THEN      ; * JMK03; * JMK06
+            IF CLIENT.REC<153>#'' THEN   ; * JMK03; * JMK06
+               IF CLIENT.REC<171>='' THEN          ; * JMK06
+                  CLIENT.REC<171>='Y'    ; * JMK03
+               END                       ; * JMK06
+            END                          ; * JMK03
+*           IF OLD.CLIENT.REC<154>#CLIENT.REC<154> THEN      ; * JMK03; * JMK06
+            IF CLIENT.REC<154>#'' THEN   ; * JMK03; * JMK06
+               IF CLIENT.REC<171>='' THEN          ; * JMK06
+                  CLIENT.REC<171>='Y'    ; * JMK03
+               END                       ; * JMK06
+            END                          ; * JMK03
+*           IF OLD.CLIENT.REC<155>#CLIENT.REC<155> THEN      ; * JMK03; * JMK06
+            IF CLIENT.REC<155>#'' THEN   ; * JMK03; * JMK06
+               IF CLIENT.REC<171>='' THEN          ; * JMK06
+                  CLIENT.REC<171>='Y'    ; * JMK03
+               END                       ; * JMK06
+            END                          ; * JMK03
+         CASE ETYPE='T' AND DISPLAY.MODE=0         ; * JMK09
+            CLIENT.REC<179>=VOUT<1>      ; * JMK09
+            IF VOUT<1>='' THEN           ; * JMK37
+               CLIENT.REC<242>=''        ; * JMK37
+            END ELSE                     ; * JMK37
+               TRBRSN=CLIENT.REC<242>    ; * JMK37
+               HELP='Enter Troubleshooting Reason [X]=Exit'  ; * JMK37
+               CALL GEN.IN(0,22,TRBRSN,'',Q,1,50,'','',2,0,22,1,QI,HELP,0,23)    ; * JMK37
+               QI=OCONV(QI,'MCU')        ; * JMK37
+               BEGIN CASE                ; * JMK37
+                  CASE QI='' AND TRBRSN#''         ; * JMK37
+                     QI=TRBRSN           ; * JMK37
+                  CASE QI='X'            ; * JMK37
+                     STOP                ; * JMK37
+                  CASE QI=''             ; * JMK37
+                     CALL ELINE('You must enter a reason for troubleshooting to be turned on.')      ; * JMK37
+                     GO 23000            ; * JMK37
+               END CASE                  ; * JMK37
+               CLIENT.REC<242>=QI        ; * JMK37
+            END                          ; * JMK37
+         CASE ETYPE='C' AND DISPLAY.MODE=0         ; * JMK30
+            CLIENT.REC<222>=VOUT<1>      ; * JMK30
+            CLIENT.REC<223>=VOUT<2>      ; * JMK30
+            CLIENT.REC<224>=VOUT<3>      ; * JMK30
+         CASE ETYPE='P' AND DISPLAY.MODE=0         ; * NPR17
+            CLIENT.REC<257>=VOUT<1>      ; * NPR17
+            CLIENT.REC<258>=VOUT<2>      ; * NPR17
+            CLIENT.REC<259>=VOUT<3>      ; * NPR17
+         CASE ETYPE='V' AND DISPLAY.MODE=0         ; * NPR20
+            CLIENT.REC<260>=VOUT<1>      ; * NPR20
+      END CASE                           ; * JMK01
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):CLIENT.NUMBER.TEXT
+      CALL FB.1.1.DISPLAY(CLIENT.REC)
+      RETURN
+****************************************************************
+* Change client default settings
+****************************************************************
+24000:CALL FB.1.1.DEFAULTS.NEW(CLIENT.ID,CLIENT.REC,DISPLAY.MODE,TARIFF.REC)
+
+      CALL FB.1.1.DISPLAY(CLIENT.REC)    ; * NPR12
+
+      RETURN
+****************************************************************
+* Client comments
+****************************************************************
+*The following program updates field 48 only. The program was
+*cloned for use from prompt #10 in FB.1.1.ADMIN where it updates
+*field 271. The Cloned program is FB.1.1.NOTES.EDI
+25000:CALL FB.1.1.NOTES.NEW(CLIENT.REC,DISPLAY.MODE)
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):CLIENT.NUMBER.TEXT
+      CALL FB.1.1.DISPLAY(CLIENT.REC)
+      RETURN
+
+****************************************************************
+* Set up BOL fields to Auto populate from data supplied by client as well as which of these fields to verify
+****************************************************************
+26000:
+
+      CALL FB.1.1.BOL.PV(CLIENT.ID,CLIENT.REC,DISPLAY.MODE)
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):CLIENT.NUMBER.TEXT
+      CALL FB.1.1.DISPLAY(CLIENT.REC)
+      RETURN
+
+27000:
+*
+      AVIN='' ; AVOUT=''                 ; * RLM01
+      AVIN<1>=PROG.DESC                  ; * RLM01
+      AVIN<2>=PACK.NAME                  ; * RLM01
+      AVIN<4>=DISPLAY.MODE               ; * SWB01
+      AVIN<5>=CO.NAME                    ; * RLM01
+*DF      CALL FB.1.1.ADMIN(AVIN,AVOUT,CLIENT.ID,CLIENT.REC,DISPLAY.MODE,F.SLSMAN,F.BCTRL)     ; * RLM01
+      CALL FB.1.1.ADMIN(AVIN,AVOUT,CLIENT.ID,CLIENT.REC,DISPLAY.MODE,F.SLSMAN,F.BCTRL,F.FB.TABLES)   ; * RLM01
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)    ; * RLM01
+      CRT @(0,2):CLIENT.NUMBER.TEXT      ; * RLM01
+      CALL FB.1.1.DISPLAY(CLIENT.REC)    ; * RLM01
+      RETURN
+****************************************************************
+* GVL Parcel Flag
+****************************************************************
+28000:HELP='Enter GVL Parcel Flag. [N]=No [Y]=Yes [cr]=Accept'         ; * DRF19
+      CALL GEN.IN(75,17,CLIENT.REC<304>'L#1','',Q,0,1,'','',2,-1,17,0,QI,HELP,0,23)        ; * DRF19
+      QI=OCONV(QI,'MCU')                 ; * DRF19
+      BEGIN CASE                         ; * DRF19
+*****         CASE QI=''     ; * DRF19
+*****            Q=CLIENT.REC<304>     ; * DRF19
+         CASE QI='N' ! QI='Y'            ; * DRF19
+            Q=QI                         ; * DRF19
+         CASE 1                          ; * DRF19
+            GOTO 28000                   ; * DRF19
+      END CASE                           ; * DRF19
+      CLIENT.REC<304>=Q                  ; * DRF19
+      IF CLIENT.REC<304>='' THEN         ; * GRB01
+         CALL ELINE('Error: Must enter a GVL Parcel Flag.')  ; * GRB01
+         GOTO 28000                      ; * GRB01
+      END                                ; * GRB01
+      CRT @(75,17):CLIENT.REC<304>       ; * DRF19
+      RETURN                             ; * DRF19
+*
+****************************************************************
+* Check for changes and update file
+****************************************************************
+99000:
+      IF OLD.CLIENT.REC # CLIENT.REC AND NOT(DISPLAY.MODE) THEN        ; * JMK43
+         HELP='Options:  [Y]es [N]o'
+         LN='Client information changed. Update? -'
+         CALL GEN.IN(0,22,LN,'',Q,1,1,'','',2,-1,22,1,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='Y'
+               IF CLIENT.REC<151>='' AND CLIENT.REC<82> NE '' THEN     ; *NPR15
+                  CALL ELINE('Client was last processed on ':OCONV(CLIENT.REC<82>,"D2/"):'. Valid Process Day is REQUIRED')        ; *NPR15
+                  GO 200                 ; *NPR15
+               END                       ; * JMK12
+               IF CLIENT.REC<81>='S' OR CLIENT.REC<81>='D' OR CLIENT.REC<81>='H' THEN      ; * JMK12
+                  IF CLIENT.REC<92>#'00002' THEN   ; * JMK12
+                     CALL ELINE('Incorrect Company Code for Scott Traffic Bank Code')      ; * JMK12
+                     GO 200              ; * JMK12
+                  END                    ; * JMK12
+               END ELSE                  ; * SWB02
+                  IF CLIENT.REC<81> = '' THEN      ; * SWB02
+                     CALL ELINE('Bank Code is now mandatory and is on 24, page 1, item 1')           ; * SWB02
+                     GOTO 200            ; * SWB02
+                  END                    ; * SWB02
+               END                       ; * JMK12
+               IF CLIENT.REC<93>='N' THEN          ; * JMK05
+                  NVAL=DCOUNT(CLIENT.REC<84>,@VM)  ; * JMK05
+                  IF CLIENT.REC<85,NVAL>+0#0 THEN  ; * JMK05
+                     CALL ELINE('Logistics Fee is not "0"')  ; * JMK05
+                     GO 200              ; * JMK05
+                  END                    ; * JMK05
+                  IF CLIENT.REC<94>='Y' THEN       ; * JMK05
+                     CALL ELINE('Not a Logistics Client and Automated Misroute is still on')         ; * JMK05
+                     GO 200              ; * JMK05
+                  END                    ; * JMK05
+                  IF CLIENT.REC<139>='Y' THEN      ; * JMK05
+                     CALL ELINE('Not a Logistics Client and Misroute Letters are still on')          ; * JMK05
+                     GO 200              ; * JMK05
+                  END                    ; * JMK05
+                  IF CLIENT.REC<171>='Y' THEN      ; * JMK05
+                     CALL ELINE('Not a Logistics Client and Misroute Emails are still on')           ; * JMK05
+                     GO 200              ; * JMK05
+                  END                    ; * JMK05
+               END                       ; * JMK05
+               IF CLIENT.REC<93>='Y' THEN          ; * Logistics Client
+                  CALL FB.1.1.VERIFY.LOGISTICS(CLIENT.ID,CLIENT.REC,VIN,VOUT)
+                  IF VOUT<1> THEN
+                     CALL ELINE('Error: Cannot Update.')
+                     GOTO 200
+                  END
+                  IF CLIENT.REC<12>='N' AND CLIENT.REC<145>#'N' THEN
+                     CALL ELINE('Error: Divisions set to No and DivEmailPrint set to E, B, or P.')
+                     GOTO 200
+                  END
+                  IF CLIENT.REC<149>='' THEN
+                     CALL ELINE('If Logistics client, then must have a logistics start date. 24 page 2 item 2')
+                     GOTO 200
+                  END
+                  IF ADD.FLAG=1 THEN
+                     IF CLIENT.REC<125>='' THEN EMAIL.ATT=126 ELSE EMAIL.ATT=125
+                     LOCATE 'LOGAUDIT@AFSLOGISTICS.COM' IN OCONV(CLIENT.REC,'MCU')<EMAIL.ATT> SETTING POS ELSE
+                        CLIENT.REC<EMAIL.ATT,-1>='LogAudit@afs.net'
+                     END
+                  END
+
+               END
+               IF CLIENT.REC<114> = '' THEN        ; * SWB02
+                  CALL ELINE('Business Development is now mandatory and is on 27, item 1')           ; * SWB02
+                  GOTO 200               ; * SWB02
+               END                       ; * SWB02
+
+               IF CLIENT.REC<139>='Y' THEN
+                  IF CLIENT.REC<20>='N' THEN
+                     CALL ELINE('Error: Must set vendors to Yes under data entry if misroute letters.')
+                     GOTO 200
+                  END
+               END
+               IF CLIENT.REC<100,13>+0 > 0 THEN
+                  IF CLIENT.REC<123>='' OR CLIENT.REC<124>='' THEN
+                     CALL ELINE('Error: Fax name and number must be updated since fax copies is > 0.')
+                     GOTO 200
+                  END
+               END
+               IF CLIENT.ID[1,2]#'99' THEN
+*DF                  IF USER#'CWARD' THEN     ; * DRF11
+                  IF USER#'CWARD' AND USER#'LCOOK' THEN      ; * DRF11
+                     IF CLIENT.REC<73>='' THEN
+                        CALL ELINE('Error: Must have a Per Bill Rate.')
+                        GOTO 200
+                     END
+                     IF CLIENT.REC<122>='' THEN
+                        CALL ELINE('Error: Must have an EDI Per Bill Rate.')
+                        GOTO 200
+                     END
+
+                  END
+                  IF CLIENT.REC<304> = '' THEN     ; * GRB01
+                     CALL ELINE('Greenville Parcel Flag is now mandatory')       ; * GRB01
+                     GOTO 200            ; * GRB01
+                  END                    ; * GRB01
+               END
+               IF CLIENT.REC<125>#'' THEN
+                  IF CLIENT.REC<134>='' OR CLIENT.REC<135>='' THEN
+                     CALL ELINE('Error: Must enter Email body version and Email sort version under 24 Defaults.')
+                     GOTO 200
+                  END
+               END
+               IF CLIENT.ID[1,2]#'99' AND CLIENT.REC<16>#'Y' THEN
+                  CALL ELINE('Error: Weights must be set to Y in 19 Data Entry Options.')
+                  GOTO 200
+               END
+               IF CLIENT.REC<147>='' THEN
+                  CALL ELINE('Error: Must enter a Parent-Client ID under 17 Reporting Options.')
+                  GOTO 200
+               END
+               IF CLIENT.REC<116>='' THEN
+                  CALL ELINE('Error: Must set Excel Macro under 17 Reporting Options.')
+                  GOTO 200
+               END
+
+               IF CLIENT.REC<153>#'' THEN          ; * JMK03; * JMK06
+                  IF CLIENT.REC<171>='' THEN       ; * JMK06
+                     CLIENT.REC<171>='Y'           ; * JMK03
+                  END                    ; * JMK06
+               END                       ; * JMK03
+               IF CLIENT.REC<154>#'' THEN          ; * JMK03; * JMK06
+                  IF CLIENT.REC<171>='' THEN       ; * JMK06
+                     CLIENT.REC<171>='Y'           ; * JMK03
+                  END                    ; * JMK06
+               END                       ; * JMK03
+               IF CLIENT.REC<155>#'' THEN          ; * JMK03; * JMK06
+                  IF CLIENT.REC<171>='' THEN       ; * JMK06
+                     CLIENT.REC<171>='Y'           ; * JMK03
+                  END                    ; * JMK06
+               END                       ; * JMK03
+               IF CLIENT.REC<31>='' THEN           ; * JMK22
+                  CALL ELINE('Phone number is required.')    ; * JMK22
+                  GOTO 200               ; * JMK22
+               END                       ; * JMK22
+               IF CLIENT.REC<183>#'' THEN          ; * JMK10
+                  INDEX.ID=CLIENT.REC<183>:'*':CLIENT.REC<184>         ; * JMK10
+                  READ INDEX.REC FROM F.INDEX,INDEX.ID ELSE INDEX.REC=''         ; * JMK10
+                  LOCATE(CLIENT.ID,INDEX.REC,1;IPOS) ELSE    ; * JMK10
+                     INDEX.REC=INSERT(INDEX.REC,1,IPOS;CLIENT.ID)      ; * JMK10
+                     INDEX.REC=INSERT(INDEX.REC,2,IPOS;CLIENT.REC<2>)  ; * JMK10
+                     WRITE INDEX.REC ON F.INDEX,INDEX.ID     ; * JMK10
+                  END                    ; * JMK10
+               END                       ; * JMK10
+               IF CLIENT.REC<225>#'' AND OLD.CLIENT.REC<225>='' THEN
+                  OPEN 'EDI.BILLS.HIST,':CLIENT.ID TO F.EDI.BILLS.HIST ELSE
+                     EXECUTE 'CREATE-FILE DATA EDI.BILLS.HIST,':CLIENT.ID:' 1009,2'    ; * NKH01
+                  END
+               END
+               IF CLIENT.REC<254>#'' AND OLD.CLIENT.REC<254>='' THEN
+                  OPEN 'FB.BOL.CRX,':CLIENT.ID TO F.FB.BOL.CRX ELSE
+                     EXECUTE 'CREATE-FILE DATA FB.BOL.CRX,':CLIENT.ID:' 503,1'         ; * NKH01
+                  END
+                  OPEN 'FB.BOL.REFNO.XREF,':CLIENT.ID TO F.FB.BOL.REFNO.XREF ELSE
+                     EXECUTE 'CREATE-FILE DATA FB.BOL.REFNO.XREF,':CLIENT.ID:' 503,1'  ; * NKH01
+                  END
+               END
+*
+               IF CLIENT.REC<93> = "Y" AND ADD.FLAG THEN     ; * NPR10
+                  CLIENT.REC<70,10> = "Y"          ; * NPR10
+               END                       ; * NPR10
+
+*****               IF CLIENT.REC<240> = "" THEN CLIENT.REC<240> = "E"      ; * NPR09  GRB01
+*
+               IF CLIENT.REC<199>#OLD.CLIENT.REC<199> THEN
+                  NUM.OF.ITEMS=DCOUNT(CLIENT.REC<199>,@VM)
+                  NUM.OF.OLD.ITEMS=DCOUNT(OLD.CLIENT.REC<199>,@VM)
+                  IF CLIENT.REC<199,NUM.OF.ITEMS>+0#0 AND OLD.CLIENT.REC<199,NUM.OF.OLD.ITEMS>+0=0 THEN
+*DF                     TEXT='UPS Track # Fee just setup get IT for verification'
+*DF                     WRITE TEXT ON F.FB.TABLES,'NO-PROCESS*':CLIENT.ID
+                     EMAIL.OUT=''
+
+                     EMAIL.OUT<1,-1>='bfranklin@afs.net'     ; * RLM01
+                     EMAIL.OUT<1,-1>='DFriend@afs.net'
+                     EMAIL.OUT<1,-1>='nmeddaugh@afs.net'
+                     EMAIL.OUT<1,-1>='Helpdesk@afs.net'
+*****                     EMAIL.OUT<2,-1>='MButts@afs.net'
+                     EMAIL.OUT<2,-1>='MMcKay@afs.net'
+                     EMAIL.OUT<5,1>='UPS Track # Fee setup for ':CLIENT.ID
+                     READV USER.NAME FROM F.BCTRL, USER,13 ELSE USER.NAME = ""
+                     IF USER.NAME NE "" THEN USER.STRING = USER:" - ":USER.NAME ELSE USER.STRING = USER
+                     EMAIL.OUT<6>=USER.STRING:' setup a UPS Track # Fee of ':CLIENT.REC<199,NUM.OF.ITEMS>'R37'
+                     EMAIL.OUT<6,-1>=CLIENT.ID:' ':CLIENT.REC<2>
+                     EMAIL.OUT<7>=1      ; * Auto format (add carriage returns to end of text)
+                     VOUT=''
+                     CALL SENDMAIL(EMAIL.OUT,VOUT)
+                  END
+               END
+               IF CLIENT.REC<270> = "Y" AND CLIENT.REC<225> = '' THEN  ; * SWB01
+                  CALL ELINE('Electronic Billing Appproved. Must enter an EDI Start Date in the Admin Screen.')          ; * SWB01
+                  GOTO 200               ; * SWB01
+               END                       ; * SWB01
+               LEN.NAME=LEN(CLIENT.REC<2>)         ; * JMK51
+               IF CLIENT.REC<2>[LEN.NAME,1]='*' AND CLIENT.REC<2>[LEN.NAME-1,1]#'*' AND CLIENT.REC<250>='' THEN          ; * JMK51
+                  CALL ELINE('Client Name indicates Parcel Audit, but no Client Type has been set.')           ; * JMK51
+                  GOTO 200               ; * JMK51
+               END                       ; * JMK51
+               IF CLIENT.REC<302>='' AND CLIENT.REC<114>#'' THEN       ; * JMK58
+                  CLIENT.REC<302>=CLIENT.REC<114>  ; * JMK58
+               END                       ; * JMK58
+               QV.UPD=0                  ; * JMK58
+               IF OLD.CLIENT.REC<302>#CLIENT.REC<302> THEN QV.UPD=1    ; * JMK58
+               IF QV.UPD THEN            ; * JMK58
+*                 CALL UPD.QV.CLIENT.INFO          ; * JMK58
+                  EXECUTE "BBSEND REBECCA Account Owner for Client ":CLIENT.ID:" has been updated from ":OLD.CLIENT.REC<302>:" to ":CLIENT.REC<302>    ; * JMK58
+                  EXECUTE "BBSEND MIKE Account Owner for Client ":CLIENT.ID:" has been updated from ":OLD.CLIENT.REC<302>:" to ":CLIENT.REC<302>       ; * JMK58
+               END                       ; * JMK58
+               WRITE CLIENT.REC ON F.CLIENT,CLIENT.ID
+               IF CLIENT.ID[1,2]#'99' THEN         ; * DRF15
+                  SAGE.VIN=''            ; * DRF15
+                  SAGE.VIN<1>='NEW.SAGE.CLIENT'    ; * DRF15
+                  SAGE.VIN<2>=CLIENT.ID  ; * DRF15
+                  SAGE.VOUT=''           ; * DRF15
+                  CALL UPD.SAGE.CHANGE.REC(SAGE.VIN,SAGE.VOUT,F.SL)    ; * DRF15
+               END                       ; * DRF15
+*
+               REPORT.ID=CLIENT.ID       ; * JMK55
+               STD.ID='STD'              ; * JMK55
+               READ REPORT.REC FROM F.REPORT,REPORT.ID ELSE  ; * JMK55
+                  READ REPORT.REC FROM F.REPORT,STD.ID ELSE  ; * JMK55
+                     REPORT.REC=''       ; * JMK55
+                     REPORT.REC<1,1>=132           ; * JMK55
+                     REPORT.REC<1,2>=60  ; * JMK55
+                     REPORT.REC<1,3>=6   ; * JMK55
+                  END                    ; * JMK55
+               END                       ; * JMK55
+               RPT.X=DCOUNT(REPORT.REC,@AM)        ; * JMK55
+               FOR RPT.I=RPT.X TO 1 STEP -1        ; * JMK55
+                  IF REPORT.REC<RPT.I,1>='' THEN DEL REPORT.REC<RPT.I>           ; * JMK55
+               NEXT RPT.I                ; * JMK55
+               WRITE REPORT.REC ON F.REPORT,REPORT.ID        ; * JMK55
+
+99010:
+               IF CLIENT.ID[1,1] = "7" OR CLIENT.ID[1,1] = "8" OR CLIENT.ID[1,1] = "9" OR ADD.FLAG = "0" THEN  ; *NPR05
+                  UPDATE.TRANS.ACCTS=0   ; * JMK47
+                  IF CLIENT.REC<2>#OLD.CLIENT.REC<2> THEN UPDATE.TRANS.ACCTS=1   ; * JMK47
+                  IF CLIENT.REC<3>#OLD.CLIENT.REC<3> THEN UPDATE.TRANS.ACCTS=1   ; * JMK47
+                  IF CLIENT.REC<4>#OLD.CLIENT.REC<4> THEN UPDATE.TRANS.ACCTS=1   ; * JMK47
+                  IF CLIENT.REC<5>#OLD.CLIENT.REC<5> THEN UPDATE.TRANS.ACCTS=1   ; * JMK47
+                  IF CLIENT.REC<6>#OLD.CLIENT.REC<6> THEN UPDATE.TRANS.ACCTS=1   ; * JMK47
+                  IF CLIENT.REC<31>#OLD.CLIENT.REC<31> THEN UPDATE.TRANS.ACCTS=1           ; * JMK47
+                  IF CLIENT.REC<45>#OLD.CLIENT.REC<45> THEN UPDATE.TRANS.ACCTS=1           ; * JMK47
+                  IF CLIENT.REC<44>#OLD.CLIENT.REC<44> THEN UPDATE.TRANS.ACCTS=1           ; * JMK47
+                  IF UPDATE.TRANS.ACCTS THEN       ; * JMK47
+                     IVIN=''             ; * JMK47
+                     IVIN<1> = "U"       ; * JMK47
+                     IVIN<2> = CLIENT.ID           ; * JMK47
+                     READV USER.NAME FROM F.BCTRL, USER,13 ELSE USER.NAME = ""   ; * JMK47
+                     IVIN<3> = USER.NAME           ; * JMK47
+                     IVIN<4> = ADD.FLAG  ; * JMK47
+                     IVOUT = ""          ; * JMK47
+                     CALL BUILD.GLOBAL.CUST.NOS(IVIN,IVOUT,F.CLIENT,CLIENT.REC)  ; * JMK47
+                     BF.ERR = IVOUT<2>   ; * JMK47
+                     IF BF.ERR NE "" THEN          ; * JMK47
+                        CALL ELINE(BF.ERR)         ; * JMK47
+                     END                 ; * JMK47
+                  END
+                  NULL                   ; *NPR05
+               END ELSE                  ; *NPR05
+                  HELP='Options:  [Y]es [N]o'      ; *NPR05
+                  LN='Create Customers in Brokerage Systems (AF,BR & INT)? -'    ; *NPR05
+                  CALL GEN.IN(0,22,LN,'',Q,1,1,'','',2,-1,22,1,QI,HELP,0,23)     ; *NPR05
+                  QI=OCONV(QI,'MCU')     ; *NPR05
+                  IF QI = "Y" THEN       ; *NPR05
+                     IVIN = "C" ; IVIN<2> = CLIENT.ID        ; *NPR05
+                     READV USER.NAME FROM F.BCTRL, USER,13 ELSE USER.NAME = ""   ; *NPR05
+                     IVIN<3> = USER.NAME ; IVIN<4> = ADD.FLAG          ; *NPR05                                                  ;*NPR05
+                     IVOUT = ""          ; *NPR05
+                     CALL BUILD.GLOBAL.CUST.NOS(IVIN,IVOUT,F.CLIENT,CLIENT.REC)  ; *NPR05
+                     BF.ERR = IVOUT<2>   ; *NPR05
+                     IF BF.ERR NE "" THEN          ; *NPR05
+                        CALL ELINE(BF.ERR)         ; *NPR05
+                     END                 ; *NPR05
+                  END ELSE               ; *NPR05
+                     OK.FLAG = "N"       ; *NPR05
+                     GOSUB CHECK.BROKERAGE         ; *NPR05
+                     IF OK.FLAG = "N" THEN         ; *NPR05
+                        CALL ELINE("Customers need to exist in Brokerage Systems (AF,BR & INT)")     ; *NPR05
+                        GOTO 99010       ; *NPR05
+                     END                 ; *NPR05
+                  END                    ; *NPR05
+               END                       ; *NPR05
+*
+               SQLVIN=''                 ; * JMK35
+               SQLVIN<1>=USER            ; * JMK35
+               SQLVIN<2>=CLIENT.ID       ; * JMK35
+               SQLVOUT=''                ; * JMK35
+               CALL UPD.SQL.CLIENT.SUB(SQLVIN,SQLVOUT,CLIENT.REC)      ; * JMK35
+               CALL UPD.SQL.QCLIENT.SUB(SQLVIN,SQLVOUT,CLIENT.REC,F.SLSMAN)      ; * JMK35
+
+               REFRESH.DIV=0             ; * JMK53
+               IF CLIENT.REC<12>#OLD.CLIENT.REC<12> THEN REFRESH.DIV=1           ; * JMK53
+               IF CLIENT.REC<30>#OLD.CLIENT.REC<30> THEN REFRESH.DIV=1           ; * JMK53
+               IF REFRESH.DIV THEN       ; * JMK53
+                  OPEN '','DIVISION.CODES,':CLIENT.ID TO F.DIV THEN    ; * JMK53
+                     STMT='SSELECT DIVISION.CODES,':CLIENT.ID          ; * JMK53
+                     EXECUTE STMT RTNLIST DIV.LIST CAPTURING RESULTS   ; * JMK53
+                     NUM.DIVS=@SELECTED  ; * JMK53
+                     DIV.EOF=0           ; * JMK53
+                     DIV.CNT=0           ; * JMK53
+                     LOOP                ; * JMK53
+                        READNEXT DIV.ID FROM DIV.LIST ELSE DIV.EOF=1   ; * JMK53
+                     UNTIL DIV.EOF DO    ; * JMK53
+                        DIV.CNT+=1       ; * JMK53
+                        READ DIV.REC FROM F.DIV,DIV.ID THEN  ; * JMK53
+* DEFINE FIELDS TO UPDATE FROM CLIENT.REC HERE
+                           SQLVIN=''     ; * JMK53
+                           SQLVIN<1>=USER          ; * JMK53
+                           SQLVIN<2>=CLIENT.ID     ; * JMK53
+                           SQLVIN<3>=DIV.ID        ; * JMK53
+                           SQLVOUT=''    ; * JMK53
+                           CALL UPD.SQL.DIV.SUB(SQLVIN,SQLVOUT,CLIENT.REC,DIV.REC)         ; * JMK53
+                        END              ; * JMK53
+                     REPEAT              ; * JMK53
+                  END                    ; * JMK53
+               END                       ; * JMK53
+*
+* NPR19 Start changes - Moved code here so the email addresses etc. can be used in all notification email below.
+*
+               SECOND.SALESMAN.ID=CLIENT.REC<115>
+               SLSMAN.NAME = ""
+               SECOND.SALESMAN.EMAIL = ""
+               ACCT.MGR = ""
+               IF SECOND.SALESMAN.ID="" THEN
+                  SECOND.SALESMAN.NUMBER.NAME='Not on file'
+               END ELSE
+                  READ SALESMAN.REC FROM F.SLSMAN,SECOND.SALESMAN.ID THEN
+                     SECOND.SALESMAN.NUMBER.NAME=SECOND.SALESMAN.ID:' ':SALESMAN.REC<1>'L#25'
+                     SECOND.SALESMAN.EMAIL = SALESMAN.REC<8>
+*                    ACCT.MGR = SALESMAN.REC<11>   ; * RLM01
+                  END ELSE
+                     SECOND.SALESMAN.NUMBER.NAME=SECOND.SALESMAN.ID:' Name Not Found'
+                  END
+               END
+
+               ACCT.MGR = CLIENT.REC<264>          ; * RLM01
+               ACCT.MGR.NAME = ""
+               ACCT.MGR.EMAIL = ""
+               IF ACCT.MGR # "" THEN
+                  READ ACCT.MGR.REC FROM F.SLSMAN,ACCT.MGR THEN
+                     ACCT.MGR.NAME = ACCT.MGR.REC<1>'L#25'
+                     ACCT.MGR.EMAIL = ACCT.MGR.REC<8>'L#25'
+                  END
+               END
+*
+* NPR19 End changes.
+*
+               INVOICE.UPD=0             ; * JMK24
+               IF OLD.CLIENT.REC<44>#CLIENT.REC<44> THEN INVOICE.UPD=1           ; * JMK24
+               IF OLD.CLIENT.REC<30>#CLIENT.REC<30> THEN     ; * NPR01
+                  IF CLIENT.REC<30> = "I" AND CLIENT.ID[1,1] NE "9" THEN GOSUB INACTIVE.EMAIL        ; * NPR01
+                  IF CLIENT.REC<30> = "I" AND CLIENT.ID[1,1] NE "9" AND CLIENT.REC<270> = "Y" THEN
+                     EMAIL.OUT=''
+*df                     EMAIL.OUT<1,-1>='JMHill@afs.net'    ; * DRF01
+*DF                     EMAIL.OUT<1,-1>='JNewman@afs.net'      ; * DRF01 ; * DRF09
+                     EMAIL.OUT<1,-1>='EDITeam@afsvista.net'  ; * DRF09
+*****                     EMAIL.OUT<2,-1>='MButts@afs.net'
+                     EMAIL.OUT<2,-1>=ACCT.MGR.EMAIL
+                     EMAIL.OUT<5,1>='Client was changed to Inactive for ':CLIENT.ID
+                     EMAIL.OUT<6>="Remove all carriers for EDI 210's "
+                     EMAIL.OUT<6,-1>=CLIENT.ID:' ':CLIENT.REC<2>
+                     EMAIL.OUT<7>=1      ; * Auto format (add carriage returns to end of text)
+                     VOUT=''
+                     CALL SENDMAIL(EMAIL.OUT,VOUT)
+                  END
+               END                       ; * NPR01
+               IF OLD.CLIENT.REC<232>#CLIENT.REC<232> THEN   ; * DRF01
+                  IF CLIENT.ID[1,1] NE "9" AND (CLIENT.REC<232>='' OR OLD.CLIENT.REC<232>='') THEN   ; * DRF01
+                     EMAIL.OUT=''        ; * DRF01
+*DF                     EMAIL.OUT<1,-1>='DFriend@afs.net'    ; * DRF01
+*DF                     EMAIL.OUT<1,-1>='JNewman@afs.net'       ; * DRF01 ; * DRF09
+                     EMAIL.OUT<1,-1>='EDITeam@afsvista.net'  ; * DRF09
+                     EMAIL.OUT<1,-1>='NRath@afs.net'         ; * DRF01
+*****                     EMAIL.OUT<2,-1>='MButts@afs.net'        ; * DRF01
+                     EMAIL.OUT<2,-1>=ACCT.MGR.EMAIL          ; * DRF01
+                     IF OLD.CLIENT.REC<232>='' THEN          ; * DRF01
+                        EMAIL.OUT<5,1>='Client has a ending date of ':OCONV(CLIENT.REC<232>,'D2/')   ; * DRF01
+                        EMAIL.OUT<6>="Remove all carriers for EDI "    ; * DRF01
+                     END ELSE            ; * DRF01
+                        EMAIL.OUT<5,1>='Client ending date has been removed'     ; * DRF01
+                        EMAIL.OUT<6>="Do Not Remove all carriers for EDI "       ; * DRF01
+                     END                 ; * DRF01
+                     EMAIL.OUT<6,-1>=CLIENT.ID:' ':CLIENT.REC<2>       ; * DRF01
+                     EMAIL.OUT<7>=1      ; * Auto format (add carriage returns to end of text)     ; * DRF01
+                     VOUT=''             ; * DRF01
+                     CALL SENDMAIL(EMAIL.OUT,VOUT)           ; * DRF01
+                  END                    ; * DRF01
+               END                       ; * DRF01
+               IF CLIENT.REC<270>='Y' AND OLD.CLIENT.REC<270>#'Y' THEN
+                  EMAIL.OUT=''
+*df                  EMAIL.OUT<1,-1>='JMHill@afs.net'     ; * DRF01
+*DF                  EMAIL.OUT<1,-1>='JNewman@afs.net'        ; * DRF01 ; * DRF09
+                  EMAIL.OUT<1,-1>='EDITeam@afsvista.net'     ; * DRF09
+*****                  EMAIL.OUT<2,-1>='MButts@afs.net'
+                  EMAIL.OUT<2,-1>='SSmith@afs.net'
+                  EMAIL.OUT<2,-1>=ACCT.MGR.EMAIL
+                  EMAIL.OUT<5,1>='Electron Billing Flag Marked to Y for ':CLIENT.ID
+                  EMAIL.OUT<6>="Setup all carriers for EDI 210's "
+                  EMAIL.OUT<6,-1>=CLIENT.ID:' ':CLIENT.REC<2>
+                  EMAIL.OUT<7>=1         ; * Auto format (add carriage returns to end of text)
+                  VOUT=''
+                  CALL SENDMAIL(EMAIL.OUT,VOUT)
+               END
+               IF CLIENT.REC<270>='N' AND OLD.CLIENT.REC<270>='Y' THEN
+                  EMAIL.OUT=''
+*df                  EMAIL.OUT<1,-1>='JMHill@afs.net'     ; * DRF01
+*DF                  EMAIL.OUT<1,-1>='JNewman@afs.net'       ; * DRF01 ; * DRF09
+                  EMAIL.OUT<1,-1>='EDITeam@afsvista.net'     ; * DRF09
+*****                  EMAIL.OUT<2,-1>='MButts@afs.net'
+                  EMAIL.OUT<2,-1>='SSmith@afs.net'
+                  EMAIL.OUT<2,-1>=ACCT.MGR.EMAIL
+                  EMAIL.OUT<5,1>='Electron Billing Flag Changed to N for ':CLIENT.ID
+                  EMAIL.OUT<6>="Remove all carriers for EDI 210's "
+                  EMAIL.OUT<6,-1>=CLIENT.ID:' ':CLIENT.REC<2>
+                  EMAIL.OUT<7>=1         ; * Auto format (add carriage returns to end of text)
+                  VOUT=''
+                  CALL SENDMAIL(EMAIL.OUT,VOUT)
+               END
+               CONTACT.UPD=0             ; * JMK24
+               IF OLD.CLIENT.REC<46>#CLIENT.REC<46> THEN CONTACT.UPD=1           ; * JMK24
+               IF CONTACT.UPD OR INVOICE.UPD THEN  ; * JMK24
+                  OPEN '','CL.CLIENTS' TO F.CL.CLIENT ELSE CALL OPEN.ABORT("CL.CLIENTS",PROG.NAME)   ; * JMK24
+                  READU CL.CLIENT.REC FROM F.CL.CLIENT,CLIENT.ID THEN  ; * JMK24
+                     CL.EMAIL.BODY=''    ; * JMK24
+                     OLD.CL.CLIENT.REC=CL.CLIENT.REC         ; * JMK24
+                     IF CONTACT.UPD THEN           ; * JMK24
+                        CL.EMAIL.BODY<1,-1>='Old Contact:':OLD.CLIENT.REC<46>    ; * JMK24
+                        CL.EMAIL.BODY<1,-1>='New Contact:':CLIENT.REC<46>        ; * JMK24
+                        IF CL.CLIENT.REC<46>=OLD.CLIENT.REC<46> THEN   ; * JMK24
+                           CL.CLIENT.REC<46>=CLIENT.REC<46>  ; * JMK24
+                           CL.EMAIL.BODY<1,-1>='Claims Client updated with new contact.'   ; * JMK24
+                        END ELSE         ; * JMK24
+                           CL.EMAIL.BODY<1,-1>='Claims Client had different contact. No Update. FYI.'          ; * JMK24
+                        END              ; * JMK24
+                     END                 ; * JMK24
+                     IF INVOICE.UPD THEN           ; * JMK24
+                        CL.EMAIL.BODY<1,-1>='Old Invoice Attn:':OLD.CLIENT.REC<44>         ; * JMK24
+                        CL.EMAIL.BODY<1,-1>='New Invoice Attn:':CLIENT.REC<44>   ; * JMK24
+                        IF CL.CLIENT.REC<44>=OLD.CLIENT.REC<44> THEN   ; * JMK24
+                           CL.CLIENT.REC<44>=CLIENT.REC<44>  ; * JMK24
+                           CL.EMAIL.BODY<1,-1>='Claims Client updated with new invoice attention contact.'     ; * JMK24
+                        END ELSE         ; * JMK24
+                           CL.EMAIL.BODY<1,-1>='Claims Client had different invoice attention contact. No Update. FYI.'  ; * JMK24
+                        END              ; * JMK24
+                     END                 ; * JMK24
+                     IF CL.CLIENT.REC#OLD.CL.CLIENT.REC THEN           ; * JMK24
+                        WRITE CL.CLIENT.REC ON F.CL.CLIENT,CLIENT.ID   ; * JMK24
+                        IF CLIENT.ID[1,2]#'99' THEN          ; * DRF15
+                           SAGE.VIN=''   ; * DRF15
+                           SAGE.VIN<1>='NEW.SAGE.CLIENT'     ; * DRF15
+                           SAGE.VIN<2>=CLIENT.ID   ; * DRF15
+                           SAGE.VOUT=''  ; * DRF15
+                           CALL UPD.SAGE.CHANGE.REC(SAGE.VIN,SAGE.VOUT,F.SL)     ; * DRF15
+                        END              ; * DRF15
+                     END                 ; * JMK24
+                     CL.EMAIL.VIN=''     ; * JMK24
+                     CL.EMAIL.VIN<1>='DCurtis@afs.net'       ; * JMK24
+                     CL.EMAIL.VIN<3>='nmeddaugh@afs.net'         ; * JMK24
+                     CL.EMAIL.VIN<4>='AFS_FB.1.1@afs.net'    ; * JMK24
+                     CL.EMAIL.VIN<5>=USER:' made a change to the contact or invoice attn for client ':CLIENT.ID:' ':CLIENT.REC<2>  ; * JMK24
+                     CL.EMAIL.VIN<6>=CL.EMAIL.BODY           ; * JMK24
+                     CL.EMAIL.VIN<7>=1   ; * Auto format (add carriage returns to end of text) ; * JMK24
+                     CL.EMAIL.VOUT=''    ; * JMK24
+                     CALL SENDMAIL(CL.EMAIL.VIN,CL.EMAIL.VOUT)         ; * JMK24
+                  END                    ; * JMK24
+                  RELEASE F.CL.CLIENT,CLIENT.ID    ; * JMK24
+               END                       ; * JMK24
+               IF OLD.CLIENT.REC<92>#CLIENT.REC<92> THEN     ; * NPR02
+                  OLD.CO = OLD.CLIENT.REC<92>      ; * NPR02
+                  NEW.CO = CLIENT.REC<92>          ; * NPR02
+
+                  IF OLD.CLIENT.REC NE "" THEN GOSUB COMPANY.CHANGE.EMAIL        ; * NPR02  ;*NPR15
+               END                       ; * NPR02
+               IF OLD.CLIENT.REC<81>#CLIENT.REC<81> THEN     ; * NPR06
+                  CHANGED.TO.CANADIAN = 0          ; * NPR19
+                  OLD.BANK.CODE = OLD.CLIENT.REC<81>         ; * NPR06
+                  NEW.BANK.CODE = CLIENT.REC<81>   ; * NPR06
+                  IF OLD.BANK.CODE = "F" AND NEW.BANK.CODE = "V" THEN  ; * NPR06
+                     GOSUB BANK.CHANGE.EMAIL       ; * NPR06
+                  END                    ; * NPR06
+
+                  IF NEW.BANK.CODE = "C" THEN      ; * NPR19
+                     IF OLD.BANK.CODE = "C" THEN   ; * NPR19
+                        NULL             ; * NPR19
+                     END ELSE            ; * NPR19
+                        CHANGED.TO.CANADIAN = 1    ; * NPR19
+                        GOSUB BANK.CHANGE.EMAIL    ; * NPR19
+                     END                 ; * NPR19
+                  END                    ; * NPR19
+               END                       ; * NPR06
+
+               IF OLD.CLIENT.REC<2> NE CLIENT.REC<2> THEN    ; * NPR13
+                  IF OLD.CLIENT.REC<2> = "" OR CLIENT.ID[1,1] = "9" THEN         ; * NPR13
+                     NULL                ; * NPR13
+                  END ELSE               ; * NPR13
+                     GOSUB NAME.CHANGE.EMAIL       ; * NPR13
+                  END                    ; * NPR13
+               END                       ; * NPR13
+
+               IF OLD.CLIENT.REC<93> NE CLIENT.REC<93> THEN  ; * NPR18
+                  IF CLIENT.ID[1,1] = "9" THEN     ; * NPR18
+                     NULL                ; * NPR18
+                  END ELSE               ; * NPR18
+                     GOSUB LOGISTICS.CHANGE.EMAIL  ; * NPR18
+                  END                    ; * NPR18
+               END                       ; * NPR18
+
+               IF CLIENT.ID[1,2]='99' AND CLIENT.REC<12>#'Y' THEN
+                  OPEN '','DIVISION.CODES,':CLIENT.ID TO F.DIV.CODE ELSE
+                     CALL ELINE('Unable to open division file')
+                     GOTO SKIP.DIV
+                  END
+                  READ DIV.REC FROM F.DIV.CODE,'00001' ELSE
+                     DIV.REC=''
+                     DIV.REC<1>=CLIENT.REC<6>
+                     DIV.REC<16>=CLIENT.REC<4>
+                     DIV.REC<17>=CLIENT.REC<5>
+                     WRITE DIV.REC ON F.DIV.CODE,'00001'
+                  END
+               END
+SKIP.DIV:      ***
+               ADJUST.CLIENT.ID=CLIENT.ID:'*':DATE():'*':TIME():'*':USER
+               WRITE CLIENT.REC ON F.ADJUST.CLIENT,ADJUST.CLIENT.ID
+               IF CLIENT.REC<147>#OLD.CLIENT.REC<147> THEN   ; * JMK07
+                  PARENT.ID=OLD.CLIENT.REC<147>    ; * JMK07
+                  IF PARENT.ID#'' THEN   ; * JMK07
+                     READU PARENT.REC FROM F.CLIENT,PARENT.ID THEN     ; * JMK07
+                        PARENT.ORG=PARENT.REC      ; * JMK07
+                        LOCATE(CLIENT.ID,PARENT.REC,175;CPOS) THEN     ; * JMK07
+                           PARENT.REC=DELETE(PARENT.REC,175,CPOS)      ; * JMK07
+                        END              ; * JMK07
+                        IF PARENT.REC#PARENT.ORG THEN        ; * JMK07
+                           WRITE PARENT.REC ON F.CLIENT,PARENT.ID      ; * JMK07
+                        END              ; * JMK07
+                     END                 ; * JMK07
+                     RELEASE F.CLIENT,PARENT.ID    ; * JMK07
+                  END                    ; * JMK07
+               END                       ; * JMK07
+               IF CLIENT.REC<147>#CLIENT.ID THEN   ; * JMK07
+                  PARENT.ID=CLIENT.REC<147>        ; * JMK07
+                  READU PARENT.REC FROM F.CLIENT,PARENT.ID THEN        ; * JMK07
+                     PARENT.ORG=PARENT.REC         ; * JMK07
+                     LOCATE(CLIENT.ID,PARENT.REC,175;CPOS;'AR') ELSE   ; * JMK07
+                        PARENT.REC=INSERT(PARENT.REC,175,CPOS;CLIENT.ID)         ; * JMK07
+                     END                 ; * JMK07
+                     IF PARENT.REC#PARENT.ORG THEN           ; * JMK07
+                        WRITE PARENT.REC ON F.CLIENT,PARENT.ID         ; * JMK07
+                     END                 ; * JMK07
+                  END                    ; * JMK07
+                  RELEASE F.CLIENT,PARENT.ID       ; * JMK07
+               END                       ; * JMK07
+               CALL SOUNDEX.EDIT(OLD.CLIENT.REC<2>,CLIENT.REC<2>,CLIENT.ID,'SDX.CLIENTS,NAME')
+               NVAL=DCOUNT(OLD.CLIENT.REC<226>,@VM)          ; * JMK32
+               FOR VAL=1 TO NVAL         ; * JMK32
+                  CALL SOUNDEX.EDIT(OLD.CLIENT.REC<226,VAL>,'',CLIENT.ID,'SDX.CLIENTS,NAME')         ; * JMK32
+               NEXT VAL                  ; * JMK32
+               NVAL=DCOUNT(CLIENT.REC<226>,@VM)    ; * JMK32
+               FOR VAL=1 TO NVAL         ; * JMK32
+                  CALL SOUNDEX.EDIT('',CLIENT.REC<226,VAL>,CLIENT.ID,'SDX.CLIENTS,NAME')   ; * JMK32
+               NEXT VAL                  ; * JMK32
+
+* Find out if any changes/deletions/additions were made to the charges and charge pages, and if so email the changes
+* The charge attribute list below must be the same as in FB.1.1.CHARGES.NEW.
+
+               NUM.CHARGES=DCOUNT(CHARGE.LIST,@VM)
+               NUM.OLD.DATES=DCOUNT(OLD.CLIENT.REC<84>,@VM)
+               NUM.NEW.DATES=DCOUNT(CLIENT.REC<84>,@VM)
+               CHARGE.CHANGES=''         ; * Values on existing charge pages that changed
+               CHARGE.DELETIONS=''       ; * Charge pages that were deleted
+               CHARGE.ADDITIONS=''       ; * Charge pages that were created
+               FSC.CHANGES=''            ; * FSC Flag was changed - JCW02
+               CC=0 ; CD=0 ; CA=0        ; * Counters
+               LOG.FSC.WARN=0            ; * JMK28
+
+* Changes/Deletions
+               FOR X=1 TO NUM.OLD.DATES
+                  LOCATE OLD.CLIENT.REC<84,X> IN CLIENT.REC<84> BY 'AR' SETTING DATE.POS THEN
+* The old effective date was found in new client rec
+                     FOR Y=1 TO NUM.CHARGES
+                        ATTRIBUTE=CHARGE.LIST<1,Y>
+*** In attributes 208 thru 219, if the new value is composed entirely
+*** of sub-value markers, do not add to the change array
+                        IF CLIENT.REC<ATTRIBUTE,DATE.POS> NE OLD.CLIENT.REC<ATTRIBUTE,X> THEN        ; * JCW03
+                           ALL.SVM = 0   ; * JCW03
+                           IF ATTRIBUTE >= 208 AND ATTRIBUTE <= 219 THEN GOSUB CHECK.VALUE           ; * JCW03
+                           IF NOT(ALL.SVM) THEN    ; * JCW03
+                              CC+=1
+                              CHARGE.CHANGES<1,CC>=OLD.CLIENT.REC<84,X>
+                              GOTO CC1
+                           END           ; * JCW03
+                        END              ; * JCW03
+                     NEXT Y
+CC1:                 FOR Y=1 TO NUM.CHARGES
+                        ATTRIBUTE=CHARGE.LIST<1,Y>
+*** In attributes 208 thru 219, if the new value is composed entirely
+*** of sub-value markers, do not add to the change array
+                        ALL.SVM = 0      ; * JCW03
+                        IF CLIENT.REC<ATTRIBUTE,DATE.POS> NE OLD.CLIENT.REC<ATTRIBUTE,X> THEN        ; * JCW03
+                           IF ATTRIBUTE >= 208 AND ATTRIBUTE <= 219 THEN GOSUB CHECK.VALUE           ; * JCW03
+                        END              ; * JCW03
+*                       IF CLIENT.REC<ATTRIBUTE,DATE.POS> NE OLD.CLIENT.REC<ATTRIBUTE,X> THEN                   ; * JCW03
+                        IF CLIENT.REC<ATTRIBUTE,DATE.POS> NE OLD.CLIENT.REC<ATTRIBUTE,X> AND NOT(ALL.SVM) THEN           ; * JCW03
+                           CHARGE.CHANGES<2,CC,-1>=ATTRIBUTE
+*                          IF ATTRIBUTE=133 THEN ; * JMK27
+                           IF ATTRIBUTE=133 OR (ATTRIBUTE>=208 AND ATTRIBUTE<=219) THEN    ; * JMK27
+                              IF CHANGE(OLD.CLIENT.REC<ATTRIBUTE,X>,@SVM,CHAR(1))='' THEN
+                                 CHARGE.CHANGES<3,CC,-1>=PLACE.HOLDER
+                              END ELSE
+                                 CHARGE.CHANGES<3,CC,-1>=CHANGE(OLD.CLIENT.REC<ATTRIBUTE,X>,@SVM,CHAR(1))
+                              END
+                              IF CHANGE(CLIENT.REC<ATTRIBUTE,DATE.POS>,@SVM,CHAR(1))='' THEN
+                                 CHARGE.CHANGES<4,CC,-1>=PLACE.HOLDER
+                              END ELSE
+                                 CHARGE.CHANGES<4,CC,-1>=CHANGE(CLIENT.REC<ATTRIBUTE,DATE.POS>,@SVM,CHAR(1))
+                              END
+                           END ELSE
+                              IF OLD.CLIENT.REC<ATTRIBUTE,X>='' THEN
+                                 CHARGE.CHANGES<3,CC,-1>=PLACE.HOLDER
+                              END ELSE
+                                 CHARGE.CHANGES<3,CC,-1>=OLD.CLIENT.REC<ATTRIBUTE,X>
+                              END
+                              IF CLIENT.REC<ATTRIBUTE,DATE.POS>='' THEN
+                                 CHARGE.CHANGES<4,CC,-1>=PLACE.HOLDER
+                              END ELSE
+                                 CHARGE.CHANGES<4,CC,-1>=CLIENT.REC<ATTRIBUTE,DATE.POS>
+                              END
+                              IF ATTRIBUTE=111 THEN          ; * JMK28
+                                 IF OLD.CLIENT.REC<ATTRIBUTE,DATE.POS>='Y' AND CLIENT.REC<ATTRIBUTE,DATE.POS>='N' THEN   ; * JMK28
+                                    LOG.FSC.WARN=1           ; * JMK28
+                                 END     ; * JMK28
+                              END        ; * JMK28
+                           END
+                        END
+                     NEXT Y
+                  END ELSE
+* The effective date was not found in new client rec; therefore, it was deleted
+                     CD+=1
+                     CHARGE.DELETIONS<1,CD>=OLD.CLIENT.REC<84,X>
+                     FOR Y=1 TO NUM.CHARGES
+                        ATTRIBUTE=CHARGE.LIST<1,Y>
+                        CHARGE.DELETIONS<2,CD,-1>=ATTRIBUTE
+*                       IF ATTRIBUTE=133 THEN ; * JMK27
+                        IF ATTRIBUTE=133 OR (ATTRIBUTE>=208 AND ATTRIBUTE<=219) THEN       ; * JMK27
+                           IF CHANGE(OLD.CLIENT.REC<ATTRIBUTE,X>,@SVM,CHAR(1))='' THEN
+                              CHARGE.DELETIONS<3,CD,-1>=PLACE.HOLDER
+                           END ELSE
+                              CHARGE.DELETIONS<3,CD,-1>=CHANGE(OLD.CLIENT.REC<ATTRIBUTE,X>,@SVM,CHAR(1))
+                           END
+                           CHARGE.DELETIONS<4,CD,-1>='<DELETED>':CHAR(1):'<DELETED>':CHAR(1):'<DELETED>'
+                        END ELSE
+                           IF OLD.CLIENT.REC<ATTRIBUTE,X>='' THEN
+                              CHARGE.DELETIONS<3,CD,-1>=PLACE.HOLDER
+                           END ELSE
+                              CHARGE.DELETIONS<3,CD,-1>=OLD.CLIENT.REC<ATTRIBUTE,X>
+                           END
+                           CHARGE.DELETIONS<4,CD,-1>='<DELETED>'
+                        END
+                     NEXT Y
+                  END                    ; * LOCATE OLD.CLIENT.REC<84,X> IN CLIENT.REC<84> BY 'AR' SETTING DATE.POS THEN
+               NEXT X
+
+* Additions
+               FOR X=1 TO NUM.NEW.DATES
+                  LOCATE CLIENT.REC<84,X> IN OLD.CLIENT.REC<84> BY 'AR' SETTING DATE.POS ELSE
+                     CA+=1
+                     CHARGE.ADDITIONS<1,CA>=CLIENT.REC<84,X>
+                     FOR Y=1 TO NUM.CHARGES
+                        ATTRIBUTE=CHARGE.LIST<1,Y>
+                        IF X=1 THEN      ; * First page => compare to null or zero
+                           BEGIN CASE
+                              CASE ATTRIBUTE=131 OR ATTRIBUTE=268
+                                 IF CLIENT.REC<ATTRIBUTE,X> NE '' THEN
+                                    CHARGE.ADDITIONS<2,CA,-1>=ATTRIBUTE
+                                    CHARGE.ADDITIONS<3,CA,-1>=PLACE.HOLDER
+                                    CHARGE.ADDITIONS<4,CA,-1>=CLIENT.REC<ATTRIBUTE,X>
+                                 END
+*                             CASE ATTRIBUTE=133 ; * JMK27
+                              CASE ATTRIBUTE=133 OR (ATTRIBUTE>=208 AND ATTRIBUTE<=219)    ; * JMK27
+                                 IF CHANGE(CLIENT.REC<ATTRIBUTE,X>,@SVM,'') NE '' THEN
+                                    CHARGE.ADDITIONS<2,CA,-1>=ATTRIBUTE
+                                    CHARGE.ADDITIONS<3,CA,-1>=PLACE.HOLDER:CHAR(1):PLACE.HOLDER:CHAR(1):PLACE.HOLDER
+                                    CHARGE.ADDITIONS<4,CA,-1>=CHANGE(CLIENT.REC<ATTRIBUTE,X>,@SVM,CHAR(1))
+                                 END
+                              CASE 1
+                                 IF CLIENT.REC<ATTRIBUTE,X> NE '0' THEN
+                                    CHARGE.ADDITIONS<2,CA,-1>=ATTRIBUTE
+                                    CHARGE.ADDITIONS<3,CA,-1>='0'
+                                    CHARGE.ADDITIONS<4,CA,-1>=CLIENT.REC<ATTRIBUTE,X>
+                                 END
+                           END CASE
+                        END ELSE         ; * Not first page => compare to previous value
+                           IF CLIENT.REC<ATTRIBUTE,X> NE CLIENT.REC<ATTRIBUTE,X-1> THEN
+                              CHARGE.ADDITIONS<2,CA,-1>=ATTRIBUTE
+*                             IF ATTRIBUTE=133 THEN ; * JMK27
+                              IF ATTRIBUTE=133 OR (ATTRIBUTE>=208 AND ATTRIBUTE<=219) THEN           ; * JMK27
+                                 IF CHANGE(CLIENT.REC<ATTRIBUTE,X-1>,@SVM,CHAR(1))='' THEN
+                                    CHARGE.ADDITIONS<3,CA,-1>=PLACE.HOLDER
+                                 END ELSE
+                                    CHARGE.ADDITIONS<3,CA,-1>=CHANGE(CLIENT.REC<ATTRIBUTE,X-1>,@SVM,CHAR(1))
+                                 END
+                                 IF CHANGE(CLIENT.REC<ATTRIBUTE,X>,@SVM,CHAR(1))='' THEN
+                                    CHARGE.ADDITIONS<4,CA,-1>=PLACE.HOLDER
+                                 END ELSE
+                                    CHARGE.ADDITIONS<4,CA,-1>=CHANGE(CLIENT.REC<ATTRIBUTE,X>,@SVM,CHAR(1))
+                                 END
+                              END ELSE
+                                 IF CLIENT.REC<ATTRIBUTE,X-1>='' THEN
+                                    CHARGE.ADDITIONS<3,CA,-1>=PLACE.HOLDER
+                                 END ELSE
+                                    CHARGE.ADDITIONS<3,CA,-1>=CLIENT.REC<ATTRIBUTE,X-1>
+                                 END
+                                 IF CLIENT.REC<ATTRIBUTE,X>='' THEN
+                                    CHARGE.ADDITIONS<4,CA,-1>=PLACE.HOLDER
+                                 END ELSE
+                                    CHARGE.ADDITIONS<4,CA,-1>=CLIENT.REC<ATTRIBUTE,X>
+                                 END
+                              END
+                           END
+                        END              ; * IF X=1 THEN
+                     NEXT Y
+                  END                    ; * LOCATE CLIENT.REC<84,X> IN OLD.CLIENT.REC<84> BY 'AR' SETTING DATE.POS ELSE
+               NEXT X
+
+               IF CLIENT.REC<189> # OLD.CLIENT.REC<189> THEN           ; * JCW02
+                  FSC.CHANGES<1> = DATE()          ; * JCW02
+                  FSC.CHANGES<2> = 189   ; * JCW02
+                  FSC.CHANGES<3> = OLD.CLIENT.REC<189>       ; * JCW02
+                  FSC.CHANGES<4> = CLIENT.REC<189>           ; * JCW02
+               END ELSE                  ; * JCW02
+                  FSC.CHANGES = ''       ; * JCW02
+               END                       ; * JCW02
+
+               CHARGE.CHANGES=CHANGE(CHARGE.CHANGES,PLACE.HOLDER,'')
+               CHARGE.DELETIONS=CHANGE(CHARGE.DELETIONS,PLACE.HOLDER,'')
+               CHARGE.ADDITIONS=CHANGE(CHARGE.ADDITIONS,PLACE.HOLDER,'')
+               IF CHARGE.CHANGES#'' OR CHARGE.DELETIONS#'' OR CHARGE.ADDITIONS#'' OR FSC.CHANGES#'' THEN       ; * JCW02
+                  IF CLIENT.ID[1,2]#'99' THEN      ; * JMK21
+                     GOSUB EMAIL.CHARGE.PAGE.CHANGES
+                  END                    ; * JMK21
+               END
+               IF LOG.FSC.WARN THEN      ; * JMK28
+                  IF CLIENT.ID[1,2]#'99' THEN      ; * JMK28
+                     GOSUB EMAIL.LOG.FSC.ALERT     ; * JMK28
+                  END                    ; * JMK28
+               END                       ; * JMK28
+               GOTO 100
+            CASE QI='N'
+               RELEASE F.CLIENT,CLIENT.ID
+               GOTO 100
+            CASE 1
+               GOTO 99000
+         END CASE
+      END
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      IF NOT(DISPLAY.MODE) THEN RELEASE F.CLIENT,CLIENT.ID
+      GOTO 100
+99999:CALL ELINE('Invalid selection - View Only')
+      RETURN
+
+********************************************************************************
+
+EMAIL.CHARGE.PAGE.CHANGES:***
+* Send emails out showing a change or addition was made to the charge page
+      EMAIL.OUT=''
+      EMAIL.OUT<1,1>='BBarker@afs.net'   ; * TO: Email addresses
+*     EMAIL.OUT<1,2>='KGilbert@afs.net'  ; * RLM01
+      EMAIL.OUT<1,2>='BRose@afs.net'     ; * RLM01
+      EMAIL.OUT<1,3>='bfranklin@afs.net'           ; * RLM01
+      EMAIL.OUT<1,4>='SMatthews@afs.net'
+*****      EMAIL.OUT<1,5>='MButts@afs.net'
+      EMAIL.OUT<1,6>='MMcKay@afs.net'
+
+      EMAIL.OUT<4>='Reports@afs.net'     ; * From Email address
+
+* Subject of Email
+
+      SALESMAN.ID=CLIENT.REC<115>        ; * JMK15
+      IF SALESMAN.ID='' THEN
+         LEAD.SALESMAN='No Servicing Salesman on File'       ; * JMK15
+      END ELSE
+         READ SALESMAN.REC FROM F.SLSMAN,SALESMAN.ID THEN
+            LEAD.SALESMAN=SALESMAN.REC<1>:'-':SALESMAN.ID
+         END ELSE
+            LEAD.SALESMAN='Name Not Found-':SALESMAN.ID
+         END
+      END
+
+      EMAIL.OUT<5,1>=CLIENT.REC<2>:'-':CLIENT.ID:' ':LEAD.SALESMAN
+
+* Email body
+      EMAIL.OUT<6,-1>=USER:' made a change to the charge page for client ':CLIENT.ID:' ':CLIENT.REC<2>
+      EMAIL.OUT<6,-1>='at ':OCONV(TIME(),'MTHS'):' on ':DATE()'D4/':'.'
+
+      IF CHARGE.CHANGES#'' THEN
+         CHARGE.ARRAY=CHARGE.CHANGES
+         CHARGE.DESCRIPTION='An Existing Charge Page With Effective Date ':PLACE.HOLDER:' Contains Values That Were Changed'
+         CHARGE.TITLE2=CLIENT.ID:' ':CLIENT.REC<2>
+         CHARGE.TITLE3=LEAD.SALESMAN
+         GOSUB SET.TITLE
+         GOSUB EMAIL.BODY
+      END
+
+      IF CHARGE.DELETIONS#'' THEN
+         CHARGE.ARRAY=CHARGE.DELETIONS
+         CHARGE.DESCRIPTION='An Existing Charge Page With Effective Date ':PLACE.HOLDER:' Was Deleted'
+         CHARGE.TITLE2=CLIENT.ID:' ':CLIENT.REC<2>
+         CHARGE.TITLE3=LEAD.SALESMAN
+         GOSUB SET.TITLE
+         GOSUB EMAIL.BODY
+      END
+
+      IF CHARGE.ADDITIONS#'' THEN
+         CHARGE.ARRAY=CHARGE.ADDITIONS
+         CHARGE.DESCRIPTION='A New Charge Page With Effective Date ':PLACE.HOLDER:' Was Created'
+         CHARGE.TITLE2=CLIENT.ID:' ':CLIENT.REC<2>
+         CHARGE.TITLE3=LEAD.SALESMAN
+         GOSUB SET.TITLE
+         GOSUB EMAIL.BODY
+      END
+
+      IF FSC.CHANGES#'' THEN             ; * JCW02
+         CHARGE.ARRAY=FSC.CHANGES        ; * JCW02
+         CHARGE.DESCRIPTION='A Change Was Made to the Carrier FSC Flag'          ; * JCW02
+         CHARGE.TITLE2=CLIENT.ID:' ':CLIENT.REC<2>           ; * JCW02
+         CHARGE.TITLE3=LEAD.SALESMAN     ; * JCW02
+         GOSUB SET.TITLE                 ; * JCW02
+         GOSUB EMAIL.BODY                ; * JCW02
+      END                                ; * JCW02
+
+      SCREEN.TXT=''                      ; * JMK17
+      CALL FB.1.1.CHARGES.SCREEN(CLIENT.ID,CLIENT.REC,DATE(),SCREEN.TXT)         ; * JMK17
+      IF SCREEN.TXT#'' THEN              ; * JMK17
+         NATT=DCOUNT(SCREEN.TXT,@AM)     ; * JMK17
+         FOR ATT=1 TO NATT               ; * JMK17
+            SCREEN.LINE=SCREEN.TXT<ATT>  ; * JMK19
+            IF SCREEN.LINE='' THEN SCREEN.LINE=' '           ; * JMK19
+            EMAIL.OUT<6,-1>=SCREEN.LINE  ; * JMK17
+         NEXT ATT                        ; * JMK17
+      END                                ; * JMK17
+      EMAIL.OUT<7>=1                     ; * Auto format (add carriage returns to end of text)
+      VOUT=''
+      CALL SENDMAIL(EMAIL.OUT,VOUT)
+      RETURN
+
+********************************************************************************
+
+EMAIL.BODY:***
+      NUM.PAGES=DCOUNT(CHARGE.ARRAY<1>,@VM)
+      FOR X=1 TO NUM.PAGES
+         EFF.DATE=CHARGE.ARRAY<1,X>
+         CHARGE.TITLE1=CHANGE(CHARGE.DESCRIPTION,PLACE.HOLDER,EFF.DATE'D4-')
+         NUM.CHANGES=DCOUNT(CHARGE.ARRAY<2,X>,@SVM)
+         EMAIL.OUT<6,-1>=' '
+         EMAIL.OUT<6,-1>=' '
+         EMAIL.OUT<6,-1>=CHARGE.TITLE1
+         EMAIL.OUT<6,-1>=CHARGE.TITLE2
+         EMAIL.OUT<6,-1>=CHARGE.TITLE3
+         EMAIL.OUT<6,-1>=' '
+*        EMAIL.OUT<6,-1>='    Description (attribute)         Old Value         New Value'  ; * JCW02
+         EMAIL.OUT<6,-1>='    Description (attribute)          Values'           ; * JCW02
+         EMAIL.OUT<6,-1>='    -----------------------------------------------------------'
+         FOR Y=1 TO NUM.CHANGES
+            ATTRIBUTE=CHARGE.ARRAY<2,X,Y>
+            READ CLIENT.DICT FROM F.DICT.CLIENT,ATTRIBUTE ELSE CLIENT.DICT=''
+            DESCRIPTION=CLIENT.DICT<3>
+            CONVERSION=CLIENT.DICT<7>
+
+            BEGIN CASE                   ; * JMK27
+               CASE ATTRIBUTE=133        ; * JMK27
+                  EMAIL.OUT<6,-1>=' '
+                  EMAIL.OUT<6,-1>='    Charge Page Notes BEFORE Change:'
+                  EMAIL.OUT<6,-1>='    ':DESCRIPTION:' (':ATTRIBUTE:') ':FIELD(CHARGE.ARRAY<3,X,Y>,CHAR(1),1)
+                  EMAIL.OUT<6,-1>='    ':DESCRIPTION:' (':ATTRIBUTE:') ':FIELD(CHARGE.ARRAY<3,X,Y>,CHAR(1),2)
+                  EMAIL.OUT<6,-1>='    ':DESCRIPTION:' (':ATTRIBUTE:') ':FIELD(CHARGE.ARRAY<3,X,Y>,CHAR(1),3)
+                  EMAIL.OUT<6,-1>=' '
+                  EMAIL.OUT<6,-1>='    Charge Page Notes AFTER Change:'
+                  EMAIL.OUT<6,-1>='    ':DESCRIPTION:' (':ATTRIBUTE:') ':FIELD(CHARGE.ARRAY<4,X,Y>,CHAR(1),1)
+                  EMAIL.OUT<6,-1>='    ':DESCRIPTION:' (':ATTRIBUTE:') ':FIELD(CHARGE.ARRAY<4,X,Y>,CHAR(1),2)
+                  EMAIL.OUT<6,-1>='    ':DESCRIPTION:' (':ATTRIBUTE:') ':FIELD(CHARGE.ARRAY<4,X,Y>,CHAR(1),3)
+               CASE ATTRIBUTE = 189      ; * JCW02
+                  EMAIL.OUT<6,-1>=' '    ; * JCW02
+* BEGIN NPR03 CHANGES
+                  BEGIN CASE
+                     CASE CHARGE.ARRAY<3,X,Y> = "F"
+                        BEFORE.FSC.DESC = "Use the current FSC."
+                     CASE CHARGE.ARRAY<3,X,Y> = "C"
+                        BEFORE.FSC.DESC = "Use the Carrier's FSC"
+                     CASE CHARGE.ARRAY<3,X,Y> = "O"
+                        BEFORE.FSC.DESC = "Use the 'Old' AFS FSC"
+                     CASE 1
+                        BEFORE.FSC.DESC = ""
+                  END CASE
+                  BEGIN CASE
+                     CASE CHARGE.ARRAY<4,X,Y> = "F"
+                        AFTER.FSC.DESC = "Use the current FSC."
+                     CASE CHARGE.ARRAY<4,X,Y> = "C"
+                        AFTER.FSC.DESC = "Use the Carrier's FSC"
+                     CASE CHARGE.ARRAY<4,X,Y> = "O"
+                        AFTER.FSC.DESC = "Use the 'Old' AFS FSC"
+                     CASE 1
+                        AFTER.FSC.DESC = ""
+                  END CASE
+* END NPR03 CHANGES
+                  EMAIL.OUT<6,-1>='    ':DESCRIPTION:' BEFORE Change:'           ; * JCW02
+                  EMAIL.OUT<6,-1>='    ':DESCRIPTION:' (':ATTRIBUTE:') ':CHARGE.ARRAY<3,X,Y>'R#20':" - ":BEFORE.FSC.DESC           ; * JCW02, NPR03
+                  EMAIL.OUT<6,-1>=' '    ; * JCW02
+                  EMAIL.OUT<6,-1>='    ':DESCRIPTION:' AFTER Change:'  ; * JCW02
+                  EMAIL.OUT<6,-1>='    ':DESCRIPTION:' (':ATTRIBUTE:') ':CHARGE.ARRAY<4,X,Y>'R#20':" - ":AFTER.FSC.DESC  ; * JCW02, NPR03
+               CASE 1                    ; * JMK27
+                  IF INDEX(CHARGE.ARRAY,CHAR(1),1) THEN      ; * JCW02
+                     EMAIL.OUT<6,-1>=' '           ; * JMK27
+                     EMAIL.OUT<6,-1>='    ':DESCRIPTION:' BEFORE Change:'        ; * JMK27
+                     NDTL=DCOUNT(CHARGE.ARRAY<3,X,Y>,CHAR(1))          ; * JMK27
+                     IF NDTL = 0 THEN NDTL=DCOUNT(CHARGE.ARRAY<4,X,Y>,CHAR(1))   ; * JCW03
+                     FOR DTL=1 TO NDTL   ; * JMK27
+*                       EMAIL.OUT<6,-1>='    ':DESCRIPTION:' (':ATTRIBUTE:') ':OCONV(FIELD(CHARGE.ARRAY<3,X,Y>,CHAR(1),DTL),CONVERSION)'R#9' ; * JMK27
+                        EMAIL.OUT<6,-1>='    ':DESCRIPTION:' (':ATTRIBUTE:') ':OCONV(FIELD(CHARGE.ARRAY<3,X,Y>,CHAR(1),DTL),CONVERSION)'R#20'          ; * JMK27  ; * JCW02
+                     NEXT DTL            ; * JMK27
+                     EMAIL.OUT<6,-1>=' '           ; * JMK27
+                     EMAIL.OUT<6,-1>='    ':DESCRIPTION:' AFTER Change:'         ; * JMK27
+                     FOR DTL=1 TO NDTL   ; * JMK27
+*                       EMAIL.OUT<6,-1>='    ':DESCRIPTION:' (':ATTRIBUTE:') ':OCONV(FIELD(CHARGE.ARRAY<4,X,Y>,CHAR(1),DTL),CONVERSION)'R#9' ; * JMK27
+                        EMAIL.OUT<6,-1>='    ':DESCRIPTION:' (':ATTRIBUTE:') ':OCONV(FIELD(CHARGE.ARRAY<4,X,Y>,CHAR(1),DTL),CONVERSION)'R#20'          ; * JMK27  ; * JCW02
+                     NEXT DTL            ; * JMK27
+                  END ELSE               ; * JCW02
+                     EMAIL.OUT<6,-1>=' '           ; * JCW02
+                     EMAIL.OUT<6,-1>='    ':DESCRIPTION:' BEFORE Change:'        ; * JCW02
+                     EMAIL.OUT<6,-1>='    ':DESCRIPTION:' (':ATTRIBUTE:') ':OCONV(CHARGE.ARRAY<3,X,Y>,CONVERSION)'R#20'  ; * JCW02
+                     EMAIL.OUT<6,-1>=' '           ; * JCW02
+                     EMAIL.OUT<6,-1>='    ':DESCRIPTION:' AFTER Change:'         ; * JCW02
+                     EMAIL.OUT<6,-1>='    ':DESCRIPTION:' (':ATTRIBUTE:') ':OCONV(CHARGE.ARRAY<4,X,Y>,CONVERSION)'R#20'  ; * JCW02
+                  END                    ; * JCW02
+            END CASE
+         NEXT Y
+      NEXT X
+      RETURN
+
+***************************************************************
+SET.TITLE:***
+***************************************************************
+      LONGEST.ID=1
+      LONGEST.LEN=LEN(CHARGE.DESCRIPTION)
+      IF LEN(CHARGE.TITLE2)>LONGEST.LEN THEN
+         LONGEST.ID=2
+         LONGEST.LEN=LEN(CHARGE.TITLE2)
+      END
+      IF LEN(CHARGE.TITLE3)>LONGEST.LEN THEN
+         LONGEST.ID=3
+         LONGEST.LEN=LEN(CHARGE.TITLE3)
+      END
+      BEGIN CASE
+         CASE LONGEST.ID=1
+            CHARGE.TITLE2=SPACE(INT((LONGEST.LEN-LEN(CHARGE.TITLE2))/2)):CHARGE.TITLE2
+            CHARGE.TITLE2=CHARGE.TITLE2:SPACE(LONGEST.LEN-LEN(CHARGE.TITLE2))
+            CHARGE.TITLE3=SPACE(INT((LONGEST.LEN-LEN(CHARGE.TITLE3))/2)):CHARGE.TITLE3
+            CHARGE.TITLE3=CHARGE.TITLE3:SPACE(LONGEST.LEN-LEN(CHARGE.TITLE3))
+         CASE LONGEST.ID=2
+            CHARGE.DESCRIPTION=SPACE(INT((LONGEST.LEN-LEN(CHARGE.DESCRIPTION))/2)):CHARGE.DESCRIPTION
+            CHARGE.DESCRIPTION=CHARGE.DESCRIPTION:SPACE(LONGEST.LEN-LEN(CHARGE.DESCRIPTION))
+            CHARGE.TITLE3=SPACE(INT((LONGEST.LEN-LEN(CHARGE.TITLE3))/2)):CHARGE.TITLE3
+            CHARGE.TITLE3=CHARGE.TITLE3:SPACE(LONGEST.LEN-LEN(CHARGE.TITLE3))
+         CASE LONGEST.ID=3
+            CHARGE.DESCRIPTION=SPACE(INT((LONGEST.LEN-LEN(CHARGE.DESCRIPTION))/2)):CHARGE.DESCRIPTION
+            CHARGE.DESCRIPTION=CHARGE.DESCRIPTION:SPACE(LONGEST.LEN-LEN(CHARGE.DESCRIPTION))
+            CHARGE.TITLE2=SPACE(INT((LONGEST.LEN-LEN(CHARGE.TITLE2))/2)):CHARGE.TITLE2
+            CHARGE.TITLE2=CHARGE.TITLE2:SPACE(LONGEST.LEN-LEN(CHARGE.TITLE2))
+      END CASE
+      CHARGE.DESCRIPTION='*** ':CHARGE.DESCRIPTION:' ***'
+      CHARGE.TITLE2='*** ':CHARGE.TITLE2:' ***'
+      CHARGE.TITLE3='*** ':CHARGE.TITLE3:' ***'
+      RETURN
+***************************************************************
+EMAIL.LOG.FSC.ALERT:***
+***************************************************************
+*
+* Send emails out showing a change in Logistics FSC from "Y" to "N"
+*
+      EMAIL.OUT=''
+      EMAIL.OUT<1,1>='BBarker@afs.net'   ; * TO: Email addresses
+*     EMAIL.OUT<1,2>='KGilbert@afs.net'  ; * RLM01
+      EMAIL.OUT<1,2>='BRose@afs.net'     ; * RLM01
+
+      EMAIL.OUT<1,3>='bfranklin@afs.net'           ; * RLM01
+      EMAIL.OUT<1,4>='BJeppson@afs.net'
+      EMAIL.OUT<3>=''                    ; * BCC: Email addresses
+      EMAIL.OUT<4>='***ALERT***@afs.net'           ; * From Email address
+
+* Subject of Email
+      SALESMAN.ID=CLIENT.REC<115>        ; * JMK15
+      IF SALESMAN.ID='' THEN
+         LEAD.SALESMAN='No Servicing Salesman on File'       ; * JMK15
+      END ELSE
+         READ SALESMAN.REC FROM F.SLSMAN,SALESMAN.ID THEN
+            LEAD.SALESMAN=SALESMAN.REC<1>:'-':SALESMAN.ID
+         END ELSE
+            LEAD.SALESMAN='Name Not Found-':SALESMAN.ID
+         END
+      END
+
+      EMAIL.OUT<5,1>=CLIENT.REC<2>:'-':CLIENT.ID:' ':LEAD.SALESMAN
+
+* Email body
+      EMAIL.OUT<6,-1>=USER:' made a change to the charge page for client ':CLIENT.ID:' ':CLIENT.REC<2>
+      EMAIL.OUT<6,-1>='at ':OCONV(TIME(),'MTHS'):' on ':DATE()'D4/':'.'
+      EMAIL.OUT<6,-1>='The Logistics FSC field has been changed from Y to N.  This could result '    ; * JMK28
+      EMAIL.OUT<6,-1>='in reduced revenue for AFS.  Please confirm the validity of this change.'     ; * JMK28
+
+      EMAIL.OUT<7>=1                     ; * Auto format (add carriage returns to end of text)
+      VOUT=''
+      CALL SENDMAIL(EMAIL.OUT,VOUT)
+      RETURN
+
+****************************************************************
+GET.CHARGE.LIST:* JMK25
+****************************************************************
+      CHARGE.LIST=''                     ; * JMK25
+      CHARGE.LIST<1,-1>=32               ; * JMK25
+      CHARGE.LIST<1,-1>=33               ; * JMK25
+      CHARGE.LIST<1,-1>=34               ; * JMK25
+      CHARGE.LIST<1,-1>=35               ; * JMK25
+      CHARGE.LIST<1,-1>=36               ; * JMK25
+      CHARGE.LIST<1,-1>=39               ; * JMK25
+      CHARGE.LIST<1,-1>=40               ; * JMK25
+      CHARGE.LIST<1,-1>=73               ; * JMK25
+      CHARGE.LIST<1,-1>=85               ; * JMK25
+      CHARGE.LIST<1,-1>=88               ; * JMK25
+      CHARGE.LIST<1,-1>=111              ; * JMK28
+      CHARGE.LIST<1,-1>=113              ; * JMK25
+      CHARGE.LIST<1,-1>=122              ; * JMK25
+      CHARGE.LIST<1,-1>=172              ; * JMK25
+      CHARGE.LIST<1,-1>=128              ; * JMK25
+      CHARGE.LIST<1,-1>=129              ; * JMK25
+      CHARGE.LIST<1,-1>=130              ; * JMK25
+      CHARGE.LIST<1,-1>=131              ; * JMK25
+      CHARGE.LIST<1,-1>=132              ; * JMK25
+      CHARGE.LIST<1,-1>=133              ; * JMK25
+      CHARGE.LIST<1,-1>=177              ; * JMK25
+      CHARGE.LIST<1,-1>=178              ; * JMK25
+      CHARGE.LIST<1,-1>=185              ; * JMK25
+      CHARGE.LIST<1,-1>=187              ; * JMK25
+      CHARGE.LIST<1,-1>=190              ; * JMK25
+      CHARGE.LIST<1,-1>=199              ; * JMK25
+      CHARGE.LIST<1,-1>=200              ; * JMK25
+      CHARGE.LIST<1,-1>=208              ; * JMK26
+      CHARGE.LIST<1,-1>=209              ; * JMK26
+      CHARGE.LIST<1,-1>=210              ; * JMK26
+      CHARGE.LIST<1,-1>=211              ; * JMK26
+      CHARGE.LIST<1,-1>=212              ; * JMK26
+      CHARGE.LIST<1,-1>=213              ; * JMK26
+      CHARGE.LIST<1,-1>=214              ; * JMK26
+      CHARGE.LIST<1,-1>=215              ; * JMK26
+      CHARGE.LIST<1,-1>=216              ; * JMK26
+      CHARGE.LIST<1,-1>=217              ; * JMK26
+      CHARGE.LIST<1,-1>=218              ; * JMK26
+      CHARGE.LIST<1,-1>=219              ; * JMK26
+      CHARGE.LIST<1,-1>=268              ; * JMK62
+      RETURN                             ; * JMK25
+***************************************************************
+INACTIVE.EMAIL:*              ; * START NPR01
+****************************************************************
+* Send emails out showing a change in Clients Status to Inactive
+*
+      EMAIL.OUT=''
+      EMAIL.OUT<1,-1>='BBarker@AFS.net'  ; * TO: Email addresses
+*     EMAIL.OUT<1,-1>='KGilbert@afs.net'  ; * RLM01
+      EMAIL.OUT<1,-1>='brose@afs.net'    ; * RLM01
+
+      EMAIL.OUT<1,-1>='bfranklin@afs.net'          ; * RLM01
+      EMAIL.OUT<1,-1>='BJeppson@afs.net'
+*****      EMAIL.OUT<1,-1>='MButts@afs.net'
+      EMAIL.OUT<1,-1>='SMatthews@afs.net'
+      EMAIL.OUT<1,-1>='NRath@afs.net'
+      EMAIL.OUT<3>=''                    ; * BCC: Email addresses
+      EMAIL.OUT<4>='***ALERT***@afs.net'           ; * From Email address
+*
+      EMAIL.OUT<5,1>=CLIENT.REC<2>:'-':CLIENT.ID:' Status set to Inactive'
+*
+* Email body
+
+      LAST.PROC.DT = CLIENT.REC<82>      ; *NPR08
+      INIT.SALESMAN.ID=CLIENT.REC<114>   ; *NPR08
+      INIT.SALESMAN.STR = "Not on File"  ; *NPR08
+      READV INIT.SLSMAN.NAME FROM F.SLSMAN,INIT.SALESMAN.ID,1 THEN     ; *NPR08
+         INIT.SALESMAN.STR = INIT.SALESMAN.ID:" - ":OCONV(INIT.SLSMAN.NAME,"MCT")          ; *NPR08
+      END                                ; *NPR08
+*
+      SRVC.SALESMAN.ID=CLIENT.REC<115>   ; *NPR08
+      SRVC.SALESMAN.STR = "Not on File"  ; *NPR08
+      READV SRVC.SLSMAN.NAME FROM F.SLSMAN, SRVC.SALESMAN.ID,1 THEN    ; *NPR08
+         SRVC.SALESMAN.STR = SRVC.SALESMAN.ID:" - ":OCONV(SRVC.SLSMAN.NAME,"MCT")          ; *NPR08
+      END                                ; *NPR08
+*
+
+      READV USER.NAME FROM F.BCTRL, USER,13 ELSE USER.NAME = ""
+      IF USER.NAME NE "" THEN USER.STRING = USER:" - ":USER.NAME ELSE USER.STRING = USER
+      EMAIL.OUT<6,-1>=USER.STRING:' Changed status of client ':CLIENT.ID:' ':CLIENT.REC<2>:' to Inactive'
+      EMAIL.OUT<6,-1>='at ':OCONV(TIME(),'MTHS'):' on ':DATE()'D4/':'.'
+*
+      EMAIL.OUT<6,-1>=' '                ; *NPR08
+      EMAIL.OUT<6,-1>='Initiating Salesman : ' : INIT.SALESMAN.STR     ; *NPR08
+      EMAIL.OUT<6,-1>=' '                ; *NPR08
+      EMAIL.OUT<6,-1>='Servicing  Salesman : ' : SRVC.SALESMAN.STR     ; *NPR08
+      EMAIL.OUT<6,-1>=' '                ; *NPR08
+      IF LAST.PROC.DT NE "" THEN         ; *NPR08
+         EMAIL.OUT<6,-1>='Last process Date   :  ': OCONV(LAST.PROC.DT,"D4/")    ; *NPR08
+      END ELSE                           ; *NPR08
+         EMAIL.OUT<6,-1>='Last process Date   :  Unknown'    ; *NPR08
+      END                                ; *NPR08
+*
+      EMAIL.OUT<7>=1                     ; * Auto format (add carriage returns to end of text)
+      VOUT=''
+      CALL SENDMAIL(EMAIL.OUT,VOUT)
+*
+      RETURN
+
+****************************************************************
+COMPANY.CHANGE.EMAIL:*                  ; * START NPR02
+****************************************************************
+* Send emails out showing a change in Company Code
+*
+      EMAIL.OUT=''
+*     EMAIL.OUT<1,-1>='Accounting@afs.net'         ; * JMK56
+*     EMAIL.OUT<1,-1>='BBarker@AFS.net'  ; * TO: Email addresses ; * JMK56
+*     EMAIL.OUT<1,-1>='bfranklin@afs.net'          ; * RLM01
+*     EMAIL.OUT<1,-1>='BJeppson@afs.net' ; * JMK56
+      EMAIL.OUT<1,-1>='BRose@afs.net'    ; * RLM01
+      EMAIL.OUT<1,-1>='CBeasley@afs.net'           ; * JMK56
+      EMAIL.OUT<1,-1>='CBulger@afs.net'  ; * DRF08
+      EMAIL.OUT<1,-1>='CPeoples@afs.net'           ; * DRF04
+      EMAIL.OUT<1,-1>='DRaborn@afs.net'  ; * JMK56
+      EMAIL.OUT<1,-1>='JDarnell@afs.net'           ; * JMK56
+*     EMAIL.OUT<1,-1>='KGilbert@afs.net' ; * RLM01
+      EMAIL.OUT<1,-1>='KMcquiston@afs.net'         ; * DRF07
+*****      EMAIL.OUT<1,-1>='MButts@afs.net'
+      EMAIL.OUT<1,-1>='NTaylor@afs.net'  ; * DRF10
+    *  EMAIL.OUT<1,-1>='SMatthews@afs.net'          ; * JMK56
+      EMAIL.OUT<1,-1>='RWhitt@afs.net'   ; * JMK56
+      EMAIL.OUT<1,-1>='TGreen@afs.net'   ; * DRF08
+      EMAIL.OUT<1,-1>='KBarnes@afs.net'  ; * JMK64
+      EMAIL.OUT<4>='***ALERT***@afs.net'           ; * From Email address
+*
+* Email body
+*
+      READV USER.NAME FROM F.BCTRL, USER,13 ELSE USER.NAME = ""
+      IF USER.NAME NE "" THEN USER.STRING = USER:" - ":USER.NAME ELSE USER.STRING = USER
+*
+      EMAIL.OUT<5,1>= 'Company Code changed for client ': CLIENT.ID :' - ':CLIENT.REC<2>
+
+      OLD.CO.NUM = OLD.CO * 1
+      NEW.CO.NUM = NEW.CO * 1
+      IF NEW.CO.NUM = 2 THEN NEW.CO.NUM = 1
+
+      READV OLD.CO.NAME FROM F.FB.COMPANY,OLD.CO, 1 ELSE OLD.CO.NAME = "AFS"
+
+      READV NEW.CO.NAME FROM F.FB.COMPANY,NEW.CO, 1 ELSE NEW.CO.NAME = "AFS"
+
+      OLD.CO.STR = OLD.CO : " - " : OLD.CO.NAME
+      NEW.CO.STR = NEW.CO : " - " : NEW.CO.NAME
+
+      EMAIL.OUT<6>=CLIENT.REC<2>:' - ':CLIENT.REC<2>
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1> = USER.STRING:' Changed the Company code From ':OLD.CO.STR:' to ':NEW.CO.STR
+      EMAIL.OUT<6,-1>=' at ':OCONV(TIME(),'MTHS'):' on ':DATE()'D4/':'.'
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>='This change WILL AFFECT COMMISSIONS!'
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>='All of the commission sales codes for this client will need to be updated!'
+      EMAIL.OUT<6,-1>=' '
+
+*
+      IF NEW.CO = "00000" THEN
+         OLD.CO.NUM = OLD.CO * 1
+         EMAIL.OUT<6,-1>='The ':OLD.CO.NUM:'000 series commission codes need to be changed to the actual commission code numbers.'
+      END ELSE
+         EMAIL.OUT<6,-1>= 'The actual commission code numbers need to be changed to the ':NEW.CO.NUM:'000 series commission codes.'
+      END
+
+      EMAIL.OUT<6,-1>= 'Commissions will not be correct and Office Commissions will not balance until these commissions changes are made'
+      EMAIL.OUT<6,-1>=' '
+
+      BEGIN CASE
+         CASE NEW.CO = "00000"
+            EMAIL.OUT<6,-1>='Commission codes for Company ' : NEW.CO.STR : ' are the actual numbers  e.g. 56'
+            EMAIL.OUT<6,-1>=' '
+         CASE NEW.CO = "00001"
+            EMAIL.OUT<6,-1>='Commission codes for Company ' : NEW.CO.STR : ' are ':NEW.CO.NUM:'000 plus the actual numbers. e.g ':NEW.CO.NUM:'056'
+            EMAIL.OUT<6,-1>=' '
+         CASE NEW.CO = "00002"
+            EMAIL.OUT<6,-1>='Commission codes for Company ' : NEW.CO.STR : ' are ':NEW.CO.NUM:'000 plus the actual numbers. e.g ':NEW.CO.NUM:'056'
+            EMAIL.OUT<6,-1>=' '
+         CASE NEW.CO = "00003"
+            EMAIL.OUT<6,-1>='Commission codes for Company ' : NEW.CO.STR : ' are ':NEW.CO.NUM:'000 plus the actual numbers. e.g ':NEW.CO.NUM:'056'
+            EMAIL.OUT<6,-1>=' '
+         CASE NEW.CO = "00006"
+            EMAIL.OUT<6,-1>='Commission codes for Company ' : NEW.CO.STR : ' are ':NEW.CO.NUM:'000 plus the actual numbers. e.g ':NEW.CO.NUM:'056'
+            EMAIL.OUT<6,-1>=' '
+         CASE NEW.CO = "00007"
+            EMAIL.OUT<6,-1>='Commission codes for Company ' : NEW.CO.STR : ' are ':NEW.CO.NUM:'000 plus the actual numbers. e.g ':NEW.CO.NUM:'056'
+            EMAIL.OUT<6,-1>=' '
+      END CASE
+
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1>='This Email was Generated in Program ':PROG.NAME:' in internal subroutine COMPANY.CHANGE.EMAIL'
+*
+      EMAIL.OUT<7>=1                     ; * Auto format (add carriage returns to end of text)
+      VOUT=''
+      CALL SENDMAIL(EMAIL.OUT,VOUT)
+*
+      RETURN
+
+****************************************************************
+BANK.CHANGE.EMAIL:*              ; * START NPR06
+****************************************************************
+* Send emails out showing a change in Bank Code
+*
+      EMAIL.OUT=''
+      IF NOT(CHANGED.TO.CANADIAN) THEN
+*         EMAIL.OUT<1,1> = 'Accounting@afs.net'
+         EMAIL.OUT<1,1> = 'dcurtis@afs.net'
+         EMAIL.OUT<3>=''                 ; * BCC: Email addresses
+         EMAIL.OUT<4>='***ALERT***@afs.net'        ; * From Email address
+      END ELSE                           ; * NPR19
+         EMAIL.OUT<1,1> = 'Accounting@afs.net'     ; * NPR19
+         EMAIL.OUT<1,-1> = 'SMatthews@afs.net'     ; * NPR19
+         EMAIL.OUT<1,-1> = 'bfranklin@afs.net'     ; * NPR19  ; * RLM01
+         EMAIL.OUT<1,-1> = 'nmeddaugh@afs.net'         ; * NPR19
+*****         EMAIL.OUT<1,-1> = 'MButts@afs.net'        ; * NPR19
+         EMAIL.OUT<1,-1> = 'MMcKay@afs.net'        ; * NPR19
+         IF ACCT.MGR.EMAIL NE "" THEN EMAIL.OUT<1,-1> = ACCT.MGR.EMAIL           ; * NPR19
+         IF SECOND.SALESMAN.EMAIL NE "" THEN       ; * NPR19
+            EMAIL.OUT<1,-1> = SECOND.SALESMAN.EMAIL          ; * NPR19
+         END                             ; * NPR19
+      END
+*
+* Email body
+*
+      READV USER.NAME FROM F.BCTRL, USER,13 ELSE USER.NAME = ""
+      IF USER.NAME NE "" THEN USER.STRING = USER:" - ":USER.NAME ELSE USER.STRING = USER
+*
+      IF NOT(CHANGED.TO.CANADIAN) THEN   ; * NPR19
+         EMAIL.OUT<5,1>= 'Bank Code changed for client ':CLIENT.REC<2>:' - ':CLIENT.ID     ; * NPR19
+      END ELSE                           ; * NPR19
+         EMAIL.OUT<5,1>= 'Bank changed to CANADIAN for client ':CLIENT.REC<2>:' - ':CLIENT.ID        ; * NPR19
+      END                                ; * NPR19
+*
+      EMAIL.OUT<6>=CLIENT.REC<2>:'-':CLIENT.ID
+      EMAIL.OUT<6,-1>=' '
+      EMAIL.OUT<6,-1> = USER.STRING:' Changed the Bank code From ':OLD.BANK.CODE:' to ':NEW.BANK.CODE
+      EMAIL.OUT<6,-1>=' at ':OCONV(TIME(),'MTHS'):' on ':DATE()'D4/':'.'
+      EMAIL.OUT<6,-1>=' '
+      IF NOT(CHANGED.TO.CANADIAN) THEN   ; * NPR19
+         EMAIL.OUT<6,-1>='This change WILL AFFECT COMMISSIONS!!!'
+      END ELSE                           ; * NPR19
+         EMAIL.OUT<6,-1>='NOTE : Client changed to have CANADIAN bank!!!'        ; * NPR19
+      END                                ; * NPR19
+*
+      EMAIL.OUT<7>=1                     ; * Auto format (add carriage returns to end of text)
+      VOUT=''
+      CALL SENDMAIL(EMAIL.OUT,VOUT)
+*
+      RETURN
+****************************************************************
+NAME.CHANGE.EMAIL:*              ; * START NPR13
+****************************************************************
+* Send emails out showing a change in Company Code
+*
+      EMAIL.OUT=''
+      EMAIL.OUT<1> = 'ClientNameChangeAlert@afs.net'
+      EMAIL.OUT<4>='***ALERT***@afs.net'           ; * From Email address
+*
+* Email body
+*
+      READV USER.NAME FROM F.BCTRL, USER,13 ELSE USER.NAME = ""
+      IF USER.NAME NE "" THEN USER.STRING = USER:" - ":USER.NAME ELSE USER.STRING = USER
+*
+      EMAIL.OUT<5,1>= 'Name changed for client ':CLIENT.ID : ' ' :OLD.CLIENT.REC<2>
+*
+      EMAIL.OUT<6> = CLIENT.ID:'-':OLD.CLIENT.REC<2>:' name was changed from ':OLD.CLIENT.REC<2>:' to ':CLIENT.REC<2>
+      EMAIL.OUT<6,-1> = ' '
+      EMAIL.OUT<6,-1> = 'This change was done by  ':USER.STRING:' on ':DATE()'D4/' : ' at ':OCONV(TIME(),'MTHS') : '.'
+      EMAIL.OUT<6,-1> = ' '
+      EMAIL.OUT<6,-1> = 'Warning this change may impact Swift Knowledge!'
+*
+      EMAIL.OUT<7>=1                     ; * Auto format (add carriage returns to end of text)
+      VOUT=''
+      CALL SENDMAIL(EMAIL.OUT,VOUT)
+*
+      RETURN
+****************************************************************
+LOGISTICS.CHANGE.EMAIL:
+***************************************************************
+*
+      EMAIL.OUT='Krivet@afs.net'
+      IF ACCT.MGR.EMAIL NE '' THEN EMAIL.OUT<1,-1> = ACCT.MGR.EMAIL
+      IF SECOND.SALESMAN.EMAIL NE "" THEN EMAIL.OUT<1,-1> = SECOND.SALESMAN.EMAIL          ; *NPR19
+      EMAIL.OUT<4>='***ALERT***@afs.net'           ; * From Email address
+*
+* Email body
+*
+      READV USER.NAME FROM F.BCTRL, USER,13 ELSE USER.NAME = ""
+      IF USER.NAME NE "" THEN USER.STRING = USER:" - ":USER.NAME ELSE USER.STRING = USER
+*
+      W.LOG.FLAG = CLIENT.REC<93>
+      W.LOG.FLAG.OLD = OLD.CLIENT.REC<93>
+      IF W.LOG.FLAG.OLD = "" THEN W.LOG.FLAG.OLD = "N"
+
+      BEGIN CASE
+         CASE W.LOG.FLAG.OLD = "N" AND W.LOG.FLAG = "Y"      ; * Flag changed to be a Logistics Client
+            EMAIL.OUT<5,1>= 'Logistics status change : ':CLIENT.ID : ' ' :CLIENT.REC<2> : ' converted to be a Logistics Client '
+            EMAIL.OUT<6> = CLIENT.ID:' ':CLIENT.REC<2>:' changed from a NON logistics client to a logistics client'
+         CASE W.LOG.FLAG.OLD = "Y" AND W.LOG.FLAG = "N"      ; * Flag changed to be a NON Logistics Client
+            EMAIL.OUT<5,1>= 'Logistics status change : ':CLIENT.ID : ' ' :CLIENT.REC<2> : ' converted to be a NON Logistics Client '
+            EMAIL.OUT<6> = CLIENT.ID:' ':CLIENT.REC<2>:' changed from a logistics client to a NON logistics client'
+         CASE 1
+            RETURN
+      END CASE
+
+      EMAIL.OUT<6,-1> = ' '
+      EMAIL.OUT<6,-1> = 'This change was done by  ':USER.STRING:' on ':DATE()'D4/' : ' at ':OCONV(TIME(),'MTHS') : '.'
+      EMAIL.OUT<6,-1> = ' '
+*
+      EMAIL.OUT<7>=1                     ; * Auto format (add carriage returns to end of text)
+      VOUT=''
+      CALL SENDMAIL(EMAIL.OUT,VOUT)
+*
+      RETURN
+
+****************************************************************
+CHECK.VALUE:                             ; * JCW03
+***************************************************************
+*--------------------------------------------------------
+* If the value is composed entirely of sub-value markers,
+* then set ALL.SVM to 1, otherwise ALL.SVM = 0
+*--------------------------------------------------------
+      ALL.SVM = 1
+      VAL = CLIENT.REC<ATTRIBUTE,DATE.POS>
+      LEN.VAL = LEN(VAL)
+      FOR II = 1 TO LEN.VAL
+         IF VAL[II,1] # @SVM THEN
+            ALL.SVM = 0
+            EXIT
+         END
+      NEXT II
+      RETURN
+****************************************************************
+CHECK.BROKERAGE:* Prompt for Child Customer in Brokerage system and check if it exists at all.
+*                    New Parent client may only be created on its own if it is being created to match up an
+*                    existing child in the Brokerage Subsystems - Currently (AF,BR & INT).
+***************************************************************
+*
+      HELP="Enter Child Customer number to be assigned this Parent Client"
+      CALL GEN.IN(0,21,'Enter Customer Number : #####','',Q,0,20,'','',2,-5,21,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      ID.CUST.TEST = QI "R%5"
+*
+      FND.IN = ""
+*
+      READ AF.CUST.REC FROM F.AF.CUST, ID.CUST.TEST THEN
+         FND.IN = "AF"
+         OK.FLAG = "Y"
+      END
+*
+      READ BR.CUST.REC FROM F.BR.CUST, ID.CUST.TEST THEN
+         IF FND.IN NE "" THEN FND.IN := ",BR" ELSE FND.IN = "BR"
+         OK.FLAG = "Y"
+      END
+*
+      READ INT.CUST.REC FROM F.INT.CUST, ID.CUST.TEST THEN
+         IF FND.IN NE "" THEN FND.IN := ",INT" ELSE FND.IN = "INT"
+         OK.FLAG = "Y"
+      END
+*
+      IF OK.FLAG = "Y" THEN
+         CALL ELINE(ID.CUST.TEST:" Found in ":FND.IN:" RETURN to Continue")      ; *NPR05
+      END
+*
+      RETURN

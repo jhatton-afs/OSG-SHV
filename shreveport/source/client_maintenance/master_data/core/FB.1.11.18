@@ -1,0 +1,733 @@
+      ****************************************************************
+* Program name : FB.1.11.18
+* Author       : N PRATT
+* Date written : JANUARY 2008
+* Library      : FBBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* ENTER SUBSTITUTE ZIPS
+*
+* Last updated by afs (AFSLOGISTICS\gbino) at 06:49:34 on 03/14/2018.
+*
+* Start modification history
+* Mod nn  mm/dd/yy, init, req #, description
+* 141104 - DRF01 - SysAid 12961 - Create spreadsheet for zip substitution
+* End modification history
+*
+*******************************************************************
+$OPTIONS HEADER.EJECT
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+      ERRMSG=''
+
+* Initialize variables
+*
+10:
+*
+      TAB=CHAR(9)                        ; * DRF01
+      PROMPT''
+      PROG.NAME='FB.1.11.18'
+      PROG.DESC = "ZIP CODE SUBSTITUTION"
+      PACK.NAME='FREIGHT BILLING'
+*
+      CALL GET.USER.NEW(USER.NAME,CH.NUM)
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.1.11.18' ; UPL.VOUT = ''
+      UPL.VIN<3>=USER.NAME
+      UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+      CALL AFS.SCR.HEAD(CO.ID,"",'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      OPEN '','OPERATOR' TO F.OP ELSE CALL OPEN.ABORT("OPERATOR",PROG.NAME)
+*
+
+      READV OP.FLG FROM F.OP,USER.NAME,57 ELSE
+         OP.FLG = "N"
+      END
+      IF OP.FLG = "Y" THEN
+
+
+         **     BEGIN CASE
+*
+* Authorized users
+*
+         ****       CASE USER.NAME = 'DAVID'
+         ****       CASE USER.NAME = 'GBINO'
+         ****       CASE USER.NAME = 'NMEDDAUGH'
+         ****       CASE USER.NAME = 'BRIAN'
+         ****      CASE USER.NAME = 'WPARDUE'
+         ****       CASE USER.NAME = 'PBASS'
+
+*
+* Restrict everyone else
+*
+         **       CASE 1
+      END ELSE
+         SUBJ="Unauthorized Program Access by ":USER.NAME
+         TEXT=''
+         TEXT<1,-1>=USER.NAME:' ':DATE()'D2/':' ':OCONV(TIME(),'MTHS'):' ':PROG.NAME
+         TEXT<1,-1>='User ':USER.NAME:' tried to access ':PROG.DESC
+         TEXT<1,-1>="(This user's name was not included in the program to allow access)"
+         MVIN=''
+*          MVIN<1> = 'gbino@afs.net'
+         MVIN<1,-1> = 'dfriend@afs.net'
+         MVIN<1,-1> = 'nmeddaugh@afs.net'
+         MVIN<2>=''
+         MVIN<4>='AFS'
+         MVIN<5>=SUBJ
+         MVIN<6>=TEXT
+         CALL SENDMAIL(MVIN,MVOUT)
+
+         CALL FB.PRINT.CENT(1,80,12,'Restricted Access Application...')
+         CALL FB.PRINT.CENT(1,80,14,'Access Denied! Contact the IS Help Desk for Access')
+         CALL ELINE('')
+         STOP
+         **    END CASE
+      END
+
+*
+* Open files
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      OPEN '','VOC' TO F.VOC ELSE CALL OPEN.ABORT('VOC',PROG.NAME)
+      OPEN '','FB.TABLES' TO F.TABLES ELSE CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      OPEN '','ZIPS' TO F.ZIPS ELSE CALL OPEN.ABORT("ZIPS",PROG.NAME)
+      OPEN '','PCIN' TO F.PCIN ELSE CALL OPEN.ABORT('PCIN',PROG.NAME)
+      OPEN '','PCOUT' TO F.PCOUT ELSE CALL OPEN.ABORT('PCOUT',PROG.NAME)
+      OPEN '','FB.MILEAGE' TO F.MILEAGE ELSE CALL OPEN.ABORT("FB.MILEAGE",PROG.NAME)
+      
+      READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE           ; * DRF01
+         CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')         ; * DRF01
+         STOP                            ; * DRF01
+      END                                ; * DRF01
+
+      BILLDATA.REC<2>:='\':USER.NAME     ; * DRF01
+      WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER.NAME ELSE           ; * DRF01
+         CALL ELINE("YOUR USER NAME '":USER.NAME:"' IS NOT IN THE BILLDATA FOLDER - PLEASE SEE IS")  ; * DRF01
+         STOP                            ; * DRF01
+      END                                ; * DRF01
+
+      OPEN '','BILLDATA.':USER.NAME TO BILLDATA ELSE         ; * DRF01
+         CALL ELINE('UNABLE TO OPEN "BILLDATA.":USER.NAME')  ; * DRF01
+         STOP                            ; * DRF01
+      END                                ; * DRF01
+*
+      ***  CALL CHANNEL(CH.NUM)
+      READ ZIP.TAB FROM F.TABLES, "ZIP.SUBSTITUTIONS" ELSE
+         CALL ELINE('ZIP Substitution Table NP.ZIP.STRIP.AFS500 not set up ')
+         STOP
+      END
+      WRITE ZIP.TAB ON F.TABLES, "ZIP.SUBSTITUTIONS.HOLD"
+      ZIP.TAB.HOLD = ZIP.TAB
+      DISP.REC = ""
+      N.ZIPS = DCOUNT(ZIP.TAB<1>,@VM)
+      FOR I.ZIP = 1 TO N.ZIPS
+         ZIP.TO.SUBST = ZIP.TAB<1,I.ZIP>
+         SUBST.ZIP = ZIP.TAB<2,I.ZIP>
+         GOSUB SETUP.DISP.ARRAY
+      NEXT I.ZIP
+******************************************************
+50:* Prompt for Bad Zip
+******************************************************
+      CALL SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+      BAD.ZIP.STR = ""
+      HELP="Enter 'Bad' Zip, 'S' to Skip to see ALL or 'EX'=Exit."
+      BAD.ZIP = ""
+      CALL GEN.IN(10,10,"'Bad' Zip : ",'',Q,0,8,'R','',0,23,10,0,QI,HELP,0,23)
+      BEGIN CASE
+         CASE QI = 'X' OR QI = 'EX' OR QI = ''
+            STOP
+         CASE QI = 'S'
+            GOTO 80
+         CASE QI MATCHES '1A1N1A1N1A1N'
+            BAD.ZIP.HOLD = QI
+            HELP="Is this a Canadian ZIP 'Y', 'N'"
+            PROMPT.STR = "Is this a Canadian ZIP 'Y'es or 'N'o : "
+            CALL GEN.IN(0,22,PROMPT.STR,'',Q,0,1,'R',0,0,LEN(PROMPT.STR)+2,22,0,QI,HELP,0,23)
+            BEGIN CASE
+               CASE QI = 'X' OR QI = 'EX' OR QI = ''
+                  GOTO 50
+               CASE QI = 'Y'
+                  BAD.ZIP = BAD.ZIP.HOLD
+                  BAD.ZIP.STR = BAD.ZIP'R#8'
+                  NULL
+               CASE QI = 'N'
+                  GOTO 50
+               CASE 1
+                  CALL ELINE('Invalid Selection - RETURN to Continue')
+                  GOTO 50
+            END CASE
+         CASE NUM(Q)
+            IF LEN(Q) GT 5 THEN
+               CALL ELINE("ZIP entered is too long")
+               GOTO 50
+            END ELSE
+               BAD.ZIP = Q "R%5"
+               READ BZ.REC FROM F.ZIPS, BAD.ZIP ELSE
+                  BZ.REC = ""
+                  HELP="ZIP not on file Continue 'Y', 'N'"
+                  PROMPT.STR = "ZIP not on file Continue 'Y'es or 'N'o : "
+                  CALL GEN.IN(0,22,PROMPT.STR,'',Q,0,1,'R',0,0,LEN(PROMPT.STR)+2,22,0,QI,HELP,0,23)
+                  BEGIN CASE
+                     CASE QI = 'X' OR QI = 'EX' OR QI = ''
+                        GOTO 50
+                     CASE QI = 'Y'
+                        BAD.ZIP.STR = BAD.ZIP'R#5'
+                        NULL
+                     CASE QI = 'N'
+                        GOTO 50
+                     CASE 1
+                        CALL ELINE('Invalid Selection - RETURN to Continue')
+                        GOTO 50
+                  END CASE
+               END
+               LOCATE BAD.ZIP IN DISP.REC<1> BY "AR" SETTING Z.POS THEN
+                  GD.ZIP = DISP.REC<4,Z.POS>
+                  CALL ELINE("'Good' Zip ":GD.ZIP:" Already set up for this zip")
+                  GOTO 50
+               END
+               BAD.ZIP.STR = BAD.ZIP'R#5':"  ":BZ.REC<1>:" ":BZ.REC<2>
+            END
+         CASE 1
+            CALL ELINE('Invalid Selection - RETURN to Continue')
+            GOTO 50
+      END CASE
+*
+      CRT @(10,10):"'Bad' Zip  : ":BAD.ZIP.STR
+******************************************************
+60:* Prompt for Good Zip
+******************************************************
+      GOOD.ZIP.STR = ""
+      HELP="Enter 'Good' Zip, 'X'=Exit."
+      CALL GEN.IN(10,12,"'Good' Zip : ",'',Q,0,8,'R','',0,23,12,0,QI,HELP,0,23)
+      BEGIN CASE
+         CASE QI = 'EX'
+            GOSUB UPDATE.LOG
+            STOP
+         CASE QI = 'X'
+            GOTO 50
+         CASE QI = ''
+            CALL ELINE("Invalid Entry")
+            GOTO 60
+         CASE QI MATCHES '1A1N1A1N1A1N'
+            GOOD.ZIP.HOLD = Q
+            HELP="Is this a Canadian ZIP 'Y', 'N'"
+            PROMPT.STR = "Is this a Canadian ZIP 'Y'es or 'N'o : "
+            CALL GEN.IN(0,22,PROMPT.STR,'',Q,0,1,'R',0,0,LEN(PROMPT.STR)+2,22,0,QI,HELP,0,23)
+            BEGIN CASE
+               CASE QI = 'EX'
+                  STOP
+               CASE QI = 'X'
+                  GOTO 60
+               CASE QI = 'Y' OR QI = ''
+                  GOOD.ZIP = GOOD.ZIP.HOLD
+                  GOOD.ZIP.STR = GOOD.ZIP'R#8'
+                  NULL
+               CASE QI = 'N'
+                  GOTO 60
+               CASE 1
+                  CALL ELINE('Invalid Selection - RETURN to Continue')
+                  GOTO 60
+            END CASE
+         CASE NUM(Q)
+            IF LEN(Q) GT 5 THEN
+               CALL ELINE("ZIP entered is too long")
+               GOTO 60
+            END ELSE
+               GOOD.ZIP = Q "R%5"
+               READ SZ.REC FROM F.ZIPS, GOOD.ZIP ELSE
+                  SZ.REC = ""
+                  HELP="ZIP not on file Continue 'Y', 'N'"
+                  PROMPT.STR = "ZIP not on file Continue 'Y'es or 'N'o : "
+                  CALL GEN.IN(0,22,PROMPT.STR,'',Q,0,1,'R',0,0,LEN(PROMPT.STR)+2,22,1,QI,HELP,0,23)
+                  BEGIN CASE
+
+                     CASE QI = 'EX'
+                        STOP
+                     CASE QI = 'X'
+                        GOTO 60
+                     CASE QI = 'Y' OR QI = ''
+                        GOOD.ZIP.STR = GOOD.ZIP'R#5'
+                        NULL
+                     CASE QI = 'N'
+                        GOTO 60
+                     CASE 1
+                        CALL ELINE('Invalid Selection - RETURN to Continue')
+                        GOTO 60
+                  END CASE
+               END
+            END
+            IF GOOD.ZIP = BAD.ZIP THEN
+               CALL ELINE("'Good' and 'Bad' Zips may not be the same")
+               GOTO 60
+            END
+            GOOD.ZIP.STR = GOOD.ZIP'R#5':"  ":SZ.REC<1>:" ":SZ.REC<2>
+         CASE 1
+            CALL ELINE('Invalid Selection - RETURN to Continue')
+            GOTO 60
+      END CASE
+*
+      CRT @(10,12):"'Good' Zip : ":GOOD.ZIP.STR
+*
+      HELP="Continue 'Y', 'N'"
+      PROMPT.STR = "Continue 'Y'es or 'N'o : ":SPACE(40)
+      CALL GEN.IN(0,22,PROMPT.STR,'',Q,0,1,'R',0,0,LEN(PROMPT.STR)+2,22,1,QI,HELP,0,23)
+      BEGIN CASE
+
+         CASE QI = 'EX'
+            STOP
+         CASE QI = 'X'
+            GOTO 50
+         CASE QI = 'Y' OR QI = ''
+            NULL
+         CASE QI = 'N'
+            GOTO 50
+         CASE 1
+            CALL ELINE('Invalid Selection - RETURN to Continue')
+            GOTO 50
+      END CASE
+*
+      ZIP.TO.SUBST = BAD.ZIP
+      SUBST.ZIP = GOOD.ZIP
+      GOSUB SETUP.DISP.ARRAY
+*
+80:*
+*
+      PAGE = 1
+*
+      GOSUB 9000                         ; * Display Zip substitution Table
+*
+* First page of ZIPS
+******************************************************
+100:* Choose line number
+******************************************************
+
+      HELP="Line # 'B'=Back 'T'=Top ''=Next pg 'LP'=Last Pg 'E'=End-&-Save 'CS'=Crt Sprd"  ; * DRF01
+      CALL GEN.IN(0,22,"Enter line number please. ####",'',Q,0,4,'','',0,-4,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI=''
+            PAGE=PAGE+1
+            IF PAGE GT LAST.PAGE THEN
+               CALL ELINE('No more pages')
+               GOTO 100
+            END
+            GOSUB 9000
+         CASE QI='B'
+            PAGE=PAGE-1
+            IF PAGE=0 THEN PAGE=1
+            GOSUB 9000
+         CASE QI='T'
+            PAGE=1
+            GOSUB 9000
+         CASE QI='LP'
+            PAGE=LAST.PAGE
+            GOSUB 9000
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GOTO 50
+         CASE QI='CS'                    ; * DRF01
+            DF.ARRAY=HEAD.LINE           ; * DRF01
+            GOSUB CREATE.SPREADSHEET     ; * DRF01
+         CASE NUM(QI)
+            SEL=QI
+            IF SEL LT START ! SEL GT STOP+1 THEN
+               CALL ELINE('Invalid selection.')
+               GOTO 100
+            END
+
+            GOSUB 8000
+            IF EXIT.FLAG = "Y" THEN GOTO 50
+         CASE QI='E'
+            GOSUB 9500
+            GOTO 50
+      END CASE
+      GOTO 100
+
+*****************************************************
+8000:** Edit code
+*****************************************************
+      EXIT.FLAG = "N"
+      ROW=3+REM(SEL,18)
+      IF ROW=3 THEN ROW=21
+
+      MASK.ZIP = DISP.REC<4,SEL>
+      HELP="Enter 'Good' Zip. ''=Accept. 'D'=Delete. 'X'=Back 'EX'=Exit."
+
+      CALL GEN.IN(43,ROW,MASK.ZIP'L#6','',Q,0,6,'R',0,0,-6,ROW,0,QI,HELP,0,23)
+*
+      BEGIN CASE
+         CASE QI = 'EX'
+            STOP
+         CASE QI = 'X'
+            EXIT.FLAG = "Y"
+         CASE QI = ''
+            GOSUB 9000
+         CASE QI='D'
+            DISP.REC=DELETE(DISP.REC,1,SEL)
+            DISP.REC=DELETE(DISP.REC,2,SEL)
+            DISP.REC=DELETE(DISP.REC,3,SEL)
+            DISP.REC=DELETE(DISP.REC,4,SEL)
+            DISP.REC=DELETE(DISP.REC,5,SEL)
+            DISP.REC=DELETE(DISP.REC,6,SEL)
+            GOSUB 9000
+         CASE NUM(Q)
+            IF LEN(Q) GT 5 THEN
+               CALL ELINE("ZIP entered is too long")
+               GOTO 8000
+            END ELSE
+               TEST.ZIP = Q "R%5"
+               READ TZ.REC FROM F.ZIPS, TEST.ZIP THEN
+                  TO.CITY = TZ.REC<1>
+                  TO.STATE = TZ.REC<2>
+               END ELSE
+                  TZ.REC = ""
+                  TO.CITY = "Unknown"
+                  TO.STATE = "??"
+                  HELP="ZIP not on file Continue 'Y', 'N'"
+                  PROMPT.STR = "ZIP not on file Continue 'Y'es or 'N'o : "
+                  CALL GEN.IN(0,22,PROMPT.STR,'',Q,0,1,'R',0,0,LEN(PROMPT.STR)+2,22,1,QI,HELP,0,23)
+                  BEGIN CASE
+
+                     CASE QI = 'EX'
+                        STOP
+                     CASE QI = 'X'
+                        GOTO 8000
+                     CASE QI = 'Y' OR QI = ''
+                        NULL
+                     CASE QI = 'N'
+                        GOTO 8000
+                     CASE 1
+                        CALL ELINE('Invalid Selection - RETURN to Continue')
+                        GOTO 8000
+                  END CASE
+               END
+               DISP.REC<4,SEL> = TEST.ZIP
+               DISP.REC<5,SEL> = TO.CITY
+               DISP.REC<6,SEL> = TO.STATE
+               GOSUB 9000
+            END
+         CASE 1
+            CALL ELINE("Invalid Selection")
+            GOTO 8000
+      END CASE
+*
+      RETURN
+
+*****************************************************
+9000:* Display lines.
+*****************************************************
+      CALL SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+
+      DET.HEADER = "LN#" "R#4"
+      DET.HEADER := " ":"FROM ZIP" "L#9"
+      DET.HEADER := " ":"CITY" "L#16"
+      DET.HEADER := " ":"STATE" "L#6":" -- "
+      DET.HEADER := " ":"TO ZIP" "L#9"
+      DET.HEADER := " ":"CITY" "L#16"
+      DET.HEADER := " ":"STATE" "L#6"
+      CRT @(0,3):DET.HEADER
+      HEAD.LINE='From Zip':TAB           ; * DRF01
+      HEAD.LINE:='From City':TAB         ; * DRF01
+      HEAD.LINE:='From State':TAB        ; * DRF01
+      HEAD.LINE:='To Zip':TAB            ; * DRF01
+      HEAD.LINE:='To City':TAB           ; * DRF01
+      HEAD.LINE:='To State'              ; * DRF01
+*
+      START=(PAGE*18)-17
+      IF START GT 9999 THEN
+         START=1
+         PAGE=1
+      END
+      STOP=START+17
+      CRT @(65,2):"PAGE ":PAGE "R#3" :" of ":LAST.PAGE "R#3"
+      MAX.LINES = DCOUNT(DISP.REC<1>,CHAR(253))
+      IF STOP GT MAX.LINES THEN STOP = MAX.LINES
+      ROW = 3
+      FOR I=START TO STOP STEP 1
+         ROW=3+REM(I,18)
+         IF ROW=3 THEN ROW=21
+*
+         D.ZIP.TO.SUBST = DISP.REC<1,I>
+         D.FROM.CITY = DISP.REC<2,I>
+         D.FROM.STATE = DISP.REC<3,I>
+         D.SUBST.ZIP = DISP.REC<4,I>
+         D.TO.CITY = DISP.REC<5,I>
+         D.TO.STATE = DISP.REC<6,I>
+*
+         DET.LINE = @(0,ROW):I "R#4"
+         DET.LINE := " ":D.ZIP.TO.SUBST "L#9"
+         DET.LINE := " ":D.FROM.CITY "L#16"
+         DET.LINE := " ":D.FROM.STATE "L#6":" -- "
+         DET.LINE := " ":D.SUBST.ZIP "L#9"
+         DET.LINE := " ":D.TO.CITY "L#16"
+         DET.LINE := " ":D.TO.STATE "L#6"
+         PRINT DET.LINE
+*
+      NEXT I
+      PRINT @(0,ROW+1):I "R#4"
+      LAST.PAGE = INT(MAX.LINES/18)+1
+
+      RETURN
+*****************************************************
+9500:* Update file Table
+*****************************************************
+      N.LINES = DCOUNT(DISP.REC<1>,CHAR(253))
+      ZIP.TAB = ""
+*
+      FOR I.ZIP = 1 TO N.LINES
+         ZIP.TAB<1,I.ZIP> = DISP.REC<1,I.ZIP>
+         ZIP.TAB<2,I.ZIP> = DISP.REC<4,I.ZIP>
+      NEXT I.ZIP
+*
+      WRITE ZIP.TAB ON F.TABLES, "ZIP.SUBSTITUTIONS"
+*
+      RETURN
+*****************************************************
+SETUP.DISP.ARRAY:
+*****************************************************
+      READ FROM.REC FROM F.ZIPS, ZIP.TO.SUBST THEN
+         FROM.CITY = FROM.REC<1>
+         FROM.STATE = FROM.REC<2>
+      END ELSE
+         FROM.CITY = "Unknown"
+         FROM.STATE = "??"
+      END
+*
+
+      READ TO.REC FROM F.ZIPS, SUBST.ZIP THEN
+         TO.CITY = TO.REC<1>
+         TO.STATE = TO.REC<2>
+      END ELSE
+         TO.CITY = "Unknown"
+         TO.STATE = "??"
+      END
+*
+      Z.POS = "-1"
+      LOCATE ZIP.TO.SUBST IN DISP.REC<1> BY "AR" SETTING Z.POS ELSE
+         DISP.REC=INSERT(DISP.REC,1,Z.POS;ZIP.TO.SUBST)
+         DISP.REC=INSERT(DISP.REC,2,Z.POS;FROM.CITY)
+         DISP.REC=INSERT(DISP.REC,3,Z.POS;FROM.STATE)
+         DISP.REC=INSERT(DISP.REC,4,Z.POS;SUBST.ZIP)
+         DISP.REC=INSERT(DISP.REC,5,Z.POS;TO.CITY)
+         DISP.REC=INSERT(DISP.REC,6,Z.POS;TO.STATE)
+      END
+
+      MAX.LINES = DCOUNT(DISP.REC<1>,CHAR(253))
+      LAST.PAGE = INT(MAX.LINES/18)+1
+*
+      RETURN
+*****************************************************
+CREATE.SPREADSHEET:***
+****************************************************
+      MAX.ZIPS = DCOUNT(DISP.REC<1>,CHAR(253))     ; * DRF01
+      FOR Z = 1 TO MAX.ZIPS              ; * DRF01
+         CUR.LINE=DISP.REC<1,Z>:TAB      ; * DRF01
+         CUR.LINE:=DISP.REC<2,Z>:TAB     ; * DRF01
+         CUR.LINE:=DISP.REC<3,Z>:TAB     ; * DRF01
+         CUR.LINE:=DISP.REC<4,Z>:TAB     ; * DRF01
+         CUR.LINE:=DISP.REC<5,Z>:TAB     ; * DRF01
+         CUR.LINE:=DISP.REC<6,Z>         ; * DRF01
+         DF.ARRAY<-1>=CUR.LINE           ; * DRF01
+      NEXT Z                             ; * DRF01
+      WRITE DF.ARRAY ON BILLDATA,'ZIP-SUBSTITUTION.XLS' THEN           ; * DRF01
+         CALL ELINE('You can find the downloaded file on your U drive named ZIP-SUBSTITUTION.XLS')   ; * DRF01
+      END                                ; * DRF01
+      RETURN                             ; * DRF01
+*****************************************************
+CALC.MILEAGE:
+*****************************************************
+      CALL SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+      CRT @(10,10):"Searching for Substitute Zip for ":BAD.ZIP.STR
+*
+      ORIG.ZIP = BAD.ZIP
+      W.ZIP.SUFF = BAD.ZIP[1,3]
+      CARRIER.ID = "00787"
+      W.SEN = \SSELECT ZIPS WITH @ID = "\:W.ZIP.SUFF:\]"\
+      EXECUTE W.SEN CAPTURING RESULT
+*
+      N.RECS = @SELECTED
+      EOF = "N"
+      CNT = 1
+      MILEAGE.TAB = ""
+      SELECTED.ZIP = ""
+      USE.THIS.ZIP = "N"
+*
+      LOOP
+         READNEXT DEST.ZIP ELSE EOF = "Y"
+      WHILE EOF = "N" DO
+         GOSUB GET.MILES
+         IF USE.THIS.ZIP = "Y" THEN EOF = "Y"
+         CNT += 1
+      REPEAT
+
+      IF USE.THIS.ZIP = "Y" THEN
+         ZIP.TO.SUBST = BAD.ZIP
+         GOSUB SETUP.DISP.ARRAY
+      END ELSE
+         CALL ELINE("No substitute ZIP Selected or found")
+         STOP
+      END
+*
+      RETURN
+*****************************************************
+GET.MILES:
+****************************************************
+      MILE.REC = ORIG.ZIP:@VM:DEST.ZIP
+      CLIENT.ID = "99999"
+*
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         CALL ELINE("Can't read CLIENT ":CLIENT.ID)
+         STOP
+      END
+*
+      CLIENT.NAME = CLIENT.REC<2>
+      VOUT = ""
+*
+      VIN='SEND'
+      VIN='READ'
+      VIN<2>=CH.NUM
+      VIN<3>=MILE.REC
+      VIN<4>=1                           ; * 1 to Skip File Lookup and go to PC
+      VIN<5>=PROG.NAME
+      VIN<6>=CLIENT.ID:' - ':CLIENT.NAME
+      VIN<8>=CLIENT.ID                   ; * JMK03
+      VIN<9>=CARRIER.ID                  ; * JMK03
+*
+      GOSUB ADD.ZIPS
+*
+      READ ORIG.ZIP.REC FROM F.ZIPS, ORIG.ZIP ELSE ORIG.ZIP.REC = ""
+      READ DEST.ZIP.REC FROM F.ZIPS, DEST.ZIP ELSE DEST.ZIP.REC = ""
+*
+      MILEAGE=VOUT<1>
+
+      CRT
+      CRT CNT "R#5":" ":ORIG.ZIP:" ":ORIG.ZIP.REC<1>[1,15] "L#15":" ":ORIG.ZIP.REC<2> "L#2":" ":
+      CRT "To  ":DEST.ZIP:" ":DEST.ZIP.REC<1>[1,15] "L#15":" ":DEST.ZIP.REC<2> "L#2":" ":
+      IF NUM(MILEAGE) AND MILEAGE GT "0" THEN
+         CRT " Miles ":MILEAGE
+      END ELSE
+         CRT " ???? Miles ":@(-3)
+      END
+
+      CRT @(10,12):"CHECKING ":DEST.ZIP:" ":DEST.ZIP.REC<1>[1,15] "L#15":" ":DEST.ZIP.REC<2> "L#2"
+      CRT @(40,16):CNT:" ZIPS Checked out of ":N.RECS:" Possibilities":"     "
+*
+      IF NUM(MILEAGE) AND MILEAGE NE "" THEN
+         CRT @(10,12):"Found Zip  ":DEST.ZIP:" ":DEST.ZIP.REC<1> : ", ":DEST.ZIP.REC<2> "L#2":" ":
+         MILEAGE = ICONV(MILEAGE,"MR2")
+         IF NUM(MILEAGE) AND MILEAGE GT "0" THEN
+            CRT " ":OCONV(MILEAGE,"MR2"):" Miles Away":@(-3)
+         END ELSE
+            CRT " ???? Miles":@(-3)
+         END
+*
+         HELP="Use this ZIP as substitute Zip 'Y'es, 'N'o or 'X' to exit"
+         CALL GEN.IN(10,14,"Use This ZIP : ",'',Q,0,1,'R',0,0,28,14,1,QI,HELP,0,23)
+         BEGIN CASE
+            CASE Q = "X" OR Q = "EX"
+               STOP
+            CASE Q = "Y"
+               USE.THIS.ZIP = "Y"
+               SUBST.ZIP = DEST.ZIP
+            CASE 1
+         END CASE
+         M.POS = "-1"
+         LOCATE MILEAGE IN MILEAGE.TAB<1> BY "AR" SETTING M.POS ELSE
+            MILEAGE.TAB=INSERT(MILEAGE.TAB,1,M.POS;MILEAGE)
+            MILEAGE.TAB=INSERT(MILEAGE.TAB,2,M.POS;ORIG.ZIP)
+            MILEAGE.TAB=INSERT(MILEAGE.TAB,3,M.POS;DEST.ZIP)
+         END
+      END
+*
+      RETURN
+*****************************************************
+ADD.ZIPS:
+*****************************************************
+      ZIP.TO.BE.ADDED=ORIG.ZIP           ; * Zip Code to Be added to the database
+
+      VOUT=''
+      CITY=''
+      STATE=''
+*
+* Call PCMiler, Force a PC read to obtain the city and state
+*****************************************************
+SINGLE.LOOKUP:***
+****************************************************
+      VIN='BOTH'
+      FORCE.PC=1
+      VIN<2>=CH.NUM
+      ORIG.ZIP=ZIP.TO.BE.ADDED
+      VIN<3>=ORIG.ZIP:@VM:DEST.ZIP
+      VIN<4>=FORCE.PC
+      VIN<5>='ADD.ZIP'
+      VIN<7>=1                           ; * Don't Report Errors
+      CALL PCMILER.BETA(VIN,VOUT,F.PCIN,F.PCOUT,F.MILEAGE)
+
+      MILEAGE=VOUT<1>
+*
+      IF VOUT<1>='' OR VOUT<1>+0 = 0 THEN VOUT='' ; GO 9999
+      IF VOUT<2>#'' THEN VOUT='' ; GO 9999
+
+*Have a good city and state at this point
+*
+      CITY=TRIM(FIELD(VOUT<3,1>,",",1))
+      STATE=TRIM(FIELD(VOUT<3,1>,",",2))
+      ZIP.REC=''
+      ZIP.REC<1>=CITY
+      ZIP.REC<2>=STATE
+      READ TEMP FROM F.ZIPS,ZIP.TO.BE.ADDED ELSE
+
+         VOUT=CITY
+         VOUT<2>=STATE
+      END
+***************************************************
+UPDATE.LOG:
+****************************************************
+      IF ZIP.TAB # ZIP.TAB.HOLD THEN
+         SYS.TME = TIME()
+         PROC.DTE =DATE()
+         VIN=""
+         VOUT=""
+         VIN<1> = PROC.DTE
+         VIN<2> = SYS.TME
+         VIN<6> = USER.NAME
+****VIN<7> = CLIENT.ID:",":DIV.ID
+         VIN<10> = CH.NUM
+         VIN<8> = "FB.1.11.18"
+         VIN<11> = "SZIPS"
+         ATT.CNT = DCOUNT(ZIP.TAB,@AM)
+         FOR I = 1 TO ATT.CNT
+            IF ZIP.TAB<I> # ZIP.TAB.HOLD<I> THEN
+               VIN<3> = I
+               IF DCOUNT(ZIP.TAB.HOLD<I>,@VM) GT 1 THEN
+                  TMP = ZIP.TAB.HOLD<I>
+                  CONVERT @VM TO @SVM IN TMP
+                  VIN<4> = TMP
+               END ELSE
+                  VIN<4> = ZIP.TAB.HOLD<I>
+               END
+               IF DCOUNT(ZIP.TAB<I>,@VM) GT 1 THEN
+                  TMP = ZIP.TAB<I>
+                  CONVERT @VM TO @SVM IN TMP
+                  VIN<5> = TMP
+               END ELSE
+                  VIN<5> = ZIP.TAB<I>
+               END
+               CALL UPD.AUD.LOG(VIN,VOUT)
+               
+            END
+         NEXT I
+      END
+      * SOURCE.FILE = VIN<9>
+      RETURN
+****************************************************
+9999: ** Return to calling program
+****************************************************
+      RETURN
+*****************************************************
+ENTER.ZIP:
+****************************************************
+*
+      RETURN

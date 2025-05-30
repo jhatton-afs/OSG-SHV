@@ -1,0 +1,458 @@
+*****************************************************************************
+* Program name : LOAD.LSO.FP.DATA
+* Author       : Nicole Hennick
+* Date written : 09-08-2020
+* Library      : FBBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* LOAD AP EMISSOINS BILL HISTORY
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 08:44:40 on 08/07/2020.
+*
+* Start modification history
+* 09/08/20 : NKH00 : ACCU-941 New program
+* End modification history
+*
+******************************************************************************
+INITIALIZE.VARIABLES:
+      OTODAY=OCONV(DATE(),'D4/')
+      OBDAY=OCONV(DATE()-6,'D4/')
+      PROG.NAME='LOAD.LSO.FP.DATA'
+      CEOL=@(-4)
+      CALL GET.USER.NEW(USER,CH.NUM)
+
+      DUP.CNT = 0
+      
+      TB=CHAR(9)
+      GOSUB OPEN.FILES
+      READV OP.FLG FROM F.OP,USER,38 ELSE
+         OP.FLG = "N"
+      END
+      IF OP.FLG # "Y" THEN
+         CALL ELINE('UNAUTHORIZED ACCESS')
+         STOP
+      END
+      RPT.SVC.PREFIX=CHAR(239):CHAR(187):CHAR(191)
+      BAD.CARRIER.HDR='CARRIER#''L#10 ':'NAME''L#35 ':'STATUS''L#6'
+      CLIENT.ID='02025'
+      PREV.TEST=''
+      
+START.PREPROCESS.LOOP:
+      CMD = 'SELECT BILLDATA.NMEDDAUGH = 163193]'
+      EXECUTE CMD
+      EOF=0
+      LOOP 
+         READNEXT FP.ID ELSE EOF=1
+*         FP.ID = 'LSOFirst.txt'     ; * Billdata filename
+      UNTIL EOF
+         CRT FP.ID
+         BAD.CARRIER.LIST=''
+         GOSUB 100
+      REPEAT
+      
+      STOP
+      
+READ.PREPROCESS.RECORD:
+      READ FP.REC FROM F.FP,FP.ID THEN
+         FP.ORG=FP.REC
+         FP.REC=CHANGE(FP.REC,CHAR(9),@VM)
+
+         IMP.NATT=DCOUNT(FP.REC,@AM)
+         IMP.PER=''
+         FOR IMP.ATT=1 TO IMP.NATT
+
+            IF IMP.ATT LT 6 THEN GO NEXT.PRE.ATT
+            FP.LINE=TRIM(FP.REC<IMP.ATT>)
+            IF FP.LINE='' THEN GO NEXT.PRE.ATT
+            IF FP.LINE=' ' THEN GO NEXT.PRE.ATT
+            IMP.REC=FP.LINE
+            GOSUB DEFINE.IMPORT.FIELDS
+            GOSUB READ.CLIENT.RECORD
+            GOSUB READ.CARRIER.RECORD
+            IF CARRIER.REC<89>#'A' THEN
+               IF BAD.CARRIER.LIST='' THEN
+                  BAD.CARRIER.LIST=BAD.CARRIER.HDR
+               END
+               BAD.CARRIER.HDR='CARRIER#''L#10 ':'NAME''L#35 ':'STATUS''L#6'
+               BAD.CARRIER.DTL=CARRIER.ID'L#10 ':CARRIER.REC<1>'L#35 ':CARRIER.REC<89>'L#6'
+               BAD.CARRIER.LIST<-1>=BAD.CARRIER.DTL
+            END
+            
+NEXT.PRE.ATT:
+         NEXT IMP.ATT
+      END
+      
+NEXT.PREPROCESS:
+      IF BAD.CARRIER.LIST#'' THEN
+         MVIN=''
+         SUBJ='INACTIVE CARRIER(S) FOR LEAN HEAVY FREIGHT PAYMENT IMPORT FILE'
+         TEXT=USER:' ATTEMPTED TO IMPORT THE LEAN HEAVY FREIGHT PAYMENT FILE '
+         TEXT<1,-1>='THAT CONTAIN CARRIER(S) WITH AN INACTIVE STATUS '
+         TEXT<1,-1>='ON ':DATE()'D2/':' ':OCONV(TIME(),'MTHS')
+         TEXT<1,-1>=' '
+         TEXT<1,-1>='PLEASE REVIEW AND ADVISE THE MAPPED CARRIER NUMBER TO USE IN ORDER TO CORRECT.'
+         TEXT<1,-1>=' '
+         TEXT<1,-1>=CHANGE(BAD.CARRIER.LIST,@AM,@VM)
+         MVIN=''
+         MVIN<1,-1>='DFRIEND@AFS.NET'
+         MVIN<4>='AFS'
+         MVIN<5>=SUBJ
+         MVIN<6>=TEXT
+     **    CALL SENDMAIL(MVIN,MVOUT)
+         ABORT
+      END
+      
+START.PROCESSING.LOOP:
+READ.IMPORT.RECORD:
+100:
+      READ FP.REC FROM F.FP,FP.ID THEN
+
+         PROC.DATE=ICONV("12-31-19","D")
+
+         FP.ORG=FP.REC
+         FP.REC=CHANGE(FP.REC,CHAR(9),@VM)
+         
+         IMP.NATT=DCOUNT(FP.REC,@AM)
+       ***  FP.REC<1,74>='AFSPROID'
+         IMP.PER=''
+         FOR IMP.ATT=2 TO IMP.NATT
+
+*            IF IMP.ATT LT 4 THEN GO NEXT.IMP.ATT
+
+            FP.LINE=TRIM(FP.REC<IMP.ATT>)
+            IF FP.LINE='' THEN GO NEXT.IMP.ATT
+            IF FP.LINE=' ' THEN GO NEXT.IMP.ATT
+            IMP.REC=FP.LINE
+            GOSUB DEFINE.IMPORT.FIELDS
+            GOSUB READ.CLIENT.RECORD
+            HIST.CLIENT=0
+            FP.CLIENT=1
+            GOSUB READ.CARRIER.RECORD
+            GOSUB CREATE.ADDITIONAL.FIELDS
+            GOSUB WRITE.FB.REC
+            
+NEXT.IMP.ATT:
+         NEXT IMP.ATT
+*         WRITE FP.ORG ON F.FP,'RAN_':FP.ID
+         FP.REC=CHANGE(FP.REC,@VM,CHAR(9))
+      END
+      
+NEXT.IMPORT:
+      RETURN
+      
+*************************************************************
+OPEN.FILES:
+*************************************************************
+      OPEN '','BILLDATA.':USER TO F.FP ELSE
+         CALL OPEN.ABORT('BILLDATA',PROG.NAME)      
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         CALL OPEN.ABORT('FB.BILLS.CRX',PROG.NAME)
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+         CALL OPEN.ABORT('ZIPS.CODES',PROG.NAME)
+      END
+      OPEN '','FED.INV.XREF' TO F.INV.XREF ELSE
+         CALL OPEN.ABORT("FED.INV.XREF",PROG.NAME)
+      END
+      OPEN '','EDI.CAR.ACNT.XREF' TO F.ECAX ELSE
+         CALL OPEN.ABORT("EDI.CAR.ACNT.XREF",PROG.NAME)
+      END
+      OPEN '','SCAC.XREF' TO F.SCAC ELSE
+         CALL OPEN.ABORT("SCAC.XREF",PROG.NAME)
+      END
+      OPEN '','OPERATOR' TO F.OP ELSE CALL OPEN.ABORT("OPERATOR",PROG.NAME)      
+      RETURN
+      
+*************************************************************
+DEFINE.IMPORT.FIELDS:
+*************************************************************
+      IMPEXPENSECODE = "FIN"
+      IMPACTUALCHARGE=TRIM(IMP.REC<1,8>)
+      CONVERT "$" TO "" IN IMPACTUALCHARGE
+      CONVERT '"' TO "" IN IMPACTUALCHARGE
+      CONVERT "," TO "" IN IMPACTUALCHARGE 
+      ACC = INDEX(IMPACTUALCHARGE,'(',1) 
+      IF ACC GT 0 THEN 
+         IMPACTUALCHARGE = 0        
+      END                    
+      IMPCARRIERNAME='Lone Star Overnight'
+      IMPSHIPDATE=ICONV(IMP.REC<1,36>[1,10],'D')
+      IMPINVOICE_PRONO=IMP.REC<1,7>
+      IMPDIRECTION="I"
+*      BEGIN CASE
+*         CASE IMPDIRECTION = "OUTBOUND"
+*         IMPDIRECTION = "O"
+*         CASE IMPDIRECTION = "INBOUND"
+*         IMPDIRECTION = "I"
+*         CASE IMPDIRECTION = "THIRD PARTY"
+*         IMPDIRECTION = "T"          
+*      END CASE
+      TEMP.NUM = IMP.REC<1,59>            
+      TEMP.NUM = CHANGE(TEMP.NUM,',','')
+      TEMP.NUM = CHANGE(TEMP.NUM,'"','')
+      TEMP.NUM=TRIM(TEMP.NUM)
+      IMPBILLEDWEIGHT=ICONV(TEMP.NUM,'MR0')
+      IMPCLASS = ""
+      IMPBOL=""
+      
+      IMPSENDERCITY=IMP.REC<1,29>
+      IMPSENDERSTATE=IMP.REC<1,30>
+      IMPSENDERZIP=TRIM(IMP.REC<1,31>[1,7])
+     
+      IMPRECEIVERNAME=IMP.REC<1,26>
+      IMPRECEIVERCITY=IMP.REC<1,22>
+      IMPRECEIVERSTATE=IMP.REC<1,23>
+      IMPRECEIVERZIP=TRIM(IMP.REC<1,24>[1,7])            
+      IMPMILES=""
+      IMPCUSTSHIPID=""
+      IMPLOADNUM=""
+         
+      DIVISION='00FIN'    ; * WAS 1"R%5"
+      IMPDELIVERYDATE=""
+      IMPFREIGHT=""
+      IMPCALCOM = 0
+
+      RETURN
+      
+*************************************************************
+READ.CLIENT.RECORD:
+*************************************************************
+
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE CLIENT.REC=''
+
+OPEN.CLIENT.FILES:*
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.HIST ELSE
+         CALL OPEN.ABORT('FB.BILLS.HIST,':CLIENT.ID,PROG.NAME)
+      END
+
+      RETURN
+      
+*************************************************************
+READ.CARRIER.RECORD:
+*************************************************************
+      CONVERT '"' TO '' IN IMPCARRIERNAME
+            
+      CARRIER.ID = '06189'            
+      READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE CARRIER.REC=''
+      RETURN
+      
+*************************************************************
+CREATE.ADDITIONAL.FIELDS:
+*************************************************************
+      LCC.ARRAY=''
+      BILL.DATE=IMPSHIPDATE
+      IN.OUT=IMPDIRECTION[1,1]
+      ORIG.ZIP=IMPSENDERZIP
+      CONVERT '-' TO '' IN ORIG.ZIP
+      IF NUM(ORIG.ZIP) AND LEN(ORIG.ZIP)>5 THEN
+         ORIG.ZIP=ORIG.ZIP[1,5]
+      END ELSE
+         CONVERT " " TO "" IN ORIG.ZIP
+      END
+      READV ORIG.COUNTRY.CD FROM F.ZIPS,ORIG.ZIP,3 ELSE ORIG.COUNTRY.CD=''
+      DEST.ZIP=IMPRECEIVERZIP
+      CONVERT '-' TO '' IN DEST.ZIP
+      IF NUM(DEST.ZIP) AND LEN(DEST.ZIP)>5 THEN
+         DEST.ZIP=DEST.ZIP[1,5]
+      END ELSE
+         CONVERT " " TO "" IN DEST.ZIP
+      END
+      READV DEST.COUNTRY.CD FROM F.ZIPS,DEST.ZIP,3 ELSE DEST.COUNTRY.CD=''
+      CONVERT '"' TO '' IN IMPMILES
+      CONVERT ',' TO '' IN IMPMILES
+      WEIGHT=IMPBILLEDWEIGHT
+      CARRIER.CHG=IMPACTUALCHARGE * 100
+      ACTUAL.CHG=IMPACTUALCHARGE * 100      
+      VAR.ARR=''
+
+      CHECK.AMT=ACTUAL.CHG
+      CHECK.NUM=''
+      CHECK.DATE=ICONV('12-01-19','D')
+      
+      BOL=IMPBOL
+      VC.ID=IMPRECEIVERNAME
+      ZIP.ARR=''
+      MILEAGE=0
+
+      T.MODE.BY.WGT=15  ; * Parcel Ground
+      
+      MISROUTE.ARRAY=''
+      DISC.PERC=''
+      ORIG.STATE=IMPSENDERSTATE
+      DEST.STATE=IMPRECEIVERSTATE
+      ORIG.CITY=IMPSENDERCITY
+      DEST.CITY=IMPRECEIVERCITY
+      ZIP.ARR<1,1>=ORIG.ZIP
+      ZIP.ARR<2,1>=ORIG.CITY
+      ZIP.ARR<3,1>=ORIG.STATE
+      ZIP.ARR<1,2>=DEST.ZIP
+      ZIP.ARR<2,2>=DEST.CITY
+      ZIP.ARR<3,2>=DEST.STATE
+      DUE.DATE=''
+      E.DATE=IMPSHIPDATE
+      BANK.ID=CLIENT.REC<81>
+      VERIFIED=''
+      BILL.STATUS='O'
+      INV.NUM=''
+      OVERRIDE.FIELD=''
+      OVERRIDE.OPERATOR=''
+      OVERRIDE.INFO=''
+      OVERRIDE.STATUS=''
+      FLAT.RATE=''
+      MIN.CHG=''
+
+      VERSION='0'
+      DUP.FLAG=0                         
+      BD.FLAG=0
+      SLASH.FLAG=0                       
+      SLASH.CNT=0                        
+      REJECT.REASONS=''
+      PRO=IMPINVOICE_PRONO
+      PRO=TRIM(PRO)
+      BEGIN CASE
+         CASE CARRIER.ID='10313' AND LEN(PRO) < 7
+            PRO=PRO'R%7'
+         CASE CARRIER.ID='33541' AND LEN(PRO)<5
+            PRO=PRO'R%5'
+      END CASE
+      SERVICE.LEVEL=''
+      MISROUTE.AMOUNT=''
+      MISROUTE.CARRIER=''
+      ADDRESS.CORRECTION.CHARGE=''
+
+      HANDLING.UNITS=''
+      FB.NOTE=''
+
+      EDI.PPR=''
+      RETURN
+      
+*************************************************************
+WRITE.FB.REC:
+*************************************************************
+      PRO.ID=CARRIER.ID:'*':PRO:'*':VERSION
+      IF BD.FLAG THEN
+         PRO.ID=CARRIER.ID:'*':PRO:'BD*':VERSION
+      END
+      IF SLASH.FLAG AND SLASH.CNT#"0" THEN        
+         PRO.ID=CARRIER.ID:'*':PRO:'/':SLASH.CNT:'*':VERSION         
+      END                                
+      READ TEST.REC FROM F.HIST,PRO.ID ELSE TEST.REC=''
+      READ TEST.REC FROM F.CRX,PRO.ID ELSE TEST.REC=''
+      IF TEST.REC#'' AND HIST.CLIENT=1 THEN RETURN
+      IF TEST.REC#'' THEN                
+
+         SLASH.FLAG=1                    
+         SLASH.CNT+=1                    
+
+         GO WRITE.FB.REC                 
+      END                                
+      T.DATE=DATE()
+      T.TIME=TIME()
+      USER='CLIENT-IMPORT'
+      PRO.REC = ''
+      PRO.REC<1> = BILL.DATE
+      PRO.REC<2> = IN.OUT
+
+      PRO.REC<3>=ORIG.ZIP
+      PRO.REC<4>=DEST.ZIP
+
+      PRO.REC<5> = IMPEXPENSECODE
+      PRO.REC<6> = WEIGHT
+      PRO.REC<7> = CARRIER.CHG
+      PRO.REC<8> = ACTUAL.CHG
+      PRO.REC<9> = DIVISION
+
+      PRO.REC<13> = ACTUAL.CHG
+      PRO.REC<14> = "99999"
+      PRO.REC<15> = ICONV("12-31-19","D")
+      PRO.REC<16> = BOL
+      PRO.REC<17> = VC.ID
+      PRO.REC<18> = ORIG.ZIP
+      PRO.REC<19> = IMPMILES
+
+      PRO.REC<20> = CARRIER.ID
+      PRO.REC<21> = T.MODE.BY.WGT
+
+      PRO.REC<25>=ORIG.STATE
+      PRO.REC<26>=DEST.STATE
+      PRO.REC<27>=ORIG.CITY
+      PRO.REC<28>=DEST.CITY
+      
+      PRO.REC<31> = IMPEXPENSECODE
+      
+      PRO.REC<33> = ACTUAL.CHG            
+
+      PRO.REC<37> = ICONV("12-31-19","D")
+      PRO.REC<38> = DUE.DATE
+      PRO.REC<39> = 'O'
+      PRO.REC<40> = BANK.ID
+      PRO.REC<45> = VERIFIED
+      PRO.REC<53> = USER
+      PRO.REC<54> = 'BATCH'
+
+      PRO.REC<68> = BILL.STATUS
+*      PRO.REC<74> = IMPCLASS
+*      PRO.REC<183> = IMPCUSTSHIPID  
+*      PRO.REC<184> = IMPLOADNUM    
+      FRT.ARRAY=''                      
+      MIS.ARRAY=''                      
+
+      IF VERSION > 0 THEN PRO.REC<37>=''
+      CALC = 0
+      
+      READ TEMP FROM F.HIST,PRO.ID THEN         
+         ORIG.PRO.ID = PRO
+         PRO.ID = CARRIER.ID:'*':PRO:'/1*':VERSION         
+         READ TEMP FROM F.HIST,PRO.ID THEN
+            PRO.ID = CARRIER.ID:'*':PRO:'/2*':VERSION                  
+            READ TEMP FROM F.HIST,PRO.ID THEN                     
+               PRO.ID = CARRIER.ID:'*':PRO:'/3*':VERSION                     
+            END
+         END
+*         DUP.CNT +=1      
+*         CRT 'Duplicate: ':PRO.ID:' ':DUP.CNT
+      END
+      WRITE PRO.REC ON F.HIST,PRO.ID      
+
+* UPDATE FREIGHT BILL CROSS REFERENCE (SKELETAL) RECORD
+      REC = ''
+      REC<1> = CLIENT.ID
+      REC<2> = BILL.DATE
+      REC<7> = PRO.REC<7>
+      REC<8> = PRO.REC<8>
+      REC<10> = PRO.REC<10>
+      REC<11> = PRO.REC<11>
+      REC<12> = PRO.REC<12>
+      REC<30> = PRO.REC<30>
+      REC<37> = PRO.REC<37>
+      REC<39> = PRO.REC<39>
+      REC<41> = PRO.REC<41>
+      REC<53> = PRO.REC<53>
+      REC<54> = PRO.REC<54>
+      REC<55> = PRO.REC<55>
+      REC<63> = PRO.REC<63>
+
+      WRITE REC ON F.CRX,PRO.ID
+
+      RETURN
+
+*************************************************************
+CONVERT.NUMBER:
+*************************************************************
+      TEST.NUM=CHANGE(TEST.NUM,'($','-')
+      TEST.NUM=CHANGE(TEST.NUM,')','')
+      TEST.NUM=CHANGE(TEST.NUM,'$','')
+      TEST.NUM=CHANGE(TEST.NUM,'"','')
+      TEST.NUM=CHANGE(TEST.NUM,',','')
+      RETURN
+   END

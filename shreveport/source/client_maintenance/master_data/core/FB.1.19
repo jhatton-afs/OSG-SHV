@@ -1,0 +1,1430 @@
+***********************************************************************
+* Program name : FB.1.19
+* Author       : Jim T. Row
+* Date written : 2012
+* Library      : FBBP
+* COPYRIGHT (C) 2019 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* Maintenance screen for reject codes
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 08:46:00 on 02/05/2020.
+*
+* Start modification history
+* 072312 - RLM01 - Sysaid #3073 - Replace former employees' email addresses with those of current employees
+* 020520 - NKH01 - ACCU-760 Removed the option to remove a code
+* End modification history
+*
+************************************************************************
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+*
+* Equates
+*
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+
+      EQU PAGE.SIZE TO 14
+      EQU REJECT.CODES.NAME TO 'REJECT.CODES'      ; * Record name
+      EQU GROUPING.CODES.NAME TO 'REJECT.CODE.GROUPS'        ; * Record name
+
+      EQU MESSAGE.FLAG TO '!!'
+      EQU BREAK.CHAR TO '~'
+
+      EQU RESTRICT.ACCESS TO TRUE
+
+      TERM.TYPE=SYSTEM(7)
+      BEGIN CASE
+         CASE TERM.TYPE='REGENT60'
+            REV.ON = CHAR(14)
+            REV.OFF = CHAR(15)
+         CASE 1
+            REV.ON=@(-13)
+            REV.OFF=@(-14)
+      END CASE
+
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FBBP',PROG.NAME)
+      END
+      OPEN '','OPERATOR' TO F.OP ELSE CALL OPEN.ABORT("OPERATOR",PROG.NAME)      ; * GRB01
+*
+* Initialize GENERAL APPLICATION variables
+*
+      PROMPT''
+      PROG.NAME = 'FB.1.19'
+      PROG.DESC = 'Rejection Code Editor'
+      CALL GET.USER.NEW(USER.NAME,CH.NUM)
+      PACK.NAME = 'USER :':USER.NAME     ; * Might want to change this.
+      CO.NAME='AFS Logistics, LLC'
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.1.19' ; UPL.VOUT = ''        ; * NPR_UPL 04/23/2010
+      UPL.VIN<3> = USER.NAME
+      UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+
+
+      READV OP.FLG FROM F.OP,USER.NAME,74 ELSE
+         OP.FLG = "N"
+      END
+      IF OP.FLG = "Y" THEN
+      END ELSE
+
+         SUBJ="Unauthorized Program Access by ":USER.NAME
+         TEXT=''
+         TEXT<1,-1>=USER.NAME:' ':DATE()'D2/':' ':OCONV(TIME(),'MTHS'):' ':PROG.NAME
+         TEXT<1,-1>='User ':USER.NAME:' tried to access ':PROG.DESC
+         TEXT<1,-1>="(This user's name was not included in the program to allow access)"
+         MVIN=''
+
+         MVIN<1>='MARY@afs.net'          ; * RLM01
+         MVIN<2>=''
+         MVIN<4>='AFS'
+         MVIN<5>=SUBJ
+         MVIN<6>=TEXT
+         CALL SENDMAIL(MVIN,MVOUT)
+
+         CALL FB.PRINT.CENT(1,80,12,'Restricted Access Application...')
+         CALL FB.PRINT.CENT(1,80,14,'Access Denied! See CHRIS for Access')
+         CALL ELINE('')
+         STOP
+      END
+      DEBUG.MSG = ''
+
+      WIDTH = 80
+      CTR = INT(WIDTH/2)
+      REVON = REV.ON
+      REVOFF = REV.OFF
+      SELECTED = ''
+      LAST.EDIT.POS = 1
+
+      SAVE.IT = TRUE
+      TRUNCATE.LEN=52
+      MAX.EDIT.SCR.PROMPTS = 6
+      EXIT.FLAG = FALSE
+
+      CUSTOM.YN.HELP=''
+
+      MAIN.HELP.LINE = 1
+      MAIN.HELP=''
+*      MAIN.HELP<-1> = "EDIT: [A]-Add [#]-Line # [T]-Top [H]-Help [R]-Remove [B]-Back [F]-Fwd [X]-Exit"  ; * NKH01
+      MAIN.HELP<-1> = "EDIT: [A]-Add [#]-Line # [T]-Top [H]-Help [B]-Back [F]-Fwd [X]-Exit"              ; * NKH01
+      MAIN.HELP<-1> = "EDIT: [T]-Top Page [L]-Last Page [-]-Back [+]-Forwd"
+      MAIN.HELP<-1> = "EDIT: [P]-Print [>] or [.]-Next Help Line [<] or [,]-Prior Help Line"
+      NUM.MAIN.HELP.LINES = DCOUNT(MAIN.HELP,@AM)
+
+*
+* Load Rejection Codes
+*
+      READ REJECT.CODES FROM F.TABLES,REJECT.CODES.NAME ELSE
+         CALL ELINE('Could not load ':REJECT.CODES.NAME:' from FB.TABLES.')
+         STOP
+      END
+      READ GROUPING.CODES FROM F.TABLES,GROUPING.CODES.NAME ELSE
+         CALL ELINE('Could not load ':GROUPING.CODES.NAME:' from FB.TABLES.')
+         STOP
+      END
+      NUM.OF.ITEMS = DCOUNT(GROUPING.CODES<1>,@VM)
+      GROUP.CODE.LIST=''
+      FOR XX = 1 TO NUM.OF.ITEMS
+         GROUP.CODE.LIST=GROUP.CODE.LIST:' ':GROUPING.CODES<1,XX>
+      NEXT XX
+      GROUP.CODE.LIST=TRIM(GROUP.CODE.LIST)
+
+      REJ.PAGE = 1
+
+      GOSUB SETUP.MAIN.LIST.DSP
+
+MAIN.START:
+
+      GOSUB DSP.MAIN.SCN                 ; * Draw screen layout...
+      EXIT.KEY = ''                      ; * Key use to exit "X" or "EX"
+      PAGE = 1                           ; * Current Page Number
+      DIFF.PAGE = FALSE
+      CHANGED.FLAG = FALSE
+
+UD.1:
+*
+* Display current position
+*
+      GOSUB UPDATE.MAIN.DISPLAY
+
+UD.2:
+
+      MASK = STR('#', 15)
+      IF DIFF.PAGE THEN MASK = LAST.EDIT.POS 'L#15'
+
+      HELP = MAIN.HELP<MAIN.HELP.LINE>
+      CRT @(0,22):'Option :':@(-4):
+      CALL GEN.IN(8,22,MASK,'',Q,0,15,'','',2,8,22,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' AND DIFF.PAGE THEN QI=MASK
+      QI = TRIM(QI)
+      DIFF.PAGE = FALSE
+      BEGIN CASE
+         CASE QI='EX' OR QI='X'
+*
+* Exit Program
+*
+            EXIT.KEY=QI
+            SAVE.IT = FALSE
+
+         CASE QI='>' OR QI='.'
+
+            IF MAIN.HELP.LINE >=NUM.MAIN.HELP.LINES THEN
+               MAIN.HELP.LINE =1
+            END ELSE
+
+               MAIN.HELP.LINE+=1
+            END
+            GOTO UD.2
+
+         CASE QI='<' OR QI=','
+*
+*  Prior Help Line
+*
+            IF MAIN.HELP.LINE =1 THEN
+               MAIN.HELP.LINE =NUM.MAIN.HELP.LINES
+            END ELSE
+               MAIN.HELP.LINE-=1
+            END
+            GOTO UD.2
+
+         CASE QI='T' OR QI='TOP'         ; * Top Page
+
+            IF NUM.LINES > 0 THEN
+               PAGE = 1
+            END ELSE
+               CALL ELINE('Top of document.')
+               GOTO UD.2
+            END
+
+         CASE QI='L' OR QI='LAST'        ; * Last Page
+
+            IF NUM.LINES > 0 THEN
+               PAGE=INT(NUM.LINES/PAGE.SIZE)
+               IF REM(NUM.LINES,PAGE.SIZE) THEN PAGE+=1
+            END ELSE
+               CALL ELINE('Bottom of document.')
+               GOTO UD.2
+            END
+
+         CASE QI='B' OR QI='-'
+*
+* Go Back 1 Page
+*
+            IF PAGE > 1 THEN
+               PAGE-=1
+            END ELSE
+               CALL ELINE('*** Top ***')
+               GOTO UD.2
+            END
+
+         CASE QI='F' OR QI='+' OR QI='='
+*
+* Go forward 1 Page
+*
+            IF NUM.LINES>PAGE*PAGE.SIZE THEN
+               PAGE+=1
+            END ELSE
+               CALL ELINE('*** Bottom ***')
+               GOTO UD.2
+            END
+
+         CASE QI='?' OR QI='HELP' OR QI='H'
+*
+* Help - List all Commands
+*
+            CALL FB.DRAW.BOX(0,2,80,20,' ',' ')
+            CRT @(19, 4):'HELP SCREEN - List of Commands'
+            CRT @(3, 6):'B  - Go Back 1 Page                F  - Go Forward 1 Page'
+            CRT @(3, 7):'-  - Go Back 1 Page                +  - Go Forward 1 Page'
+            CRT @(3, 8):'T  - Goto Top of Table (TOP)       L  - Goto Last Page '
+            CRT @(3, 9):'>  - Next Help Line                <  - Prior Help Line'
+            CRT @(3,10):',  - Next Help Line                .  - Prior Help Line'
+*            CRT @(3,11):'A  - Add Rejection Code            R  - Remove Selected Lines'           ; * NKH01
+            CRT @(3,11):'#  - Edit Line/Selected Lines     ### - Selects a Line'                   ; * NKH01
+            CRT @(3,12):'EX - Exit Program'                                                        ; * NKH01
+            CRT @(3,15):'REVON    - Turn On Reverse Display REVOFF   - Turn Off Reverse Display'
+            CRT @(3,17):'HELP     - This help screen        P        - Prints Rej Listing'
+            CALL ELINE('Viewing HELP Screen.')
+
+            GOSUB DSP.MAIN.SCN
+
+         CASE QI = 'DEBUG'
+
+            CALL FB.DRAW.BOX(0,4,80,17,' ','')
+            CRT @(19, 6):'DEBUG SCREEN'
+            CALL ELINE('Viewing DEBUG Screen.')
+
+            CODE.NUM=MAIN.DSP.LIST<2, QI>
+            GOSUB DSP.MAIN.SCN
+
+         CASE QI='PRINT' OR QI='P'       ; * Print Table to printer
+
+            IF NUM.LINES > 0 THEN
+               YN.MSG = 'Print table to currently selected printer?'
+               YN.MASK = 'Y '
+               GOSUB ASK.Y.OR.N
+               IF YN.ANSWER = 'Y' THEN
+                  GOSUB PRINT.TABLE
+               END
+            END ELSE
+               CALL ELINE('Nothing to print! Unable to print.')
+               GOTO UD.2
+            END
+
+         CASE QI='REVON'
+
+            IF REVON = '' THEN
+               REVON = REV.ON
+               REVOFF = REV.OFF
+               CALL ELINE("Reverse Screen Highlighting is now ON!")
+            END ELSE
+               CALL ELINE("*** Reverse Screen Highlighting is already ON.")
+            END
+            GOTO UD.1
+
+         CASE QI='A'
+*
+* Enter a rejection message
+*
+            ADD.MODE = TRUE
+            CHANGED.FLAG = FALSE
+            EXIT.FLAG = FALSE
+            EDIT.POS = DCOUNT(REJECT.CODES<2>, @VM) + 1
+            GOSUB ADD.REJ.REASON
+            LAST.EDIT.POS = EDIT.POS
+            GOSUB DSP.MAIN.SCN
+
+
+         CASE NUM(QI)
+
+            BEGIN CASE
+               CASE NOT(NUM(QI))
+*If the user entered a code displayed on this page, take them to it.
+*If the user entered an existing code but that would be displayed on a
+*different page than the one currently displayed, display the page and
+*default to the code they entered at the prompt.
+                  LOCATE QI IN REJECT.CODES<1> SETTING QI.POS THEN
+                     IF PAGE # MAIN.DSP.LIST<4, QI.POS> THEN
+                        PAGE = MAIN.DSP.LIST<4, QI.POS>
+                        LAST.EDIT.POS=QI.POS
+                        EDIT.POS=QI.POS
+                        CODE.NUM=MAIN.DSP.LIST<2, QI.POS>
+                     END
+                  END ELSE
+                     CALL ELINE(QI:' is not a valid code. If you wish to add it, please use the "A" option.')
+                     GOTO UD.2
+                  END
+               CASE QI < 1 OR QI > NUM.LINES
+                  CALL ELINE('Number entered must be between 1 and ':NUM.LINES:' inclusive.')
+               CASE QI # INT(QI)
+                  CALL ELINE('Entry must be a whole number between 1 and ':NUM.CODES:'.')
+                  GOTO UD.2
+               CASE 1
+
+                  EDIT.POS=QI
+                  IF PAGE = MAIN.DSP.LIST<4, QI> THEN
+                     LAST.EDIT.POS = EDIT.POS
+                     CHANGED.FLAG = FALSE
+                     GOSUB EDIT.REJ.REASON
+                  END ELSE
+*User entered a line not currently displayed.
+                     PAGE = MAIN.DSP.LIST<4, QI>
+                     DIFF.PAGE = TRUE
+                     LAST.EDIT.POS = QI
+                     GOTO UD.2
+                  END
+            END CASE
+
+* Begin NKH01
+*         CASE QI='R'
+*
+* Remove rejection code/line
+*
+*            GOSUB REMOVE.REJ.REASON
+
+*         CASE QI # '' AND NUM(QI)
+*            NUM.SEL = QI
+*            IF NUM.SEL > 0 AND NUM.SEL <= NUM.CODES THEN
+*               LOCATE NUM.SEL IN MAIN.DSP.LIST<1> SETTING WHERE THEN
+*                  SELECTED<NUM.SEL> = NOT(SELECTED<NUM.SEL>)
+
+*                  PAGE = MAIN.DSP.LIST<4,WHERE>
+*                  GOTO UD.1
+*               END
+*            END ELSE
+*               CALL ELINE('Entry # "':NUM.SEL:'" is not a valid choice! Select an entry from 1 - ':NUM.CODES)
+*               GOTO UD.2
+*            END
+*
+*         CASE QI='##'
+*            CALL ELINE("To select an item, Type the item's number at the Option prompt.")
+*            GOTO UD.2
+* End NKH01
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO UD.2
+      END CASE
+
+      IF NOT (EXIT.KEY) THEN GOTO UD.1
+      CRT @(-1):
+
+      RETURN
+
+* Begin NKH01
+*************************************************************
+*REMOVE.REJ.REASON:
+*************************************************************
+*      LOCATE TRUE IN SELECTED SETTING CHANGES.MADE THEN
+*
+* Verify choice with user
+*
+*         YN.MSG = 'Remove the selected Rejection Reasons?'
+*         YN.MASK = 'Y '
+*         GOSUB ASK.Y.OR.N
+*         BEGIN CASE
+*            CASE YN.ANSWER = 'N'
+*            CASE YN.ANSWER = 'Y'
+*               FOR T.X = 1 TO NUM.CODES
+*                  IF SELECTED<T.X> THEN
+*
+* This screen line was selected
+* Now find the screen line in the Display List
+*
+*                     LOCATE T.X IN MAIN.DSP.LIST<1> SETTING WHERE THEN
+*
+* Was this a "free form" entered message?
+*
+*                        CODE = MAIN.DSP.LIST<2,WHERE>
+*                        WHERE = MAIN.DSP.LIST<1,WHERE>
+*                        REJECT.CODES<1,WHERE>='DELETE ME'
+*                     END
+*                  END
+*               NEXT
+*
+* Remove marked Reject Reasons
+*
+*               LOOP
+*                  LOCATE 'DELETE ME' IN REJECT.CODES<1> SETTING WHERE THEN
+*                     FOUND.ONE=TRUE
+*                     DEL REJECT.CODES<1,WHERE>
+*                     DEL REJECT.CODES<2,WHERE>
+*                     DEL REJECT.CODES<3,WHERE>
+*                     DEL REJECT.CODES<4,WHERE>
+*                     DEL REJECT.CODES<5,WHERE>
+*                  END ELSE
+*                     FOUND.ONE=FALSE
+*                  END
+*               WHILE (FOUND.ONE)
+*               REPEAT
+
+*               GOSUB SETUP.MAIN.LIST.DSP
+*               IF PAGE > NUM.PAGES THEN PAGE = NUM.PAGES
+
+*               IF NUM.LINES=0 THEN
+
+*                  GOSUB DSP.MAIN.SCN
+*               END
+*         END CASE
+*      END ELSE
+*         CALL ELINE('No lines have been selected to remove. Try again.')
+*      END
+*      SELECTED = ''
+
+*      RETURN
+
+*************************************************************
+ADD.REJ.REASON:
+*************************************************************
+ARM.0:
+      TITLE = "FREIGHT BILL REJECTION CODE ENTRY"
+      STRING=''
+      ADD.MODE=TRUE
+      CODE.NUM = ''
+      ACTIVE.FLAG = ''
+      NEVER.PAY.FLAG = ''
+      GROUPING.CODE = ''
+      EMAIL.ADDR=''
+      REJECT.REASON = ''
+      REJECT.REASON.DISP=STRING
+      GOSUB INIT.EDIT.SCREEN
+
+* Create a new code
+*
+      CODE.NUM = DCOUNT(REJECT.CODES<1>,@VM)+1
+ARM.2:
+      CODE.STR = 'AU':CODE.NUM
+      LOCATE CODE.STR IN REJECT.CODES<1> SETTING WHERE THEN
+         CODE.NUM+=1
+         GOTO ARM.2
+         IF CODE.NUM > 999 THEN
+ARM.3:
+            CALL ELINE('Error in creating CODE NUMBER for Rejection - CALL PROGRAMMING!')
+            GOTO ARM.3
+         END
+      END
+      CODE.NUM = CODE.STR
+      GOSUB DSP.EDIT.SCN
+      GOSUB EDIT.SCR.PROMPT.CTRL
+
+      CALL FB.DRAW.BOX(0,7,80,11,' ','')
+
+      RETURN
+
+*************************************************************
+EDIT.REJ.REASON:
+*************************************************************
+      IF EDIT.POS = 0 THEN
+         IF NUM(LAST.EDIT.POS) THEN
+            IF LAST.EDIT.POS > NUM.CODES THEN LAST.EDIT.POS = NUM.CODES
+         END
+         HELP = "Entry Options:  [1]-[":NUM.CODES:"] Chooses the reason to edit  [X]-Back"
+         MASK = LAST.EDIT.POS:' '
+
+         LOOP
+            CRT @(0,22):'Edit Which Reason:':@(-4)
+            Q=''
+            CALL GEN.IN(20,22,MASK,'',Q,0,4,'','',2,20,22,0,QI,HELP,1,23)
+            QI = OCONV(QI,'MCU')
+            BEGIN CASE
+               CASE QI='X'
+                  RETURN
+
+               CASE NUM(QI)
+                  IF QI>0 AND QI<=NUM.CODES THEN
+                     EDIT.POS = QI
+                  END ELSE
+                     CALL ELINE('Entry value is too large!  Try again.')
+                  END
+               CASE 1
+                  CALL ELINE('Invalid entry.')
+            END CASE
+         UNTIL (EDIT.POS#0)
+         REPEAT
+
+         CRT @(0,22):@(-4):
+         CRT @(0,23):@(-4):
+      END
+
+      LAST.EDIT.POS = EDIT.POS
+
+ERR.0:
+      CODE.NUM = REJECT.CODES<1, EDIT.POS>
+      STR.IN = REJECT.CODES<2, EDIT.POS>
+      REJECT.REASON = STR.IN
+      EMAIL.ADDR = REJECT.CODES<3, EDIT.POS>
+      ACTIVE.FLAG = REJECT.CODES<4, EDIT.POS>
+      NEVER.PAY.FLAG = REJECT.CODES<6, EDIT.POS>
+      GROUPING.CODE = REJECT.CODES<5, EDIT.POS>
+*
+      PREV.CODE.NUM = CODE.NUM
+      PREV.EMAIL.ADDR = EMAIL.ADDR
+      PREV.ACTIVE.FLAG = ACTIVE.FLAG
+      PREV.NEVER.PAY.FLAG = NEVER.PAY.FLAG
+      PREV.GROUPING.CODE = GROUPING.CODE
+      PREV.REJECT.REASON = STR.IN
+*
+      LINE=1
+      STRING=''
+      LOOP
+         STR.BREAK = 78
+         GOSUB WORD.BREAK.STRING
+         STRING<LINE> = STR.DONE'L#78'
+         STR.IN = STR.OUT
+         LINE+=1
+      UNTIL (LINE>5 OR STR.OUT='')
+      REPEAT
+      REJECT.REASON.DISP=STRING
+      PREV.REJECT.REASON.DISP=REJECT.REASON.DISP
+
+      ADD.MODE=FALSE
+      LINE=1
+      TITLE = "EDIT FREIGHT BILL REJECTION REASONS"
+      GOSUB INIT.EDIT.SCREEN
+      GOSUB DSP.EDIT.SCN
+      GOSUB EDIT.SCR.PROMPT.CTRL
+
+ERR.1:
+
+      IF QI = 'X' THEN
+         CHANGED.FLAG = FALSE
+         GOSUB CHECK.FOR.UPDATES
+         IF CHANGED.FLAG THEN
+            IF DCOUNT(STRING,@AM) > 0 THEN
+
+               YN.MSG = 'Save the information for Code ':CODE.NUM:' ?'
+               YN.MASK = 'Y '
+               GOSUB ASK.Y.OR.N
+               IF YN.ANSWER = 'N' THEN GOTO ERR.EXIT
+               IF YN.ANSWER = 'X' THEN GOTO ERR.0
+               GOSUB SAVE.CODE.INFO
+
+               GOSUB SETUP.MAIN.LIST.DSP
+            END ELSE
+               YN.MSG = 'This message is blank! Changes will not be saved! Do you wish to try again? '
+               YN.MASK = 'Y '
+               GOSUB ASK.Y.OR.N
+               IF YN.ANSWER # 'N' THEN GOTO ERR.0
+            END
+         END
+      END
+
+      GOSUB DSP.MAIN.SCN
+
+ERR.EXIT:
+      CALL FB.DRAW.BOX(0,7,80,11,' ','')
+      EDIT.POS = 0
+
+      RETURN
+
+*************************************************************
+REJ.ENTRY:
+**************************************************************
+* Initialize Variables
+*
+      LINE=1
+      FOR T.X=1 TO 5
+
+         CRT @(0,14+T.X):STRING<T.X>
+      NEXT
+
+RE.0:
+      HELP = "ENTRY OPTIONS: ''-Finished [B]-Back up one line [C]-Clear [X]-Exit"
+
+RE.1:
+      CRT @(0,22):'Enter a message to be attached to the bill.  Enter OPTIONS on a blank line.':@(-4):
+      DONE = FALSE
+
+      LOOP
+      UNTIL (DONE)
+         IF STRING<LINE>='' THEN
+            MASK = '#'
+         END ELSE
+            MASK = STRING<LINE>
+         END
+
+         CRT @(0,14+LINE):STRING<LINE>
+
+         CALL GEN.IN(0,14+LINE,MASK,'',Q,0,78,'','',2,0,14+LINE,0,QI,HELP,0,23)
+         QI = OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='' AND STRING<LINE>#''
+
+               CRT @(0,14+LINE):STRING<LINE>'L#78':
+               IF LINE<5 THEN
+                  LINE+=1
+               END ELSE
+                  DONE=TRUE
+               END
+
+            CASE QI='X' OR QI=''
+               DONE=TRUE
+
+            CASE QI='B'
+               IF LINE>1 THEN LINE-=1
+
+            CASE QI='C'
+               YN.MSG = 'Clear the current message?'
+               YN.MASK = 'Y '
+               GOSUB ASK.Y.OR.N
+               IF YN.ANSWER = 'Y' THEN GOTO ADD.REJ.REASON
+
+            CASE 1
+               STRING<LINE>=TRIM(Q)
+
+               CRT @(0,14+LINE):STRING<LINE>'L#78':
+               IF LINE<5 THEN
+                  LINE+=1
+               END ELSE
+                  DONE=TRUE
+               END
+         END CASE
+      REPEAT
+
+      FOR T.X=1 TO 5
+         CRT @(0,14+T.X):STRING<T.X>
+      NEXT
+
+
+      REJECT.REASON.DISP = TRIM(STRING)
+
+      RETURN
+
+**********************************************************
+PROMPT.EMAIL.ADDR:
+**********************************************************
+RE.2:
+
+RE.3:
+      HELP = 'Enter email address or space to clear'
+      IF EMAIL.ADDR='' THEN
+         MASK='#'
+      END ELSE
+         MASK=EMAIL.ADDR
+      END
+      CALL GEN.IN(25,12,MASK,'',Q,0,30,'','',2,25,12,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI=' '
+            EMAIL.ADDR=''
+         CASE QI='X'
+            TITLE=CHANGE(TITLE,'EMAIL ADDRESS','REASON')
+
+            PROMPT.NUM -= 2
+         CASE TRIM(Q)#''
+            IF COUNT(Q,'@') # 1 THEN
+               CALL ELINE('Must have only one @ in an email address')
+               GOTO RE.3
+            END
+            IF NOT(INDEX(Q,'@',1)) THEN
+               CALL ELINE('Must have only one @ in an email address')
+               GOTO RE.3
+            END
+            EMAIL.ADDR=Q
+      END CASE
+
+      CRT @(25, 12):EMAIL.ADDR:@(-4)
+      RETURN
+
+*************************************************************
+UPDATE.MAIN.DISPLAY:***
+*************************************************************
+
+      IF NUM.LINES = 0 THEN
+         CALL FB.DRAW.BOX(0,5,80,PAGE.SIZE,' ','')
+         CALL FB.PRINT.CENT(0,78,13,'There are no codes on-file.')
+         RETURN
+      END
+
+      STR.OUT = '(Page ':PAGE'R#1':' of ':NUM.PAGES:')'
+      CRT @(78-LEN(STR.OUT),3):STR.OUT
+      CRT @(0,4):STR('-',79):
+
+      Y = 0
+      LINE = (PAGE-1)*PAGE.SIZE+1
+
+      LOOP
+      UNTIL (Y=>PAGE.SIZE)
+         BEGIN CASE
+            CASE LINE > NUM.LINES
+*
+* Print nothing - (Actually clears line)
+*
+               DESC=''
+
+            CASE TRIM(MAIN.DSP.LIST<1,LINE>) # ''
+*
+* Is this line a continuation of the prior?
+*
+               IF SELECTED<MAIN.DSP.LIST<1,LINE>> THEN
+                  DESC = REVON:'*'
+               END ELSE
+                  DESC = REVOFF:' '
+               END
+
+               IF TRIM(MAIN.DSP.LIST<2,LINE>) # '' THEN
+                  IF TRIM(MAIN.DSP.LIST<5,LINE>)# '' THEN
+                     DESC:= MAIN.DSP.LIST<1,LINE>'R#3':'*)'
+                  END ELSE
+                     DESC:= MAIN.DSP.LIST<1,LINE>'R#3':') '  ; * No
+                  END
+               END ELSE
+                  DESC:= '     '         ; * Yes
+               END
+
+               CODE.NUM = MAIN.DSP.LIST<2,LINE>
+               ACTIVE.FLAG = MAIN.DSP.LIST<6,LINE>
+               NEVER.PAY.FLAG = MAIN.DSP.LIST<8,LINE>
+               GROUPING.CODE = MAIN.DSP.LIST<7,LINE>
+
+               DESC := CODE.NUM 'L#5':SPACE(1):ACTIVE.FLAG 'L#1':SPACE(2):NEVER.PAY.FLAG 'L#1':SPACE(2):GROUPING.CODE 'L#8':SPACE(1):MAIN.DSP.LIST<3,LINE>:REVOFF
+               LINE+=1
+
+            CASE 1
+               DESC=''
+               LINE+=1
+         END CASE
+
+         Y+=1                            ; * Inc Y screen position
+
+         CRT @(0,6+Y):DESC:@(-4)
+      REPEAT
+
+      RETURN                             ; * RETURN FOR UPDATE.MAIN.DISPLAY
+
+*----------------------------------------------------------------------
+* SETUP.MAIN.LIST.DSP
+*
+* Y = SCREEN HORIZONTAL LINE
+*
+* MAIN.DSP.LIST<1,Y> - Screen displayable line number
+*                 A NULL Line Number indictates that is a wrapped text
+*                 line of the previous screen line (Y-1)
+* MAIN.DSP.LIST<2,Y> -
+* MAIN.DSP.LIST<3,Y> - Text to display
+*                 A NULL text to display means that this line will not
+*                 fit at the bottom of the screen.
+* MAIN.DSP.LIST<4,Y> - The computed page number which this line is displayed
+*                 on.
+*----------------------------------------------------------------------
+*************************************************************
+SETUP.MAIN.LIST.DSP:
+*************************************************************
+      LINE = 1
+      PAGE.SIZES=''
+      STRING=''
+      MAIN.DSP.LIST=''
+      NUM.CODES = DCOUNT(REJECT.CODES<1>, @VM)     ; * Count Reject Codes
+*
+* This first portion will break the rejection messages into the width
+* of the window.  This section calls the 'routine' WORD.BREAK.STRING, it
+* takes a string in STR.IN and searches for a SPACE from the maximum
+* width of the window string and goes back one char searching for a space
+* to break the line on.
+*
+      LOOP
+      UNTIL (LINE>NUM.CODES)
+
+         CODE.NUM = REJECT.CODES<1, LINE>
+         STRING = TRIM(REJECT.CODES<2, LINE>)
+         PREV.REJECT.REASON.DISP = STRING
+         REJECT.REASON = STRING
+         EMAIL.ADDR = REJECT.CODES<3, LINE>
+         ACTIVE.FLAG = REJECT.CODES<4, LINE>
+         NEVER.PAY.FLAG = REJECT.CODES<6, LINE>
+         GROUPING.CODE = REJECT.CODES<5, LINE>
+
+         REFRESH.LINE = TRIM(LINE)
+         REJECT.DESC = STRING
+         GOSUB BUILD.MAIN.DSP.LIST
+
+         LINE += 1
+
+      REPEAT
+
+      PREV.CODE.NUM = CODE.NUM
+      PREV.EMAIL.ADDR = EMAIL.ADDR
+      PREV.ACTIVE.FLAG = ACTIVE.FLAG
+      PREV.NEVER.PAY.FLAG = NEVER.PAY.FLAG
+      PREV.GROUPING.CODE = GROUPING.CODE
+      PREV.REJECT.REASON = REJECT.REASON
+
+*
+* This third portion will add which page number the code and message will
+* be on.  This will used for quick access to a page number for page
+* jumping when highlighting code lines.
+*
+
+      COUNT=0
+      NUM.LINES=NUM.CODES
+      NUM.PAGES=INT(NUM.LINES/PAGE.SIZE)
+      IF REM(NUM.LINES, PAGE.SIZE) THEN NUM.PAGES+=1
+
+      T.PAGE.NUM=1
+      FOR X=1 TO NUM.LINES
+         COUNT +=1
+         MAIN.DSP.LIST<4,X>=T.PAGE.NUM
+         IF COUNT = PAGE.SIZE THEN
+            T.PAGE.NUM+=1
+            COUNT = 0
+         END
+      NEXT X
+
+      RETURN                             ; * RETURN FOR SETUP.MAIN.LIST.DSP
+
+*----------------------------------------------------------------------
+* WORD.BREAK.STRING
+*
+*  PASSED VALUES:
+*       STR.IN      - String to search for a space
+*       STR.BREAK   - Character position to look for a space at.
+*
+*  RETURNED VALUES:
+*       STR.IN         - The orginal string untouched
+*       STR.BREAK      - The position which the string was broken at
+*       ORG.STR.BREAK  - The orginal passed string break position
+*       STR.DONE       - The portion of the string that was extracted.
+*       STR.OUT        - The remaining portion of the string. This string
+*                        also has preceeding spaces removed.
+*
+*----------------------------------------------------------------------
+*************************************************************
+WORD.BREAK.STRING:
+*************************************************************
+      STR.LEN = LEN(STR.IN)
+      ORG.STR.BREAK = STR.BREAK
+      DONE=FALSE
+
+*
+* Do we have a BREAK.CHAR already in the string?
+*
+      POS=INDEX(STR.IN, '~', 1)
+      BEGIN CASE
+*
+* Nope.. We could not find one.
+*
+         CASE POS=''
+
+*
+* First Character is the Break Char... Just trim it out..
+*
+         CASE POS=1
+            STR.IN=STR.IN[2,9999]
+            STR.LEN=LEN(STR.IN)
+
+*
+* Yes..We found one.  Is it within range?
+*
+         CASE POS >0 AND POS < STR.BREAK
+*
+* Yes.. Init our String Out (STR.DONE), Set the return break
+* position (STR.BREAK) and mark as DONE (DONE=TRUE).
+*
+            STR.BREAK = POS
+            STR.DONE = STR.IN[1,POS-1]
+            DONE=TRUE
+
+      END CASE
+
+*
+* Did we find the brake character?
+*
+      IF NOT(DONE) THEN
+*
+* Nope,
+*
+* Is the passed string already short enough?
+*
+         IF STR.LEN < STR.BREAK THEN
+*
+* Yes.. Init STR.DONE
+*
+            STR.DONE = STR.IN
+         END ELSE
+*
+* No.. We need to break it. Break on spaces.
+*
+            LOOP
+            UNTIL (DONE)
+               IF (STR.IN[STR.BREAK,1]=' ') THEN
+                  STR.DONE=STR.IN[1,STR.BREAK-1]   ; * Don't include the space
+                  DONE = TRUE
+               END ELSE
+*
+* Have not found a space yet.. Back-up 1 character and
+* check it.
+*
+                  STR.BREAK-=1
+*
+* Have we failed to find a Space?
+*
+                  IF STR.BREAK < 3 THEN
+*
+* Yes.. Truncate string at the orginal max len.
+*
+                     STR.DONE=STR.IN[1,ORG.STR.BREAK]
+                     DONE = TRUE
+                  END
+               END
+            REPEAT
+         END
+      END
+
+*
+* Init our returning string of the remaining unused portion of the
+* orginal string.
+*
+      STR.OUT = STR.IN[STR.BREAK+1,999]
+
+*
+* Remove the PRECEEDING SPACES on the remaining portion of the string.
+*
+      DONE=FALSE
+      LOOP
+      UNTIL (DONE)
+         IF (STR.OUT[1,1] # ' ' OR LEN(STR.OUT)=0) THEN
+            DONE=TRUE
+         END ELSE
+            STR.OUT=STR.OUT[2,999]
+         END
+      REPEAT
+
+      RETURN
+
+*************************************************************
+ASK.Y.OR.N:***
+*************************************************************
+
+      YN.ANSWER = ''
+      IF (CUSTOM.YN.HELP # '') THEN
+         HELP=CUSTOM.YN.HELP
+         CUSTOM.YN.HELP=''
+      END ELSE
+         HELP = CHAR(7):"Entry Options: [Y]-Yes [N]-No [X]-Back"
+      END
+
+Y.OR.N:
+
+      CRT @(0,22):YN.MSG:@(-4)
+      MASK = YN.MASK'L#1'
+      Q=''
+      CALL GEN.IN(LEN(YN.MSG)+1,22,MASK,'',Q,0,1,'','',2,LEN(YN.MSG)+1,22,0,QI,HELP,1,23)
+      QI = OCONV(QI,'MCU')
+
+      IF QI='' THEN QI=MASK
+
+      BEGIN CASE
+         CASE QI = '1'
+            QI = 'Y'
+         CASE QI = '0'
+            QI = 'N'
+         CASE QI = 'Y'
+         CASE QI = 'N'
+         CASE QI = 'X'
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO Y.OR.N
+      END CASE
+
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+      YN.ANSWER = QI
+
+*************************************************************
+INIT.MAIN.SCREEN:***
+*************************************************************
+
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('-',79) ; 
+      CRT @(0,5):'Line# Code  A  P  Grouping Description'
+      CRT @(0,6):'----- ----- -  -  -------- ':STR('-',TRUNCATE.LEN)
+      CRT @( 0,21):STR('-',79) ; 
+
+      RETURN
+
+*************************************************************
+INIT.EDIT.SCREEN:***
+*************************************************************
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('-',79)
+
+      CRT @(0,4):'   Reject Reason Code..:  ':     ; * SWB02
+      CRT @(0,6):'1) Active/Inactive.....:  ':     ; * SWB02
+      CRT @(0,8):'2) Never/Eventually Pay:  ':     ; * SWB02
+      CRT @(0,10):'3) Grouping Code.......:  ':    ; * SWB02
+      CRT @(0,12):'4) Email Address.......:  ':    ; * SWB02
+      CRT @(0,14):'5) Reject Message......:  ':    ; * SWB02
+      CRT @( 0,21):STR('-',79)
+
+      RETURN
+
+*************************************************************
+DSP.MAIN.SCN:***
+*************************************************************
+
+      GOSUB INIT.MAIN.SCREEN             ; *SWB01
+      CRT @(0,3):' ###   Rejection Reasons'        ; *SWB01
+      CRT @(0,4):STR('-',79)             ; *SWB01
+
+      RETURN                             ; *SWB01
+
+
+*************************************************************
+DSP.EDIT.SCN:***
+*************************************************************
+
+      CRT @(25,4):CODE.NUM:@(-4)
+      CRT @(25,6):ACTIVE.FLAG:@(-4)
+      CRT @(25,8):NEVER.PAY.FLAG:@(-4)
+      GROUPING.CODE.DISP = ''
+      IF GROUPING.CODE # '' THEN
+         GROUPING.CODE.DISP = GROUPING.CODE 'L#8'
+         GROUPING.CODE.DESC = ''
+         LOCATE GROUPING.CODE IN GROUPING.CODES<1>, 1 SETTING GC.POS THEN
+            GROUPING.CODE.DESC = GROUPING.CODES<2, GC.POS>
+            GROUPING.CODE.DISP := SPACE(2):'-':SPACE(2):GROUPING.CODE.DESC 'L#30'
+         END
+      END
+      CRT @(25,10):GROUPING.CODE.DISP:@(-4)
+      CRT @(25,12):EMAIL.ADDR:@(-4)
+      REJECT.REASON.DISP.LINES=DCOUNT(REJECT.REASON.DISP,@FM)
+      FOR RRL = 1 TO REJECT.REASON.DISP.LINES
+         CRT @(0,14+RRL):REJECT.REASON.DISP<RRL>:@(-4)
+      NEXT RRL
+
+      RETURN
+
+*************************************************
+PROMPT.REJECT.CODE:
+************************************************
+      MASK = '#####'
+      IF CODE.NUM # '' THEN MASK = CODE.NUM
+      OLD.CODE.NUM = CODE.NUM
+      HELP = 'Enter Reject Code, [X]-Back, [EX]it'
+      CALL GEN.IN(25,4,MASK,'',Q,0,15,'','',2,25,4,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GOSUB DSP.MAIN.SCN
+            EXIT.FLAG = TRUE
+            RETURN
+         CASE QI='' AND MASK # '#####'
+            QI=MASK
+            IF ADD.MODE THEN
+               CALL ELINE('You must enter a Reject Code.')
+            END ELSE
+               GOTO REJECT.CODE.BOTTOM
+            END
+         CASE QI='' OR QI=' '
+            CALL ELINE('Not a valid entry. Please enter the Reject Code.')
+            GOTO PROMPT.REJECT.CODE
+         CASE 1
+            LOCATE QI IN REJECT.CODES<1> SETTING QI.POS THEN
+               CALL ELINE('Code ':QI:' already on Line ':QI.POS:'. ')
+               GOTO PROMPT.REJECT.CODE
+            END
+            CODE.NUM = QI
+      END CASE
+
+REJECT.CODE.BOTTOM:
+
+      CRT @(25, 4):CODE.NUM:@(-4)
+      RETURN
+
+***************************************
+PROMPT.ACTIVE.FLAG:
+***************************************
+
+      MASK = '##'
+      IF ACTIVE.FLAG # '' THEN MASK = ACTIVE.FLAG 'L#2'
+
+      HELP = 'Enter [A]ctive, [I]nactive, [X]-Back, [EX]it'
+      CALL GEN.IN(25,6,MASK,'',Q,0,2,'','',2,25,6,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GOSUB DSP.MAIN.SCN           ; * SWB02
+            EXIT.FLAG = TRUE
+            RETURN                       ; * SWB02
+
+         CASE QI='' AND MASK # '##'
+            QI=MASK
+            IF ADD.MODE THEN
+               CALL ELINE('You must enter "A" or "I"')
+            END ELSE
+               GOTO ACTIVE.FLAG.BOTTOM
+            END
+         CASE QI='' OR QI=' '
+            CALL ELINE('Not a valid entry. Please enter [A]ctive or [I]nactive.')
+            GOTO ACTIVE.FLAG.BOTTOM
+         CASE QI='A' OR QI='I'
+            ACTIVE.FLAG = QI
+         CASE 1
+            CALL ELINE('Not a valid entry. Please enter [A]ctive or [I]nactive.')
+            GOTO ACTIVE.FLAG.BOTTOM
+      END CASE
+
+ACTIVE.FLAG.BOTTOM:
+
+      CRT @(25, 6):ACTIVE.FLAG 'L#2':@(-4)
+
+      RETURN
+
+******************************************
+PROMPT.NEVER.PAY.FLAG:
+******************************************
+
+      MASK = '##'
+      IF NEVER.PAY.FLAG # '' THEN MASK = NEVER.PAY.FLAG 'L#2'
+
+      HELP = 'Enter [E]ventually Pay, [N]ever Pay, [X]-Back, [EX]it'
+      CALL GEN.IN(25,8,MASK,'',Q,0,2,'','',2,25,8,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            IF ADD.MODE THEN
+               PROMPT.NUM -= 2
+            END ELSE
+               EXIT.FLAG = TRUE
+            END
+         CASE QI='' AND MASK # '##'
+            QI=MASK
+            IF ADD.MODE THEN
+               CALL ELINE('You must enter "A" or "I"')
+            END ELSE
+               GOTO NEVER.PAY.FLAG.BOTTOM
+            END
+         CASE QI='' OR QI=' '
+            CALL ELINE('Not a valid entry. Please enter [E]ventually Pay or [N]ever Pay.')
+            GOTO NEVER.PAY.FLAG.BOTTOM
+         CASE QI='E' OR QI='N'
+            NEVER.PAY.FLAG = QI
+         CASE 1
+            CALL ELINE('Not a valid entry. Please enter [E]ventually Pay or [N]ever Pay.')
+            GOTO NEVER.PAY.FLAG.BOTTOM
+      END CASE
+
+NEVER.PAY.FLAG.BOTTOM:
+
+      CRT @(25, 8):NEVER.PAY.FLAG 'L#2':@(-4)
+
+      RETURN
+
+************************************
+PROMPT.GROUPING:
+************************************
+
+      MASK = '########'
+      IF GROUPING.CODE # '' THEN MASK = GROUPING.CODE
+      OLD.GROUPING.CODE = GROUPING.CODE
+
+      HELP = 'Enter Grouping Code ':GROUP.CODE.LIST
+      HELP = HELP'L#79'
+      CALL GEN.IN(25,10,MASK:@(-4),'',Q,0,8,'','',2,25,10,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            IF ADD.MODE THEN PROMPT.NUM -= 2
+         CASE QI=' '
+            GROUPING.CODE = ''
+
+         CASE QI='' AND MASK # '########'
+            QI=MASK
+            IF ADD.MODE THEN
+               CALL ELINE('You must enter valid Grouping Code.')
+            END ELSE
+               GOTO GROUPING.CODE.BOTTOM
+            END
+         CASE QI='' OR QI=' '
+            CALL ELINE('Not a valid entry. Please enter valid Grouping Code.')
+            GOTO GROUPING.CODE.BOTTOM
+         CASE 1
+            LOCATE QI IN GROUPING.CODES<1>, 1 SETTING GC.POS THEN
+               GROUPING.CODE = QI
+            END ELSE
+               CALL ELINE(QI:' is not a valid Grouping Code.')
+               GOTO PROMPT.GROUPING
+            END
+      END CASE
+
+      GROUPING.CODE.DISP = ''
+      IF GROUPING.CODE # '' THEN
+         GROUPING.CODE.DISP = GROUPING.CODE 'L#8'
+         GROUPING.CODE.DESC = ''
+         LOCATE GROUPING.CODE IN GROUPING.CODES<1>, 1 SETTING GC.POS THEN
+            GROUPING.CODE.DESC = GROUPING.CODES<2, GC.POS>
+            GROUPING.CODE.DISP := SPACE(2):'-':SPACE(2):GROUPING.CODE.DESC 'L#30'
+         END
+      END
+
+GROUPING.CODE.BOTTOM:
+
+      CRT @(25,10):GROUPING.CODE.DISP:@(-4)
+      RETURN
+
+*************************************************
+PRINT.TABLE:
+*************************************************
+      PRINTER ON
+*     PAGE 1
+      HED=''
+
+      CALL PAGE.HEAD(PROG.DESC,'AFS,LLC','','Payment,Rejection Reasons',DATE(),132,HED)
+*     PAGE 0
+      COL.HED1='Line ':'Code''L#5 ':'A  ':'P  ':'Grouping ':'Description'
+      COL.HED2='---- ':'----''L#5 ':'-  ':'-  ':'-------- ':'--------------------------------------------------------------'
+      HEADING HED:COL.HED1:"'L'":COL.HED2:"'L'"
+      DONE=FALSE
+
+      NUM.DISP=DCOUNT(MAIN.DSP.LIST<1>,@VM)        ; * JMKXX
+      FOR LINE = 1 TO NUM.DISP
+         PRT.DESC=''
+         BEGIN CASE
+
+            CASE TRIM(MAIN.DSP.LIST<3,LINE>) = ''
+            CASE 1
+*
+* Is this line a continuation of the prior?
+*
+               IF TRIM(MAIN.DSP.LIST<2,LINE>) # '' THEN
+                  PRT.DESC:= MAIN.DSP.LIST<1,LINE>'R#3':') '           ; * No
+               END ELSE
+                  PRT.DESC:= '     '     ; * Yes
+               END
+
+               CODE.NUM = MAIN.DSP.LIST<2,LINE>
+               ACTIVE.FLAG = MAIN.DSP.LIST<6,LINE>
+               NEVER.PAY.FLAG = MAIN.DSP.LIST<8,LINE>
+               GROUPING.CODE = MAIN.DSP.LIST<7,LINE>
+               CODE.DESC = MAIN.DSP.LIST<9,LINE>
+               PRT.DESC := CODE.NUM 'L#5 ':ACTIVE.FLAG 'L#1  ':NEVER.PAY.FLAG 'L#1  ':GROUPING.CODE 'L#8 ':CODE.DESC
+               PRINT PRT.DESC
+               IF TRIM(MAIN.DSP.LIST<10,LINE>)# '' THEN
+                  PRINT SPACE(26):MAIN.DSP.LIST<10,LINE>
+               END
+               IF TRIM(MAIN.DSP.LIST<5,LINE>)# '' THEN
+                  PRINT SPACE(26):MAIN.DSP.LIST<5,LINE>
+               END
+         END CASE
+      NEXT
+
+      PRINTER OFF
+      PRINTER CLOSE
+
+      CALL ELINE("Table printed.")
+
+      RETURN
+
+*************************************************
+DEBUG:
+*************************************************
+*
+* Was a special debug message passed? If not, Use the default.
+*
+      IF DEBUG.MSG = '' THEN DEBUG.MSG='DEBUG POINT - BREAK IT!'
+      CRT @(0,0):DEBUG.MSG:
+      INPUT NULL,1
+      CRT @(0,0):SPACE(LEN(DEBUG.MSG)):
+      DEBUG.MSG=''                       ; * Clear it to prevent reuse of special.
+
+      RETURN
+
+*****************************************
+EDIT.SCR.PROMPT.CTRL:
+*****************************************
+      PROMPT.NUM = 0
+
+      IF ADD.MODE THEN
+         LOOP
+            PROMPT.NUM += 1
+            GOSUB WHICH.PROMPT
+         UNTIL PROMPT.NUM > MAX.EDIT.SCR.PROMPTS OR EXIT.FLAG DO REPEAT
+
+      END
+      IF NOT(EXIT.FLAG) THEN
+         LOOP
+            EDIT.MASK = '##'
+            HELP = 'Enter Line # to change, [U]pdate, [X]-back to Main screen, [EX]it'
+            CRT @(0,22):'Option :':@(-4):
+            CALL GEN.IN(8,22,EDIT.MASK,'',Q,0,15,'','',2,8,22,0,QI,HELP,0,23)
+            QI=OCONV(QI,'MCU')
+         UNTIL QI = 'EX' DO
+            BEGIN CASE
+               CASE QI = 'X'
+                  RETURN
+               CASE QI = 'EX'
+*CRT This won't ever get executed because of loop conditional
+               CASE QI = '' OR QI = ' '
+               CASE QI = 'U'
+*
+                  GOSUB CHECK.FOR.UPDATES
+                  IF CHANGED.FLAG THEN GOSUB SAVE.CODE.INFO
+                  RETURN
+               CASE QI < 1 OR QI > MAX.EDIT.SCR.PROMPTS
+               CASE QI # INT(QI)
+               CASE 1
+                  PROMPT.NUM = QI
+                  GOSUB WHICH.PROMPT
+            END CASE
+         REPEAT
+         IF QI='EX' THEN STOP
+      END
+
+      RETURN
+
+WHICH.PROMPT:
+
+      ON PROMPT.NUM GOSUB PROMPT.ACTIVE.FLAG, PROMPT.NEVER.PAY.FLAG, PROMPT.GROUPING, PROMPT.EMAIL.ADDR, REJ.ENTRY       ; * SWB02
+
+      RETURN
+*
+***********************************
+SAVE.CODE.INFO:
+***********************************
+*
+      CRT 'SAVE.CODE.INFO:'
+      STR.OUT=''
+      FOR X = 1 TO 5
+         IF REJECT.REASON.DISP<X> # '' THEN STR.OUT:= REJECT.REASON.DISP<X>:' '
+      NEXT
+      REJECT.CODES<1,EDIT.POS>=CODE.NUM
+      STR.OUT = TRIM(STR.OUT)
+      REJECT.CODES<2,EDIT.POS>=STR.OUT
+      REJECT.CODES<3,EDIT.POS>=EMAIL.ADDR
+      REJECT.CODES<4,EDIT.POS>=ACTIVE.FLAG
+      REJECT.CODES<5,EDIT.POS>=GROUPING.CODE
+      REJECT.CODES<6,EDIT.POS>=NEVER.PAY.FLAG
+*
+*Now refresh MAIN.DSP.LIST so the front screen will show the latest info
+      REFRESH.LINE = EDIT.POS
+      REJECT.DESC = STR.OUT
+      GOSUB BUILD.MAIN.DSP.LIST
+
+      WRITE REJECT.CODES ON F.TABLES,REJECT.CODES.NAME ELSE
+
+EXIT.IT:
+         CALL ELINE('Could not SAVE ':REJECT.CODES.NAME:' ON FB.TABLES - Call Programming!')
+         GOTO EXIT.IT
+      END
+
+      IF EDIT.POS > NUM.LINES THEN NUM.LINES = EDIT.POS      ; *SWB01
+
+      CHANGED.FLAG = FALSE
+
+      RETURN
+
+**************************************
+CHECK.FOR.UPDATES:
+**************************************
+
+      BEGIN CASE
+         CASE CODE.NUM # PREV.CODE.NUM
+            CHANGED.FLAG = TRUE
+         CASE TRIM(REJECT.REASON.DISP) # TRIM(PREV.REJECT.REASON.DISP)
+            CHANGED.FLAG = TRUE
+         CASE GROUPING.CODE # PREV.GROUPING.CODE
+            CHANGED.FLAG = TRUE
+         CASE EMAIL.ADDR # PREV.EMAIL.ADDR
+            CHANGED.FLAG = TRUE
+         CASE ACTIVE.FLAG # PREV.ACTIVE.FLAG
+            CHANGED.FLAG = TRUE
+         CASE NEVER.PAY.FLAG # PREV.NEVER.PAY.FLAG
+            CHANGED.FLAG = TRUE
+         CASE 1
+            NULL
+      END CASE
+
+      RETURN
+
+****************************************
+BUILD.MAIN.DSP.LIST:
+****************************************
+
+      PRT.REJECT.DESC1=REJECT.DESC[1,108]
+      PRT.REJECT.DESC2=REJECT.DESC[109,108]
+      IF LEN(REJECT.DESC) > TRUNCATE.LEN THEN
+         REJECT.DESC=REJECT.DESC[1, TRUNCATE.LEN-10]:' [More...]'
+      END ELSE
+         REJECT.DESC=REJECT.DESC[1, TRUNCATE.LEN]
+      END
+
+      MAIN.DSP.LIST<2, REFRESH.LINE> = CODE.NUM
+      MAIN.DSP.LIST<5, REFRESH.LINE> = EMAIL.ADDR
+      MAIN.DSP.LIST<6, REFRESH.LINE> = ACTIVE.FLAG
+      MAIN.DSP.LIST<7, REFRESH.LINE> = GROUPING.CODE
+      MAIN.DSP.LIST<1, REFRESH.LINE> = REFRESH.LINE
+      MAIN.DSP.LIST<3, REFRESH.LINE> = REJECT.DESC
+      MAIN.DSP.LIST<8, REFRESH.LINE> = NEVER.PAY.FLAG
+      MAIN.DSP.LIST<9, REFRESH.LINE> = PRT.REJECT.DESC1      ; * JMKXXX
+      MAIN.DSP.LIST<10, REFRESH.LINE> = PRT.REJECT.DESC2     ; * JMKXXX
+
+      RETURN
+
+   END

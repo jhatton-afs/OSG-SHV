@@ -1,0 +1,356 @@
+* PROGRAM TO DELETE UNPROCESS BILLS FROM FRIEGHT PAYMENT
+*
+* FREIGHT BILL PACKAGE
+*
+*
+**********************************************************************
+*
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_DIVISION.CODES
+$INCLUDE FILE.DEFS INC_REGIONS
+*
+* Initialize variables
+*
+* 030309 - NPR01 - T090253 - Highlight Client name based on ranking
+* 032211 - JMK01 - T999999 - ADD UPS EBILL TO EDI FILTER
+* 040312 - SWB01 - PROJ 182 - Update FB.TIMELINE.SUMMARY
+* 081514 - DRF01 - SysAid 11437 - Open FB.TABLES
+
+      PROG.NAME='FB.2.8'
+      PROG.DESC='DELETE UNPROCESSED BILLS'
+      PACK.NAME='FREIGHT BILLING'
+      CALL GET.USER(USER)
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.2.8' ; UPL.VOUT = ''         ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      CALL CHANNEL(CH.NUM)
+*
+      PROMPT''
+      CLIENT.ID=''
+      CLIENT.NAME=''
+      CARRIER.ID=''
+      CARRIER.NAME=''
+      HLA = '' ; HLB = ''
+      INT.TODAY = DATE()                 ; * SWB08
+      CO.NAME = 'AFS Logistics, LLC'               ; * SWB01
+      ACCESS.REASON = 'OB.DEL'           ; * 'OPEN BILLS DELETE' ; * SWB01
+*
+* Open files
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         CALL OPEN.ABORT('FB.BILLS.CRX',PROG.NAME)
+      END
+      OPEN '','FB.OPEN.BILLS' TO F.OPEN ELSE
+         CALL OPEN.ABORT('FB.OPEN.BILLS',PROG.NAME)
+      END
+      OPEN '', 'DELETED.BILLS' TO F.DEL.BILLS ELSE
+         CALL OPEN.ABORT('DELETED.BILLS',PROG.NAME)
+      END
+      OPEN '','FED.INV.XREF' TO F.INV.XREF ELSE
+         CALL OPEN.ABORT("FED.INV.XREF",PROG.NAME)
+      END
+      OPEN '','BCTRL' TO BCTRL ELSE
+         CALL OPEN.ABORT('BCTRL',PROG.NAME)
+      END
+      OPEN '','FB.TIMELINE.SUMMARY' TO F.TIMELINE.SUMMARY ELSE         ; * SWB01
+         CALL OPEN.ABORT('FB.TIMELINE.SUMMARY',PROG.NAME)    ; * SWB01
+      END                                ; * SWB01
+      OPEN '','FB.TABLES' TO F.TABLES ELSE     ; * DRF01
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)     ; * DRF01
+      END     ; * DRF01
+      READ ACCESS.CONTROL FROM BCTRL,USER ELSE ACCESS.CONTROL=''
+      IF NOT(ACCESS.CONTROL<11> OR ACCESS.CONTROL<12>) THEN
+         CALL ELINE('You do not have access to this program. Please see data processing.')
+         STOP
+      END
+      USER.DPT = ACCESS.CONTROL<15>      ; * SWB01
+      GOSUB GET.SCREEN.DSP
+*
+* Enter Client Id
+*
+100:  HELP = "Enter the client number for bills to delete [X] = Exit [EX] = Exit"
+      IF CLIENT.ID = '' THEN MASK = '#####' ELSE MASK = CLIENT.ID
+      CALL GEN.IN(14,5,MASK,'',Q,0,20,'','',2,-5,5,1,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'EX' ! QI = 'X'
+            STOP
+         CASE QI = '' & CLIENT.ID = ''
+            STOP
+         CASE QI = ''
+            Q = CLIENT.ID
+         CASE NOT(QI MATCHES "0N")
+            VIN=0                        ; * Starting Chars In
+            VOUT=''
+            CALL SOUNDEX.DISPLAY.NEW(VIN,VOUT,QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            GOSUB GET.SCREEN.DSP
+            BEGIN CASE
+               CASE ITEM.LIST = ''
+                  GOTO 100               ; * START OVER
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 100               ; * START OVER
+               CASE 1
+                  IF NUM(ITEM.LIST<1,1>) THEN SND.DATA=ITEM.LIST<1,1> ; GOSUB SEND.DATA
+                  GOTO 100               ; * START OVER
+            END CASE
+         CASE NUM(QI)
+            Q = QI'R%5'
+         CASE 1
+            GOTO 100                     ; * START OVER
+      END CASE
+
+*---- Get client name
+
+      IF CLIENT.ID # Q THEN CLIENT.ID = Q'R%5'
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         CALL ELINE("ERROR - Client ":CLIENT.ID:" not on file.")
+         GOTO 100                        ; * START OVER
+      END
+
+      HIN = CLIENT.REC<240> ; HOUT = ""  ; * NPR01  Highlight based on ranking
+      CALL CLIENT.HL(HIN,HOUT) ; HLB = HOUT<1,1> ; HLA = HOUT<1,2>     ; * NPR01
+
+      CLIENT.NAME = CLIENT.REC<2>
+      CRT @(14,5):CLIENT.ID:' ':HLB:CLIENT.NAME:HLA:@(-4)    ; * NPR01
+
+*---- Open client files
+
+      OPEN '','FB.BILLS,':CLIENT.ID TO F.BILLS ELSE
+         CALL ELINE("Cannot open FB.BILLS for client ":CLIENT.ID)
+         GOTO 100                        ; * START OVER
+      END
+      OPEN '','FB.OPEN.DATE.XREF,':CLIENT.ID TO F.FOX ELSE
+         CALL ELINE("Cannot open FB.OPEN.DATE.XREF,":CLIENT.ID)
+         GO 100
+      END
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.HIST ELSE
+         CALL ELINE("Cannot open FB.BILLS.HIST for client ":CLIENT.ID)
+         GOTO 100                        ; * START OVER
+      END
+      OPEN '','FB.BILLS.ACCESS,':CLIENT.ID TO F.ACCESS ELSE
+         CALL ELINE("Cannot open FB.BILLS.ACCESS for client ":CLIENT.ID)
+         GOTO 100                        ; * START OVER
+      END
+
+*----
+* Enter carrier
+*
+
+200:
+      IF CARRIER.ID # '' THEN MASK = CARRIER.ID'R%5' ELSE MASK = '#####'
+      HELP = "Enter the carrier number. [SPACE]=All. [X]=Back [EX]=Exit"
+      CALL GEN.IN(14,7,MASK,'',Q,0,20,'','',2,-5,7,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'X'
+            CRT @(14,7):@(-4):
+            GOTO 100
+         CASE QI = 'EX'
+            STOP
+         CASE QI = ' ' OR QI='ALL'OR (QI='' AND CARRIER.ID='')
+            Q=''
+         CASE NOT(QI MATCHES "0N")
+            VIN=0                        ; * Starting Chars In
+            VOUT=''
+            CALL SOUNDEX.DISPLAY.NEW(VIN,VOUT,QI,'CARRIERS','SDX.CARRIER,NAME','1,2,3,4',ITEM.LIST)
+            GOSUB GET.SCREEN.DSP
+            BEGIN CASE
+               CASE ITEM.LIST = ''
+                  GOTO 200               ; * ENTER CARRIER
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 200               ; * ENTER CARRIER
+               CASE ITEM.LIST # ''
+                  IF NUM(ITEM.LIST<1,1>) THEN SND.DATA=ITEM.LIST<1,1> ; GOSUB SEND.DATA
+                  GOTO 200               ; * ENTER CARRIER
+            END CASE
+         CASE QI = ''
+            Q = CARRIER.ID
+         CASE NUM(QI)
+            Q = QI'R%5'
+         CASE 1
+            GOTO 200                     ; * ENTER CARRIER
+      END CASE
+      CARRIER.ID = Q
+
+*---- Get carrier data
+
+      IF CARRIER.ID#'' THEN
+         READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE
+            CALL ELINE("ERROR - Carrier ":CARRIER.ID:" not on file.")
+            GOTO 200                     ; * ENTER CARRIER
+         END
+         CARRIER.NAME = CARRIER.REC<1>
+      END ELSE
+         CARRIER.NAME='ALL'
+      END
+      CRT @(14,7):CARRIER.ID'R#5':' ':CARRIER.NAME:@(-4)
+300:  HELP='Enter N to reenter data. EX=Exit.'
+      CALL GEN.IN(0,22,'Is the information correct? Y ','',ACK,0,2,'','',1,-2,22,0,QI,HELP,0,23)
+      ACK=OCONV(ACK,'MCU')
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN GOTO 200
+      IF QI='EX' THEN STOP
+      IF ACK='N' THEN
+         CLIENT.ID=''
+         CLIENT.NAME=''
+         CARRIER.ID=''
+         CARRIER.NAME=''
+         GOSUB GET.SCREEN.DSP
+         GOTO 100
+      END
+      IF ACK='EX' THEN STOP
+      IF ACK='' ! ACK='Y' ELSE GOTO 300
+*
+* Main processing loop
+*
+      STMT='SELECT FB.BILLS,':CLIENT.ID:' WITH  39 # "R" AND WITHOUT 88 '
+      STMT:=' AND WITH 53 # "EBILL.IMPORT.NEW"'    ; * JMK01
+      IF CARRIER.ID#'' THEN STMT=STMT:' AND WITH CARRIER# = "':CARRIER.ID:'" '
+      EXECUTE STMT CAPTURING OUTPUT
+      IF SYSTEM(11) ELSE
+         CALL ELINE('No Items Selected')
+         STOP
+      END
+
+READNXT:***
+      READNEXT PRO.ID ELSE STOP
+      READ PRO.REC FROM F.BILLS,PRO.ID ELSE GOTO READNXT
+
+      WRITE PRO.ID:@FM:USER:@FM:@FM:PRO.REC<8> ON F.DEL.BILLS,DATE():'*':TIME()
+      TIMELINE.TRANS.TYPE = "DEL"        ; * SWB01
+      GOSUB UPDATE.TIMELINE.SUMMARY      ; * SWB01
+      ACC.VIN=''                         ; * SWB01
+      ACC.VOUT=''                        ; * SWB01
+      ACC.VIN<1>=CLIENT.ID               ; * SWB01
+      ACC.VIN<2>=PRO.ID                  ; * SWB01
+      ACC.VIN<3>=USER                    ; * SWB01
+      ACC.VIN<4>=USER.DPT                ; * SWB01
+      ACC.VIN<5>=DATE()                  ; * SWB01
+      ACC.VIN<6>=TIME()                  ; * SWB01
+      ACC.VIN<7>='1'                     ; * SWB01
+      ACC.VIN<8>=PROG.NAME               ; * SWB01
+      ACC.VIN<9>=PROG.DESC               ; * SWB01
+      ACC.VIN<10>=PACK.NAME              ; * SWB01
+      ACC.VIN<11>=CO.NAME                ; * SWB01
+      ACC.VIN<12> = ACCESS.REASON        ; * SWB01
+
+      CALL UPD.FB.BILLS.ACCESS(ACC.VIN,ACC.VOUT,CLIENT.ITM,CARRIER.REC,OLD.PRO.REC,F.ACCESS,F.TABLES)          ; * SWB01
+      DELETE F.BILLS,PRO.ID
+      DELETE F.HIST,PRO.ID
+      DELETE F.CRX,PRO.ID
+      READ DFOX FROM F.FOX,PRO.REC<37> THEN
+         FOX.ID=CLIENT.ID:"*":PRO.ID
+         LOCATE FOX.ID IN DFOX SETTING POS THEN
+            DEL DFOX<POS>
+            WRITE DFOX ON F.FOX,PRO.REC<37>
+         END
+      END
+      DELETE F.OPEN,CLIENT.ID:'*':PRO.ID
+      IF PRO.REC<94>#'' THEN
+         READ DINV.XREF FROM F.INV.XREF,PRO.REC<94> THEN
+            LOCATE PRO.ID IN DINV.XREF BY 'AR' SETTING INV.POS THEN
+               DEL DINV.XREF<INV.POS>
+               IF DINV.XREF='' THEN
+                  DELETE F.INV.XREF,PRO.REC<94>
+               END ELSE
+                  WRITE DINV.XREF ON F.INV.XREF,PRO.REC<94>
+               END
+            END
+         END
+      END
+      GOTO READNXT
+
+GET.SCREEN.DSP:***
+*---- Display screen to send to subroutine
+*
+      CALL AFS.SCR.HEAD('','','',PROG.NAME,PROG.DESC,PACK.NAME,"AFS Logistics, LLC",TIME.DATE,1)
+      CRT @(5,5):'Client : '
+      CRT @(5,7):'Carrier: '
+      CRT @(14,5):CLIENT.ID:' ':HLB:CLIENT.NAME:HLA:@(-4)
+      TEXT=CARRIER.ID:' ':CARRIER.NAME
+      CRT @(14,7):TEXT[1,65]
+      CRT @(0,10):"******************************************************************************"
+      CRT @(0,11):"*                                                                            *"
+      CRT @(0,12):"*    This process will delete all unprocess, non rejected and non EDI Bills  *"
+      CRT @(0,13):"*                                                                            *"
+      CRT @(0,14):"******************************************************************************"
+      RETURN
+SEND.DATA:**** Execute DATA stmt and reduce CC
+      DATA SND.DATA
+      RETURN
+
+************************
+UPDATE.TIMELINE.SUMMARY:                 ; * SWB01
+************************
+
+      IF FIELD(PRO.ID, '*', 1) = 0 THEN  ; * SWB01
+         IF PRO.REC<246> # '' AND PRO.REC<247> # '' AND PRO.REC<37> # '' THEN    ; * SWB01
+            TR.VIN = PRO.REC<53>         ; * SWB01
+            TR.VIN<2> = CLIENT.ID        ; * SWB01
+            TR.VIN<3> = CARRIER.ID       ; * SWB01
+            BEGIN CASE                   ; * SWB01
+               CASE TIMELINE.TRANS.TYPE = 'DEL'    ; * SWB01
+                  TR.VIN<4> = PRO.REC<246>         ; * SWB01
+                  TR.VIN<5> = PRO.REC<247>         ; * SWB01
+                  TR.VIN<6> = PRO.REC<248>         ; * SWB01
+                  TR.VIN<7> = ''         ; * SWB01
+                  TR.VIN<8> = ''         ; * SWB01
+               CASE 1                    ; * SWB01
+            END CASE                     ; * SWB01
+
+            TR.VIN<9> = PRO.ID           ; * SWB01
+            TR.VIN<10> = TIMELINE.TRANS.TYPE       ; * SWB01
+            CALL FB.UPD.TIMELINE.SUMMARY(TR.VIN, TR.VOUT, F.TIMELINE.SUMMARY)    ; * SWB01
+            IF TR.VOUT # '' THEN         ; * SWB01
+               TR.EMAIL.OUT=''           ; * SWB01
+               TR.EMAIL.OUT<1,1>='nmeddaugh@afs.net'           ; * SWB01
+               TR.EMAIL.OUT<1,2>='mkerbow@afs.net'           ; * SWB01
+               TR.EMAIL.OUT<3>=''        ; * SWB01
+               TR.EMAIL.OUT<4>='FB.2.1.NW@afs.net'           ; * SWB01
+               TR.EMAIL.OUT<5>='Freight Bill Timeline Tracking errors'           ; * SWB01
+               BEGIN CASE                ; * SWB01
+                  CASE TR.VOUT[1, 11] = 'TRANS.TYPE='        ; * SWB01
+*Invalid Trans Type was passed
+                     TR.EMAIL.OUT<6>='An invalid TRANS.TYPE of ':FIELD(TR.VOUT, '=', 2):' was '      ; * SWB01
+                     TR.EMAIL.OUT<6,-1>='passed from FB.2.1.NW to FB.UPD.TIMELINE.TRACKING '         ; * SWB01
+                     TR.EMAIL.OUT<6,-1>='with the following parmaters:'          ; * SWB01
+                     FOR TTEO = 1 TO 10  ; * SWB01
+                        TR.EMAIL.OUT<6,-1>='TR.VIN<':TTEO:'> = ':TR.VIN<TTEO>    ; * SWB01
+                     NEXT TTEO           ; * SWB01
+
+                  CASE 1                 ; * SWB01
+*This transaction caused the FB Counter in one or more of the Summmary
+*records to 'go negative'. This transaction is not necessarily the one
+*that CAUSED the miscount.'
+
+                     TR.EMAIL.OUT<6>='An invalid TRANS.TYPE of ':FIELD(TR.VOUT, '=', 2):' was '      ; * SWB01
+                     TR.EMAIL.OUT<6,-1>='passed from FB.2.1.NW to FB.UPD.TIMELINE.TRACKING '         ; * SWB01
+                     TR.EMAIL.OUT<6,-1>='resulting in one or more Summary records having a Count of less than zero '     ; * SWB01
+                     TR.EMAIL.OUT<6,-1>='with the following parmaters:'          ; * SWB01
+                     FOR TTEO = 1 TO 10  ; * SWB01
+                        TR.EMAIL.OUT<6,-1>='TR.VIN<':TTEO:'> = ':TR.VIN<TTEO>    ; * SWB01
+                     NEXT TTEO           ; * SWB01
+                     TR.EMAIL.OUT<6,-1>=' '        ; * SWB01
+                     TR.EMAIL.OUT<6,-1>='FB.TIMELINE.SUMMARY ID ' 'L#45  ':'Field 1  ':'Trans  ':'FB #'        ; * SWB01
+                     TR.EMAIL.OUT<6,-1>=' '        ; * SWB01
+                     TR.ERR.CNT = DCOUNT(TR.VOUT<1>, @VM)    ; * SWB01
+                     FOR TTEC = 1 TO TR.ERR.CNT    ; * SWB01
+                        TR.EMAIL.OUT<6,-1> = TR.VOUT<1, TTEC>'L#45  ':TR.VOUT<2, TTEC>'L#7  ':TR.VOUT<3, TTEC>'L#5  ':TR.VOUT<4, TTEC>       ; * SWB01
+                     NEXT TTEC           ; * SWB01
+               END CASE                  ; * SWB01
+               CALL SENDMAIL(TR.EMAIL.OUT,TR.EMAIL.VOUT)     ; * SWB01
+
+            END                          ; * SWB01
+         END                             ; * SWB01
+      END                                ; * SWB01
+
+      RETURN                             ; * SWB01
+
+9999:* EXIT PROGRAM
+      STOP

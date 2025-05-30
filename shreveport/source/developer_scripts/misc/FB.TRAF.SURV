@@ -1,0 +1,202 @@
+      SUBROUTINE FB.TRAF.SURV(VIN,VOUT,LINE.ITEMS,LI.CODES,HIST.REC)
+* PROGRAM FB.TRAF.SURV
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.TRAF.SURV' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+* PROGRAM TO SUMMARIZE LINE ITEM CHARGES TO THEIR PROPER PLACE
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: OWEN HOLMAN
+* DATE: MAY 22, 1995
+*
+**********************************************************************
+*
+*
+      $INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Update Arrays with Data
+*
+*  VIN<1>   1-Multi Class (Data is Multivalued), '' -or- 0-Single Values
+*             If Multi Class Flag is set the Class is MV in Attribute 1
+*  VIN<2>   2-Maximum Dollar Amount of Min Shipments
+      MIN.AMT.LIMIT=VIN<2>
+      VM=CHAR(253)
+      MILES=HIST.REC<19>
+      IF VIN<1>=1 THEN
+         MULTI.CLASS=1
+*      VOUT=50:VM:55:VM:60:VM:65:VM:70:VM:77.5:VM:85:VM:92.5:VM:100:VM:110:VM:125:VM:150:VM:175:VM:200:VM:250:VM:300:VM:400:VM:500
+         VOUT=50:VM:55:VM:60:VM:65:VM:70:VM:77:VM:85:VM:92:VM:100:VM:110:VM:125:VM:150:VM:175:VM:200:VM:250:VM:300:VM:400:VM:500
+      END ELSE
+         MULTI.CLASS=0
+         VOUT=''
+      END
+      GOSUB CLEAR.VARS
+      LI=''
+      FOR X = 1 TO 14
+         LI<X>=HIST.REC<69+X>
+      NEXT X
+      IF HIST.REC<87>='N' THEN;* If Intra State Set AFS Charge=Carrier Charge
+         LI<10>=LI<8>
+      END
+      TIMES = DCOUNT(LI<1>,CHAR(253))
+      TL.SWITCH=INDEX(@VM:LI<1>,@VM:'TL',1) ; * Add VM to Beg & Look VM:TL
+      FOR X = 1 TO TIMES
+         CODE=LI<1,X>
+         LOCATE CODE IN LI.CODES<1> SETTING POS THEN
+            CODE.TYPE=LI.CODES<3,POS>
+         END ELSE
+            CALL ELINE('Line Item Code ':CODE:' Missing from Table ... Set to FRT')
+            LOCATE 'FRT' IN LI.CODES<1> SETTING POS THEN
+               CODE.TYPE=LI.CODES<3,POS>
+            END ELSE
+               CALL ELINE('Line Item Code FRT Missing from Table ... Abort')
+               ABORT
+            END
+         END
+         IF TL.SWITCH THEN ; **** Modify Code for Truck Load ***
+            IF (CODE.TYPE="A" AND CODE#'SIT') OR CODE.TYPE="F" THEN
+*BRIAN 2-9-99      IF MILES LE 300 THEN CODE.TYPE="A" ELSE CODE.TYPE="F"
+               IF MIN.AMT.LIMIT#'' THEN
+                  IF LI<8,X> > MIN.AMT.LIMIT THEN CODE.TYPE="F" ELSE CODE.TYPE="A"
+               END
+            END
+         END
+         IF CODE='FSC' THEN
+            CAR.FSC=LI<8,X>
+            AFS.FSC=LI<10,X>
+         END
+         BEGIN CASE
+            CASE CODE.TYPE='F' ; * Freight Type Items
+               CAR.FRT+=LI<8,X>
+               AFS.FRT+=LI<10,X>
+               IF CODE#'DEF' THEN
+                  TOT.PIC+=LI<2,X>
+                  TOT.WGT+=LI<6,X>
+                  IF LI<3,X>='Y' THEN
+                     HAZ.FLG=1
+                     HAZ.PIC+=LI<2,X>
+                  END
+                  CLA.WGT+=LI<5,X>*LI<6,X>
+               END
+            CASE CODE = 'SIT' ; * SIT
+               VOUT<26>+=1; * SIT Count
+               VOUT<27>+=LI<8,X>; * SIT Amount
+            CASE CODE.TYPE='A' AND CODE # 'SIT' ; * Absolute Minimum
+               MIN.FLG=1
+               MIN.FRT+=LI<8,X>
+               TOT.PIC+=LI<2,X>
+               TOT.WGT+=LI<6,X>
+               IF LI<3,X>='Y' THEN
+                  HAZ.FLG=1
+                  HAZ.PIC+=LI<2,X>
+               END
+               CLA.WGT+=LI<5,X>*LI<6,X>
+               BEGIN CASE
+                  CASE MILES LE 100
+                     MILES.VALUE=1
+                  CASE MILES LE 200
+                     MILES.VALUE=2
+                  CASE MILES LE 300
+                     MILES.VALUE=3
+                  CASE MILES LE 400
+                     MILES.VALUE=4
+                  CASE MILES LE 500
+                     MILES.VALUE=5
+                  CASE 1
+                     MILES.VALUE=6
+               END CASE
+               IF MILES # 0 THEN
+                  VOUT<21,MILES.VALUE>+=1 ; * # Of Shipments
+                  VOUT<22,MILES.VALUE>+=LI<8,X> ; * Carrier Charge
+                  VOUT<23,MILES.VALUE>+=LI<2,X> ; * Pieces
+                  VOUT<24,MILES.VALUE>+=MILES ; * Mileage
+                  VOUT<25>+=MILES ; * Single Level Miles for Cst/Mile Calcs.
+               END
+            CASE CODE.TYPE='N' ; * Neogotiable Charges
+               CAR.NOT+=LI<8,X>
+            CASE CODE.TYPE='M' ; * Miscellaneous
+               NON.FRT+=LI<8,X>
+            CASE 1
+               CALL ELINE('Code ':CODE:' does not contain a valid Type Code... N used')
+               NON.FRT+=LI<8,X>
+         END CASE
+         IF MULTI.CLASS THEN
+            CLASS=LI<5,X>
+            IF CLASS=77.5 THEN CLASS=77
+            IF CLASS=92.5 THEN CLASS=92
+            GOSUB 7000
+            GOSUB CLEAR.VARS
+         END
+      NEXT X
+      IF MULTI.CLASS THEN GO END.PROG
+      GOSUB 7000
+      GO END.PROG
+7000: ***
+      ATT=2 ; VALUE=1 ; GOSUB 8000;* Number of Shipments
+      ATT=3 ; VALUE=CAR.FRT ; GOSUB 8000;* Carrier Freight
+      ATT=4 ; VALUE=CAR.NOT ; GOSUB 8000;* Carrier Nogatiable Freight
+      ATT=5 ; VALUE=MIN.FLG ; GOSUB 8000;* Number of "MIN" Shipments
+      ATT=6 ; VALUE=MIN.FRT ; GOSUB 8000;* "MIN" Freight Amount
+      ATT=7 ; VALUE=NON.FRT ; GOSUB 8000;* Not FRT,TMIN,DEF,MIN,NOA,SS,HAZ
+      ATT=8 ; VALUE=AFS.FRT ; GOSUB 8000;* AFS Charges on FRT, TMIN
+      ATT=9 ; VALUE=LI<14>  ; GOSUB 8000;* Carrier Discount Amount
+      ATT=10; VALUE=TOT.PIC ; GOSUB 8000;* Total Pieces FRT,TMIN,DEF,MIN
+      ATT=11; VALUE=TOT.WGT ; GOSUB 8000;* Total Weight
+      IF HIST.REC<19>+0=0 ELSE
+         ATT=12 ; VALUE=1 ; GOSUB 8000;* Number of Shipments With Mileage
+         ATT=13 ; VALUE=HIST.REC<19> ; GOSUB 8000;* Mileage on Bill
+         ATT=17; VALUE=CAR.FRT; GOSUB 8000;* Carrier Freight
+         ATT=18; VALUE=CAR.NOT; GOSUB 8000;* Carrier Nogatiable Freight
+         ATT=19; VALUE=MIN.FLG; GOSUB 8000;* Carrier "MIN" Freight Amount
+         ATT=20; VALUE=NON.FRT; GOSUB 8000;* Carrier "Non" Freight
+      END
+      ATT=14; VALUE=HAZ.FLG ; GOSUB 8000;* Number of Shipments With Haz Mat
+      ATT=15; VALUE=HAZ.PIC ; GOSUB 8000;* Number of Haz Mat Pieces
+      ATT=16; VALUE=CLA.WGT ; GOSUB 8000;* Class*Weight (For Weighted Avg.)
+      ATT=28; VALUE=CAR.FSC ; GOSUB 8000;* Carrier Fuel Sur Charge
+      ATT=29; VALUE=AFS.FSC ; GOSUB 8000;* AFS Fuel Sur Charge
+      RETURN
+8000: ***
+      IF NOT(NUM(VALUE)) THEN
+         CRT @(0,23):"VALUE = '":VALUE:"' is not Numeric! .... Call Owen '":
+         INPUT NUL
+      END
+      IF MULTI.CLASS=0 THEN
+         VOUT<ATT>+=VALUE
+      END ELSE
+         LOCATE CLASS IN VOUT<1> SETTING POS ELSE
+            IF CLASS#'' THEN
+               CALL ELINE('Unable to locate class of ':CLASS:' in List of Classes')
+            END
+            RETURN ; * No/Bad Class
+         END
+         BEGIN CASE
+            CASE ATT=2 OR ATT=12 OR ATT=13 OR ATT=14
+               VOUT<ATT,POS>=VALUE
+            CASE ATT=9; * Carrier Discount (Single Value)
+               VOUT<ATT>=VALUE
+            CASE 1
+               VOUT<ATT,POS>+=VALUE
+         END CASE
+      END
+      RETURN
+CLEAR.VARS: ***
+      CAR.FRT=0
+      CAR.NOT=0
+      MIN.FLG=0
+      MIN.FRT=0
+      NON.FRT=0
+      AFS.FRT=0
+      TOT.PIC=0
+      TOT.WGT=0
+      HAZ.FLG=0
+      HAZ.PIC=0
+      CLA.WGT=0
+
+      CAR.FSC=0
+      AFS.FSC=0
+
+      RETURN
+END.PROG: ***
+      RETURN
+      END

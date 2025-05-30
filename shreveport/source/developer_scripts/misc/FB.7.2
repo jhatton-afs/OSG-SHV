@@ -1,0 +1,734 @@
+************************************************************************
+* Program name : FB.7.2
+* Author       : Owen
+* Date written : 03/15/95
+* Library      : FBBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+*  DESCRIPTION  : This program select the bills entered between the dates
+*                 specified and builds a MWB formatted text file.
+*                 MWB is then executed (base rate data is added).
+*                 The program then extracts the base rate data and
+*                 updates the FB.BILL.HIST file with the base rate data.*
+
+* Last updated by afs (AFSLOGISTICS\gbino) at 09:15:29 on 10/29/2018.
+*
+* Start modification history
+* Cody Henderson - Oct. 15, 1996
+* 050106 - JMK01 - ADD FAK TABLE FOR MULTIPLE CLASSES
+* 062107 - JMK02 - ADD USER SELECTED TIERS
+* 082109 - JMK03 - Intra-Canadian Rates for Traffic Survey
+* 022111 - NPR01 - T110124 Add tariff calculation type to FB.BILLS and FB.BILLS.HIST files.
+* 042514 - JMK04 - SysAid#9474 - Intra CN Base rate is not applying on Traffic Survey
+* 060114 - DRF01 - SysAid 9986 - Canadian bills not rating for client
+*          99760.
+* 102918 - GRB01 - ACCU-170 Correct rating amount error
+*******************************************************************************
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Initialize variables.
+      ESC=CHAR(27)
+      PROMPT''
+      ERRMSG=''
+      ERRORS=''
+      MAX.BILLS=500                      ; * Maximum Number of bills to send at once
+      PROG.NAME='FB.7.2'
+      PROG.DESC="Process Base Rates to Freight Bills"
+      PACK.NAME="Freight Billing"
+
+      CALL GET.USER.NEW(USER,CH.NUM)
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.7.2' ; UPL.VOUT = ''         ; * NPR_UPL 04/23/2010
+      UPL.VIN<3> = USER
+      UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+
+      CLASSES=50:@VM:55:@VM:60:@VM:65:@VM:70:@VM:77.5:@VM:85:@VM:92.5:@VM:100:@VM:110:@VM:125:@VM:150:@VM:175:@VM:200:@VM:250:@VM:300:@VM:400:@VM:500
+      MAX.DISC.WEIGHT=20000
+*
+* Open general files
+*
+      OPEN '','TEMP' TO F.TEMP ELSE
+         CALL OPEN.ABORT('TEMP',PROG.NAME)
+      END
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+         END
+      END
+      OPEN '','PCIN' TO F.PCIN ELSE
+         CALL OPEN.ABORT('PCIN',PROG.NAME)
+      END
+      OPEN '','PCOUT' TO F.PCOUT ELSE
+         CALL OPEN.ABORT('PCOUT',PROG.NAME)
+      END
+      CLEARFILE F.WORK
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.FB.TABLES ELSE CALL OPEN.ABORT("FB.TABLES",PROG.NAME)
+      READ TARIFF.REC FROM F.FB.TABLES,'TARIFF.DATE.XREF' ELSE TARIFF.REC=''
+      READ PROG.TARIFF.REC FROM F.FB.TABLES,'TARIFFS' ELSE PROG.TARIFF.REC=''
+*
+******************************************************
+100:  * Enter client number.
+******************************************************
+      CALL AFS.SCR.HEAD(CO.ID, FILE.ID, '', PROG.NAME, PROG.DESC,PACK.NAME, CO.NAME, TIME.DATE, 1)
+      HELP="Enter client number. Word of name for search. X=Exit. EX=Exit."
+      CALL GEN.IN(0,3,'Enter client number #####','',Q,0,20,'','',2,-5,3,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='' ! QI='EX' ! QI='X'
+            STOP
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 100
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 100
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO 100
+            END CASE
+         CASE NUM(QI)
+            Q=QI'R%5'
+         CASE 1
+            GOTO 100
+      END CASE
+*
+      CLIENT.ID=Q
+      IF CLIENT.ID[1,2]#99 THEN
+         CALL ELINE('Invalid entry. Client Number must begin with 99.')
+         GOTO 100
+      END
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         CALL ELINE('ERROR - Client ':CLIENT.ID:' not on file.')
+         GOTO 100
+      END
+*
+      CLIENT.NAME=CLIENT.REC<2>
+      FAK.POS=INDEX(CLIENT.NAME,'FAK',1)
+
+      IF FAK.POS THEN
+         FAK=TRIM(CLIENT.NAME[FAK.POS+4,99999])
+         IF INDEX(FAK,'(',1) THEN        ; * JMK01 ; * JMK02
+            TIER.REC=''                  ; * JMK02
+            NVAL=DCOUNT(FAK,',')         ; * JMK02
+            FOR VAL=1 TO NVAL            ; * JMK02
+               LEVEL=FIELD(FAK,',',VAL)  ; * JMK02
+               RATE.CLASS=FIELD(LEVEL,'(',1)       ; * JMK02
+               RANGE.CLASS=FIELD(LEVEL,'(',2)[1,LEN(LEVEL)-1]          ; * JMK02
+               BEG.CLASS=FIELD(RANGE.CLASS,'-',1)  ; * JMK02
+               END.CLASS=FIELD(RANGE.CLASS,'-',2)  ; * JMK02
+               TIER.REC<1,VAL>=RATE.CLASS          ; * JMK02
+               TIER.REC<2,VAL>=BEG.CLASS           ; * JMK02
+               TIER.REC<3,VAL>=END.CLASS           ; * JMK02
+               LOCATE RATE.CLASS IN CLASSES<1> SETTING CPOS THEN       ; * JMK02
+                  TIER.REC<4,VAL>=CPOS   ; * JMK02
+               END                       ; * JMK02
+               LOCATE BEG.CLASS IN CLASSES<1> SETTING LPOS THEN        ; * JMK02
+                  TIER.REC<5,VAL>=LPOS   ; * JMK02
+               END                       ; * JMK02
+               LOCATE END.CLASS IN CLASSES<1> SETTING HPOS THEN        ; * JMK02
+                  TIER.REC<6,VAL>=HPOS   ; * JMK02
+               END                       ; * JMK02
+            NEXT VAL                     ; * JMK02
+            FAK = 'TIER'                 ; * JMK01
+         END                             ; * JMK01
+      END ELSE
+         FAK=''
+      END
+      CRT @(0,3):'Enter Client Number ':CLIENT.ID'R%5':
+      CRT ' ':CLIENT.NAME:@(-4):
+*
+* Open client's files.
+*
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.HIST ELSE
+         CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,PROG.NAME)
+      END
+      OPEN '','FB.BILLS,':CLIENT.ID TO F.BILLS ELSE
+         CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,PROG.NAME)
+      END
+
+      TARIFF.NAME='AFS500_9501'          ; * JMK03
+      TARIFF.MASK="Enter the tariff or <S> to Select: ":TARIFF.NAME    ; * JMK03
+      TVIN=''                            ; * JMK03
+      TVOUT=''                           ; * JMK03
+*
+*******************************************************
+150:* Get Tariff to use
+******************************************************
+      HELP='Enter Tariff Name to use, S=Select, X=Back, EX=Exit.'      ; * JMK03
+      CALL GEN.IN(0,6,TARIFF.MASK,'',Q,0,6,'','',1,35,6,0,QI,HELP,0,23)          ; * JMK03
+      Q=OCONV(Q,'MCU')                   ; * JMK03
+      BEGIN CASE                         ; * JMK03
+         CASE Q = 'X'                    ; * JMK03
+            GO 100                       ; * JMK03
+         CASE Q = 'EX'                   ; * JMK03
+            STOP                         ; * JMK03
+         CASE Q = ''                     ; * JMK03
+            IF TVOUT#'' THEN             ; * JMK03
+               Q=TVOUT                   ; * JMK03
+            END ELSE                     ; * JMK03
+               Q=TARIFF.NAME             ; * JMK03
+            END                          ; * JMK03
+         CASE Q = 'S'                    ; * JMK03
+            TVIN='' ; TVOUT=''           ; * JMK03
+            CALL TARIFF.SELECT(TVIN,TVOUT,TARIFF.REC)        ; * JMK03
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)        ; * JMK03
+            CRT @(0,3):'Enter Client Number ':CLIENT.ID'R%5 ':CLIENT.NAME:@(-4):           ; * JMK03
+            BEGIN CASE                   ; * JMK03
+               CASE TVOUT='X' ; GO 100   ; * JMK03
+               CASE TVOUT='EX' ; STOP    ; * JMK03
+               CASE 1                    ; * JMK03
+                  Q=TVOUT                ; * JMK03
+                  TARIFF.MASK="Enter the tariff or <S> to Select: ":Q  ; * JMK03
+                  GO 150                 ; * JMK03
+            END CASE                     ; * JMK03
+         CASE 1                          ; * JMK03
+            CALL ELINE(Q:' is an invalid answer.!')          ; * JMK03
+            GO 150                       ; * JMK03
+      END CASE                           ; * JMK03
+      LOCATE Q IN TARIFF.REC<1> SETTING POS THEN
+         TARIFF.ACT.NAME=TARIFF.REC<2,POS>
+         TARIFF.EFF.DATE=TARIFF.REC<3,POS>
+         TARIFF.DESC=TARIFF.REC<4,POS>
+         TARIFF.FACTOR=TARIFF.REC<5,POS>
+      END ELSE
+         CALL ELINE(TARIFF.NAME:' missing from TARIFF.DATE.XREF')
+         CALL ELINE("Unable to locate tariff ":Q:" in FB.TABLES TARIFF.DATE.XREF")
+         GO 150
+      END
+      LOCATE TARIFF.ACT.NAME IN PROG.TARIFF.REC<1> SETTING POS THEN
+         TARIFF.DRIVER=PROG.TARIFF.REC<3,POS>
+      END ELSE
+         CALL ELINE("Unable to locate tariff ":TARIFF.ACT.NAME:" in FB.TABLES TARIFFS")
+         GO 150
+      END
+      OLD.TARIFF.DRIVER=TARIFF.DRIVER    ; * DRF01
+      TARIFF.NAME=Q                      ; * JMK03
+      CRT@(35,6):TARIFF.NAME:' ':TARIFF.DESC       ; * JMK03
+*
+********************************************************
+180:  * Get FAK If ANY
+*******************************************************
+      HELP='Enter FAK, "TIER" or <Return> for Actual Class'
+      LN="Enter the FAK or <Return> for None: "
+      CALL GEN.IN(0,9,LN,'',Q,0,6,'','',1,36,9,0,QI,HELP,0,23)
+      Q=OCONV(Q,'MCU')
+      BEGIN CASE
+         CASE Q = 'X'
+            GO 150                       ; * JMK03
+         CASE Q = 'EX'
+            STOP
+         CASE Q = ''
+            NULL
+         CASE Q = 'TIER'                 ; * JMK01
+         CASE CLIENT.ID='99409' AND Q = '60&100'
+         CASE 1
+            LOCATE Q IN CLASSES<1> SETTING SOMEWHERE ELSE
+               CALL ELINE(Q:' is not a valid class!')
+               GO 180
+            END
+      END CASE
+      FAK=Q
+      NEW.CLIENT.NAME=CLIENT.NAME
+      IF FAK.POS#0 THEN NEW.CLIENT.NAME=CLIENT.NAME[1,FAK.POS-2]
+
+      IF FAK#'' THEN                     ; * JMK01
+         IF FAK='TIER' THEN              ; * JMK01
+            TIER.REC=''                  ; * JMK02
+            GOSUB DEFINE.TIER            ; * JMK02
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)        ; * JMK02
+            IF TIER.REC='' THEN GO 180   ; * JMK02
+            NEW.CLIENT.NAME:=' FAK '     ; * JMK02
+            NVAL=DCOUNT(TIER.REC<1>,@VM)           ; * JMK02
+            FOR VAL=1 TO NVAL            ; * JMK02
+               NEW.CLIENT.NAME:=TIER.REC<1,VAL>:'(':TIER.REC<2,VAL>:'-':TIER.REC<3,VAL>:')'          ; * JMK02
+               IF VAL#NVAL THEN NEW.CLIENT.NAME:=','         ; * JMK02
+            NEXT VAL                     ; * JMK02
+         END ELSE                        ; * JMK01
+            NEW.CLIENT.NAME:=' FAK ':FAK           ; * JMK01
+         END                             ; * JMK01
+         CRT @(0,3):'Enter Client Number ':CLIENT.ID'R%5':   ; * JMK02
+         CRT ' ':NEW.CLIENT.NAME:@(-4):  ; * JMK02
+      END                                ; * JMK01
+
+********************************************************
+300:  * Verify selection criteria is correct.
+********************************************************
+      HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            GO 180
+         CASE QI='EX'
+            STOP
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO 300
+      END CASE
+      WRITEV TARIFF.NAME ON F.CLIENTS,CLIENT.ID,72           ; * JMK 06/29/10
+      IF NEW.CLIENT.NAME#CLIENT.NAME THEN
+         WRITEV NEW.CLIENT.NAME ON F.CLIENTS,CLIENT.ID,2
+      END
+
+      PASS=0
+
+********************************************************
+400:  **** Start processing
+********************************************************
+      PASS=PASS+1
+      BEGIN CASE
+         CASE PASS=1
+            TEXT="Selecting Domestic Bills to Process - Please Wait."
+            CANADIAN=0
+         CASE PASS=2
+            CANADIAN=1
+            TEXT="Selecting Canadian Bills to Process - Please Wait."
+         CASE 1
+            GO 800
+      END CASE
+      IF PASS > 2 THEN GO 800
+      CALL CENTER(TEXT,80)
+      CRT @(0,15):@(-4):TEXT
+*
+* Select bills to process.
+*
+      BID=''
+
+      IF BID#'' THEN
+         CALL ELINE('NOW GOING TO SELECT ':BID)
+         EXECUTE "SELECT FB.BILLS.HIST,":CLIENT.ID:" '":BID:"'" PASSLIST
+      END
+      IF PASS=1 THEN
+         STMT='SSELECT FB.BILLS.HIST,':CLIENT.ID:' WITH NO 87'
+         STMT=STMT:' BY 20 BY PRO '      ; ** By Carrier Number by Pro Number
+         EXECUTE STMT PASSLIST CAPTURING OUTPUT
+         IF SYSTEM(11) ELSE
+            CALL ELINE('No transactions on file.')
+            GOTO 100
+         END
+         EXECUTE 'SAVE-LIST ':CH.NUM PASSLIST CAPTURING OUTPUT
+         EXECUTE 'GET-LIST ':CH.NUM PASSLIST CAPTURING OUTPUT
+         NUM.ITEMS = @SELECTED
+         TEXT="Building Record to Send to ":TARIFF.NAME
+      END ELSE
+         STMT='SSELECT FBWORK':CH.NUM
+         EXECUTE STMT PASSLIST CAPTURING OUTPUT
+         IF SYSTEM(11) ELSE GO 800
+         NUM.ITEMS = @SELECTED
+         TEXT="Building Record to Send to ":TARIFF.NAME
+      END
+      CALL CENTER(TEXT,80)
+      DIN=''
+      CRT @(0,15):@(-4):TEXT
+      BILL.COUNT=0
+500:  READNEXT BILL.ID ELSE
+****         IF DIN#'' THEN GOSUB PROCESS.BILLS   ;* GRB01
+         GO 800
+      END
+
+      BILL.COUNT+=1
+      CALL PROG.BAR(21,BILL.COUNT,NUM.ITEMS,PER)
+      IF REM(BILL.COUNT,MAX.BILLS)=0 THEN
+      *****   IF DIN#'' THEN GOSUB PROCESS.BILLS        ; * JMK03 ;* GRB01
+         IF PASS=1 THEN
+            TEXT="Building Record to Send to ":TARIFF.NAME
+         END ELSE
+            TEXT="Building Record to Send to ":TARIFF.NAME
+         END
+         CALL CENTER(TEXT,80)
+         CRT @(0,15):@(-4):TEXT
+         DIN=''
+      END
+
+      READ DBILL FROM F.HIST,BILL.ID ELSE ABORT
+      NUM.OF.ITEMS=DCOUNT(DBILL<79>,@VM)
+      FOR I = 1 TO NUM.OF.ITEMS
+         DBILL<79,I>=0
+      NEXT I
+*** Remove All TMIN's with No Corresponding Carrier Charge ***
+      LOCATE 'TMIN' IN DBILL<70> SETTING POS THEN
+         IF DBILL<77,POS>+0=0 THEN
+            FOR REMTMIN = 70 TO 80
+               DEL DBILL<REMTMIN,POS>
+            NEXT REMTMIN
+         END
+      END
+*** Remove All DEF's with No Corresponding Carrier Charge ***
+      LOCATE 'DEF' IN DBILL<70> SETTING POS THEN
+         IF DBILL<77,POS>+0=0 THEN
+            FOR REMTMIN = 70 TO 80
+               DEL DBILL<REMTMIN,POS>
+            NEXT REMTMIN
+         END ELSE
+            DBILL<78,POS>=''
+            DBILL<79,POS>=''
+         END
+      END
+      WRITE DBILL ON F.HIST,BILL.ID
+      READV NUL FROM F.BILLS,BILL.ID,1 THEN
+         WRITE DBILL ON F.BILLS,BILL.ID
+      END
+      ORIG.ZIP=DBILL<3>
+      DEST.ZIP=DBILL<4>
+      IF PASS=1 THEN                     ; * Separate Canadian Bills
+         IF NOT(NUM(ORIG.ZIP)) OR NOT(NUM(DEST.ZIP)) THEN
+            WRITEV '' ON F.WORK,BILL.ID,1
+            GO 500
+         END
+      END
+* Build LINE.IN to Add to DIN
+      LINE.IN=BILL.ID
+      LINE.IN<1,2>=ORIG.ZIP
+      LINE.IN<1,3>=DEST.ZIP
+
+      LINE.IN<1,7>=TARIFF.ACT.NAME
+      NUM.DETAILS=DCOUNT(DBILL<70>,@VM)
+      FOR X = 1 TO NUM.DETAILS
+         CODE=DBILL<70,X>
+         IF FAK='' THEN
+            CLASS=DBILL<74,X>
+         END ELSE
+            CLASS=DBILL<74,X>
+            BEGIN CASE                   ; * JMK01
+               CASE FAK='60&100'         ; * JMK01
+                  BEGIN CASE
+                     CASE CLASS GE 50 AND CLASS LE 100
+                        CLASS=60
+                     CASE CLASS GE 110 AND CLASS LE 250
+                        CLASS=100
+                     CASE 1
+                        NULL
+                  END CASE
+               CASE FAK='TIER'           ; * JMK01
+                  LOCATE CLASS IN TIER.REC<3> BY 'AR' SETTING TPOS THEN NULL ELSE NULL     ; * JMK02
+                  IF CLASS GE TIER.REC<2,TPOS> AND CLASS LE TIER.REC<3,TPOS> THEN          ; * JMK02
+                     CLASS=TIER.REC<1,TPOS>        ; * JMK02
+                  END                    ; * JMK02
+               CASE 1                    ; * JMK01
+                  CLASS=FAK
+            END CASE
+         END
+         WEIGHT=DBILL<75,X>
+         IF CODE='FRT' OR (CODE='TMIN' & CLASS#'' & WEIGHT#'') THEN
+            LINE.IN<1,4,-1>=CLASS
+            LINE.IN<1,5,-1>=WEIGHT
+            LINE.IN<1,6,-1>=X            ; * Value of Detail Place Holder
+         END
+      NEXT X
+      IF LINE.IN<1,4>='' THEN GO 500     ; * No data to process... Skip Bill
+      LINE.IN<1,8>=TARIFF.EFF.DATE
+      LINE.IN<1,9>=TARIFF.FACTOR
+      DIN<-1>=LINE.IN
+      DIN=LINE.IN    ;* GRB01
+      GOSUB PROCESS.BILLS    ;* GRB01
+      GO 500
+**********************************************************
+PROCESS.BILLS:**** Send Bills to Rater
+**********************************************************
+      IF PASS=1 THEN
+         TEXT="Now Sending Domestic Bills to rate with ":TARIFF.NAME:" to be processed"
+      END ELSE
+         TEXT="Now Sending Canadian Bills to rate with ":TARIFF.NAME:" to be processed"
+      END
+      CALL CENTER(TEXT,80)
+      CRT @(0,15):@(-4):TEXT
+      VIN='BOTH'
+      VIN<2>=MAX.DISC.WEIGHT             ; * Maximum Discounted Weight
+
+      TARIFF.DRIVER=OLD.TARIFF.DRIVER    ; * DRF01
+      IF TARIFF.DRIVER='MWB-O' AND CANADIAN=0 THEN
+         IF USER='OWEN' THEN
+            CALL AFS500(VIN,VOUT,DIN,TDIN,DOUT,F.PCIN,F.PCOUT)
+         END ELSE
+            CALL AFS500(VIN,VOUT,DIN,TDIN,DOUT,F.PCIN,F.PCOUT)
+         END
+      END ELSE
+         IF TARIFF.DRIVER='MWB' THEN     ; * JMK03
+            TARIFF.DRIVER='RWS'          ; * JMK04
+            IF CANADIAN THEN AFS.TARIFF.NAME='AFS525' ELSE AFS.TARIFF.NAME='AFS500'        ; * JMK03
+            DINNATT=DCOUNT(DIN,@AM)      ; * JMK03
+            FOR DINATT=1 TO DINNATT      ; * JMK03
+               DIN<DINATT,7>=AFS.TARIFF.NAME       ; * JMK03
+            NEXT DINATT                  ; * JMK03
+         END                             ; * JMK03
+         DOUT=''   ;* GRB01
+         VOUT=''     ;* GRB01
+
+         CALL @TARIFF.DRIVER(VIN,VOUT,DIN,TDIN,DOUT,F.PCIN,F.PCOUT,F.FB.TABLES)  ; * JMK03 ; * JMK04
+      END
+
+*** Process DOUT Information
+      IF PASS=1 THEN
+         TEXT="Now Posting ":TARIFF.NAME:" Information To Freight Bill File"
+      END ELSE
+         TEXT="Now Posting ":TARIFF.NAME:" Information To Freight Bill File"
+      END
+      CALL CENTER(TEXT,80)
+      CRT @(0,15):@(-4):TEXT
+
+      MAX.TIMES=DCOUNT(DIN,@AM)
+      CNTR=0
+      ERRCODE=''
+700:  *** Extract Data From Next Bill
+      CNTR=CNTR+1
+      IF CNTR > MAX.TIMES THEN RETURN
+      OUT.LINE=DOUT<1>
+      IN.LINE=DIN<1>
+   **   DEL DOUT<1>    ;* GRB01
+   **   DEL DIN<1>      ;* GRB01
+      BILL.ID=IN.LINE<1,1>
+      READ DBILL FROM F.HIST,BILL.ID ELSE
+         ERRLINE='BILL ':BILL.ID:' is missing from Bill File'
+         GOSUB 1000
+         GO 700
+      END
+      NUMB.DETAILS=DCOUNT(IN.LINE<1,4>,@SVM)
+       TOTAL.CHARGE=OUT.LINE<1,5>
+      BILL.TYPE=OUT.LINE<1,3>
+      FOR X = 1 TO NUMB.DETAILS
+         BEGIN CASE
+            CASE BILL.TYPE='MINIMUM'
+            CASE BILL.TYPE='ACTUAL' OR BILL.TYPE='DEFICIT'
+               VAL=IN.LINE<1,6,X>
+               DBILL<78,VAL>=OUT.LINE<1,1,X>       ; * RATE
+               DBILL<79,VAL>=OUT.LINE<1,2,X>       ; * CHARGE
+               GB1=OUT.LINE<1,1,X>       ; * RATE
+               GB2=OUT.LINE<1,2,X>       ; * CHARGE
+            CASE 1
+               ERRLINE='Client ':CLIENT.ID:' Bill ':BILL.ID:' was not rated!!  Rate manually!'
+               GOSUB 1000
+               GO 700
+         END CASE
+      NEXT X
+      BEGIN CASE
+         CASE BILL.TYPE='MINIMUM'
+            LOCATE 'TMIN' IN DBILL<70> SETTING VAL ELSE
+               VAL=DCOUNT(DBILL<70>,@VM)+1
+               DBILL<70,VAL>='TMIN'
+            END
+            DBILL<79,VAL>=TOTAL.CHARGE
+         CASE BILL.TYPE='DEFICIT'
+            LOCATE 'DEF' IN DBILL<70> SETTING VAL ELSE
+               VAL=DCOUNT(DBILL<70>,@VM)+1
+               DBILL<70,VAL>='DEF'
+            END
+            DBILL<74,VAL>=OUT.LINE<1,6>  ; * DEFICIT CLASS
+            DBILL<75,VAL>=OUT.LINE<1,7>  ; * DEFICIT WEIGHT
+            DBILL<78,VAL>=OUT.LINE<1,8>  ; * DEFICIT RATE
+            DBILL<79,VAL>=OUT.LINE<1,9>  ; * DEFICIT CHARGE
+            IF DBILL<76,VAL>='' THEN
+               CARRIER.RATE=OCONV(DBILL<76,1>,'MR2')
+               DEFICIT.WT=OCONV(OUT.LINE<1,7>,'MR2')
+               CARRIER.CHG=CARRIER.RATE*DEFICIT.WT
+               DBILL<76,VAL>=ICONV(CARRIER.RATE,'MR2')
+               DBILL<77,VAL>=ICONV(CARRIER.CHG,'MR2')
+            END
+      END CASE
+
+      READV NUL FROM F.BILLS,BILL.ID,1 THEN
+         WRITE DBILL ON F.BILLS,BILL.ID
+      END
+      WRITE DBILL ON F.HIST,BILL.ID
+      RETURN      ;* GRB01
+   **   GO 700     ;* GRB01
+**********************************************************
+800:  * Finished processing
+**********************************************************
+      IF PASS < 2 THEN GO 400
+      IF TRIM(ERRORS)#'' THEN WRITE ERRORS ON F.TEMP,'ERRORS'
+
+      STOP
+*********************************************************
+1000: ***
+*********************************************************
+      ERRORS<-1>=ERRLINE
+      CALL ELINE(ERRLINE) 
+      PRINT @(0,23):ERRLINE[1,79]:CHAR(7):
+      
+      RETURN
+*********************************************************
+DEFINE.TIER:
+*********************************************************
+*
+* First page of codes.
+*
+      PAGE=1
+      GOSUB 90000
+*
+**********************************************************
+10000:* Enter selection code.
+**********************************************************
+      HELP="Enter line number. 'B'=Back. 'T'=Top, ''=Next page. 'E'=End. 'EX'=Exit."
+      CALL GEN.IN(0,22,"Enter line number please. ###",'',Q,0,3,'','',1,-3,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI=''
+            PAGE=PAGE+1
+            GOSUB 90000
+         CASE QI='B'
+            PAGE=PAGE-1
+            IF PAGE=0 THEN PAGE=1
+            GOSUB 90000
+         CASE QI='T'
+            PAGE=1
+            GOSUB 90000
+         CASE QI='EX'
+            STOP
+         CASE NUM(QI)
+            SEL=QI
+            IF SEL LT START ! SEL GT STOP THEN
+               CALL ELINE('Invalid selection.')
+               GOTO 10000
+            END
+            GOSUB 80000
+         CASE QI='E'
+            X=DCOUNT(TIER.REC<1>,CHAR(253))
+            FOR I=X TO 1 STEP -1
+               IF TIER.REC<1,I>='' THEN
+                  TIER.REC=DELETE(TIER.REC,1,I)
+                  TIER.REC=DELETE(TIER.REC,2,I)
+                  TIER.REC=DELETE(TIER.REC,3,I)
+                  TIER.REC=DELETE(TIER.REC,4,I)
+                  TIER.REC=DELETE(TIER.REC,5,I)
+                  TIER.REC=DELETE(TIER.REC,6,I)
+               END
+            NEXT I
+            RETURN
+      END CASE
+      GOTO 10000
+
+*********************************************************
+80000:* Edit class code.
+********************************************************
+      ROW=3+REM(SEL,18)
+      IF ROW=3 THEN ROW=21
+      CODE=TIER.REC<1,SEL>
+      LOW=TIER.REC<2,SEL>
+      HIGH=TIER.REC<3,SEL>
+**********************************************************
+80100:
+*********************************************************
+      HELP="Enter new class code. ''=Accept. 'D'=Delete. 'X'=Exit."
+      CALL GEN.IN(5,ROW,CODE'R#11 ','',Q,0,5,'','',5,5,ROW,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(5,ROW):CODE'R#11 '
+            RETURN
+         CASE QI=''
+            Q=CODE
+         CASE QI='D'
+            TIER.REC=DELETE(TIER.REC,1,SEL)
+            TIER.REC=DELETE(TIER.REC,2,SEL)
+            TIER.REC=DELETE(TIER.REC,3,SEL)
+            TIER.REC=DELETE(TIER.REC,4,SEL)
+            TIER.REC=DELETE(TIER.REC,5,SEL)
+            TIER.REC=DELETE(TIER.REC,6,SEL)
+            GOSUB 90000
+            RETURN
+      END CASE
+      LOCATE QI IN CLASSES<1> SETTING CPOS ELSE
+         CALL ELINE('Invalid class entry.')
+         GO 80100
+      END
+      IF SEL>1 THEN
+         IF CPOS<=TIER.REC<4,SEL-1> THEN
+            CALL ELINE('Must be higher than previous class code.')
+            GO 80200
+         END
+      END
+      CODE=Q
+      CRT @(5,ROW):CODE'R#11 '
+**********************************************************
+80200:
+*********************************************************
+      HELP="Enter new low range value. ''=Accept. 'X'=Back to class code."
+      CALL GEN.IN(17,ROW,LOW'R#11 ','',Q,0,5,'R','',5,17,ROW,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(17,ROW):LOW'R#11 '
+            GOTO 80100
+         CASE QI=''
+            Q=LOW
+         CASE NUM(QI)
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry.')
+      END CASE
+      LOCATE QI IN CLASSES<1> SETTING LPOS ELSE
+         CALL ELINE('Invalid class entry.')
+         GO 80200
+      END
+      IF SEL>1 THEN
+         IF LPOS<=TIER.REC<6,SEL-1> THEN
+            CALL ELINE('Must be higher than previous high range value.')
+            GO 80200
+         END
+      END
+      LOW=Q
+      CRT @(17,ROW):LOW'R#11 '
+**********************************************************
+80300:
+*********************************************************
+      HELP="Enter new high range value. ''=Accept. 'X'=Back to low value."
+      CALL GEN.IN(29,ROW,HIGH'R#11','',Q,0,5,'R','',5,29,ROW,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(29,ROW):HIGH'R#11'
+            GOTO 80200
+         CASE QI=''
+            Q=HIGH
+         CASE NUM(QI)
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry.')
+      END CASE
+      LOCATE QI IN CLASSES<1> SETTING HPOS ELSE
+         CALL ELINE('Invalid class entry.')
+         GO 80300
+      END
+      IF HPOS<LPOS THEN
+         CALL ELINE('Cannot be lower than low range value.')
+         GO 80300
+      END
+      HIGH=Q
+      CRT @(29,ROW):HIGH'R#11'
+*
+      TIER.REC<1,SEL>=CODE
+      TIER.REC<2,SEL>=LOW
+      TIER.REC<3,SEL>=HIGH
+      TIER.REC<4,SEL>=CPOS
+      TIER.REC<5,SEL>=LPOS
+      TIER.REC<6,SEL>=HPOS
+      RETURN
+*
+********************************************************
+90000:* DISPLAY TIER ARRAY
+********************************************************
+      CRT @(0,3):@(-3):'Line'"R#4 ":'Rate Class'"R#11 ":'Begin Class'"R#11 ":'End Class'"R#11"
+      START=(PAGE*18)-17
+      IF START GT 72 THEN
+         START=1
+         PAGE=1
+      END
+      STOP=START+17
+      FOR I=START TO STOP STEP 1
+         ROW=3+REM(I,18)
+         IF ROW=3 THEN ROW=21
+         CODE=TIER.REC<1,I>
+         LOW=TIER.REC<2,I>
+         HIGH=TIER.REC<3,I>
+         PRINT @(0,ROW):I"R#4 ":CODE"R#11 ":LOW'R#11 ':HIGH'R#11'
+      NEXT I
+      RETURN

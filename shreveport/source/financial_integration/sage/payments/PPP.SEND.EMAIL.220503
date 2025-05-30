@@ -1,0 +1,439 @@
+****************************************
+* Program name : PPP.SEND.EMAIL
+* Author       : Greg Bino
+* Date written : March 25 2021
+* Library      : FBBP
+* COPYRIGHT (c) : AFS, LLC 2021, All Rights Reserved.
+*
+* Send notification emails of bills with past due dates approaching
+* Last updated by afs (AFSLOGISTICS\gbino) at 08:45:20 on 04/27/2021.
+*
+* Start modification history
+* Mod nn  mm/dd/yy, init, req #, description
+
+* End modification history
+*
+*******************************************
+$INCLUDE UNIVERSE.INCLUDE ODBC.H
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'PPP.SEND.EMAIL' ; UPL.VOUT = ''
+      CALL GET.USER.NEW(USER,CH.NUM)
+      UPL.VIN<3> = USER
+      UPL.VIN<4> = CH.NUM
+      ***     CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+
+      BEGIN CASE
+         CASE USER='DAVID'
+         CASE USER = "GBINO"
+         CASE USER = "NMEDDAUGH"
+         CASE USER='SV.UVAUTO'
+         CASE USER='UVTASKS'
+         CASE 1
+            CRT "YOU ARE NOT AUTHORIZED TO USE THIS PROGRAM"
+            STOP
+      END CASE
+
+      VIN1=""
+      VIN1<1> = "PPP.SEND.EMAIL"
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "S"
+      ***    CALL PROGTRACK(VIN1,VOUT1)
+
+      GOSUB OPEN.FILES
+
+      GET (ARG.,1) OBEG.DATE THEN
+         BEG.DATE=ICONV(OBEG.DATE,'D')
+      END ELSE
+         BEG.DATE=DATE()
+      END
+      GET (ARG.,2) OEND.DATE THEN
+         END.DATE=ICONV(OEND.DATE,'D')
+      END ELSE
+         END.DATE=DATE()
+      END
+      GET (ARG.,3) CLIENT.LIST.NAME ELSE CLIENT.LIST.NAME=''
+      GET (ARG.,4) OPT.LIST ELSE OPT.LIST=''
+      GET (ARG.,5) START.TIME ELSE START.TIME=''
+      IF @TTY = "phantom" THEN
+      END ELSE
+         CRT @(0,0):@(-1):@(0,3):'PPP.SEND.EMAIL - Processing Clients from ':BEG.DATE'D2/':' to ':END.DATE'D2/':'...'
+      END
+
+      * loop through participating clients
+      * check for bill with due date lt 11 days
+      * send email to client with due date lt 11 but gt 5
+      * send email to client with due date lt 6 and send payment fee and mark as paid
+
+
+      IF CLIENT.LIST.NAME#'' AND CLIENT.LIST.NAME#'ALL' THEN
+         STMT='GET-LIST ':CLIENT.LIST.NAME
+      END ELSE
+         STMT='SSELECT PPP.CLIENT '
+      END
+      EXECUTE STMT RTNLIST CLIENT.LIST CAPTURING RESULTS
+      NUM.CLIENTS=@SELECTED
+
+      EXPECT = ""
+      NULL=""
+      TOT.NUM.BILLS=0
+      ERROR.CNT=0
+      ERRORS=''
+      TODAY = DATE()
+      DAY.WINDOW.10 = TODAY - 10
+      DAY.WINDOW.9 = TODAY - 9
+      DAY.WINDOW.8 = TODAY - 8
+      DAY.WINDOW.7 = TODAY - 7
+      DAY.WINDOW.6 = TODAY - 6
+      DAY.WINDOW.5 = TODAY - 5
+      WORK.ARRY=''
+      CLIENT.EOF=0
+      CLIENT.CNT=0
+*DF      DEBUG
+      LOOP
+         READNEXT CLIENT.ID FROM CLIENT.LIST ELSE CLIENT.EOF=1
+      UNTIL CLIENT.EOF DO
+         CLIENT.CNT+=1
+         CLIENT.PCT=ICONV(CLIENT.CNT/NUM.CLIENTS*100,'MR2')CLIENT.ID
+
+         GOSUB OPEN.CLIENT.FILES
+         READV CLIENT.NAME FROM F.CLIENT,CLIENT.ID,2 ELSE
+            CLIENT.NAME = "NOF"
+         END
+         READ PPP.CLIENT FROM F.CLIENT.PPP,CLIENT.ID THEN
+            BILL.ARRY =''
+            MAIL.ARRY=''
+            EMAIL.ADDRESS = PPP.CLIENT<10>
+            CONTACT = PPP.CLIENT<11>
+
+            IF @TTY = "phantom" THEN
+               DISPLAY CLIENT.ID'R#5'
+            END ELSE
+               CRT @(0,5):@(-4):CLIENT.CNT'R#4':' - ':CLIENT.PCT'R26#6':'% ':CLIENT.ID:' - ':CLIENT.NAME
+            END
+*DF            DEBUG
+            TARGET.DT = DATE() + 6
+            TARGET.DT = OCONV(TARGET.DT,"D2/")
+            STMT='SELECT PPP.CLIENT.BILLS,':CLIENT.ID
+            STMT:=' WITH NO PAID.DT AND WITH DUE.DT EQ "' : TARGET.DT : '"'
+
+            EXECUTE STMT RTNLIST BILL.LIST CAPTURING OUTPUT
+
+            NUM.BILLS=@SELECTED
+            TOT.NUM.BILLS+=NUM.BILLS
+
+            IF NUM.BILLS GT 0 THEN
+               BILL.CNT=0
+               BILL.PER=0
+               BILL.EOF=0
+*DF               DEBUG
+               LOOP
+                  READNEXT BILL.ID FROM BILL.LIST ELSE BILL.EOF=1
+               UNTIL BILL.EOF DO
+                  BILL.CNT+=1
+                  BILL.PCT=ICONV(BILL.CNT/NUM.BILLS*100,'MR2')
+                  IF NOT(REM(BILL.CNT,10)) AND @TTY # "phantom" THEN
+                     CRT @(0,10):@(-3):' #Bills - ':NUM.BILLS'R#12':' - ':BILL.CNT'R#15'
+                  END
+
+                  READ CLIENT.BILLS FROM F.PPP,BILL.ID THEN
+                     READ BILL.REC FROM F.HIST,BILL.ID THEN
+
+                        BILL.AMT = BILL.REC<8>
+
+                        CARRIER.ID = FIELD(BILL.ID,"*",1)
+
+                        PROC.DT = CLIENT.BILLS<2>
+
+                        DUE.DT = CLIENT.BILLS<1>
+
+                        LOCATE(CARRIER.ID,BILL.ARRY,1;DPOS;'AR') THEN
+                           BILL.ARRY<2,DPOS> = BILL.ARRY<2,DPOS> + BILL.AMT
+                        END ELSE         ; * carrier not found
+                           BILL.ARRY = INSERT(BILL.ARRY,1,DPOS,0,CARRIER.ID)
+                           BILL.ARRY = INSERT(BILL.ARRY,2,DPOS,0, BILL.AMT)
+                           BILL.ARRY = INSERT(BILL.ARRY,3,DPOS,0, DUE.DT)
+                           BILL.ARRY = INSERT(BILL.ARRY,4,DPOS,0, PROC.DT)
+                        END
+
+                        CLIENT.BILLS<4> = DATE()   ; * MARK AS PAID
+                        WRITE CLIENT.BILLS ON F.PPP,BILL.ID
+
+                     END
+                  END
+
+               REPEAT
+
+               IF BILL.ARRY # "" THEN
+                  GOSUB CREATE.FEE
+               END
+              		
+            END
+
+            ************************************************************************************
+             *     						  7 8 9 10	11	
+          TODAY = DATE()
+            TARGET.DT = TODAY + 11
+            TARGET.DT = OCONV(TARGET.DT,"D2/")
+            STMT='SSELECT PPP.CLIENT.BILLS,':CLIENT.ID
+            STMT:=' WITH NO PAID.DT AND WITH DUE.DT LE "' : TARGET.DT : '"'
+            STMT:=' BY 2 BY-DSND DUE.DT'
+
+            EXECUTE STMT RTNLIST BILL.LIST CAPTURING OUTPUT
+*DF   DEBUG
+            NUM.BILLS=@SELECTED
+            TOT.NUM.BILLS+=NUM.BILLS
+
+            IF NUM.BILLS GT 0 THEN
+               BILL.CNT=0
+               BILL.PER=0
+               BILL.EOF=0
+            
+               LOOP
+                  READNEXT BILL.ID FROM BILL.LIST ELSE BILL.EOF=1
+               UNTIL BILL.EOF DO
+                  BILL.CNT+=1
+                  BILL.PCT=ICONV(BILL.CNT/NUM.BILLS*100,'MR2')
+                  IF NOT(REM(BILL.CNT,10)) AND @TTY # "phantom" THEN
+                     CRT @(0,10):@(-3):' #Bills - ':NUM.BILLS'R#12':' - ':BILL.CNT'R#15'
+                  END
+                  READ CLIENT.BILLS FROM F.PPP,BILL.ID THEN
+
+                     DUE.DT = CLIENT.BILLS<1>
+                     PROC.DT = CLIENT.BILLS<2>
+                     GOSUB SET.DATES
+                     ***           ; * send warning letter
+                     **** identify days from due dt
+                     IF SEND.MAIL GT 6 THEN
+                     LOCATE(SEND.MAIL,MAIL.ARRY,1;DPOS;'AR') THEN
+                        MAIL.ARRY<2,DPOS> = MAIL.ARRY<2,DPOS> + 1
+                     END ELSE            ; * carrier not found
+                        MAIL.ARRY = INSERT(MAIL.ARRY,1,DPOS,0,SEND.MAIL)
+                        MAIL.ARRY = INSERT(MAIL.ARRY,2,DPOS,0, 1)
+                        MAIL.ARRY = INSERT(MAIL.ARRY,3,DPOS,0, DUE.DT)
+                        MAIL.ARRY = INSERT(MAIL.ARRY,4,DPOS,0, PROC.DT)
+                     END
+                   END
+                  END
+
+                  IF MOD(BILL.CNT,10)=0 THEN
+                     ** CRT @(0,22):@(-4):
+                  END
+               REPEAT
+            END
+            DEBUG
+
+            IF MAIL.ARRY # "" THEN
+               SEND.MAIL = MAIL.ARRY<1,1>
+               PROC.DT = OCONV(MAIL.ARRY<4,1>,"D2/")
+               GOSUB SEND.MAIL
+            END
+          
+            IF TOT.NUM.BILLS+0#0 THEN
+** CRT @(0,22):@(-3):
+            END
+         END
+SKIP.CLIENT:*
+      REPEAT
+      GO THE.END
+*******************************************************************
+DO.IT:
+*******************************************************************
+      BEGIN CASE
+         CASE SEND.MAIL = 10
+            BILL.REC<10> = DATE()
+         CASE SEND.MAIL = 9
+            BILL.REC<11> = DATE()
+         CASE SEND.MAIL = 8
+            BILL.REC<12> = DATE()
+         CASE SEND.MAIL = 7
+            BILL.REC<13> = DATE()
+         CASE SEND.MAIL = 6
+            BILL.REC<14> = DATE()
+         CASE SEND.MAIL = 5
+            BILL.REC<15> = DATE()
+      END CASE
+
+      RETURN
+
+*******************************************************************
+CREATE.FEE:
+*******************************************************************
+      PAYMENT = 0
+*DF      DEBUG
+      CARRIER.CNT = DCOUNT(BILL.ARRY<1>,@VM)
+      FOR I = 1 TO CARRIER.CNT
+         CARRIER = BILL.ARRY<1,I>
+****   BILL.TOT = OCONV(BILL.ARRY<2,I>,"MR2")
+         BILL.TOT = BILL.ARRY<2,I>
+         DUE.DT = BILL.ARRY<3,I>
+         PROC.DT = BILL.ARRY<4,I>
+         FEE.ID = DATE()+1:"*":CLIENT.ID:"*":CARRIER
+         FEE.REC=''
+         FEE.REC<1> = DATE()+1
+         FEE.REC<2> = BILL.TOT
+         FEE.REC<3> = 0
+         FEE.REC<4> = 0
+         FEE.REC<5> = DUE.DT
+         FEE.REC<6> = "PRE.PAID.FUNDING.FEE"
+         WRITE FEE.REC ON F.FEE,FEE.ID
+         PAYMENT = PAYMENT + BILL.TOT
+      NEXT I
+      SEND.MAIL = 5
+      GOSUB SEND.MAIL
+      RETURN
+
+******************************************************
+SET.DATES:
+******************************************************
+
+      DUE.WINDOW = DUE.DT - TODAY
+
+      SEND.MAIL = DUE.WINDOW
+      RETURN
+      
+
+      RETURN
+*****************************************************************
+SEND.MAIL:***
+****************************************************************
+      PAY.DT = 0
+      DAYS = SEND.MAIL
+***    PAYMENT=0
+      IF SEND.MAIL GT 5 THEN
+         MVIN=''
+         MVIN<1>='nmeddaugh@afs.net'
+         MVIN<1.-1>=EMAIL.ADDRESS
+         MVIN<4>='AFS@AFS.NET'
+         MVIN<5>='Alert; Carrier Charges Due'
+         TEXT=''
+         TEXT<1,-1>='Good morning,'
+         TEXT<1,-1>=' '
+         TEXT<1,-1>='As a reminder, payment for your parcel carrier invoice(s) processed by AFS on ':PROC.DT:' is due in ':DAYS:' days.'
+         TEXT<1,-1>='The carriers charge a penalty for any late payment; therfore, this needs immediate attention'
+         TEXT<1,-1>='Please remit payment to AFS via wire transfer or ACH. Checks will not be accepted.'
+         TEXT<1,-1>=' '
+         TEXT<1,-1>=' '
+         TEXT<1,-1>="We are always here to assist in any way and will make the payment for you in the event you are unable to send payment to AFS before five days prior to the carriers' due date."
+         TEXT<1,-1>=' '
+         TEXT<1,-1>=' '
+         TEXT<1,-1>='Please call your AFS representative with any questions.'
+         TEXT<1,-1>=' '
+         TEXT<1,-1>=' '
+         TEXT<1,-1>='Best regards,'
+         TEXT<1,-1>='AFS Accounting team'
+         MVIN<6>=TEXT
+         MVIN<7>=1
+ IF TEXT # "" THEN
+      CALL SENDMAIL(MVIN,MVOUT)
+    END
+      END
+*DF      DEBUG
+      IF SEND.MAIL = 5 THEN
+         PROC.DT = OCONV(PROC.DT,"D2/")
+         PAYMENT = OCONV(PAYMENT,"MR2")
+         MVIN=''
+         MVIN<1>='nmeddaugh@afs.net'
+**   MVIN<1.-1>=EMAIL.ADDRESS
+         MVIN<4>='AFS@AFS.NET'
+         MVIN<5>='Payment to your Parcel Carriers'
+         TEXT=''
+         TEXT<1,-1>='Effective today, AFS will be funding $':PAYMENT:' to your parcel carrier for invoices(s) processed by AFS on ':PROC.DT
+         TEXT<1,-1>='to ensure no penalty is assessed on your account by the carrier.'
+         TEXT<1,-1>=' '
+         TEXT<1,-1>=' '
+         TEXT<1,-1>='This will be reflected on your AFS invoice. Please remit payment to AFS via wire transfer or ACH accordingly. Checks will not be accepted.'
+         TEXT<1,-1>=' '
+         TEXT<1,-1>=' '
+         TEXT<1,-1>='Please call your AFS representative with any questions.'
+         TEXT<1,-1>=' '
+         TEXT<1,-1>=' '
+         TEXT<1,-1>='Best regards,'
+         TEXT<1,-1>='AFS Accounting team'
+         MVIN<6>=TEXT
+         MVIN<7>=1
+ IF TEXT # "" THEN
+      CALL SENDMAIL(MVIN,MVOUT)
+    END
+      END
+     
+      RETURN
+*****************************************************************
+THE.END:***
+****************************************************************
+
+      IF ERRORS#'' THEN
+         ERROR.CNT+=1
+         IF ERROR.CNT>3 THEN
+            MVIN=''
+            MVIN<1>='nmeddaugh@afs.net'
+            MVIN<4>='AFS@AFS.NET'
+            MVIN<5>='PPP  Update Errors'
+            TEXT='On ':DATE()'D2/':' ':OCONV(TIME(),'MTHS'):', ':USER:' updated '
+            TEXT<1,-1>=ERRORS
+            TEXT<1,-1>=' '
+            TEXT<1,-1>=ERRORS
+            MVIN<6>=TEXT
+            MVIN<7>=1
+            CALL SENDMAIL(MVIN,MVOUT)
+         END ELSE
+**         WRITE ERRORS ON F.ERR,"SQL.FBHIST":TIMEDATE()
+         END
+      END
+
+      VIN1=''
+      VIN1<1> = "PPP.SEND.EMAIL"
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "E"
+**   CALL PROGTRACK(VIN1,VOUT1)
+
+      STOP
+******************************************************
+OPEN.FILES:
+********************************************************
+
+      OPEN 'FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT("FB.TABLES",PROG.NAME)
+      END
+      OPEN 'CLIENTS' TO F.CLIENT ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN 'PPP.CLIENT' TO F.CLIENT.PPP ELSE
+         CALL OPEN.ABORT("PPP.CLIENT",PROG.NAME)
+      END
+      OPEN 'ERRORS.LOG' TO F.ERR ELSE
+         CALL OPEN.ABORT("ERRORS.LOG",PROG.NAME)
+      END
+      OPEN 'FB.PROG.FEE' TO F.FEE ELSE
+         CALL OPEN.ABORT("FB.PROG.FEE",PROG.NAME)
+      END
+      READ LI.CODE.REC FROM F.TABLES,'LI.CODES' ELSE LI.CODE.REC=''
+
+      RETURN
+
+******************************************************
+OPEN.CLIENT.FILES:
+********************************************************
+      OPEN 'PPP.CLIENT.XREF,':CLIENT.ID TO F.XREF ELSE
+         STMT = 'CREATE-FILE DATA PPP.CLIENT.XREF,':CLIENT.ID:' ':1001:".":1
+         EXECUTE STMT CAPTURING STUFF RETURNING JUNK
+         OPEN 'PPP.CLIENT.XREF,':CLIENT.ID TO F.PPP ELSE
+            CALL ELINE('UNABLE TO CREATE PPP.CLIENT.XREF FILE')
+            OPN.FLG = 0
+         END
+      END
+      OPEN 'PPP.CLIENT.BILLS,':CLIENT.ID TO F.PPP ELSE
+         STMT = 'CREATE-FILE DATA PPP.CLIENT,':CLIENT.ID:' ':1001:".":1
+         EXECUTE STMT CAPTURING STUFF RETURNING JUNK
+         OPEN 'PPP.CLIENT,':CLIENT.ID TO F.PPP ELSE
+            CALL ELINE('UNABLE TO CREATE FILE')
+            OPN.FLG = 0
+         END
+      END
+      OPEN 'FB.BILLS.HIST,':CLIENT.ID TO F.HIST ELSE
+         CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,PROG.NAME)
+      END
+
+      RETURN
+
+   END

@@ -1,0 +1,678 @@
+      SUBROUTINE RWS.T(VIN,VOUT,DIN,TDIN,DOUT,F.PCIN,F.PCOUT,F.TABLES)
+*
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR:      MIKE KERBOW & KEVIN MESSENGER
+* DATE:        OCTOBER 2005
+* DESCRIPTION: THIS PROGRAM WILL SUBMIT A TEXT FILE TO RATEWARE
+*              USING UNIVERSE SOCKET CONNECTIONS
+*
+* DIN - Data Sent In to Be Processed
+* DOUT - Data Returned that was processed (Answers)
+* NOTE:  On Mode READ DIN MUST BE SUPPLIED for DOUT to be Created!
+*
+* COPYRIGHT (C) AFS LOGISTICS, LLC., 2016
+*
+************************************************************************
+* 012306 - JMK01 - CHANGE SERVER ADDRESS TO DNS NAME
+* 020206 - JMK02 - ADD AFS500 TO TARIFF LIST
+* 021506 - JMK03 - GET CITY AND STATE FROM ZIPS FOR RATING
+* 031306 - JMK04 - ADD RWS ERROR DESCRIPTION FOR ERROR CODE
+* 032006 - JMK05 - ADD TIME LOOP TO ALLOW FOR NETWORK ACCESS
+* 052206 - JMK06 - CHECK SUB.ZIP RECORD FOR ZIP CODE SUBSTITUTION
+* 092606 - JMK07 - GET CLIENT
+* 101306 - JMK08 - ADD ZIP SUBSTITUTE FOR 92010 (92019)
+* 110906 - JMK09 - T200611090009 / priority 2  / OLA  ZIP SUBSTITUTE FOR 92011 (92019)
+* 042307 - JMK10 - T200704180006 / Priority 1  /    RE: CZAR + 10%
+* 011708 - NPR01 - ADDED CALL TO UPD.PROCESS.LOG Which monitors who uses this program. Temporary change - may be removed
+* 012508 - NPR02 - ADDED TABLE FOR ZIP SUBSTITUTIONS TO GET AWAY FROM HARD CODING  - SEE FB.1.11.19 FOR TAB MAINT.
+* 020608 - JMK11 - T080421 - RWS errors ; Combination not in tariff
+* 022508 - NPR03 - ADDED CALL TO UPD.PROCESS.LOG to monitor response time issues. Temporary change - m
+* 030508 - JMK12 - T080590 - Rate Estimate unresponsive 4:00 - 6:30 EST.
+* 051308 - JMK13 - PASSING FILE VARIABLE F.TABLES
+* 051308 - JMK14 - READ RWS SERVER NAME FROM FILE RECORD
+* 081108 - JMK15 - C081931 - Send an email each time an invalid zip is sent to RWS
+* 092908 - JMK16 - Remove change of tariff for Canadian LITECZ rates
+* 101708 - JMK17 - C082354 - Limit email alerts for RateWare shipping point problem
+* 102908 - JMK18 - T082417 - ProComm errors RWS
+* 012909 - JMK19 - T090133 - Now not receiving any RWS Origin / Destination Shipping Point Problem Alerts
+* 041509 - JMK20 - C090512 - Zip Code Errors involving Alaska? (S/B Hawaii NPR??) should not trigger an alert
+* 060809 - JMK21 - Correct Tariff Adjustment Factor format differences
+* 072809 - JMK22 - Correct 30M rates for Tariff CZAR_9901
+* 110209 - NPR04 - Alerts need to exclude Alaska zip codes
+* 110609 - NPR05 - Do not cause Alert if both Orig. and Dest zip are Canadian.
+* 021710 - JMK23 - CHANGE LOCATIONS FOR RATEWARE SERVER CALLS
+* 022510 - JMK24 - Limit all rates to a ceiling of 10M
+* 041410 - JMK25 - Setup table to determine how many active users
+* 082913 - JMK26 - Add TIME.LINE variable to track 6 points of timing for activities
+* 080515 - DRF01 - SysAid 19089 - Changed to point to SHVRATING instead of AFS
+************************************************************************
+*
+*
+* Initialize variables
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+      CALL CHANNEL(CH.NUM)
+      CRLF=CHAR(13):CHAR(10)
+      CALL GET.USER(USER)
+      COMMON PROGPARAMS(24)
+      EQU PROGFROM TO PROGPARAMS(1)
+****      EQU USER TO PROGPARAMS(2)
+      EQU PROCDATE TO PROGPARAMS(3)
+      VOUT=''
+      DOUT=''
+      LINE.OUT=''
+      TIME.LINE=''                       ; * JMK26
+      TIME.LINE<1,1,1>=TIME()            ; * JMK26 ; * START TIME
+      PROMPT ''
+      PROG.NAME='RWS'
+      REQ.PFX.REC = SPACE(10)            ; * 10 Character Long
+      REQ.HDR.REC = SPACE(104)           ; * 104 Characters Long
+      REQ.DDSC.REC = SPACE(50)           ; * 50 Characters Long Spaces Unless Used
+      REQ.IDSC.REC = SPACE(50)           ; * 50 Characters Long Spaces Unless Used
+      REQ.DTL.REC = ""                   ; * 9 Characters Long Up To 20 Di_seqments Can Be Used
+      DTL.CNT=0
+      ERROR.MODE='F'
+      RATE.MODE='1'
+      TARIFF.LIST=''
+      TARIFF.LIST<1,-1>='AACTCZ'
+      TARIFF.LIST<2,-1>='AACTCZ02'
+      TARIFF.LIST<1,-1>='ABF504'
+      TARIFF.LIST<2,-1>='ABF50401'
+      TARIFF.LIST<1,-1>='AFS500'         ; * JMK02
+      TARIFF.LIST<2,-1>='AFS50002'       ; * JMK02
+      TARIFF.LIST<1,-1>='AFS525'
+      TARIFF.LIST<2,-1>='AFS52502'
+      TARIFF.LIST<1,-1>='AFS95'
+      TARIFF.LIST<2,-1>='AFS50002'
+      TARIFF.LIST<1,-1>='ARFW500'
+      TARIFF.LIST<2,-1>='ARF50001'
+      TARIFF.LIST<1,-1>='ARFWCZ'
+      TARIFF.LIST<2,-1>='ARFWCZ02'
+      TARIFF.LIST<1,-1>='CENFUS'
+      TARIFF.LIST<2,-1>='CENFUS01'
+      TARIFF.LIST<1,-1>='CFW555'
+      TARIFF.LIST<2,-1>='CFW55504'
+      TARIFF.LIST<1,-1>='CTS599'
+      TARIFF.LIST<2,-1>='CTS59901'
+      TARIFF.LIST<1,-1>='INP500'
+      TARIFF.LIST<2,-1>='INP500'
+      TARIFF.LIST<1,-1>='INTPCZ'
+      TARIFF.LIST<2,-1>='INTPCZ02'
+      TARIFF.LIST<1,-1>='LITECZ'
+      TARIFF.LIST<2,-1>='LITECZ02'
+      TARIFF.LIST<1,-1>='LINT'
+      TARIFF.LIST<2,-1>='LINT0002'
+      TARIFF.LIST<1,-1>='MASCCZ'
+      TARIFF.LIST<2,-1>='MASCCZ02'
+      TARIFF.LIST<1,-1>='ODF559'
+      TARIFF.LIST<2,-1>='ODF55901'
+      TARIFF.LIST<1,-1>='RDW507'
+      TARIFF.LIST<2,-1>='RDW50703'
+      TARIFF.LIST<1,-1>='SAI500'
+      TARIFF.LIST<2,-1>='SAI50001'
+      TARIFF.LIST<1,-1>='SMC519'
+      TARIFF.LIST<2,-1>='SMC51906'
+      TARIFF.LIST<1,-1>='VIKNIN'
+      TARIFF.LIST<2,-1>='VIKNIN02'
+      TARIFF.LIST<1,-1>='VIKNUS'
+      TARIFF.LIST<2,-1>='VIKNUS01'
+      TARIFF.LIST<1,-1>='YFS500'
+      TARIFF.LIST<2,-1>='YFS50001'
+*
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'RWS' ; UPL.VOUT = ''  ; * NPR_UPL 04/23/2010
+****      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      CALL UPD.RATE.ACTIVITY(UPL.VIN,UPL.VOUT)
+****************************************************************
+      GOSUB LOAD.SUB.ZIP                 ; * JMK06
+*     SERVER.IP.ADDRESS = "RATEWARE"     ; * HostName ; * JMK01 ; * JMK14
+      READ RWS.REC FROM F.TABLES,'RWS' ELSE        ; * JMK14
+         RWS.REC=''                      ; * JMK14
+         RWS.REC<1>='SHVRATING'          ; * DRF01
+         RWS.REC<2>='SHVRATING'          ; * DRF01
+      END                                ; * JMK14
+      SERVER.IP.ADDRESS=RWS.REC<1>       ; * JMK14
+      SOCKET.PORT = "23700"              ; * Port to Use
+      SOCKETMODE = "1"                   ; * 0=non-blocking, 1=blocking
+*     SOCKETHANDLE = ""                  ; * socket handle ; * JMK12
+      SERFLAG = "-1"                     ; * JMK12
+      TIMEOUT = 0                        ; * milliseconds
+      OPEN.CNT=0
+*
+      ST.TIME = TIME()                   ; * NPR03
+      SOCKETINFO=''                      ; * JMK12
+
+******************************************************************************
+OPEN.SOCKET:* OPEN SOCKET
+******************************************************************************
+******LOG.RET = PROTOCOLLOGGING("RWSLOG","ON",10)
+      RESULT = openSocket(SERVER.IP.ADDRESS,SOCKET.PORT,SOCKETMODE,TIMEOUT,SOCKETHANDLE)
+      IF RESULT <> 0 THEN
+         NEWRESULT = getSocketErrorMessage(RESULT,ERR)
+         OPEN.CNT+=1
+         IF OPEN.CNT<10 THEN             ; * NPR03
+            SLEEP 1                      ; * JMK05
+            GO OPEN.SOCKET               ; * JMK05
+         END                             ; * JMK05
+         IF SERVER.IP.ADDRESS#RWS.REC<2> THEN      ; * JMK14
+            EMAIL.OUT=''                 ; * JMK14
+            EMAIL.OUT<1,-1>='HelpDesk@afs.net'     ; * JMK14
+            EMAIL.OUT<4>='FBBP_RWS@afs.net'        ; * JMK14
+            EMAIL.OUT<5>='Activating ':RWS.REC<2>:' Rating Engine.'    ; * JMK14
+            EMAIL.OUT<6>='FBBP RWS could not connect for user ':USER:' on ':OCONV(DATE(),'D2/'):' at ':OCONV(TIME(),'MTHS'):'.'    ; * JMK14
+            EMAIL.OUT<6>:='  Please confirm rating engine servers are working correctly.'  ; * JMK14
+            EVIN=EMAIL.OUT               ; * JMK14
+            EVOUT=''                     ; * JMK14
+****            CALL SENDMAIL(EVIN,EVOUT)    ; * JMK14
+            SERVER.IP.ADDRESS=RWS.REC<2>           ; * JMK14
+            IDATE=DATE()
+            ITIME=TIME()
+            TIME.BLOCK=INT(ITIME/600)
+            RWS.CHECK.ID='RWS*':IDATE:'*':TIME.BLOCK
+            READ TEST FROM F.TABLES,RWS.CHECK.ID ELSE TEST=''
+            TEST<1>+=1
+            WRITE TEST ON F.TABLES,RWS.CHECK.ID
+            IF TEST<1>>10 THEN
+               READ RWS.REC FROM F.TABLES,'RWS' ELSE
+                  RWS.REC=''
+                  RWS.REC<1>='AFS-FS'
+                  RWS.REC<2>='AFS'
+               END
+               HOLD.RWS.REC=RWS.REC
+               RWS.REC<1>=HOLD.RWS.REC<2>
+               RWS.REC<2>=HOLD.RWS.REC<1>
+               WRITE RWS.REC ON F.TABLES,'RWS'
+               EMAIL.OUT=''
+               EMAIL.OUT<1>='URGENT_RWS_ERRORS@afs.net'
+               EMAIL.OUT<4>='FBBP_RWS.SVC@afs.net'
+               IF USER='MKERBOW' THEN
+                  EMAIL.OUT<1>='mkerbow@afs.net'
+                  EMAIL.OUT<2>=''
+               END
+               EMAIL.OUT<5>='Changing AFS Carrier Connect Engine.'
+               EMAIL.OUT<6>='FBBP RWS.SVC could not connect for ':TEST<1>:' times within the past 10 minute block.  The primary server has been changed from ':HOLD.RWS.REC<1>:' to ':RWS.REC<1>:'.'
+               EMAIL.OUT<6>:='  Please confirm rating engine servers are working correctly----NOW!!!'          ; * JMK14
+               EMAIL.OUT<8>='PRIO'
+               EVIN=EMAIL.OUT            ; * JMK14
+               EVOUT=''                  ; * JMK14
+               CALL SENDMAIL(EVIN,EVOUT)           ; * JMK14
+            END
+            GO OPEN.SOCKET               ; * JMK14
+         END                             ; * JMK14
+*        VOUT<1>=ERR:RESULT              ; * JMK14
+         VOUT<1>='SCK-':ERR:'_':RESULT   ; * JMK14
+         L.IN = PROG.NAME                ; *NPR03
+         L.OUT = ST.TIME                 ; *NPR03
+         ELAPSED.TIME = TIME() - ST.TIME           ; *NPR03
+         L.OUT<2> = ELAPSED.TIME         ; *NPR03
+         L.OUT<3> = "ERROR on openSocket >> ":ERR:RESULT     ; *NPR03
+         CALL UPD.PROCESS.LOG(L.IN,L.OUT)          ; *NPR03 - Monitors who uses this program.
+
+         GO 9999                         ; * JMK25
+      END
+*******************************************************************************
+SOCKET.GOOD:
+*******************************************************************************
+*
+* Set up fields for Prefix Segment
+*
+      REQ.PFX.SIZE = "0000"              ; * 4 character - length of all segments preceding 0's
+      REQ.PFX.VERSION = "0102"           ; * 4 character length currently version 0102
+      REQ.PFX.TYPE = "01"                ; * 2 character length preceding 0.  This is the type of request
+      MODE=VIN<1>
+      MAX.DISC.WEIGHT=VIN<2>
+      CLIENT=VIN<3>                      ; * JMK07
+      CARRIER=VIN<4>                     ; * JMK15
+      RATE.TYPE=VIN<5>                   ; * JMK15
+      CLIENT.NAME=''                     ; * JMK15
+      CARRIER.NAME=''                    ; * JMK15
+*
+* Create TDIN (Multi-Lines for Weights > MAX.DISC.WEIGHT)
+*
+      BILLS=DCOUNT(DIN,@AM)
+      TDIN=''                            ; * RWS DIN
+* <1,10> = Attribute of DIN bill Belongs To
+* <1,11> = Value of DIN bill Belongs To
+* <1,12> = Y-Special Calculations, N-Report Bill As Stated
+      FOR BC = 1 TO BILLS
+         LINE=DIN<BC>
+         BILL.WEIGHT=SUM(LINE<1,5>)
+         IF BILL.WEIGHT > MAX.DISC.WEIGHT THEN
+            TEMP.LINE=LINE               ; * To Save Orig, Dest, Tariff, Eff Date, Factor
+            DET.TIMES=DCOUNT(LINE<1,4>,@SVM)       ; * Number of Classes
+            FOR DET = 1 TO DET.TIMES
+               TEMP.LINE<1,4>=LINE<1,4,DET>        ; * Class
+               TEMP.LINE<1,5>=MAX.DISC.WEIGHT
+               TEMP.LINE<1,10>=BC        ; * Attribute of DIN Source
+               TEMP.LINE<1,11>=DET       ; * Value of DIN Source
+               TEMP.LINE<1,12>='Y'       ; * Perform the Weight * Rate Extension
+               TDIN<-1>=TEMP.LINE
+            NEXT DET
+         END ELSE
+            LINE<1,10>=BC                ; * Attribute of DIN that this bill comes from
+            LINE<1,12>='N'               ; * Don't Perform the Weight * Rate Extension
+            TDIN<-1>=LINE
+         END
+      NEXT BC
+
+* Build Record to submit
+*     BILLS=DCOUNT(TDIN,@AM) ; * JMK99
+      BILLS=DCOUNT(DIN,@AM)              ; * JMK99
+      REQ.ARRAY=''
+      RTN.ARRAY=''
+      LINE.OUT=''
+      FOR BC = 1 TO BILLS
+
+         BILL=DIN<BC>                    ; * JMK99
+         PRO=BILL<1,1>
+         ORIG.ZIP=BILL<1,2>
+         LOCATE ORIG.ZIP IN CHK.ZIP<1> SETTING OZPOS THEN    ; * JMK06
+            ORIG.ZIP=SUB.ZIP<1,OZPOS>    ; * JMK06
+         END                             ; * JMK06
+         ORIG.ST=''
+         ORIG.CITY=''
+         DEST.ZIP=BILL<1,3>
+         LOCATE DEST.ZIP IN CHK.ZIP<1> SETTING DZPOS THEN    ; * JMK06
+            DEST.ZIP=SUB.ZIP<1,DZPOS>    ; * JMK06
+         END                             ; * JMK06
+         DEST.ST=''
+         DEST.CITY=''
+         BEGIN CASE                      ; * JMK03
+            CASE LEN(ORIG.ZIP)=6         ; * JMK03
+               ORIG.CITY=OCONV(ORIG.ZIP,'TCAN.ZIP.CODES;X;;1')         ; * JMK03
+               ORIG.ST=OCONV(ORIG.ZIP,'TCAN.ZIP.CODES;X;;2')           ; * JMK03
+            CASE LEN(ORIG.ZIP)=5         ; * JMK03
+               ORIG.CITY=OCONV(ORIG.ZIP,'TZIPS.CODES;X;;1')  ; * JMK03
+               ORIG.ST=OCONV(ORIG.ZIP,'TZIPS.CODES;X;;2')    ; * JMK03
+         END CASE                        ; * JMK03
+         BEGIN CASE                      ; * JMK03
+            CASE LEN(DEST.ZIP)=6         ; * JMK03
+               DEST.CITY=OCONV(DEST.ZIP,'TCAN.ZIP.CODES;X;;1')         ; * JMK03
+               DEST.ST=OCONV(DEST.ZIP,'TCAN.ZIP.CODES;X;;2')           ; * JMK03
+            CASE LEN(DEST.ZIP)=5         ; * JMK03
+               DEST.CITY=OCONV(DEST.ZIP,'TZIPS.CODES;X;;1')  ; * JMK03
+               DEST.ST=OCONV(DEST.ZIP,'TZIPS.CODES;X;;2')    ; * JMK03
+         END CASE                        ; * JMK03
+         INTRASTATE='N'
+         IF ORIG.ST#'' AND DEST.ST#'' THEN
+            IF ORIG.ST=DEST.ST THEN INTRASTATE='Y'
+         END
+
+         TARIFF.NAME=BILL<1,7>           ; * Tariff Name
+         LOCATE(TARIFF.NAME,TARIFF.LIST,1;TPOS) THEN
+            RWS.TARIFF=TARIFF.LIST<2,TPOS>
+         END ELSE
+            RWS.TARIFF=TARIFF.NAME
+         END
+         VIN<1> = 'RWS.T'
+         VIN<2> = TARIFF.NAME
+         VOUT = ''
+         CALL UPD.TARIFF.ACTIVITY(VIN,VOUT)
+         TARIFF.EFF.DT=BILL<1,8>'D4-'    ; * Tariff effective date
+         TARIFF.ADJ.FACTOR=BILL<1,9>
+         LTAF=LEN(TARIFF.ADJ.FACTOR)     ; * JMK21
+         TARIFF.ADJ.FACTOR=TARIFF.ADJ.FACTOR[1,LTAF-2]       ; * JMK21
+         DTL.CNT=DCOUNT(BILL<1,5>,@SVM)
+         IF DTL.CNT > 20 THEN
+*           CALL ELINE("Error on bill '":PRO:"' Exceeded Maximum of 20 detail lines!")     ; * JMK11
+            VOUT<1>="Error on bill ":PRO:" Exceeded Maximum of 20 detail lines!"           ; * JMK11
+            RETURN                       ; * JMK11
+         END
+         SCAC=''
+         CARRIER.TYPE='A'
+         SEND.CNT=0
+         GOSUB SUBMIT.REQUEST
+         GET.CNT=0
+         IF DUPE.SKIP = 0 THEN
+            GOSUB GET.RESULTS
+         END
+         FACTOR='1000000'                ; * JMK10 Rateware does this-no longer needed.
+         DETAILS=''
+         FACTOR.TOTAL.CHARGE=0
+         FOR X = 1 TO DTL.CNT
+            DETAIL=RTN.DTL.REC[((X-1)*16)+1,16]
+            IF FACTOR="" THEN FACTOR="1000000"
+            DETAIL.RATE=ICONV(TRIM(DETAIL[1,7]),'MR2')       ; * Detail Rate
+            DETAIL.CHARGE=ICONV(TRIM(DETAIL[8,9]),'MR2')     ; * Detail Chrg
+            IF FACTOR=1000000 AND TDIN<BC,12>='N' THEN       ; * Take as Stated
+               LINE.OUT<1,1,X>=DETAIL.RATE
+               LINE.OUT<1,2,X>=DETAIL.CHARGE
+            END ELSE
+               FACTOR.DETAIL.RATE=OCONV(DETAIL.RATE*FACTOR/1000000,'MR0')
+               LINE.OUT<1,1,X>=FACTOR.DETAIL.RATE  ; * JMK99
+               WEIGHT=DIN<1,5,X>         ; * JMK99
+               FACTOR.DETAIL.CHARGE=OCONV(WEIGHT*FACTOR.DETAIL.RATE/100,'MR0')
+               LINE.OUT<1,2,X>=FACTOR.DETAIL.CHARGE          ; * JMK99
+               FACTOR.TOTAL.CHARGE=SUM(LINE.OUT<1,2>)        ; * JMK99
+            END
+         NEXT X
+         TOTAL.CHARGE=ICONV(TRIM(RTN.HDR.REC[62,9]),'MR2')
+         TARIFF.MINIMUM=ICONV(TRIM(RTN.HDR.REC[33,7]),'MR2')
+         IF FACTOR#1000000 THEN
+            FACTOR.TARIFF.MINIMUM=ICONV(TARIFF.MINIMUM*FACTOR/1000000,'MR0')
+         END
+         DEFICIT.WEIGHT=TRIM(RTN.HDR.REC[47,6])+0
+         BEGIN CASE
+            CASE DEFICIT.WEIGHT > 0
+               BILL.TYPE='DEFICIT'
+               IF FACTOR=1000000 THEN
+                  BILL.CHARGE=TOTAL.CHARGE
+               END ELSE
+                  BILL.CHARGE=FACTOR.TOTAL.CHARGE
+               END
+            CASE TOTAL.CHARGE < TARIFF.MINIMUM
+               BILL.TYPE='MINIMUM'
+               IF FACTOR=1000000 THEN
+                  BILL.CHARGE=TARIFF.MINIMUM
+               END ELSE
+                  BILL.CHARGE=FACTOR.TARIFF.MINIMUM
+               END
+            CASE 1
+               BILL.TYPE='ACTUAL'
+               IF FACTOR=1000000 AND TDIN<BC,12>='N' THEN
+                  BILL.CHARGE=TOTAL.CHARGE
+               END ELSE
+                  BILL.CHARGE=FACTOR.TOTAL.CHARGE
+               END
+         END CASE
+         LINE.OUT<1,3>=BILL.TYPE
+         IF TDIN<BC,12>='Y' THEN
+            LINE.OUT<1,4>+=BILL.WEIGHT+0           ; * Billed Weight
+         END ELSE
+            LINE.OUT<1,4>=TRIM(RTN.HDR.REC[27,6])+0          ; * Billed Weight
+         END
+         LINE.OUT<1,5>=BILL.CHARGE
+         DEFICIT.WEIGHT=TRIM(RTN.HDR.REC[47,6])+0  ; * Deficit Weight
+         LINE.OUT<1,7>=DEFICIT.WEIGHT
+         DEFICIT.RATE=ICONV(TRIM(RTN.HDR.REC[40,7]),'MR2')   ; * Deficit Rate
+         IF FACTOR=1000000 THEN
+            LINE.OUT<1,8>=DEFICIT.RATE
+            LINE.OUT<1,9>=ICONV(TRIM(RTN.HDR.REC[53,9]),'MR2')         ; * Deficit Charge
+         END ELSE
+            FACTOR.DEFICIT.RATE=OCONV(DEFICIT.RATE*FACTOR/1000000,'MR0')
+            FACTOR.DEFICIT.CHARGE=OCONV(FACTOR.DEFICIT.RATE*DEFICIT.WEIGHT/100,'MR0')
+            LINE.OUT<1,5>+=FACTOR.DEFICIT.CHARGE
+            LINE.OUT<1,8>=FACTOR.DEFICIT.RATE
+            LINE.OUT<1,9>=FACTOR.DEFICIT.CHARGE
+         END
+         LINE.OUT<1,10>=TRIM(RTN.ERR.REC[1,4])     ; * Error Code
+         IF LINE.OUT<1,10>#'' THEN
+            RWS.ERROR=LINE.OUT<1,10>     ; * JMK15
+            RWS.ERRMSG='RWS-':OCONV(LINE.OUT<1,10>,'TRWS.ERRMSG;X;;1')           ; * JMK04
+            LINE.OUT<1,10>=RWS.ERRMSG    ; * JMK04
+            OPEN 'TEMP' TO F.TEMP THEN
+               TEMP.ID=USER:"*":DATE():"*":TIME()
+               SUBJ='-s"RWS Error Code"'
+               TEXT=USER:' ':DATE()'D2/':' ':OCONV(TIME(),'MTHS')
+               TEXT<-1>="Error Code ":LINE.OUT<1,10>:" Returned from RWS ":RTN.ERR.REC
+               TEXT<-1>="Use FBBP RWS.ERROR to troubleshoot problem"
+               TEXT<-1>="WAD.IN*":TEMP.ID:" written on file TEMP"
+               TEXT<-1>="WAD.OUT*":TEMP.ID:" written on file TEMP"
+               TEXT<-1>="DIN*":TEMP.ID:" written on file TEMP"
+               TEXT<-1>="TDIN*":TEMP.ID:" written on file TEMP"
+               TEXT<-1>="VIN*":TEMP.ID:" written on file TEMP"
+               TEXT<-1>="HEADER-->":RTN.HDR.REC:"<--HEADER"
+            END
+            BEGIN CASE                   ; * JMK15
+               CASE RWS.ERROR='0212'     ; * JMK15
+                  RWS.ZIP=1              ; * JMK15
+                  ERR.INFO='RateWare Rating Engine (FBBP RWS) could not resolve the origin or the destination point on the following shipment:'        ; * JMK15
+                  ADD.INFO="Make sure you typed the ZIP code correctly, and that the ZIP code is within the territory governed "   ; * JMK15
+                  ADD.INFO:="by the tariff you want to use. Otherwise, it is possible that this ZIP code is not valid for the effective "    ; * JMK15
+                  ADD.INFO:="date of the tariff. That is, this ZIP code may have been assigned some time after this tariff's effective date."          ; * JMK15
+               CASE RWS.ERROR='0216'     ; * JMK15
+                  RWS.ZIP=1              ; * JMK15
+                  IF ORIG.ST='HI' THEN RWS.ZIP=0   ; * JMK20
+                  IF ORIG.ST='AK' THEN RWS.ZIP=0   ; * NPR04
+                  ERR.INFO='RateWare Rating Engine (FBBP RWS) could not find the origin point as a valid location in the tariff on the following shipment:'      ; * JMK15
+                  ADD.INFO="Make sure you typed the ZIP code correctly, and that the ZIP code is within the territory governed "   ; * JMK15
+                  ADD.INFO:="by the tariff you want to use. Otherwise, it is possible that this ZIP code is not valid for the effective "    ; * JMK15
+                  ADD.INFO:="date of the tariff. That is, this ZIP code may have been assigned some time after this tariff's effective date."          ; * JMK15
+               CASE RWS.ERROR='0217'     ; * JMK15
+                  RWS.ZIP=1              ; * JMK15
+                  IF DEST.ST='HI' THEN RWS.ZIP=0   ; * JMK20
+                  IF ORIG.ST='AK' THEN RWS.ZIP=0   ; * NPR04
+                  ERR.INFO='RateWare Rating Engine (FBBP RWS) could not find the destination point as a valid location in the tariff on the following shipment:'           ; * JMK15
+                  ADD.INFO="Make sure you typed the ZIP code correctly, and that the ZIP code is within the territory governed "   ; * JMK15
+                  ADD.INFO:="by the tariff you want to use. Otherwise, it is possible that this ZIP code is not valid for the effective "    ; * JMK15
+                  ADD.INFO:="date of the tariff. That is, this ZIP code may have been assigned some time after this tariff's effective date."          ; * JMK15
+               CASE RWS.ERROR='0218'     ; * JMK15
+                  RWS.ZIP=1              ; * JMK15
+                  ERR.INFO='RateWare Rating Engine (FBBP RWS) could not resolve the origin and destination points as a valid combination in the tariff on the following shipment:'   ; * JMK15
+                  ADD.INFO="The ZIP code combination is not within the territory governed by the Data Module you want to use. "    ; * JMK15
+                  ADD.INFO:="If you are certain both ZIP codes are part of the territory, then it is possible that the ZIP code pair is "    ; * JMK15
+                  ADD.INFO:="only valid in one direction."   ; * JMK15
+               CASE 1                    ; * JMK15
+                  RWS.ZIP=0              ; * JMK15
+                  ADD.INFO=''            ; * JMK15
+            END CASE                     ; * JMK15
+            IF BC > 1 AND DIN<BC>=DIN<1> THEN RWS.ZIP=0      ; * JMK15
+            IF ORIG.ZIP MATCH('1A1N1A1N1A1N') AND DEST.ZIP MATCH('1A1N1A1N1A1N') THEN RWS.ZIP = 0    ; * NPR05
+            IF RWS.ZIP=1 AND RATE.TYPE#'B' AND TARIFF.NAME[1,3]='AFS' THEN       ; * JMK15 ; * JMK17 ; * JMK19
+               EMAIL.OUT=''              ; * JMK15
+               EMAIL.OUT<1,-1>='Bad-Zips@afs.net'  ; * JMK15
+               EMAIL.OUT<4>='FBBP_RWS@afs.net'     ; * JMK15
+               EMAIL.OUT<5>='RateWare Rating Engine Origin or Destination Shipping Point Problem'    ; * JMK15
+               EMAIL.OUT<6>=ERR.INFO     ; * JMK15
+               EMAIL.OUT<6,-1>=' '       ; * JMK15
+               IF CLIENT#'' THEN         ; * JMK15
+                  CLIENT.NAME=OCONV(CLIENT,'TCLIENTS;X;;2')  ; * JMK15
+                  EMAIL.OUT<6,-1>='Client is      :':CLIENT:' - ':CLIENT.NAME    ; * JMK15
+               END                       ; * JMK15
+               IF CARRIER#'' THEN        ; * JMK15
+                  CARRIER.NAME=OCONV(CARRIER,'TCARRIERS;X;;1')         ; * JMK15
+                  EMAIL.OUT<6,-1>='Carrier is     :':CARRIER:' - ':CARRIER.NAME  ; * JMK15
+               END                       ; * JMK15
+               IF PRO#'' THEN            ; * JMK15
+                  EMAIL.OUT<6,-1>='Pro Number is  :':PRO     ; * JMK15
+               END                       ; * JMK15
+               EMAIL.OUT<6,-1>='Origin is      :':ORIG.ZIP:' - ':ORIG.CITY:', ':ORIG.ST    ; * JMK15
+               EMAIL.OUT<6,-1>='Destination is :':DEST.ZIP:' - ':DEST.CITY:', ':DEST.ST    ; * JMK15
+               EMAIL.OUT<6,-1>='Tariff is      :':TARIFF.NAME:' effective date ':TARIFF.EFF.DT'D2/'
+               EMAIL.OUT<6,-1>='RateWare Error :':RWS.ERROR:' - ':RWS.ERRMSG     ; * JMK15
+               EMAIL.OUT<6,-1>='User Logon     :':USER       ; * NPR999
+               EMAIL.OUT<6,-1>=' '       ; * JMK15
+               EMAIL.OUT<6,-1>=ADD.INFO
+               EMAIL.OUT<6,-1>=' '       ; * JMK15
+               EMAIL.OUT<6,-1>="This may be resolved by using a valid substitute postal code recognized by the tariff for the problem location."       ; * JMK15
+               EVIN=EMAIL.OUT            ; * JMK15
+               EVOUT=''                  ; * JMK15
+               CALL SENDMAIL(EVIN,EVOUT)           ; * JMK15
+            END                          ; * JMK15
+         END
+         DOUT<-1>=LINE.OUT
+      NEXT BC
+      CONTR.BILL=DIN<1>
+      BENCH.BILL=DIN<2>
+      IF DIN<1>=DIN<2> THEN
+         DOUT<2>=DOUT<1>
+      END
+*
+* CLOSE SOCKET
+*
+      RESULT = closeSocket(SOCKETHANDLE)           ; * JMK12
+      TIME.LINE<1,1,6>=TIME()            ; * JMK26 ; * END TIME
+
+************************************************************************
+9999: *** Exit Program
+      VOUT<3>=TIME.LINE                  ; * RETURN TIMING TO HOST PROCESS
+      *****    CRT VOUT
+      RETURN
+*
+      ST.TIME = TIME()
+*******************************************************************************
+SUBMIT.REQUEST:***
+*******************************************************************************
+      TIME.LINE<1,1,2>=TIME()            ; * JMK26 ; * BUILD REQUEST
+      REQ.HDR.REC=STR(' ',104)
+      REQ.HDR.REC[1,1]='F'               ; * Error/File Mode
+      REQ.HDR.REC[2,1]='1'               ; * Complete/Partial Mode
+      REQ.HDR.REC[3,8]=RWS.TARIFF 'L#8'  ; * Tariff Name
+      REQ.HDR.REC[11,1]=INTRASTATE       ; * Intrastate Switch
+      REQ.HDR.REC[12,10]=TARIFF.EFF.DT   ; * 'D4-' FORMAT
+      REQ.HDR.REC[22,6]=ORIG.ZIP 'L#6'   ; * Origin Zip Code
+      REQ.HDR.REC[28,2]=ORIG.ST 'L#2'    ; * Origin State
+      REQ.HDR.REC[30,17]=ORIG.CITY 'L#17'          ; * Origin City
+      REQ.HDR.REC[47,6]=DEST.ZIP 'L#6'   ; * Destination Zip Code
+      REQ.HDR.REC[53,2]=DEST.ST 'L#2'    ; * Destination State
+      REQ.HDR.REC[55,17]=DEST.CITY 'L#17'          ; * Destination City
+      REQ.HDR.REC[72,2]=DTL.CNT 'R%2'    ; * # of Detail Records
+      REQ.HDR.REC[74,16]=PRO 'L#16'      ; * ID Number
+      REQ.HDR.REC[90,1]='N' 'L#1'        ; * Single Shipment
+      REQ.HDR.REC[91,1]='N' 'L#1'        ; * Use Discounts
+      REQ.HDR.REC[92,1]='' 'L#1'         ; * Origin Routing Flag
+      REQ.HDR.REC[93,1]='' 'L#1'         ; * Destination Routing Flag
+      REQ.HDR.REC[94,1]='N' 'L#1'        ; * Discount Application
+      REQ.HDR.REC[95,4]=SCAC 'L#4'       ; * Carrier SCAC
+      REQ.HDR.REC[99,1]=CARRIER.TYPE 'L#1'         ; * Carrier Type
+      REQ.HDR.REC[100,5]=TARIFF.ADJ.FACTOR[1,5] 'R%5'        ; * Rate Adjustment Factor
+      REQ.DDSC.REC=STR(' 0000',10)       ; * JMK22 - LOAD ALL DISCOUNTS WITH 0%
+      REQ.IDSC.REC=STR(' 0000',10)       ; * JMK22 - LOAD ALL DISCOUNTS WITH 0%
+      REQ.DDSC.REC[36,5]=' 9999'         ; * JMK22 - LOAD 20M DISCOUNT WITH 99.99% TO STOP AT 10M
+      REQ.IDSC.REC[36,5]=' 9999'         ; * JMK22 - LOAD 20M DISCOUNT WITH 99.99% TO STOP AT 10M
+      REQ.DTL.REC=''
+      FOR X = 1 TO DTL.CNT
+         CLASS=BILL<1,4,X>               ; * CLASS
+         WEIGHT=BILL<1,5,X>
+         DTL.LINE=SPACE(9)
+         DTL.LINE[1,3]=INT(CLASS)'L#3'
+         DTL.LINE[4,6]=WEIGHT 'R%6'
+         REQ.DTL.REC:=DTL.LINE
+      NEXT X
+
+* Get length of all seqments plus 10 for Prefix segment length
+      REQ.PFX.SIZE = LEN(REQ.HDR.REC) + LEN(REQ.DDSC.REC)+LEN(REQ.IDSC.REC)+LEN(REQ.DTL.REC)+10
+
+* Combine fields of Prefix segment into the PFX.REC
+      REQ.PFX.REC=SPACE(10)
+      REQ.PFX.REC[1,4]=REQ.PFX.SIZE'R%4'
+      REQ.PFX.REC[5,4]=REQ.PFX.VERSION'L#4'
+      REQ.PFX.REC[9,2]=REQ.PFX.TYPE 'L#2'
+
+* Combine all segments into the Request string [packet]
+      REQ.REC= REQ.PFX.REC:REQ.HDR.REC:REQ.DDSC.REC:REQ.IDSC.REC:REQ.DTL.REC
+      REQ.ARRAY<BC>=REQ.REC
+      RESULT = 0
+      SDATLEN = ""
+      RTN.REC = ""
+      MAX_DATA_READ = 0
+      ACTSIZ = ""
+      ERR = ""
+*
+* Write request stream to the rateware server
+*
+      CRT "REQ    ******************************************"
+      DUPE.SKIP = 0
+      IF BC = 1 THEN
+         DUPE = ""
+         DUPE<BC> = REQ.REC
+      END
+      IF BC = 2 AND DUPE<1> = REQ.REC THEN
+         DUPE.SKIP = 1
+         RETURN
+      END
+      CRT REQ.REC
+      TIME.LINE<1,1,3>=TIME()            ; * JMK26 ; * SUBMIT REQUEST
+      RESULT = writeSocket(SOCKETHANDLE,REQ.REC,TIMEOUT,SOCKETMODE,SDATLEN)
+      IF RESULT <> 0 THEN
+         NEWRESULT = getSocketErrorMessage(RESULT,ERR)
+         SEND.CNT+=1
+         IF SEND.CNT<10 THEN             ; * NPR03
+            CRT @(0,22):"RWS writeSocket attempt ":SEND.CNT:" of 10"
+            SLEEP 1                      ; * JMK05
+            GO SUBMIT.REQUEST            ; * JMK05
+         END                             ; * JMK05
+         VOUT<1>='SCK-':ERR:'_':RESULT   ; * JMK14
+         L.IN = PROG.NAME                ; *NPR03
+         L.IN<2> = ""                    ; *NPR03
+         L.IN<3> = "twoodruff@afs.net"   ; *NPR03
+         L.OUT = ST.TIME                 ; *NPR03
+         ELAPSED.TIME = TIME() - ST.TIME           ; *NPR03
+         L.OUT<2> = ELAPSED.TIME         ; *NPR03
+         L.OUT<3> = "writeSocket - ":ERR:RESULT    ; *NPR03
+         CALL UPD.PROCESS.LOG(L.IN,L.OUT)          ; *NPR03 - Monitors who uses this program.
+         RETURN
+      END
+      RETURN
+      ST.TIME = TIME()
+******************************************************************************
+GET.RESULTS:***
+*******************************************************************************
+      TIME.LINE<1,1,4>=TIME()            ; * JMK26 ; * RETRIEVE RESPONSE
+      RTN.REC=''
+      RTN.PFX.REC=''
+****      CRT REQ.REC
+      RTN.ERR.REC=''
+      RTN.HDR.REC=''
+      RTN.DTL.REC=''
+      RESULT = readSocket(SOCKETHANDLE,RTN.REC,MAX_DATA_READ,TIMEOUT,SOCKETMODE,ACTSIZ)
+      CRT
+      CRT "RESPONSE    **********************************"
+      CRT RTN.REC
+      IF RESULT <> 0 THEN
+         NEWRESULT = getSocketErrorMessage(RESULT,ERR)
+         GET.CNT+=1
+         IF GET.CNT<10 THEN              ; * NPR03
+            CRT @(0,22):"RWS readSocket attempt ":GET.CNT:" of 10"
+            SLEEP 1                      ; * JMK05
+            GO GET.RESULTS               ; * JMK05
+         END                             ; * JMK05
+         VOUT<1>='SCK-':ERR:'_':RESULT   ; * JMK14
+         L.IN = PROG.NAME                ; *NPR03
+         L.IN<3> = "twoodruff@afs.net"   ; *NPR03
+         L.OUT = ST.TIME                 ; *NPR03
+         ELAPSED.TIME = TIME() - ST.TIME           ; *NPR03
+         L.OUT<2> = ELAPSED.TIME         ; *NPR03
+         L.OUT<3> = "readSocket - ":ERR:RESULT     ; *NPR03
+         CALL UPD.PROCESS.LOG(L.IN,L.OUT)          ; *NPR03 - Monitors who uses this program.
+         RETURN
+      END
+      TIME.LINE<1,1,5>=TIME()            ; * JMK26 ; * PARSE RESPONSE
+      RTN.ARRAY<-1>=RTN.REC
+* Pull each segment out of the response stream
+      RTN.PFX.REC = RTN.REC[1,10]        ; * Prefix is the first 10 characters
+      RTN.ERR.REC = RTN.REC[11,4]        ; * Error is the next 4 characters
+      RTN.HDR.REC = RTN.REC[15,168]      ; * HO Segment is the from character 15 to 168
+      RTN.DTL.REC = RTN.REC[184,320]     ; * DO Segments is 16 characters long * number of DO Segments (up to 20 DO segments)
+*
+* Extract data from the results
+*
+      RTN.HDR.INFO.FLG=RTN.HDR.REC[1,1]  ; * Information Flag
+      RTN.HDR.TAR.AUTH=RTN.HDR.REC[2,8]  ; * Tariff Authority
+      RTN.HDR.RATE.BASIS=RTN.HDR.REC[10,11]
+      RTN.HDR.ACT.WGT=RTN.HDR.REC[21,6]
+      RTN.HDR.BILL.WGT=RTN.HDR.REC[27,6]
+      RTN.HDR.MIN.CHG=RTN.HDR.REC[33,7]
+      RTN.HDR.DEF.RT=RTN.HDR.REC[40,7]
+      RTN.HDR.DEF.WGT=RTN.HDR.REC[47,6]
+      RTN.HDR.DEF.CHG=RTN.HDR.REC[53,9]
+      RTN.HDR.TTL.CHG=RTN.HDR.REC[62,9]
+      RTN.HDR.ORIG.ST=RTN.HDR.REC[71,2]
+      RTN.HDR.ORIG.CITY=RTN.HDR.REC[73,17]
+      RTN.HDR.DEST.ST=RTN.HDR.REC[90,2]
+      RTN.HDR.DEST.CITY=RTN.HDR.REC[92,17]
+      RTN.HDR.ID=RTN.HDR.REC[109,16]
+      RTN.HDR.TARIFF.EFF.DT=RTN.HDR.REC[125,10]
+      RTN.HDR.DISC.PCT=RTN.HDR.REC[135,5]
+      RTN.HDR.SVC.DAYS=RTN.HDR.REC[140,2]
+      RTN.HDR.FILL1=RTN.HDR.REC[142,9]
+      RTN.HDR.ORIG.ROUTE.FLG=RTN.HDR.REC[151,1]
+      RTN.HDR.DEST.ROUTE.FLG=RTN.HDR.REC[152,1]
+      RTN.HDR.TL.DISC=RTN.HDR.REC[153,9]
+      RTN.HDR.MC.DISC=RTN.HDR.REC[162,7]
+      RETURN
+*******************************************************************************
+LOAD.SUB.ZIP:*
+*******************************************************************************
+      CHK.ZIP=''                         ; * JMK06
+      SUB.ZIP=''                         ; * JMK06
+      READ ZIP.SUBST.ARRAY FROM F.TABLES, 'ZIP.SUBSTITUTIONS' THEN
+         CHK.ZIP=ZIP.SUBST.ARRAY<1>      ; * JMK18
+         SUB.ZIP=ZIP.SUBST.ARRAY<2>      ; * JMK18
+      END
+      CHK.NVAL=DCOUNT(CHK.ZIP,@VM)
+      SUB.NVAL=DCOUNT(SUB.ZIP,@VM)
+*
+      RETURN                             ; * JMK06
+   END

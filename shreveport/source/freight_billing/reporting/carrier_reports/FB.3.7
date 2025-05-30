@@ -1,0 +1,382 @@
+$OPTIONS HEADER.EJECT
+ERRMSG=''
+*
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+*
+* PROGRAM FB.3.7
+* PROGRAM TO PROCESS "FREIGHT COSTS BY AREA" REPORT
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: BRIAN M. QUEEN
+* DATE: NOVEMBER 26, 1991
+*
+***************************************************************************************
+*
+* 05/08/06 : JCW01 : CHANGES TO '@SELECTED', 'CLEARSELECT', AND 'STMT<X>'
+*
+***************************************************************************************
+* Initialize variables
+*
+      INPUT PROCESS.TYPE
+      PROMPT''
+      CALL CHANNEL(CH.NUM)
+      CALL GET.USER(USER.NAME)
+      PROG.NAME='FB.3.7'
+      PROG.DESC='Freight Cost Analysis Report By Area'
+      PACK.NAME='Freight Billing'
+*
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.3.7' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+* Open files
+*
+      OPEN '','BCUST' TO F.CLIENT ELSE CALL OPEN.ABORT('BCUST',PROG.NAME)
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE CALL OPEN.ABORT('ZIPS',PROG.NAME)
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+        EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+        OPEN '','FBWORK':CH.NUM TO F.WORK ELSE CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+      END
+      CLEARFILE F.WORK
+*
+* Work file layout
+*
+* ID  BEG.RANGE*END.RANGE*STATE.CODE
+*  1  NUMBER OF INBOUND SHIPMENTS
+*  2  NUMBER OF OUTBOUND SHIPMENTS
+*  3  NUMBER OF THIRD PARTY SHIPMENTS
+*  4  TOTAL INBOUND WEIGHT
+*  5  TOTAL OUTBOUND WEIGHT
+*  6  TOTAL THIRD PARTY WEIGHT
+*  7  TOTAL INBOUND PAID
+*  8  TOTAL OUTBOUND PAID
+*  9  TOTAL THIRD PARTY PAID
+* 10  WEIGHT INBOUND BY RANGE
+* 11  WEIGHT OUTBOUND BY RANGE
+* 12  WEIGHT THRID PARTY BY RANGE
+* 13  PAID INBOUND BY RANGE
+* 14  PAID OUTBOUND BY RANGE
+* 15  PAID THIRD PARTY BY RANGE
+* 16  NUMBER OF INBOUND INVOICES BY RANGE
+* 17  NUMBER OF OUTBOUND INVOICES BY RANGE
+* 18  NUMBER OF THIRD PARTY INVOICES BY RANGE
+*
+* Get 3 digit zip code record
+*
+      READ ZIP.REC FROM F.ZIPS,'3.DIGIT' ELSE CALL READ.ABORT(ZIPS,'3.DIGIT',PROG.NAME)
+*
+* Initialize weight table
+*
+      WGHTS=''
+      WGHTS<1,1>=2499; WGHTS<2,1>='Min'
+      WGHTS<1,2>=4999; WGHTS<2,2>='2.5C-5C'
+      WGHTS<1,3>=9999; WGHTS<2,3>='5C-1M'
+      WGHTS<1,4>=19999; WGHTS<2,4>='1M-2M'
+      WGHTS<1,5>=49999; WGHTS<2,5>='2M-5M'
+      WGHTS<1,6>=99999; WGHTS<2,6>='5M-10M'
+      WGHTS<1,7>=199999; WGHTS<2,7>='10M-20M'
+      WGHTS<1,8>=299999; WGHTS<2,8>='20M-30M'
+      WGHTS<1,9>=399999; WGHTS<2,9>='30M-40M'
+      WGHTS<1,10>=499999; WGHTS<2,10>='40M-50M'
+      WGHTS<1,11>=999999; WGHTS<2,11>='50M-100M'
+      WGHTS<1,12>=149999; WGHTS<2,12>='100M-150M'
+      WGHTS<2,13>='OVER 150M'
+*
+* Display screen heading
+*
+30    CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+* Get client number to process
+*
+50    HELP.PROMPT="Enter the client number you want to process. One word of name=Search. ''=Exit."
+      CALL GEN.IN(0,3,'Enter Client Number #####','',Q,0,20,'','',1,-5,3,0,QI,HELP.PROMPT,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' ! QI='EX' ! QI='X' THEN STOP
+      IF (QI MATCHES '0A') THEN
+        CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+        CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+          IF ITEM.LIST='' ! DCOUNT(ITEM.LIST<1>,@VM) > 1 THEN GOTO 50
+          IF NOT(NUM(ITEM.LIST<1,1>)) THEN GOTO 50
+          Q=ITEM.LIST<1,1>'R%5'
+      END
+*
+      CLIENT.ID=Q'R%5'
+      CRT @(20,3):CLIENT.ID
+      READV CLIENT.NAME FROM F.CLIENT,CLIENT.ID,2 ELSE
+        IF PROCESS.TYPE='STD' THEN CALL ELINE('ERROR - Client ':CLIENT.ID:' not on file.')
+        GOTO 50
+      END
+*
+* Get current period beginning and ending dates
+*
+100   HELP='Enter the current period beginning date.'
+      CALL GEN.IN(0,5,'Current period beginning date.  ':DATE()'D2/','DATE',BEG.DATE,0,8,'','',1,-8,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN GOTO 50
+      IF QI='EX' THEN STOP
+      CRT @(32,5):BEG.DATE'D2/'
+*
+* Get current period ending date
+*
+200   HELP='Enter the current period ending date.'
+      CALL GEN.IN(0,7,'Current period ending date.     ':DATE()'D2/','DATE',END.DATE,0,8,'','',1,-8,7,0,QI,HELP,0,23)
+      IF QI='X' THEN GOTO 100
+      IF QI='EX' THEN STOP
+      IF END.DATE LT BEG.DATE THEN
+        IF PROCESS.TYPE='STD' THEN CALL ELINE('Invalid ending date.')
+        GOTO 200
+      END
+      CRT @(32,7):END.DATE'D2/'
+*
+* Ask if data correct
+*
+      HELP="Enter Y if information correct or N if incorrect."
+      CALL GEN.IN(0,22,'Is the information correct? Y','',Q,0,1,'','',2,-1,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='Y' ! QI='' ELSE GOTO 30
+*
+      CRT @(0,2):@(-3)
+      LINE='Processing Client ':CLIENT.ID:' ':CLIENT.NAME
+      CALL CENTER(LINE,80)
+      CRT @(0,10):LINE
+*
+* Open client files
+*
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS ELSE CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,PROG.NAME)
+*
+* Select data for processing
+*
+      PREC='SELECT FB.BILLS.HIST,':CLIENT.ID:' WITH 37 GE "'
+      PREC=PREC:OCONV(BEG.DATE,'D2/'):'"'
+      PREC=PREC:' AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+      IF @SELECTED < 1 THEN ; * JCW01
+        IF PROCESS.TYPE='STD' THEN CALL ELINE('No data present with the selected criteria.')
+        GOTO 50
+      END
+      NUM.ITEMS = @SELECTED
+      COUNTER=0
+*
+* Build Heading
+*
+      L.TAB=66-(LEN(PROG.DESC)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):PROG.DESC
+      R.TAB=132-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE())
+      HEAD1=PROG.NAME:SPACE(L.TAB):PROG.DESC:SPACE(R.TAB):TIMEDATE():"'L'"
+*
+      TITLE='For Client: ':CLIENT.ID:' ':CLIENT.NAME
+      L.TAB=66-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+*     R.TAB=(132-LEN(TEMP))-9
+*     HEAD2=TEMP:SPACE(R.TAB):"PAGE 'PL'"
+      R.TAB=(132-LEN(TEMP))-20
+      HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )':"PAGE 'PL'"
+      HEAD3=BEG.DATE'D2/':' to ':END.DATE'D2/'
+      CALL CENTER(HEAD3,132)
+      HEAD3=HEAD3:"'L'"
+*
+      HEAD4=SPACE(21):"|------------- TOTALS --------------| "
+      HEAD4=HEAD4:"|-------------- AVERAGES --------------|'L'"
+      HEAD5="  Zones   Area   I/O Shpts          Weight            Paid"
+      HEAD5=HEAD5:"               Weight              Charge  Shpts  $/Cwt"
+      HEAD5=HEAD5:"        Weight'L'"
+      HEAD6="------- ------ ----- ----- --------------- ---------------"
+      HEAD6=HEAD6:" -------------------- ------------------- ------ ------ -------------"
+      HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6
+*
+      VIN=''
+      VIN<3>='R'
+      CALL LASER.CODE(VIN,VOUT)
+      IF VOUT<1>#'' THEN
+        CALL ELINE(VOUT<1>)
+        STOP
+      END
+      IF VOUT<3>#'' THEN EXECUTE VOUT<3>
+      PRINTER ON
+      IF VOUT<2>#'' THEN PRINT VOUT<2>:
+      HEADING HED
+*
+* Get next record
+*
+      LOOP
+        READNEXT HIST.ID ELSE HIST.ID=''
+      UNTIL HIST.ID='' DO
+        COUNTER=COUNTER+1
+        CALL PROG.BAR(21,COUNTER,NUM.ITEMS,PER)
+        IF FIELD(HIST.ID,'*',3) GT 0 ELSE
+          READ HIST.REC FROM F.BILLS,HIST.ID THEN
+*DF            PRINTER OFF
+            CRT @(0,19):'Processing item ':HIST.ID:@(-4):
+*DF            PRINTER ON
+            PRO=FIELD(HIST.ID,'*',2)
+            START=LEN(PRO)-1
+            IF PRO[START,2]='BD' ! PRO[START,2]='AD' ELSE
+              IOT=HIST.REC<2>
+              WEIGHT=HIST.REC<6>
+              PAID=HIST.REC<8>
+              BEGIN CASE
+                CASE IOT='I' 
+                  ZIP=HIST.REC<3>[1,3]
+                  STATE=HIST.REC<25>
+                CASE IOT = 'O'
+                  ZIP=HIST.REC<4>[1,3]
+                  STATE=HIST.REC<26>
+                CASE 1
+                  ZIP=HIST.REC<4>[1,3]
+                  STATE=HIST.REC<25>:'-':HIST.REC<26>
+              END CASE
+            
+*
+* Get beginning and ending range codes
+*
+              POS=0
+              LOOP
+                POS=POS+1
+                BEGIN=ZIP.REC<2,POS>'R%3'
+                ENDING=ZIP.REC<3,POS>'R%3'
+              UNTIL STATE[1,2]=ZIP.REC<1,POS> ! ZIP.REC<1,POS>='' DO
+              REPEAT
+              IF STATE='' THEN STATE='??'
+              WORK.ID=BEGIN:'*':ENDING:'*':STATE
+              READ WORK.REC FROM F.WORK,WORK.ID ELSE WORK.REC=''
+*
+* Get weight range code
+*
+              POS=0
+              LOOP
+                POS=POS+1
+              UNTIL WEIGHT LE WGHTS<1,POS> ! WGHTS<1,POS>='' DO
+              REPEAT
+*
+* Update work record
+*
+              BEGIN CASE
+                CASE IOT='I' 
+                  WORK.REC<1>=WORK.REC<1>+1
+                  WORK.REC<4>=WORK.REC<4>+WEIGHT
+                  WORK.REC<7>=WORK.REC<7>+PAID
+                  WORK.REC<10,POS>=WORK.REC<10,POS>+WEIGHT
+                  WORK.REC<13,POS>=WORK.REC<13,POS>+PAID
+                  WORK.REC<16,POS>=WORK.REC<16,POS>+1
+                CASE IOT ='O'
+                  WORK.REC<2>=WORK.REC<2>+1
+                  WORK.REC<5>=WORK.REC<5>+WEIGHT
+                  WORK.REC<8>=WORK.REC<8>+PAID
+                  WORK.REC<11,POS>=WORK.REC<11,POS>+WEIGHT
+                  WORK.REC<14,POS>=WORK.REC<14,POS>+PAID
+                  WORK.REC<17,POS>=WORK.REC<17,POS>+1
+                CASE 1
+                  WORK.REC<3>=WORK.REC<3>+1
+                  WORK.REC<6>=WORK.REC<6>+WEIGHT
+                  WORK.REC<9>=WORK.REC<9>+PAID
+                  WORK.REC<12,POS>=WORK.REC<12,POS>+WEIGHT
+                  WORK.REC<15,POS>=WORK.REC<15,POS>+PAID
+                  WORK.REC<18,POS>=WORK.REC<18,POS>+1
+              END CASE
+              WRITE WORK.REC ON F.WORK,WORK.ID
+            END
+          END
+        END
+      REPEAT
+*
+* Print report
+*
+      TOTAL=''
+      EXECUTE 'SSELECT FBWORK':CH.NUM PASSLIST CAPTURING OUTPUT
+      LOOP
+        READNEXT WORK.ID ELSE WORK.ID=''
+      UNTIL WORK.ID='' DO
+        READ WORK.REC FROM F.WORK,WORK.ID THEN
+          PRINT
+          IF WORK.REC<1>'R0' NE 0 THEN
+            LINE=FIELD(WORK.ID,'*',1):'-':FIELD(WORK.ID,'*',2)
+            LINE=LINE:FIELD(WORK.ID,'*',3)'R#7':'    IN':WORK.REC<1>'R#6'
+            LINE=LINE:OCONV(WORK.REC<4>,'MR0,#16'):WORK.REC<7>'R26,#16'
+            AVG.WGHT=WORK.REC<4>/WORK.REC<1>
+            AVG.COST=WORK.REC<7>/WORK.REC<1>
+            TOTAL<1>=TOTAL<1>+WORK.REC<1>
+            TOTAL<2>=TOTAL<2>+WORK.REC<4>
+            TOTAL<3>=TOTAL<3>+WORK.REC<7>
+            LINE=LINE:'  ':OCONV(AVG.WGHT,'MR0,#19'):' ':AVG.COST'R26,#19'
+            X=DCOUNT(WORK.REC<16>,CHAR(253))
+            FOR I=1 TO X
+              IF WORK.REC<16,I> NE '' THEN
+                IF WORK.REC<10,I>'R0' NE 0 THEN
+                  CWT=(WORK.REC<13,I>/WORK.REC<10,I>)*100
+                END ELSE
+                  CWT=0
+                END
+                IF LINE EQ '' THEN LINE=SPACE(99)
+                LINE=LINE:' ':WORK.REC<16,I>'R#6':' ':OCONV(CWT,'MR2,#7'):' ':WGHTS<2,I>'R#13'
+                PRINT LINE
+                LINE=''
+              END
+            NEXT I
+          END
+          IF WORK.REC<2>'R0' NE 0 THEN
+            LINE=FIELD(WORK.ID,'*',1):'-':FIELD(WORK.ID,'*',2)
+            LINE=LINE:FIELD(WORK.ID,'*',3)'R#7':'   OUT':WORK.REC<2>'R#6'
+            LINE=LINE:OCONV(WORK.REC<5>,'MR0,#16'):WORK.REC<8>'R26,#16'
+            AVG.WGHT=WORK.REC<5>/WORK.REC<2>
+            AVG.COST=WORK.REC<8>/WORK.REC<2>
+            TOTAL<1>=TOTAL<1>+WORK.REC<2>
+            TOTAL<2>=TOTAL<2>+WORK.REC<5>
+            TOTAL<3>=TOTAL<3>+WORK.REC<8>
+            LINE=LINE:'  ':OCONV(AVG.WGHT,'MR0,#19'):' ':AVG.COST'R26,#19'
+            X=DCOUNT(WORK.REC<17>,CHAR(253))
+            FOR I=1 TO X
+              IF WORK.REC<17,I> NE '' THEN
+                IF WORK.REC<11,I>'R0' NE 0 THEN
+                  CWT=(WORK.REC<14,I>/WORK.REC<11,I>)*100
+                END ELSE
+                  CWT=0
+                END
+                IF LINE EQ '' THEN LINE=SPACE(99)
+                LINE=LINE:' ':WORK.REC<17,I>'R#6':' ':OCONV(CWT,'MR2,#7'):' ':WGHTS<2,I>'R#13'
+                PRINT LINE
+                LINE=''
+              END
+            NEXT I
+          END
+          IF WORK.REC<3>'R0' NE 0 THEN
+            LINE=FIELD(WORK.ID,'*',1):'-':FIELD(WORK.ID,'*',2)
+            LINE=LINE:FIELD(WORK.ID,'*',3)'R#7':'   T/P':WORK.REC<3>'R#6'
+            LINE=LINE:OCONV(WORK.REC<6>,'MR0,#16'):WORK.REC<9>'R26,#16'
+            AVG.WGHT=WORK.REC<6>/WORK.REC<3>
+            AVG.COST=WORK.REC<9>/WORK.REC<3>
+            TOTAL<1>=TOTAL<1>+WORK.REC<3>
+            TOTAL<2>=TOTAL<2>+WORK.REC<6>
+            TOTAL<3>=TOTAL<3>+WORK.REC<9>
+            LINE=LINE:'  ':OCONV(AVG.WGHT,'MR0,#19'):' ':AVG.COST'R26,#19'
+            X=DCOUNT(WORK.REC<18>,CHAR(253))
+            FOR I=1 TO X
+              IF WORK.REC<18,I> NE '' THEN
+                IF WORK.REC<12,I>'R0' NE 0 THEN
+                  CWT=(WORK.REC<15,I>/WORK.REC<12,I>)*100
+                END ELSE
+                  CWT=0
+                END
+                IF LINE EQ '' THEN LINE=SPACE(99)
+                LINE=LINE:' ':WORK.REC<18,I>'R#6':' ':OCONV(CWT,'MR2,#7'):' ':WGHTS<2,I>'R#13'
+                PRINT LINE
+                LINE=''
+              END
+            NEXT I
+          END
+        END
+      REPEAT
+*
+* Print totals and stop
+*
+      PRINT STR('-',99)
+      PRINT ' TOTALS              ':TOTAL<1>'R#5':' ':OCONV(TOTAL<2>,'MR0,#15'):' ':
+      AVG.WGHT=TOTAL<2>/TOTAL<1>
+      AVG.COST=TOTAL<3>/TOTAL<1>
+      PRINT TOTAL<3>'R26,#15':'  ':OCONV(AVG.WGHT,'MR0,#19'):' ':AVG.COST'R26,#19'
+      PRINT STR('=',99)
+      PRINTER OFF
+      PRINTER CLOSE
+      STOP

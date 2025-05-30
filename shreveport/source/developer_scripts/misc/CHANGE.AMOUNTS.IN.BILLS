@@ -1,0 +1,252 @@
+* PROGRAM TO CLEAR AMOUNT ON BILLS THAT HAVE ALREADY BEEN PROCESSED
+*
+* FREIGHT BILL PACKAGE
+*
+**********************************************************************
+*
+*
+$INCLUDE FILE.DEFS INC_CLIENTS
+      CALL GET.USER(USER)
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS","CHANGE.AMOUNTS.IN.BILLS")
+      END
+      CLIENT.ID='01270'
+      MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         CALL ELINE("Invalid client number ":CLIENT.ID)
+         STOP
+      END
+      OPEN '','AR-BRIDGE' TO F.BRIDGE ELSE
+         CALL OPEN.ABORT("AR-BRIDGE","CHANGE.AMOUNTS.IN.BILLS")
+      END
+      READ DUMMY FROM F.BRIDGE,CLIENT.ID THEN
+         CALL ELINE('AR Has to be posted before you can run this')
+         STOP
+      END ELSE
+         NULL
+      END
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.HIST ELSE
+         CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,"CHANGE.AMOUNTS.IN.BILLS")
+      END
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         CALL OPEN.ABORT("FB.BILLS.CRX","CHANGE.AMOUNTS.IN.BILLS")
+      END
+      OPEN '','FB.MODS' TO F.MODS ELSE
+         CALL OPEN.ABORT("FB.MODS","CHANGE.AMOUNTS.IN.BILLS")
+      END
+      OPEN '','FB.ADJUSTS' TO F.ADJUSTS ELSE
+         CALL OPEN.ABORT("FB.ADJUSTS",PROG.NAME)
+      END
+      OPEN '','FB.ADJUST.HIST' TO F.ADJUST.HIST ELSE
+         CALL OPEN.ABORT('FB.ADJUST.HIST',"CHANGE.AMOUNTS.IN.BILLS")
+      END
+      OPEN '','FB.OPEN.BILLS' TO F.OPEN ELSE
+         CALL OPEN.ABORT("FB.OPEN","CHANGE.AMOUNTS.IN.BILLS")
+      END
+      OPEN '','FB.OPEN.DATE.XREF,':CLIENT.ID TO F.OPEN.DATE.XREF ELSE
+         CALL OPEN.ABORT("FB.OPEN.DATE.XREF,":CLIENT.ID,"CHANGE.AMOUNTS.IN.BILLS")
+      END
+      OPEN '','VOC' TO F.VOC ELSE
+         CALL OPEN.ABORT("VOC","CHANGE.AMOUNTS.IN.BILLS")
+      END
+*DF    EXECUTE "GET-LIST BILLS.TO.CLEAR"
+
+*
+* Return to continue
+*
+100:  CRT @(0,22):@(-3)
+      HELP="Enter [Y] to begin or [EX] to exit"
+      LN='Press [Y] to begin.   '
+      CALL GEN.IN(0,22,LN,'',Q,0,2,'','',0,-2,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX' OR QI='X'
+            STOP
+         CASE QI='Y'
+         CASE 1
+            CALL ELINE('Invalid Entry')
+            GOTO 100
+      END CASE
+      CRT @(0,22):@(-3):
+      READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')
+         STOP
+      END
+
+      BILLDATA.REC<2>:='\':USER
+      WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER ELSE
+         CALL ELINE('UNABLE TO WRITE VOC "BILLDATA.":USER')
+         GOSUB CALL.NET.ADMIN
+         STOP
+      END
+      OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE
+         CALL ELINE(USER:" is not a folder in U:\Billdata. Add the folder and try again")
+         GOSUB CALL.NET.ADMIN
+         STOP
+      END
+
+*
+* READ RAW.DATA
+*
+      RAW.ID="Darling_Store_Wood.txt"
+      READ RAW.DATA FROM F.BILLDATA,RAW.ID ELSE
+         CALL ELINE('U:\':USER:'\':RAW.ID:' is not on file.  Must be present to select bills')
+         STOP
+      END
+      RAW.DATA=CHANGE(RAW.DATA,CHAR(9),@VM)        ; * Replace Tabs with Values
+*
+* GET INFO AND WRITE TO FILE
+*
+      NUM.LINES=DCOUNT(RAW.DATA,@AM)
+
+*
+* Verify selection criteria is correct.
+*
+VERIFY.SELECTION:***
+      CRT @(0,20):"By typing [I-UNDERSTAND] I am selecting ":NUM.LINES-4:" Freight Bills for refund"
+      HELP="X=Change. EX=Exit. [I-UNDERSTAND]=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. ------------','',Q,0,12,'','',0,-12,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,19):@(-3):
+            GOTO 100
+         CASE QI='EX'
+            STOP
+         CASE QI='I-UNDERSTAND'
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be [X], [EX], or [I-UNDERSTAND].')
+            GOTO VERIFY.SELECTION
+      END CASE
+      CRT @(0,22)
+
+      FIRST.TIME=1
+GO.THRU.AGAIN:***
+
+      FOR X = 1 TO NUM.LINES
+         IF X < 5 THEN GO SKIP.LINE
+         LINE=RAW.DATA<1>
+         IF TRIM(LINE)='' THEN GO SKIP.LINE
+         TRACKING.NUM=LINE<1,1>
+         AMOUNT=LINE<1,2>
+         AMOUNT=CHANGE(AMOUNT,'$','')
+         AMOUNT=ICONV(AMOUNT,'MR2')
+         NEW.AMOUNT=LINE<1,3>
+         NEW.AMOUNT=CHANGE(NEW.AMOUNT,'$','')
+         NEW.AMOUNT=ICONV(NEW.AMOUNT,'MR2')
+
+         PRO.ID="00014*":TRACKING.NUM:"*0"
+         READ PRO.REC FROM F.HIST,PRO.ID ELSE
+            CALL ELINE('Pro ':PRO.ID:' missing call programming')
+            GO SKIP.LINE
+         END
+         OPEN.ID=CLIENT.ID:"*":PRO.ID
+         READ DUMMY FROM F.OPEN,OPEN.ID ELSE
+            CALL ELINE('Open item ':OPEN.ID:' missing call programming')
+            GO SKIP.LINE
+         END
+         OLD.PRO.REC=PRO.REC
+         IF PRO.REC<8>#AMOUNT THEN
+            CALL ELINE('Amounts do not match ':PRO.REC<8>:' ':AMOUNT)
+            GO SKIP.LINE
+         END
+         PRO.REC<8>=NEW.AMOUNT
+         PRO.REC<10>=NEW.AMOUNT-AMOUNT
+         IF PRO.REC<10>+0#'0' THEN
+            PRO.REC<29>='D':PRO.REC<29>
+         END
+         PRO.REC<33>=NEW.AMOUNT
+         PRO.REC<41,1>="Corrected bill from UPS Freight"
+
+         IF NOT(FIRST.TIME) THEN WRITE PRO.REC ON F.HIST,PRO.ID
+         IF NOT(FIRST.TIME) THEN WRITE PRO.REC ON F.OPEN,OPEN.ID
+         REC = ''
+         REC<1> = CLIENT.ID
+         REC<2> = PRO.REC<1>
+         REC<7> = PRO.REC<7>
+         REC<8> = PRO.REC<8>
+         REC<10> = PRO.REC<10>
+         REC<11> = PRO.REC<11>
+         REC<12> = PRO.REC<12>
+         REC<30> = PRO.REC<30>
+         REC<37> = PRO.REC<37>
+         REC<41> = PRO.REC<41>
+         REC<53> = PRO.REC<53>
+         REC<54> = PRO.REC<54>
+         REC<55> = PRO.REC<55>
+         REC<63> = PRO.REC<63>
+         IF CLIENT.ID[1,2]='99' ELSE
+            IF NOT(FIRST.TIME) THEN WRITE REC ON F.CRX,PRO.ID
+         END
+         ADJ.REC = ''
+         ADJ.REC<1> = DATE()
+         ADJ.REC<2> = PRO.REC<8>-OLD.PRO.REC<8>
+         ADJ.REC<3> = FIELD(PRO.ID,'*',1)
+         ADJ.REC<4> = CLIENT.ID
+         ADJ.REC<5> = FIELD(PRO.ID,'*',2)
+         ADJ.DONE = 0
+         MOD.DONE = 0
+         SEQ = 1
+         LOOP
+            ADJ.ID = DATE():'*':CLIENT.ID:'*':SEQ
+            READ DUMMY FROM F.MODS,ADJ.ID ELSE MOD.DONE = 1
+         UNTIL MOD.DONE DO
+            SEQ = SEQ+1
+         REPEAT
+         IF NOT(FIRST.TIME) THEN WRITE ADJ.REC ON F.MODS,ADJ.ID
+         POST.YTD='A'
+         T.DATE=DATE()
+         T.TIME=TIME()
+         ADJUST.HIST.ID=CLIENT.ID:'*':PRO.ID:'*':T.DATE:'*':T.TIME:'*OLD'
+         IF NOT(FIRST.TIME) THEN WRITE OLD.PRO.REC ON F.ADJUST.HIST,ADJUST.HIST.ID
+         ADJUST.HIST.ID=CLIENT.ID:'*':PRO.ID:'*':T.DATE:'*':T.TIME:'*NEW'
+         IF NOT(FIRST.TIME) THEN WRITE PRO.REC ON F.ADJUST.HIST,ADJUST.HIST.ID
+         ADJUST.VIN=POST.YTD
+         ADJUST.VIN<2>=PRO.ID
+         ADJUST.VIN<3>=CLIENT.ID
+         IF NOT(FIRST.TIME) THEN CALL FB.ADJUST(ADJUST.VIN,ADJUST.VOUT,MAT CLIENT.REC,OLD.PRO.REC,PRO.REC)
+SKIP.CRX.UPDATE:***
+         CRT PRO.ID
+SKIP.LINE:*
+         DEL RAW.DATA<1>
+      NEXT X
+      IF FIRST.TIME THEN
+         RAW.ID="Darling_Store_Wood.txt"
+         READ RAW.DATA FROM F.BILLDATA,RAW.ID ELSE
+            CALL ELINE('U:\':USER:'\':RAW.ID:' is not on file.  Must be present to select bills')
+            STOP
+         END
+         RAW.DATA=CHANGE(RAW.DATA,CHAR(9),@VM)     ; * Replace Tabs with Values
+         NUM.LINES=DCOUNT(RAW.DATA,@AM)
+*
+* Verify no error occurred.
+*
+VERIFY.NO.ERRORS:***
+         CRT @(0,20):"By typing [NO] I am selecting ":NUM.LINES-5:" Freight Bills for refund"
+         HELP="X=Change. EX=Exit. [NO]=Continue."
+         CALL GEN.IN(0,22,'Enter were there errors. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='EX' OR QI='X'
+               STOP
+            CASE QI='NO'
+               FIRST.TIME=0
+               GOTO GO.THRU.AGAIN
+            CASE 1
+               CALL ELINE('Invalid entry. Must be [X], [EX], or [I-UNDERSTAND].')
+               GOTO VERIFY.NO.ERRORS
+         END CASE
+      END
+      CRT
+      CRT 'Press [ENTER] to Continue':
+      INPUT NUL
+      GO EXIT.PROGRAM
+CALL.NET.ADMIN:***
+      CALL ELINE("CALL NETWORK ADMINISTRATOR!")
+      CALL ELINE("CALL NETWORK ADMINISTRATOR!!!!!")
+      RETURN
+*
+EXIT.PROGRAM:*
+*
+      STOP

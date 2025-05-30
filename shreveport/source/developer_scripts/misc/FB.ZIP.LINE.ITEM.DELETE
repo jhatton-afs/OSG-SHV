@@ -1,0 +1,723 @@
+*****************************************************************************
+* Program name : FB.ZIP.LINE.ITEM.DELETE
+* Author       : Nicole Hennick
+* Date written : 10/24/2023
+* Library      : FBBP
+* COPYRIGHT (C) 1998 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* Delete zip line item records
+*
+* Last updated by AFS (nmeddaugh) at 07:57:18 on 10/24/2023.
+*
+* Start modification history
+* 102423 - NKH00 - ACCU   New program
+* End modification history
+*
+******************************************************************************
+*
+* Initialize variables
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE UNIVERSE.INCLUDE XML.H
+      COMMON PROG.PARAMS(24)
+      EQU CH.NUM TO PROG.PARAMS(1)
+      EQU USER TO PROG.PARAMS(2)
+      EQU SERVER.NAME TO PROG.PARAMS(3)
+
+* Includes
+$INCLUDE FILE.DEFS INC_ADDS60.CODES; * These require specific PROCOMM settings
+
+      * Equates
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+
+      * Initialize general program variables
+      PROMPT''
+      PORT.NUM=SYSTEM(19)
+      CALL GET.USER(USER.NAME)
+      PROG.NAME='FB.ZIP.LINE.ITEM.DELETE'
+      PROG.DESC='Zip Line Item Delete'
+      PACK.NAME='USER : ':USER.NAME
+      CO.NAME='AFS Logistics, LLC'
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.ZIP.LINE.ITEM.IMPORT' ; UPL.VOUT = ''  ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      EDIT.MASK.CHAR='-'
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+
+      * Initialize operating variables
+      PAGE.SIZE=13                       ; * Number of lines per page
+      START.Y=7                          ; * Starting y-position on the screen minus one
+      ZIPLINE.REC=''
+      OLD.ZIP.PAGE=''
+      ORIG.ZIP.REC=''
+      CARRIER.ID=''
+      CLIENT.ID=''
+      MODE=''
+      MODE.DESC=''
+      IOT=''
+      IOT.DESC=''
+      CARRIER.NAME=''
+      CARRIER.CITY=''
+      CARRIER.STATE=''
+      CLIENT.NAME=''
+      CLIENT.CITY=''
+      CLIENT.STATE=''
+
+      * Check for Access
+      OPEN '','OPERATOR' TO F.OP ELSE CALL OPEN.ABORT("OPERATOR",PROG.NAME)      ; * GRB01
+      READV OP.FLG FROM F.OP,USER.NAME,84 ELSE
+         OP.FLG = "N"
+      END
+      IF OP.FLG # "Y" THEN
+         CALL FB.PRINT.CENT(1,80,12,'Restricted Access Application')
+         CALL FB.PRINT.CENT(1,80,14,'Access Denied! See IT for Access')
+         CALL ELINE('')
+         STOP
+      END
+      ****     BEGIN CASE
+      ****        CASE USER.NAME='DAVID'
+      ****           USER.ACCESS=2
+      ****        CASE USER.NAME='GBINO'
+      ****           USER.ACCESS=2
+      ****        CASE USER.NAME='NKELLY'
+      ****           USER.ACCESS=2
+      ****        CASE USER.NAME='SSHAFER'
+      ****           USER.ACCESS=2
+      ****        CASE USER.NAME='TBURNS'
+      ****           USER.ACCESS=2
+      ****        CASE 1
+      ****           USER.ACCESS=1
+      ****     END CASE
+
+      * Open files
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT2('CARRIERS',PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT2('CLIENTS',PROG.NAME)
+      END
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+         CALL OPEN.ABORT2('FB.TRANSPORT',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT2('FB.TABLES',PROG.NAME)
+      END
+      OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+         OPEN '','VOC' TO F.VOC ELSE
+            CALL ELINE('Unable to open VOC file - Call IS Department.')
+            GOTO THE.END
+         END
+         READ BILLDATA.REC FROM F.VOC,'BILLDATA' ELSE
+            CALL ELINE('Unable to open VOC BILLDATA.')
+            GOTO THE.END
+         END
+         BILLDATA.REC<2>:='\':USER.NAME
+         WRITE BILLDATA.REC ON F.VOC,'BILLDATA.':USER.NAME ELSE
+            CALL ELINE('Your user name ':USER.NAME:' is not in the BILLDATA folder - Call IS Department.')
+            GOTO THE.END
+         END
+         OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+            CALL ELINE('Unable to open BILLDATA.':USER.NAME:'.')
+            GOTO THE.END
+         END
+      END
+
+      READ LI.CODES FROM F.TABLES,'LI.CODES' ELSE
+         CALL ELINE('Cannot read Line Item Codes - Get programming')
+         STOP
+      END
+      OPEN '','ZIP.LINE.ITEM' TO F.ZIP.LINE.ITEM ELSE
+         CALL OPEN.ABORT2('ZIP.LINE.ITEM',PROG.NAME)
+      END
+      OPEN '','ZIP.LINE.ITEM.BU' TO F.ZIP.LINE.ITEM.BU ELSE
+         CALL OPEN.ABORT2('ZIP.LINE.ITEM',PROG.NAME)
+      END
+      CRT @(-1)
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(5,6):'This spreadsheet should be saved on your "U:\" drive as'
+      CRT @(5,7):'a tab delimited text file called "ZIP.LINE.TXT"'
+      CRT @(5,8):'This spreadsheet needs to be formatted correctly to import:'
+      CRT @(5,9):'Column A should contain the carrier id.'
+      CRT @(5,10):'Column B should contain the client id or "All".'
+      CRT @(5,11):'Column C should contain the mode.'
+      CRT @(5,12):'Column D should contain the IOT.'
+      CRT @(5,13):'Column E should contain the zip code.'
+      CRT @(5,14):'Column F should contain the item code.'
+      CRT @(5,15):'Column G should contain the zip selection.'
+
+      YN.MSG='Are you ready to import Zip Line Item file? '
+      YN.MASK=''
+      GOSUB ASK.Y.OR.N
+
+      IF YN.ANSWER # 'Y' THEN RETURN
+      * Read in the existing Carrier Service text file
+      READ CS.IMPORT FROM F.BILLDATA,'ZIP.LINE.TXT' ELSE
+         ******   READ CS.IMPORT FROM F.BILLDATA,'ZIP.LINE.ITEM2.TXT' ELSE
+         CALL ELINE('ZIP.LINE.TXT does not exist.')
+         GOTO THE.END
+      END
+      CS.LAST.IMPORT=CS.IMPORT           ; * Save file for writing as "last"
+      CS.IMPORT=CHANGE(CS.IMPORT,CHAR(12),'')
+      CS.IMPORT=CHANGE(CS.IMPORT,CHAR(9),@VM)
+
+* Status lines
+      NATT=DCOUNT(CS.IMPORT,@AM)
+      GOSUB PARSE.FILE
+      GOSUB SAVE.ZIPLINE.REC
+      NATT=DCOUNT(CS.IMPORT,@AM)- 1
+      CRT @(0,5):'Total items in import file = ':NATT:@(-4)
+      CRT @(0,7):'Total Items processed'
+      CRT @(0,8):'---------------------'
+      CALL ELINE('Import Complete. ENTER to contine.')
+      STOP
+
+*******************************************************
+GET.CARRIER:
+*******************************************************
+      DONE = 0
+      LOOP
+      UNTIL DONE DO
+         QI = ''
+         IF CARRIER.ID#'' THEN
+            EDIT.MASK=CARRIER.ID'R%5'
+         END ELSE
+            EDIT.MASK=STR(EDIT.MASK.CHAR,5)
+         END
+         HELP='Enter carrier ID  [L]ist existing setups [EX]it'
+         ****   CALL GEN.IN(10,3,EDIT.MASK,'',Q,0,20,'','',2,10,3,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         IF QI='' AND CARRIER.ID THEN QI=CARRIER.ID
+         BEGIN CASE
+            CASE QI='EX'
+               DONE = 1
+               CONTINUE
+            CASE QI='L'
+               CONTINUE
+            CASE NOT(QI MATCHES "0N")
+               *******         CALL SOUNDEX.DISPLAY(QI,'CARRIERS','SDX.CARRIER,NAME','1,2,3,4',ITEM.LIST)
+               BEGIN CASE
+                  CASE ITEM.LIST=''
+                  CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  CASE ITEM.LIST#''
+                     IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+               END CASE
+               CONTINUE
+            CASE NUM(QI) AND QI#''
+               QI=QI'R%5'
+               READ CARRIER.REC FROM F.CARRIERS,QI THEN
+                  CARRIER.ID=QI
+                  CARRIER.NAME=CARRIER.REC<1>
+                  CARRIER.CITY=CARRIER.REC<3>
+                  CARRIER.STATE=CARRIER.REC<4>
+                  CARRIER.TXT=CARRIER.ID'R%5':' ':CARRIER.NAME:' (':CARRIER.CITY:', ':CARRIER.STATE:')'
+                  CRT @(10,3):CARRIER.TXT'L#45'
+                  DONE = 1
+               END ELSE
+                  CALL ELINE('ERROR - Carrier ':QI:' is not a valid carrier.')
+                  CONTINUE
+               END
+            CASE 1
+               CONTINUE
+         END CASE
+      REPEAT
+
+      RETURN
+********************************************************************************
+THE.END:***
+********************************************************************************
+      CRT @(0,22):@(-3):
+      STOP
+      **  END; * End program
+**************************************************************
+GET.CLIENT:***
+**************************************************************
+      DONE = 0
+      QI = ''
+      LOOP
+         IF CLIENT.ID#'' AND CLIENT.ID#'ALL' THEN
+            EDIT.MASK=CLIENT.ID'R%5'
+         END ELSE
+            IF CLIENT.ID#'ALL' THEN
+               EDIT.MASK=STR(EDIT.MASK.CHAR,5)
+            END ELSE
+               EDIT.MASK='ALL  '
+            END
+         END
+         HELP='Enter client ID or [ALL]. [L]ist existing carrier setups [EX]it'
+         ****   CALL GEN.IN(10,4,EDIT.MASK,'',Q,0,20,'','',2,10,4,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         IF QI='' AND CLIENT.ID THEN QI=CLIENT.ID
+         IF QI='' THEN QI='ALL'
+         BEGIN CASE
+            CASE QI='EX'
+               DONE = 1
+               RETURN                    ; * return to carrier and die
+            CASE QI='X'
+               CRT @(10,4):SPACE(45)
+               RETURN                    ; * to carrier
+            CASE QI='L'
+               CONTINUE
+            CASE QI='ALL'
+               CLIENT.ID=QI
+               CLIENT.TXT=CLIENT.ID:' - All Clients'
+               CRT @(10,4):CLIENT.TXT'L#45'
+               RETURN
+            CASE NOT(QI MATCHES "0N")
+               CALL SOUNDEX.DISPLAY(QI,'CLIENTS','SDX.CLIENTS,NAME','2,3,4',ITEM.LIST)
+               BEGIN CASE
+                  CASE ITEM.LIST=''
+                  CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  CASE ITEM.LIST#''
+                     IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+               END CASE
+               CONTINUE
+            CASE NUM(QI) AND QI#''
+               QI=QI'R%5'
+               READ CLIENT.REC FROM F.CLIENTS,QI THEN
+                  CLIENT.ID=QI
+                  CLIENT.NAME=CLIENT.REC<2>
+                  CLIENT.CITY=CLIENT.REC<4>
+                  CLIENT.STATE=CLIENT.REC<5>
+                  CLIENT.TXT=CLIENT.ID'R%5':' ':CLIENT.NAME:' (':CLIENT.CITY:', ':CLIENT.STATE:')'
+                  CRT @(10,4):CLIENT.TXT'L#45'
+                  DONE = 1
+                  RETURN
+               END ELSE
+                  CALL ELINE('ERROR - Client ':QI:' is not a valid client.')
+                  CONTINUE
+               END
+            CASE 1
+               CONTINUE
+         END CASE
+      REPEAT
+
+      RETURN
+*******************************************************************************
+GET.MODE:***
+******************************************************************************
+      DONEGM = 0
+      QI = ""
+      LOOP
+      UNTIL DONEGM DO
+         IF MODE='' THEN
+            MODE=1
+         END
+         EDIT.MASK=MODE
+         HELP='Enter Transportation Mode or [L]ist Transportation Modes'
+         ***********    CALL GEN.IN(67,3,EDIT.MASK'L#2','',Q,0,2,'','',2,67,3,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         IF QI='' AND MODE#'' THEN QI=MODE
+         BEGIN CASE
+            CASE QI='EX'
+               DONE = 1
+               RETURN
+            CASE QI='X'
+               CRT @(67,3):'           '
+               RETURN                    ; * to client
+            CASE QI='L'
+               CONTINUE
+         END CASE
+         READV MODE.DESC FROM F.TRANSPORT,QI,1 ELSE
+            CALL ELINE('Invalid Transportation mode')
+            CONTINUE
+         END
+         MODE=QI
+         CRT @(67,3):MODE'L#3':MODE.DESC'L#9'
+         DONEGM = 1
+      REPEAT
+      RETURN
+***************************************************************************************
+GET.IOT:***
+*************************************************************************************
+      DONEGI = 0
+      QI = ""
+      LOOP
+      UNTIL DONEGI DO
+         EDIT.MASK=IOT
+         HELP='Enter Mode. [I]nbound, [O]utbound, or [T]hird Party   [EX]it'
+         ********    CALL GEN.IN(67,4,EDIT.MASK'L#2','',Q,0,2,'','',2,67,4,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         IF QI='' AND IOT#'' THEN QI=IOT
+         BEGIN CASE
+            CASE QI='EX'
+               DONE = 1
+               RETURN
+            CASE QI='X'
+               CRT @(67,4):'            '
+               RETURN                    ; * to GET.MODE
+            CASE QI='O'
+               IOT.DESC='Outbound'
+               DONEGI = 1
+            CASE QI='I'
+               IOT.DESC='Inbound'
+               DONEGI = 1
+            CASE QI='T'
+               IOT.DESC='Third Party'
+               DONEGI = 1
+            CASE 1
+               CALL ELINE('Invalid Entry')
+               CONTINUE
+         END CASE
+      REPEAT
+      IOT=QI
+      CRT @(67,4):IOT'L#3':IOT.DESC'L#9'
+      RETURN
+
+********************************************************************************
+GET.ZIP.CODE:***
+********************************************************************************
+
+      BACK.FLAG=FALSE
+      HELP='Zip Code or [D]elete'
+      DONEGZC = 0
+      QI = ""
+      QI = ZIP.I
+      LOOP
+      UNTIL DONEGZC DO
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='X'
+               BACK.FLAG=TRUE
+               RETURN                    ; * to edit zipline
+            CASE QI='D'
+               IF ZIP.PAGE<1,EDIT.NUMBER>#'' THEN
+                  DEL ZIP.PAGE<1,EDIT.NUMBER>
+                  DEL ZIP.PAGE<2,EDIT.NUMBER>
+                  NUM.SD=NUM.SD-1
+               END
+               RETURN                    ; * to edit zipline
+            CASE QI='' AND Q=''
+               RETURN                    ; * to edit zipline
+            CASE NUM(QI)
+               IF QI #'' THEN
+                  LOCATE QI IN ZIP.PAGE<1> SETTING POS THEN
+                     IF POS # EDIT.NUMBER THEN
+                        *******   CALL ELINE(Q:' is already on file on line ':POS)
+                        ******   RETURN           ; * skip
+                        GB2 = ZIP.PAGE<2,POS>
+                        SVCNT = DCOUNT(GB2,@SVM)
+                        GBI = LIC'L#4':'-':ZS:' '
+                        FOR JJ = 1 TO SVCNT
+                           GB2 = GB2<1,1,JJ>
+                           IF GBI = GB2 THEN       ; *   ALREADY ON FILE got to check for more than 1 value
+                              EDIT.NUMBER-=1
+                              RETURN
+                           END ELSE
+                              ZIP.PAGE<2,POS> = INSERT(ZIP.PAGE<2,POS>,1,1,-1,LIC'L#4':'-':ZS)
+                              GB4 = ZIP.PAGE<2,POS>
+                              EDIT.NUMBER-=1
+                              RETURN
+                           END
+                        NEXT JJ
+                     END
+                  END ELSE
+                     NUM.SD=NUM.SD+1
+                  END
+                  ZIP.PAGE<1,EDIT.NUMBER>=QI
+                  ZIP.PAGE<2,EDIT.NUMBER> = LIC'L#4':'-':ZS
+                  TEMP.ZIP=ZIP.PAGE<1,EDIT.NUMBER>
+                  TEMP.LINE=ZIP.PAGE<2,EDIT.NUMBER>
+                  DEL ZIP.PAGE<1,EDIT.NUMBER>
+                  DEL ZIP.PAGE<2,EDIT.NUMBER>
+                  LOCATE TEMP.ZIP IN ZIP.PAGE<1> BY 'AR' SETTING ADD.POS ELSE
+                     INS TEMP.ZIP BEFORE ZIP.PAGE<1,ADD.POS>
+                     INS TEMP.LINE BEFORE ZIP.PAGE<2,ADD.POS>
+                  END
+                  DONEGZC = 1
+               END
+            CASE 1
+               CALL ELINE('Invalid entry.')
+               DONEGZC = 1
+               CONTINUE
+         END CASE
+      REPEAT
+
+      RETURN
+
+**********************************************************************
+GET.ZIP.SEL:***
+**********************************************************************
+      DONEGZS = 0
+      BACK.FLAG=FALSE
+      LOOP
+      UNTIL DONEGZS DO
+         CRT @(0,22):'Enter Zip Selection.':@(-4)
+         HELP='Check for [O]rgin only [D]estination only or [B]oth Orgin or Destination'
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='X'
+               BACK.FLAG=TRUE
+               ****************     CRT @(SEC.X.POS,SEC.Y.POS):SEC.LINE.ITEM<2,SEC.EDIT.NUMBER>'L#2'
+               RETURN                    ; * to sec.start
+            CASE 1
+               IF Q#'' THEN
+                  Q=OCONV(Q,'MCU')
+                  IF Q#'D' AND Q#'O' AND Q#'B' THEN
+                     CALL ELINE('Invalid selection you must enter a [O]rgin, [D]estination or [B]oth')
+                     CONTINUE
+                  END
+                  ****** SEC.LINE.ITEM<2,SEC.EDIT.NUMBER>=Q
+                  BEGIN CASE
+                     CASE Q='B'
+                        DESC='Both'
+                     CASE Q='D'
+                        DESC='Destination'
+                     CASE Q='O'
+                        DESC='Orgin'
+                  END CASE
+                  ******  CRT @(SEC.X.POS,SEC.Y.POS):SEC.LINE.ITEM<2,SEC.EDIT.NUMBER>'L#2':'- ':DESC'L#11'
+                  DONEGZS = 1
+               END ELSE
+                  CALL ELINE('Entry is required')
+                  CONTINUE
+               END
+         END CASE
+      REPEAT
+      RETURN                             ; * to sec.start
+********************************************************************************
+SAVE.ZIPLINE.REC:***
+********************************************************************************
+      NUM.SD=DCOUNT(ZIP.PAGE<1>,@VM)
+
+      GB5 = ZIP.PAGE<1>
+      IF NUM.SD > 0 THEN
+         START.ZIP=ZIP.PAGE<1,1>
+         END.ZIP=ZIP.PAGE<1,1>
+         NEXT.ZIP=ZIP.PAGE<1,1>
+         TEST.LINE.ITEM=ZIP.PAGE<2,1>
+         CREATE.NEW.VALUE=0
+         ZIP.REC=''
+         LINE.ITEM.DTL=''
+         FOR X=1 TO NUM.SD
+
+            IF NEXT.ZIP#ZIP.PAGE<1,X> THEN
+               CREATE.NEW.VALUE=1
+            END
+            IF TEST.LINE.ITEM#ZIP.PAGE<2,X> THEN
+               CREATE.NEW.VALUE=1
+            END
+            IF CREATE.NEW.VALUE THEN
+               ZIP.REC<1,-1>=START.ZIP'R%5'
+               ZIP.REC<2,-1>=END.ZIP'R%5'
+               LINE.ITEM.DTL=''
+GET.NEXT.LINE.ITEM:***
+               IF TEST.LINE.ITEM#'' THEN
+                  IF TEST.LINE.ITEM[1,1] = @SVM THEN
+                     LINE.ITEM.DTL<1,1,-1>=TRIM(TEST.LINE.ITEM[2,4])
+                     LINE.ITEM.DTL<2,1,-1>=TEST.LINE.ITEM[7,1]
+
+                  END ELSE
+                     LINE.ITEM.DTL<1,1,-1>=TRIM(TEST.LINE.ITEM[1,4])
+                     LINE.ITEM.DTL<2,1,-1>=TEST.LINE.ITEM[6,1]
+                  END
+                  TEST.LINE.ITEM=TEST.LINE.ITEM[8,999]
+                  GOTO GET.NEXT.LINE.ITEM
+               END
+               LINE.ITEM.DTL<1>=OCONV(LINE.ITEM.DTL<1>,"MCU")          ; * NKH01
+               ZIP.REC<3,-1>=LINE.ITEM.DTL<1>
+               ZIP.REC<4,-1>=LINE.ITEM.DTL<2>
+               *******      CRT X:SPACE(5):LINE.ITEM.DTL<1>:SPACE(5):LINE.ITEM.DTL<2>
+               START.ZIP=ZIP.PAGE<1,X>
+               END.ZIP=ZIP.PAGE<1,X>
+               TEST.LINE.ITEM=ZIP.PAGE<2,X>
+               NEXT.ZIP=ZIP.PAGE<1,X>
+               NEXT.ZIP=NEXT.ZIP+1
+               NEXT.ZIP=NEXT.ZIP'R%5'
+               CREATE.NEW.VALUE=0
+            END ELSE
+               END.ZIP=NEXT.ZIP
+               NEXT.ZIP=NEXT.ZIP+1
+               NEXT.ZIP=NEXT.ZIP'R%5'
+*DF            END.ZIP=NEXT.ZIP
+            END
+         NEXT X
+         ZIP.REC<1,-1>=START.ZIP'R%5'
+         ZIP.REC<2,-1>=END.ZIP'R%5'
+         LINE.ITEM.DTL=''
+GET.NEXT.LINE.ITEM.2:***
+         IF TEST.LINE.ITEM#'' THEN
+            LINE.ITEM.DTL<1,1,-1>=TRIM(TEST.LINE.ITEM[1,4])
+            LINE.ITEM.DTL<2,1,-1>=TEST.LINE.ITEM[6,1]
+            TEST.LINE.ITEM=TEST.LINE.ITEM[8,999]
+            GOTO GET.NEXT.LINE.ITEM.2
+         END
+         LINE.ITEM.DTL<1>=OCONV(LINE.ITEM.DTL<1>,"MCU")      ; * NKH01
+         ZIP.REC<3,-1>=LINE.ITEM.DTL<1>
+         ZIP.REC<4,-1>=LINE.ITEM.DTL<2>
+         WRITE ZIP.REC ON F.ZIP.LINE.ITEM,ZIP.LINE.ITEM.ID
+         IF ORIG.ZIP.REC # '' THEN
+            WRITE ORIG.ZIP.REC ON F.ZIP.LINE.ITEM.BU,ZIP.LINE.ITEM.ID:"*":DATE():"*":TIME()
+         END
+      END
+
+*****         DELETE F.ZIP.LINE.ITEM,ZIP.LINE.ITEM.ID
+******      END
+*DF    OLD.BENCHMARK.REC=BENCHMARK.REC
+      RETURN
+********************************************************************************
+SAVE.ZIPLINE.REC.OLD:***
+********************************************************************************
+      NUM.SD=DCOUNT(ZIP.PAGE<1>,@VM)
+      IF NUM.SD > 0 THEN
+         START.ZIP=ZIP.PAGE<1,1>
+         END.ZIP=ZIP.PAGE<1,1>
+         NEXT.ZIP=ZIP.PAGE<1,1>
+         TEST.LINE.ITEM=ZIP.PAGE<2,1>
+         CREATE.NEW.VALUE=0
+         ZIP.REC=''
+         LINE.ITEM.DTL=''
+         FOR X=1 TO NUM.SD
+            IF NEXT.ZIP#ZIP.PAGE<1,X> THEN
+               CREATE.NEW.VALUE=1
+            END
+            IF TEST.LINE.ITEM#ZIP.PAGE<2,X> THEN
+               CREATE.NEW.VALUE=1
+            END
+            IF CREATE.NEW.VALUE THEN
+               ZIP.REC<1,-1>=START.ZIP'R%5'
+               ZIP.REC<2,-1>=END.ZIP'R%5'
+               LINE.ITEM.DTL=''
+               DONESZR = 0
+               LOOP
+                  IT.CNT = DCOUNT(ZIP.REC<3>,@VM)
+                  ZIT.CNT = DCOUNT(ZIP.REC<2>,@VM)
+                  IF IT.CNT = ZIT.CNT THEN
+                     DONESZR = 1
+                  END
+               UNTIL DONESZR DO
+                  ZIP.REC<3,-1>=LIC
+                  ZIP.REC<4,-1>=ZS
+               REPEAT
+               START.ZIP=ZIP.PAGE<1,X>
+               END.ZIP=ZIP.PAGE<1,X>
+               TEST.LINE.ITEM=ZIP.PAGE<2,X>
+               NEXT.ZIP=ZIP.PAGE<1,X>
+               NEXT.ZIP=NEXT.ZIP+1
+               NEXT.ZIP=NEXT.ZIP'R%5'
+               CREATE.NEW.VALUE=0
+            END ELSE
+               END.ZIP=NEXT.ZIP
+               NEXT.ZIP=NEXT.ZIP+1
+               NEXT.ZIP=NEXT.ZIP'R%5'
+            END
+         NEXT X
+         ZIP.REC<1,-1>=START.ZIP'R%5'
+         ZIP.REC<2,-1>=END.ZIP'R%5'
+         LINE.ITEM.DTL=''
+         DONESZR = 0
+         LOOP
+            IT.CNT = DCOUNT(ZIP.REC<3>,@VM)
+            ZIT.CNT = DCOUNT(ZIP.REC<2>,@VM)
+            IF IT.CNT = ZIT.CNT THEN
+               DONESZR = 1
+            END
+         UNTIL DONESZR DO
+            ZIP.REC<3,-1>=LIC
+            ZIP.REC<4,-1>=ZS
+         REPEAT
+         WRITE ZIP.REC ON F.ZIP.LINE.ITEM,ZIP.LINE.ITEM.ID
+      END ELSE
+         DELETE F.ZIP.LINE.ITEM,ZIP.LINE.ITEM.ID
+      END
+
+      RETURN
+
+********************************************************************************
+ASK.Y.OR.N:***
+*******************************************************************************
+* This is a general Yes/No prompt routine
+* Inputs:  YN.MSG, YN.MASK
+* Outputs: YN.ANSWER
+      QI = ""
+      YN.ANSWER=''
+      LOOP
+      UNTIL QI = "N" OR QI = "Y" DO
+         CRT @(0,22):YN.MSG:@(-4)
+         HELP='Entry Options: [Y]es [N]o'
+         EDIT.MASK=YN.MASK'L#1'
+         CALL GEN.IN(LEN(YN.MSG)+1,22,EDIT.MASK,'',Q,0,1,'','',2,LEN(YN.MSG)+1,22,0,QI,HELP,0,23)
+         QI=TRIM(OCONV(QI,'MCU'))
+         IF QI='' THEN QI=TRIM(EDIT.MASK)
+         BEGIN CASE
+            CASE QI='Y'
+            CASE QI='N'
+            CASE 1
+               CALL ELINE('Invalid entry.')
+               CONTINUE
+         END CASE
+      REPEAT
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+      YN.ANSWER=QI
+      RETURN
+
+      ************************************************************************
+PARSE.FILE:
+      **************************************************************************
+      CRT @(-1)
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      EDIT.NUMBER = 0
+      CS.LINE=CS.IMPORT<2>
+      CARRIER.ID=CS.LINE<1,1>'R%5'       ; * ZIP TO ADD
+      GOSUB GET.CARRIER
+      FILE.OPEN = 0
+      FOR ATT= 2 TO NATT
+         CS.LINE=CS.IMPORT<ATT>
+         IF ATT = 2 THEN
+            CLIENT.ID =OCONV(CS.LINE<1,2>,"MCU")
+            IF CLIENT.ID # 'ALL' THEN
+               CLIENT.ID = CLIENT.ID'R%5'
+            END
+            GOSUB GET.CLIENT
+            **************   * if client changes have to write it out and read new record then continue
+            MODE=CS.LINE<1,3>
+            IOT =OCONV(CS.LINE<1,4>,"MCU")
+            ZIP=CS.LINE<1,5>"R#5"
+            LIC = CS.LINE<1,6>
+            ZS=CS.LINE<1,7>
+            GOSUB GET.MODE
+            GOSUB GET.IOT
+            * OK OPEN ZIPLINE FILE
+            ZIP.LINE.ID = CARRIER.ID:"*":CLIENT.ID:"*":MODE:"*":IOT
+            IF NOT(FILE.OPEN) AND ATT = 2 THEN
+               GOSUB OPEN.FILE
+            END
+         END
+         ZIP.I=CS.LINE<1,5>'R%5'         ; * ZIP TO ADD
+         EDIT.NUMBER+=1
+         GOSUB GET.ZIP.CODE
+      NEXT ATT
+      CRT @(0,9):(NATT -1)'R#4':' Items Posted...'
+      RETURN
+      *************************************************************
+OPEN.FILE:
+      **************************************************************
+      ZIP.LINE.ITEM.ID=CARRIER.ID:'*':CLIENT.ID:'*':MODE:'*':IOT
+      ZIP.PAGE=''
+      READ ZIPLINE.REC FROM F.ZIP.LINE.ITEM,ZIP.LINE.ITEM.ID THEN
+         ORIG.ZIP.REC = ZIPLINE.REC
+         NUM.SD=DCOUNT(ZIPLINE.REC<1>,@VM)
+         FOR X=1 TO NUM.SD
+            START.ZIP=ZIPLINE.REC<1,X>
+            END.ZIP=ZIPLINE.REC<2,X>
+            FOR Y = START.ZIP TO END.ZIP
+               ZIP.PAGE<1,-1>=Y'R%5'
+               LINE.ITEM.COUNT=DCOUNT(ZIPLINE.REC<3,X>,@SVM)
+               TEXT=''
+               FOR Z = 1 TO LINE.ITEM.COUNT
+                  TEXT=TEXT:ZIPLINE.REC<3,X,Z>'L#4':'-':ZIPLINE.REC<4,X,Z>'L#1':' '
+               NEXT Z
+               ZIP.PAGE<2,-1>=TEXT
+            NEXT Y
+
+         NEXT X
+         EDIT.NUMBER = DCOUNT(ZIP.PAGE<1>,@VM)
+      END ELSE
+         ZIP.PAGE=''
+         NUM.SD = 1
+      END
+      OLD.ZIP.PAGE=ZIP.PAGE
+      FILE.OPEN = 1
+      RETURN
+
+   END                                   ; * End program

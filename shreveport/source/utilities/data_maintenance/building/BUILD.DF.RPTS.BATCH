@@ -1,0 +1,546 @@
+**********************************************************************
+* Program name : BUILD.DF.RPTS.BATCH
+* Author       : ??
+* Date written : ??
+* Library      : FBBP
+* COPYRIGHT (c) : AFS, LLC 2014, All Rights Reserved.
+*
+* Update operator table
+*
+* Last updated by afs (tgorton) at 13:16:59 on 09/14/2016.
+*
+* Start modification history
+* 091416 - TAG01 - Sysaid 27036 Add Timestamp To Eod Processes
+* End modification history
+************************************************************************
+* Begin TAG01 
+      CALL GET.USER(USER.ID)
+      VIN1=""
+      VIN1<1> = "BUILD.DF.RPTS.BATCH"
+      VIN1<2> = USER.ID
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "S"
+      CALL PROGTRACK(VIN1,VOUT1)
+* End TAG01 
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+         CALL OPEN.ABORT('FB.TRANSPORT',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+      OPEN '','BUILD.DF.RPTS' TO F.BUILD.DF.RPTS ELSE
+         CALL OPEN.ABORT('BUILD.DF.RPTS',PROG.NAME)
+      END
+      OPEN '','BCTRL' TO F.BCTRL ELSE
+         CALL OPEN.ABORT('BCTRL',PROG.NAME)
+      END
+      OPEN '','FB.CUT.BACKS' TO F.CUTBACK ELSE
+         CALL OPEN.ABORT('FB.CUT.BACKS',PROG.NAME)
+      END
+      OPEN '','FB.BUILD.SPEC' TO F.BUILD.SPEC ELSE
+         CALL OPEN.ABORT('FB.BUILD.SPEC',PROG.NAME)
+      END
+      TESTING=1
+      READ PROC.LIST FROM F.BUILD.DF.RPTS,'PROC.LIST' THEN
+         SUCCESS.LIST=''
+         UNSUCCESS.LIST=''
+         NATT=DCOUNT(PROC.LIST,@AM)
+         FOR ATT=1 TO NATT
+            SYS.DATE=DATE()
+            SYS.DOW=OCONV(SYS.DATE,'DW')
+            BEGIN CASE
+               CASE SYS.DOW=6
+               CASE SYS.DOW=7
+               CASE 1
+                  SYS.TIME=TIME()
+                  IF SYS.TIME > 21600 AND SYS.TIME < 79200 THEN
+                     GOTO 99999          ; * END THIS PROCESS
+                  END
+            END CASE
+            RPT.DTL.ID=PROC.LIST<ATT>
+            READ RPT.DTL.REC FROM F.BUILD.DF.RPTS,RPT.DTL.ID THEN
+               GOSUB GET.RPT.DETAILS
+               USER=RPT.DTL.REC<21>
+               READ USER.REC FROM F.BCTRL,USER ELSE USER.REC=''
+               USER.NAME=USER.REC<13>
+               USER.EMAIL=USER.REC<20>
+               OPEN '','VOC' TO F.VOC ELSE
+                  GOTO NEXT.RPT
+               END
+               READ BILLDATA.REC FROM F.VOC,'BILLDATA' ELSE
+                  GOTO NEXT.RPT
+               END
+               BILLDATA.REC<2>:='\':USER
+               WRITE BILLDATA.REC ON F.VOC,'BILLDATA.':USER ELSE
+                  GOTO NEXT.RPT
+               END
+               VIN=RPT.DTL.REC
+               VOUT=''
+               EMAIL.REPORT=VIN<18>
+               BEGIN CASE
+                  CASE EMAIL.REPORT='0'
+                     OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE
+                        CALL ELINE('Unable to open BILLDATA.':USER:'.')
+                        GOTO NEXT.RPT
+                     END
+                  CASE EMAIL.REPORT='1'
+                     OPEN '','EMAILDATA' TO F.BILLDATA ELSE
+                        CALL ELINE('Unable to open EMAILDATA.')
+                        GOTO NEXT.RPT
+                     END
+               END CASE
+               START.DATE=DATE()
+               START.TIME=TIME()
+               CALL BUILD.DF.SUB(F.CLIENTS,F.CARRIERS,F.TRANSPORT,F.TABLES,F.BILLDATA,VIN,VOUT)
+               END.DATE=DATE()
+               END.TIME=TIME()
+               SSNAME=VOUT<1>
+               ERROR=VOUT<2>             ; * JMK07
+               IF ERROR#'' THEN
+                  UNSUCCESS.LIST<1,-1>=USER:"'s overnight SS report ":RPT.DTL.ID:" started at ":OCONV(START.TIME,'MTHS'):' on ':OCONV(START.DATE,'D2/'):' and did not complete at ':OCONV(END.TIME,'MTHS'):' on ':OCONV(END.DATE,'D2/'):' due to ':ERROR:'.'
+               END ELSE
+                  SUCCESS.LIST<1,-1>=USER:"'s overnight SS report started at ":OCONV(START.TIME,'MTHS'):' on ':OCONV(START.DATE,'D2/'):', completed successfully at ':OCONV(END.TIME,'MTHS'):' on ':OCONV(END.DATE,'D2/'):' and resides on E:\BILLDATA\':USER:'\':SSNAME
+                  DELETE F.BUILD.DF.RPTS,RPT.DTL.ID
+                  DEL PROC.LIST<1>
+                  NATT=DCOUNT(PROC.LIST,@AM)
+                  ATT-=1
+               END
+               EMAIL.OUT=''
+               EMAIL.OUT<1,-1>=USER.EMAIL
+               EMAIL.OUT<4>='FBBP_BUILD.DF.RPTS.BATCH@afs.net'
+               EMAIL.OUT<5>='Overnight SS Report Processing Results'
+               IF ERROR#'' THEN
+                  EMAIL.OUT<6>='Your overnight SS report did not complete due to ':ERROR
+               END ELSE
+                  EMAIL.OUT<6>='Your overnight SS report completed successfully and resides on your "U:\" drive as ':SSNAME
+               END
+               USER.ALERT.TRY=0
+SEND.USER.ALERT:***
+               CALL SENDMAIL(EMAIL.OUT,RESULTS)
+               IF RESULTS<1>='ERROR' THEN
+                  IF USER.ALERT.TRY<10 THEN
+                     USER.ALERT.TRY+=1
+                     GO SEND.USER.ALERT
+                  END
+               END
+               IF VERSION='155' THEN     ; * JMK30
+                  IF SSNAME#'ERROR' THEN
+                     SLEEP 3
+                     RVIN=''
+                     RVIN<1>=USER
+                     RVIN<2>=SSNAME
+                     RVIN<3>=CLIENT.ID
+                     RVIN<4>=RR.EFF.DATE
+                     RVIN<5>=RR.CARRIER.ID
+                     IF RR.FAK.1#'' THEN
+                        RVIN<6,1>=RR.FAK.1
+                     END
+                     IF RR.FAK.2#'' THEN
+                        RVIN<6,2>=RR.FAK.2
+                     END
+                     IF RR.FAK.3#'' THEN
+                        RVIN<6,3>=RR.FAK.3
+                     END
+                     IF RR.FAK.4#'' THEN
+                        RVIN<6,4>=RR.FAK.4
+                     END
+                     IF RR.FAK.5#'' THEN
+                        RVIN<6,5>=RR.FAK.5
+                     END
+                     IF RR.ZIP.1#'' THEN
+                        RVIN<7,1>=RR.ZIP.1
+                     END
+                     IF RR.ZIP.2#'' THEN
+                        RVIN<7,2>=RR.ZIP.2
+                     END
+                     IF RR.ZIP.3#'' THEN
+                        RVIN<7,3>=RR.ZIP.3
+                     END
+                     IF RR.ZIP.4#'' THEN
+                        RVIN<7,4>=RR.ZIP.4
+                     END
+                     IF RR.ZIP.5#'' THEN
+                        RVIN<7,5>=RR.ZIP.5
+                     END
+                     IF RR.ZIP.6#'' THEN
+                        RVIN<7,6>=RR.ZIP.6
+                     END
+                     IF RR.ZIP.7#'' THEN
+                        RVIN<7,7>=RR.ZIP.7
+                     END
+                     IF RR.ZIP.8#'' THEN
+                        RVIN<7,8>=RR.ZIP.8
+                     END
+                     IF RR.ZIP.9#'' THEN
+                        RVIN<7,9>=RR.ZIP.9
+                     END
+                     IF RR.ZIP.10#'' THEN
+                        RVIN<7,10>=RR.ZIP.10
+                     END
+                     RVOUT=''
+                     CALL RERATE.SS.SUB(RVIN,RVOUT)
+                     CALL ELINE('Re-rated SS is on your "U:\" drive as ':RVOUT<1>)
+                  END
+               END
+            END
+NEXT.RPT:   **
+         NEXT ATT
+         IF PROC.LIST='' THEN DELETE F.BUILD.DF.RPTS,'PROC.LIST'
+         IF SUCCESS.LIST#'' OR UNSUCCESS.LIST#'' THEN
+            EMAIL.OUT=''
+            IF TESTING THEN
+               EMAIL.OUT<1,-1>='MKerbow@afs.net'
+            END ELSE
+               EMAIL.OUT<1,-1>='OHolman@afs.net'
+               EMAIL.OUT<2,-1>='HelpDesk@afs.net'
+               EMAIL.OUT<3,-1>='MKerbow@afs.net'
+            END
+            EMAIL.OUT<4>='FBBP_BUILD.DF.RPTS.BATCH@afs.net'
+            EMAIL.OUT<5>='Overnight SS Report Processing Results'
+            EMAIL.OUT<6>='Overnight SS Report Processing was attempted on ':DCOUNT(SUCCESS.LIST,@VM)+DCOUNT(UNSUCCESS.LIST,@VM):' files in the Overnight Report Queue.'
+            EMAIL.OUT<6>:='  These results are listed below with any unsuccessful report attempts listed first.'
+            EMAIL.OUT<6>:='  The unsuccessful report definitions are located in BUILD.DF.RPTS file.'
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>=UNSUCCESS.LIST
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>=SUCCESS.LIST
+            BATCH.ALERT.TRY=0
+SEND.BATCH.ALERT:***
+            CALL SENDMAIL(EMAIL.OUT,RESULTS)
+            IF RESULTS<1>='ERROR' THEN
+               IF BATCH.ALERT.TRY<10 THEN
+                  BATCH.ALERT.TRY+=1
+                  GO SEND.BATCH.ALERT
+               END
+            END
+         END
+      END
+      99999:*
+* Begin TAG01 
+      VIN1=""
+      VIN1<1> = "BUILD.DF.RPTS.BATCH"
+      VIN1<2> = USER.ID
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "E"
+      CALL PROGTRACK(VIN1,VOUT1)
+* End TAG01 
+      STOP
+********************************************************************************
+GET.RPT.DETAILS:*
+********************************************************************************
+      VIN=RPT.DTL.REC
+      RPT.DTLS=''
+      CLIENT.ID=VIN<1>
+      LOG.ONLY=VIN<2>
+      CARRIER.ID=VIN<3>
+      MODE=VIN<4>
+      FILE.SEL=VIN<5>
+      BEG.DATE=VIN<6>
+      END.DATE=VIN<7>
+      CUT.BACK.CODE=VIN<8>
+      READ CUT.BACK.REC FROM F.CUTBACK,CUT.BACK.CODE ELSE CUT.BACK.REC=''
+      CUT.BACK.DESC=CUT.BACK.REC<1>
+      MISROUTE.INFO=VIN<9>
+      BEGIN CASE
+         CASE MISROUTE.INFO='I'
+            MISROUTE.DESC='Include'
+         CASE MISROUTE.INFO='E'
+            MISROUTE.DESC='Exclude'
+         CASE 1
+            MISROUTE.DESC='No Preference'
+      END CASE
+      OVERCHARGE.INFO=VIN<10>
+      BEGIN CASE
+         CASE OVERCHARGE.INFO='I'
+            OVERCHARGE.DESC='Include'
+         CASE OVERCHARGE.INFO='E'
+            OVERCHARGE.DESC='Exclude'
+         CASE 1
+            OVERCHARGE.DESC='No Preference'
+      END CASE
+      LOGISTICS.INFO=VIN<11>
+      BEGIN CASE
+         CASE LOGISTICS.INFO='I'
+            LOGISTICS.DESC='Include'
+         CASE LOGISTICS.INFO='E'
+            LOGISTICS.DESC='Exclude'
+         CASE 1
+            LOGISTICS.DESC='No Preference'
+      END CASE
+      DISCOUNT.INFO=VIN<12>
+      BEGIN CASE
+         CASE DISCOUNT.INFO='I'
+            DISCOUNT.DESC='Include'
+         CASE DISCOUNT.INFO='E'
+            DISCOUNT.DESC='Exclude'
+         CASE 1
+            DISCOUNT.DESC='No Preference'
+      END CASE
+      VERSION=VIN<13>
+      TYPE.OF.REPORT=VIN<14>
+      SEP.DIVISIONS=VIN<15>
+      DIVISIONAL.ID=VIN<16>
+      SORT=VIN<17>
+      MANUAL.EMAIL=VIN<18>
+      NEW.EMAIL.ADDR=VIN<19>
+      DIV.EMAIL.ADDR=VIN<20>
+      USER=VIN<21>
+      CH.NUM=VIN<22>
+      AUTO=VIN<23>
+      CUT.DESC=VIN<24>
+      FROM=VIN<25>
+      USING.NEW.MACRO=VIN<26>
+      DUP.ONLY=VIN<27>
+      INC.BD=VIN<28>
+      LCC.INFO=VIN<29>
+      BEGIN CASE
+         CASE LCC.INFO='I'
+            LCC.DESC='Include'
+         CASE LCC.INFO='E'
+            LCC.DESC='Exclude'
+         CASE 1
+            LCC.DESC='No Preference'
+      END CASE
+      CLIENT.ACCESS=VIN<31>
+      CARRIER.ACCESS=VIN<32>
+      SALES.ACCESS=VIN<33>
+      COMM.ACCESS=VIN<34>
+      TL.INFO=VIN<35>
+      BEGIN CASE
+         CASE TL.INFO='I'
+            TL.DESC='Include'
+         CASE TL.INFO='E'
+            TL.DESC='Exclude'
+         CASE 1
+            TL.DESC='No Preference'
+      END CASE
+      EBILL.INFO=VIN<36>
+      BEGIN CASE
+         CASE EBILL.INFO='I'
+            EBILL.DESC='Include'
+         CASE EBILL.INFO='E'
+            EBILL.DESC='Exclude'
+         CASE 1
+            EBILL.DESC='No Preference'
+      END CASE
+      SAMPLE.ONE=VIN<37>
+      INCLUDE.IOT=VIN<38>
+      BEGIN CASE
+         CASE INCLUDE.IOT='I'
+            INCLUDE.IOT.DESC='Include'
+         CASE INCLUDE.IOT='E'
+            INCLUDE.IOT.DESC='Exclude'
+         CASE 1
+            INCLUDE.IOT.DESC='No Preference'
+            IOT.DESC=''
+      END CASE
+      IOT.INFO=VIN<39>
+      BEGIN CASE
+         CASE IOT.INFO='I'
+            IOT.DESC='Inbound'
+         CASE IOT.INFO='O'
+            IOT.DESC='Outbound'
+         CASE IOT.INFO='T'
+            IOT.DESC='Third Party'
+      END CASE
+      REJ.INFO=VIN<40>
+      BEGIN CASE
+         CASE REJ.INFO='I'
+            REJ.DESC='Include'
+         CASE REJ.INFO='E'
+            REJ.DESC='Exclude'
+         CASE 1
+            REJ.DESC='No Preference'
+      END CASE
+      ROW.LIMIT=VIN<41>
+      ST.FILTER=VIN<42>
+      STACK.FILTER=VIN<43>
+      RPT.STYLE=VIN<44>
+      BEGIN CASE
+         CASE RPT.STYLE='H'
+            RPT.STYLE.DESC='HTML'
+         CASE 1
+            RPT.STYLE='T'
+            RPT.STYLE.DESC='Text'
+      END CASE
+      RR.EFF.DATE=VIN<51>
+      RR.CARRIER.ID=VIN<52>
+      RR.FAK.1=VIN<53,1>
+      RR.FAK.2=VIN<53,2>
+      RR.FAK.3=VIN<53,3>
+      RR.FAK.4=VIN<53,4>
+      RR.FAK.5=VIN<53,5>
+      RR.ZIP.1=VIN<54,1>
+      RR.ZIP.2=VIN<54,2>
+      RR.ZIP.3=VIN<54,3>
+      RR.ZIP.4=VIN<54,4>
+      RR.ZIP.5=VIN<54,5>
+      RR.ZIP.6=VIN<54,6>
+      RR.ZIP.7=VIN<54,7>
+      RR.ZIP.8=VIN<54,8>
+      RR.ZIP.9=VIN<54,9>
+      RR.ZIP.10=VIN<54,10>
+
+      IF CLIENT.ID='ALL' THEN
+         CLIENT.NAME='All Clients'
+      END ELSE
+         READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE CLIENT.REC=''
+         CLIENT.NAME=CLIENT.REC<2>
+      END
+      RPT.DTLS<1,-1>='Client Number            : ':CLIENT.ID:STR(' ',6-LEN(CLIENT.ID)):CLIENT.NAME
+      IF CLIENT.ID GE "80000" AND CLIENT.ID LE "89999" THEN
+         STMT = \SSELECT CLIENTS WITH 147 = "\:CLIENT.ID:\"\
+         EXECUTE STMT RTNLIST CORP.LIST CAPTURING OUTPUT
+         NUM.CORP = @SELECTED
+         IF NUM.CORP THEN
+            CORP.DATA<1> = CLIENT.ID 'R%5'
+            CORP.DATA<2> = NUM.CORP
+            RPT.DTLS:=" >> ": CORP.DATA<2> :" Children for Client ":CORP.DATA<1>           ; * NPR01
+         END
+      END
+      RPT.DTLS<1,-1>='Logistics Clients Only   : ':LOG.ONLY
+      RPT.DTLS<1,-1>='Build Separate Report    : ':SEP.DIVISIONS
+      RPT.DTLS<1,-1>='Division                 : ':DIVISIONAL.ID:STR(' ',6-LEN(DIVISIONAL.ID)):DIVISIONAL.ID
+
+      IF CARRIER.ID='ALL' THEN
+         CARRIER.NAME='All Carriers'
+      END ELSE
+         READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE CARRIER.REC=''
+         CARRIER.NAME=CARRIER.REC<2>
+      END
+      RPT.DTLS<1,-1>='Carrier Number           : ':CARRIER.ID:STR(' ',6-LEN(CARRIER.ID)):CARRIER.NAME
+
+      IF MODE='ALL' THEN
+         MODE.DESC='All Transport Modes'
+      END ELSE
+         READ MODE.REC FROM F.TRANSPORT,MODE ELSE MODE.REC='Unknown'
+         MODE.DESC=MODE.REC<1>
+      END
+      RPT.DTLS<1,-1>='Transportation Mode      : ':MODE:STR(' ',6-LEN(MODE)):MODE.DESC
+
+      BEGIN CASE
+         CASE FILE.SEL=1
+            FILE.DESC='Current'
+         CASE FILE.SEL=2
+            FILE.DESC='History'
+         CASE FILE.SEL=3
+            FILE.DESC='Last Processed'
+         CASE FILE.SEL=5
+            FILE.DESC='Accrual'
+         CASE 1
+            FILE.DESC='Unknown'
+      END CASE
+      RPT.DTLS<1,-1>='File Selection           : ':FILE.SEL:STR(' ',6-LEN(FILE.SEL)):FILE.DESC
+      RPT.DTLS<1,-1>='Beginning Date           : ':BEG.DATE'D4-'
+      RPT.DTLS<1,-1>='Ending Date              : ':END.DATE'D4-'
+      RPT.DTLS<1,-1>='Duplicate Bills Only     : ':DUP.ONLY
+      RPT.DTLS<1,-1>='Bills With Cut-Back Code : ':CUT.BACK.CODE:STR(' ',6-LEN(CUT.BACK.CODE)):CUT.BACK.DESC
+      RPT.DTLS<1,-1>='Bills With Misroutes     : ':MISROUTE.INFO:STR(' ',6-LEN(MISROUTE.INFO)):MISROUTE.DESC
+      RPT.DTLS<1,-1>='Bills With Overcharges   : ':OVERCHARGE.INFO:STR(' ',6-LEN(OVERCHARGE.INFO)):OVERCHARGE.DESC
+      RPT.DTLS<1,-1>='Include Balance Dues     : ':INC.BD
+      RPT.DTLS<1,-1>='Include or Exclude I/O/T : ':INCLUDE.IOT:STR(' ',6-LEN(INCLUDE.IOT)):INCLUDE.IOT.DESC    ; * JCW01
+      RPT.DTLS<1,-1>='Inbound/Outbound/Third   : ':IOT.INFO:STR(' ',6-LEN(IOT.INFO)):IOT.DESC        ; * JCW01
+      RPT.DTLS<1,-1>='Bills With Logistics     : ':LOGISTICS.INFO:STR(' ',6-LEN(LOGISTICS.INFO)):LOGISTICS.DESC
+      RPT.DTLS<1,-1>='Bills With Discounts     : ':DISCOUNT.INFO:STR(' ',6-LEN(DISCOUNT.INFO)):DISCOUNT.DESC
+      BSPEC.ID='FMT*':CLIENT.ID:'*':VERSION        ; * JMK39
+      READ BSPEC.REC FROM F.BUILD.SPEC,BSPEC.ID ELSE         ; * JMK39
+         BSPEC.ID='FMT**':VERSION        ; * JMK39
+         READ BSPEC.REC FROM F.BUILD.SPEC,BSPEC.ID ELSE      ; * JMK39
+            BSPEC.REC='Unknown'          ; * JMK39
+         END                             ; * JMK39
+      END                                ; * JMK39
+      RPT.DTLS<1,-1>='Version Specs            : ':VERSION:' - ':BSPEC.REC<1>'L#35':@(-4)  ; * JMK39
+      DSORT.ID='DF.SORT*':SORT           ; * JMK39
+      READ DSORT.REC FROM F.TABLES,DSORT.ID ELSE DSORT.REC=''          ; * JMK39
+      RPT.DTLS<1,-1>='Sort Specs               : ':SORT:' - ':DSORT.REC<1>'L#35':@(-4)     ; * JMK39
+      RPT.DTLS<1,-1>='Email this Report        : ':MANUAL.EMAIL
+      RPT.DTLS<1,-1>='Email To                 : ':NEW.EMAIL.ADDR
+      RPT.DTLS<1,-1>='Bills With LCC           : ':LCC.INFO:STR(' ',6-LEN(LCC.INFO)):LCC.DESC
+      RPT.DTLS<1,-1>='Bills With TL Parameters : ':TL.INFO:STR(' ',6-LEN(TL.INFO)):TL.DESC           ; * JMK17
+      RPT.DTLS<1,-1>='Electronic Bills         : ':EBILL.INFO:STR(' ',6-LEN(EBILL.INFO)):EBILL.DESC  ; * JMK22
+      RPT.DTLS<1,-1>='1 Bill Per Client(Faster): ':SAMPLE.ONE          ; * JMK26
+      RPT.DTLS<1,-1>='Reject Bills             : ':REJ.INFO:STR(' ',6-LEN(REJ.INFO)):REJ.DESC        ; * JMK27
+      RPT.DTLS<1,-1>='Excel Row Limit          : ':ROW.LIMIT           ; * JMK32
+      RPT.DTLS<1,-1>='State Filter             : ':ST.FILTER           ; * JMK37
+      RPT.DTLS<1,-1>='Stack Filter             : ':STACK.FILTER        ; * JMK37
+      RPT.DTLS<1,-1>='Report Style             : ':RPT.STYLE:STR(' ',6-LEN(RPT.STYLE)):RPT.STYLE.DESC          ; * JMK37
+      IF VERSION='155' THEN              ; * JMK30
+         IF RR.EFF.DATE='S' THEN         ; * JMK31
+            RPT.DTLS<1,-1>='Re-rate Effective Date   : ':'Same Date'   ; * JMK30
+         END ELSE                        ; * JMK31
+            RPT.DTLS<1,-1>='Re-rate Effective Date   : ':RR.EFF.DATE'D4-'        ; * JMK30
+         END                             ; * JMK31
+         BEGIN CASE
+            CASE RR.CARRIER.ID='S'
+               RPT.DTLS<1,-1>='Re-rate Carrier Use      : ':'S  Same Carrier'    ; * JMK30 - EITHER 'SAME' OR 'LCC'
+            CASE RR.CARRIER.ID='L'
+               RPT.DTLS<1,-1>='Re-rate Carrier Use      : ':'L  Least Cost Carrier'        ; * JMK30 - EITHER 'SAME' OR 'LCC'
+            CASE NUM(RR.CARRIER.ID)
+               READV RR.CARRIER.NAME FROM F.CARRIERS,RR.CARRIER.ID,1 ELSE RR.CARRIER.NAME='Unknown'
+               RPT.DTLS<1,-1>='Re-rate Carrier Use      : ':RR.CARRIER.ID:STR(' ',6-LEN(RR.CARRIER.ID)):RR.CARRIER.NAME  ; * JMK30 - EITHER 'SAME' OR 'LCC'
+         END CASE
+         RPT.DTLS<1,-1>='Re-rate FAK Assignment 1 : ':RR.FAK.1         ; * JMK30
+         RPT.DTLS<1,-1>='Re-rate FAK Assignment 2 : ':RR.FAK.2         ; * JMK30
+         RPT.DTLS<1,-1>='Re-rate FAK Assignment 3 : ':RR.FAK.3         ; * JMK30
+         RPT.DTLS<1,-1>='Re-rate FAK Assignment 4 : ':RR.FAK.4         ; * JMK30
+         RPT.DTLS<1,-1>='Re-rate FAK Assignment 5 : ':RR.FAK.5         ; * JMK30
+         IF RR.ZIP.1#'' THEN             ; * JMK30
+            CALL FB.READ.ZIP(RR.ZIP.1,CITY,STATE)  ; * JMK30
+            CITY.STATE=CITY:', ':STATE   ; * JMK30
+            RPT.DTLS<1,-1>='Distribution Zip 1       : ':RR.ZIP.1:' - ':CITY.STATE         ; * JMK30
+         END                             ; * JMK30
+         IF RR.ZIP.2#'' THEN             ; * JMK30
+            CALL FB.READ.ZIP(RR.ZIP.2,CITY,STATE)  ; * JMK30
+            CITY.STATE=CITY:', ':STATE   ; * JMK30
+            RPT.DTLS<1,-1>='Distribution Zip 2       : ':RR.ZIP.2:' - ':CITY.STATE         ; * JMK30
+         END                             ; * JMK30
+         IF RR.ZIP.3#'' THEN             ; * JMK30
+            CALL FB.READ.ZIP(RR.ZIP.3,CITY,STATE)  ; * JMK30
+            CITY.STATE=CITY:', ':STATE   ; * JMK30
+            RPT.DTLS<1,-1>='Distribution Zip 3       : ':RR.ZIP.3:' - ':CITY.STATE         ; * JMK30
+         END                             ; * JMK30
+         IF RR.ZIP.4#'' THEN             ; * JMK30
+            CALL FB.READ.ZIP(RR.ZIP.4,CITY,STATE)  ; * JMK30
+            CITY.STATE=CITY:', ':STATE   ; * JMK30
+            RPT.DTLS<1,-1>='Distribution Zip 4       : ':RR.ZIP.4:' - ':CITY.STATE         ; * JMK30
+         END                             ; * JMK30
+         IF RR.ZIP.5#'' THEN             ; * JMK30
+            CALL FB.READ.ZIP(RR.ZIP.5,CITY,STATE)  ; * JMK30
+            CITY.STATE=CITY:', ':STATE   ; * JMK30
+            RPT.DTLS<1,-1>='Distribution Zip 5       : ':RR.ZIP.5:' - ':CITY.STATE         ; * JMK30
+         END                             ; * JMK30
+         IF RR.ZIP.6#'' THEN             ; * JMK30
+            CALL FB.READ.ZIP(RR.ZIP.6,CITY,STATE)  ; * JMK30
+            CITY.STATE=CITY:', ':STATE   ; * JMK30
+            RPT.DTLS<1,-1>='Distribution Zip 6       : ':RR.ZIP.6:' - ':CITY.STATE         ; * JMK30
+         END                             ; * JMK30
+         IF RR.ZIP.7#'' THEN             ; * JMK30
+            CALL FB.READ.ZIP(RR.ZIP.7,CITY,STATE)  ; * JMK30
+            CITY.STATE=CITY:', ':STATE   ; * JMK30
+            RPT.DTLS<1,-1>='Distribution Zip 7       : ':RR.ZIP.7:' - ':CITY.STATE         ; * JMK30
+         END                             ; * JMK30
+         IF RR.ZIP.8#'' THEN             ; * JMK30
+            CALL FB.READ.ZIP(RR.ZIP.8,CITY,STATE)  ; * JMK30
+            CITY.STATE=CITY:', ':STATE   ; * JMK30
+            RPT.DTLS<1,-1>='Distribution Zip 8       : ':RR.ZIP.8:' - ':CITY.STATE         ; * JMK30
+         END                             ; * JMK30
+         IF RR.ZIP.9#'' THEN             ; * JMK30
+            CALL FB.READ.ZIP(RR.ZIP.9,CITY,STATE)  ; * JMK30
+            CITY.STATE=CITY:', ':STATE   ; * JMK30
+            RPT.DTLS<1,-1>='Distribution Zip 9       : ':RR.ZIP.9:' - ':CITY.STATE         ; * JMK30
+         END                             ; * JMK30
+         IF RR.ZIP.10#'' THEN            ; * JMK30
+            CALL FB.READ.ZIP(RR.ZIP.10,CITY,STATE)           ; * JMK30
+            CITY.STATE=CITY:', ':STATE   ; * JMK30
+            RPT.DTLS<1,-1>='Distribution Zip 10      : ':RR.ZIP.10:' - ':CITY.STATE        ; * JMK30
+         END                             ; * JMK30
+      END                                ; * JMK30
+      RETURN
+
+   END

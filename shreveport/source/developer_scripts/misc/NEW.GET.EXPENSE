@@ -1,0 +1,649 @@
+      SUBROUTINE NEW.GET.EXPENSE(VIN,CLIENT.ID,CARRIER,PRO.REC,F.EXP,VOUT)
+*****************************************************************************
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'NEW.GET.EXPENSE' ; UPL.VOUT = ''          ; * NPR_UPL 04/23/2010
+CALL GET.USER.NEW(USER,CH.NUM)
+ UPL.VIN<3> = USER
+ UPL.VIN<4> = CH.NUM
+
+***      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+*
+* SUBROUTINE NEW.GET.EXPENSE
+*
+*****************************************************************************
+* VIN<1> IS CUSTOMER/VENDER NAME
+*****************************************************************************
+* 090110 - JMK01 - ADD COST CENTER AND PROJECT NO TO NIBCO
+* 051611 - JMK02 - ADD OVERRIDE FIELDS TO EXPENSE CODE FOR CALCULATIONS
+* 121611 - JMK03 - SysAid#790 - Alcon UPS coding
+* 073012 - JMK04 - SysAid#3374 - Expense code set up OK Paper
+* 083012 - JMK05 - SysAid#3674 - Amerimax Transfer codes
+* 022414 - JMK06 - Airgas UPS Expense Coding
+* 032614 - JMK07 - Use Expense Fields and Operators
+* 020215 - JMK08 - SysAid#14923 - Airgas Safety coding change
+*****************************************************************************
+      $OPTIONS HEADER.EJECT
+      $OPTIONS EXEC.EQ.PREF
+      $OPTIONS INFO.ABORT
+
+      VOUT=''
+      ACTUAL.CHG=VIN<2>
+      OLA.AMT=VIN<3>
+      EDI.BILL=VIN<4>
+      PRO.NUM=VIN<5>
+      SVC.LVL=VIN<6>                     ; * JMK03
+      OREF=VIN<7>                        ; * JMK06
+      DREF=VIN<8>                        ; * JMK06
+      PKG.TYPE=VIN<9>                    ; * JMK06
+      REF1=VIN<10>                       ; * JMK06
+      REF2=VIN<11>                       ; * JMK06
+      REF3=VIN<12>                       ; * JMK06
+      REF4=VIN<13>                       ; * JMK06
+      REF5=VIN<14>                       ; * JMK06
+      DADDR=VIN<15>                      ; * JMK06
+      IF CLIENT.ID='01457' THEN          ; * JMK08
+         IF DADDR='' THEN DADDR=' '      ; * JMK08
+      END                                ; * JMK08
+      OADDR=VIN<16>                      ; * JMK06
+      IF CLIENT.ID='01457' THEN          ; * JMK08
+         IF OADDR='' THEN OADDR=' '      ; * JMK08
+      END                                ; * JMK08
+      TCODE=VIN<17>                      ; * JMK06
+      OPEN '','FB.EXPENSE' TO F.EXPENSE ELSE
+         CALL OPEN.ABORT('FB.EXPENSE',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      END
+
+      READ EXPENSE.FIELDS FROM F.TABLES,'EXPENSE.FIELDS' ELSE EXPENSE.FIELDS=''  ; * JMK07
+      EXPENSE.ID = CLIENT.ID:'*':CARRIER
+      READ EXPENSE.REC FROM F.EXPENSE, EXPENSE.ID THEN
+         GOSUB CHECK.FOR.EXPENSE
+         IF VOUT#'' THEN RETURN
+      END
+      EXPENSE.ID = CLIENT.ID:'*ALL'
+      READ EXPENSE.REC FROM F.EXPENSE,EXPENSE.ID THEN
+         GOSUB CHECK.FOR.EXPENSE
+         IF VOUT#'' THEN RETURN
+      END
+      EXPENSE.ID = 'ALL*':CARRIER
+      READ EXPENSE.REC FROM F.EXPENSE,EXPENSE.ID THEN
+         GOSUB CHECK.FOR.EXPENSE
+         IF VOUT#'' THEN RETURN
+      END
+      RETURN
+****************************************************************      
+CHECK.FOR.EXPENSE: ***
+**************************************************************** 
+      NUM.EXPENSES = DCOUNT(EXPENSE.REC<6>,@VM)
+**********************************************
+* BUILD SPECIAL OVERCHARGE ARRAY
+* Attributes represent a single Rule Group
+* Each Value of the Attr represents an AND statement
+* Each Sub-Value of a value represents an OR statement
+* The data stored in the array is the Value Number of the EXPENSE RULES
+* In other words
+* The Rule Value Number from the EXPENSE file are stored in the array
+**********************************************
+      OVER.ARR=''
+      ATT=0                              ; * Start at 0 the 1st (initial) group change will make it 1
+      VAL=1
+      LAST.GROUP='FIRST'
+      LAST.SUBGROUP='FIRST'
+      FOR X = 1 TO NUM.EXPENSES
+         GROUP=EXPENSE.REC<6,X>
+         SUBGROUP=EXPENSE.REC<14,X>
+         IF SUBGROUP='' THEN SUBGROUP=X  ; * Keep it unique for now
+         IF GROUP#LAST.GROUP THEN
+            ATT+=1
+            VAL=1
+            LAST.GROUP=GROUP
+            LAST.SUBGROUP=SUBGROUP
+         END
+         IF SUBGROUP#LAST.SUBGROUP THEN
+            LAST.SUBGROUP=SUBGROUP
+            VAL+=1
+         END
+         OVER.ARR<ATT,VAL,-1>=X
+      NEXT X
+
+      OLD.GROUP = ''
+      SHIP.DATE = PRO.REC<1>
+      NEXT.GROUP = 0
+      RULES = ''
+
+**********************************************
+* LOOP THRU SPECIAL OVERCHARGE ARRAY
+* to evaluate the rules in order
+**********************************************
+
+      RULE.TIMES=DCOUNT(OVER.ARR,@AM)
+      FOR RULE=1 TO RULE.TIMES
+         RULE.INDEX=OVER.ARR<RULE>
+         RULES=''                        ; * List of Valid Rules
+         GROUP.TIMES=DCOUNT(RULE.INDEX<1>,@VM)
+         FOR GROUP=1 TO GROUP.TIMES
+            GROUP.INDEX=RULE.INDEX<1,GROUP>
+            SUBGROUP.TIMES=DCOUNT(GROUP.INDEX<1,1>,@SVM)
+            SUBGROUP.DA=''
+            RESULT=0
+            FOR SUBGROUP=1 TO SUBGROUP.TIMES
+               RULE.VAL=GROUP.INDEX<1,1,SUBGROUP>
+
+               FIELD = EXPENSE.REC<3,RULE.VAL>
+******               IF FIELD = "DREF" THEN DEBUG
+               OPERATOR = EXPENSE.REC<4,RULE.VAL>
+               INFO = EXPENSE.REC<5,RULE.VAL>
+               EXPENSE.CODE = EXPENSE.REC<7,RULE.VAL>        ; * Should ALWAYS be the same within Groups
+               IF FIELD='CLASS' THEN
+                  IF INFO='77.5' THEN
+                     INFO='77'           ; * In case the EXPENSE is set to 77.5 (Only 77 is entered)
+                  END
+                  IF INFO='92.5' THEN
+                     INFO='92'           ; * In case the EXPENSE is set to 92.5 (Only 92 is entered)
+                  END
+               END
+               LOCATE FIELD IN EXPENSE.FIELDS<1> SETTING POS ELSE GO SKIP.RULE
+               FIELD.NUM = EXPENSE.FIELDS<3,POS>
+               FIELD.INFO = PRO.REC<FIELD.NUM>
+               FIELD.INFO = OCONV(FIELD.INFO,'MCU')
+               IF FIELD='CONS' THEN      ; * JMK04
+                  FIELD.INFO=OCONV(PRO.REC<17>,'TVEND.CUST,':CLIENT.ID:';X;;2')  ; * JMK04
+               END                       ; * JMK04
+               IF FIELD='CVCIR' THEN     ; * JMK04
+                  FIELD.INFO=OCONV(PRO.REC<17>,'TVEND.CUST,':CLIENT.ID:';X;;4')  ; * JMK04
+               END                       ; * JMK04
+               IF FIELD='CVNAME' THEN
+
+                  FIELD.INFO=OCONV(VIN<1>,'MCU')
+               END
+               IF FIELD='OLAVAR' THEN
+                  IF OLA.AMT+0=0 THEN GO SKIP.RULE
+                  FIELD.INFO=ACTUAL.CHG-OLA.AMT
+               END
+               IF FIELD='PRO' THEN
+                  FIELD.INFO=PRO.NUM
+               END
+               IF FIELD='SVC' THEN       ; * JMK03
+                  FIELD.INFO=SVC.LVL     ; * JMK03
+               END                       ; * JMK03
+               IF FIELD='OREF' THEN      ; * JMK06
+                  FIELD.INFO=OREF        ; * JMK06
+               END                       ; * JMK06
+               IF FIELD='DREF' THEN      ; * JMK06
+                  FIELD.INFO=DREF        ; * JMK06
+               END                       ; * JMK06
+               IF FIELD='PTYP' THEN      ; * JMK06
+                  FIELD.INFO=PKG.TYPE    ; * JMK06
+               END                       ; * JMK06
+               IF FIELD='REF1' THEN      ; * JMK06
+                  FIELD.INFO=REF1        ; * JMK06
+               END                       ; * JMK06
+               IF FIELD='REF2' THEN      ; * JMK06
+                  FIELD.INFO=REF2        ; * JMK06
+               END                       ; * JMK06
+               IF FIELD='REF3' THEN      ; * JMK06
+                  FIELD.INFO=REF3        ; * JMK06
+               END                       ; * JMK06
+               IF FIELD='REF4' THEN      ; * JMK06
+                  FIELD.INFO=REF4        ; * JMK06
+               END                       ; * JMK06
+               IF FIELD='REF5' THEN      ; * JMK06
+                  FIELD.INFO=REF5        ; * JMK06
+               END                       ; * JMK06
+               IF FIELD='DADDR' THEN     ; * JMK06
+                  FIELD.INFO=DADDR       ; * JMK06
+               END                       ; * JMK06
+               IF FIELD='OADDR' THEN     ; * JMK06
+                  FIELD.INFO=OADDR       ; * JMK06
+               END                       ; * JMK06
+               IF FIELD='TCODE' THEN     ; * JMK06
+                  FIELD.INFO=TCODE       ; * JMK06
+               END                       ; * JMK06
+
+
+               BEGIN CASE
+                  CASE FIELD='ALL'
+                     RULES<1,-1>='ALL BILLS'
+                     RULES<2,-1>='TRUE'
+                     RULES<3,-1>='TRUE'
+                     GO FOUND.EXPENSE
+                  CASE FIELD = 'INTRA'
+                     ORIG.ST = PRO.REC<25>
+                     DEST.ST = PRO.REC<26>
+                     IF ORIG.ST = DEST.ST THEN
+                        RULES<1,-1> = 'INTRASTATE SHIPMENT'
+                        RULES<2,-1>='TRUE'
+                        RULES<3,-1>='TRUE'
+                        RESULT=1
+                     END
+
+                  CASE FIELD = 'INTER'
+                     ORIG.ST = PRO.REC<25>
+                     DEST.ST = PRO.REC<26>
+                     IF ORIG.ST # DEST.ST THEN
+                        RULES<1,-1> = 'INTERSTATE SHIPMENT'
+                        RULES<2,-1>='TRUE'
+                        RULES<3,-1>='TRUE'
+                        RESULT=1
+                     END
+
+                  CASE FIELD = 'FLAT'
+                     FLAT.FLAG = PRO.REC<119>
+                     IF FLAT.FLAG = 1 THEN
+                        RULES<1,-1> = 'FLAT RATE'
+                        RULES<2,-1>='TRUE'
+                        RULES<3,-1>='TRUE'
+                        RESULT=1
+                     END
+
+                  CASE FIELD = 'EDI'
+                     IF EDI.BILL = 1 THEN
+                        RULES<1,-1> = 'EDI BILL'
+                        RULES<2,-1>='TRUE'
+                        RULES<3,-1>='TRUE'
+                        RESULT=1
+                     END
+
+                  CASE FIELD = 'NO-EDI'
+                     IF EDI.BILL # 1 THEN
+                        RULES<1,-1> = 'NOT EDI BILL'
+                        RULES<2,-1>='TRUE'
+                        RULES<3,-1>='TRUE'
+                        RESULT=1
+                     END
+
+                  CASE OPERATOR = 'AP' OR OPERATOR='NA'
+                     BEGIN CASE
+                        CASE FIELD = 'CONS'        ; * JMK04
+                           SPECIAL.FLAG=1          ; * JMK04
+                        CASE FIELD = 'CVCIR'       ; * JMK04
+                           SPECIAL.FLAG=1          ; * JMK04
+                        CASE FIELD = 'CVNAME'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'OCITY'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'DCITY'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'EXPSE'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'BOL'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'POD'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'PRO'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'ACC'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'DST'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'OST'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'SVC'         ; * JMK03
+                           SPECIAL.FLAG=1          ; * JMK03
+                        CASE FIELD = 'OREF'        ; * JMK06
+                           SPECIAL.FLAG=1          ; * JMK06
+                        CASE FIELD = 'DREF'        ; * JMK06
+                           SPECIAL.FLAG=1          ; * JMK06
+                        CASE FIELD = 'PTYP'        ; * JMK06
+                           SPECIAL.FLAG=1          ; * JMK06
+                        CASE FIELD = 'REF1'        ; * JMK06
+                           SPECIAL.FLAG=1          ; * JMK06
+                        CASE FIELD = 'REF2'        ; * JMK06
+                           SPECIAL.FLAG=1          ; * JMK06
+                        CASE FIELD = 'REF3'        ; * JMK06
+                           SPECIAL.FLAG=1          ; * JMK06
+                        CASE FIELD = 'REF4'        ; * JMK06
+                           SPECIAL.FLAG=1          ; * JMK06
+                        CASE FIELD = 'REF5'        ; * JMK06
+                           SPECIAL.FLAG=1          ; * JMK06
+                        CASE FIELD = 'DADDR'       ; * JMK06
+                           SPECIAL.FLAG=1          ; * JMK06
+                        CASE FIELD = 'OADDR'       ; * JMK06
+                           SPECIAL.FLAG=1          ; * JMK06
+                        CASE FIELD = 'UF1'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'UF2'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'UF3'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'UF4'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'UF5'
+                           SPECIAL.FLAG=1
+                        CASE FIELD = 'UF6'
+                           SPECIAL.FLAG=1
+                        CASE 1
+                           SPECIAL.FLAG=0
+                     END CASE
+                     NUM.ITEMS = DCOUNT(FIELD.INFO,@VM)
+                     FOUND.OCC=0
+                     FOR Y = 1 TO NUM.ITEMS
+                        INFO.DAT.LEN = LEN(INFO)
+                        FIRST.CHAR = INFO[1,1]
+                        LAST.CHAR = INFO[INFO.DAT.LEN,1]
+                        INFO.DATA=FIELD.INFO<1,Y>
+                        BEGIN CASE
+                           CASE FIRST.CHAR ='[' & LAST.CHAR =']' & SPECIAL.FLAG
+                              TEMP.INFO.DAT = INFO[2,9999]
+                              TEMP.INFO.DAT = TEMP.INFO.DAT[1,LEN(INFO)-2]
+                              IF INDEX(INFO.DATA,TEMP.INFO.DAT,1) THEN FOUND.OCC=1
+                           CASE FIRST.CHAR ='[' & SPECIAL.FLAG
+                              TEMP.LEN = INFO.DAT.LEN-1
+                              INFO.LEN = LEN(INFO.DATA)
+                              IF INFO[2,TEMP.LEN] = INFO.DATA[INFO.LEN-TEMP.LEN+1,TEMP.LEN] THEN FOUND.OCC=1
+                           CASE LAST.CHAR =']' & SPECIAL.FLAG
+                              TEMP.LEN = INFO.DAT.LEN-1
+                              IF INFO[1,TEMP.LEN] = INFO.DATA[1,TEMP.LEN] THEN FOUND.OCC=1
+                           CASE 1
+                              IF OCONV(INFO,'MCU')='NULL' THEN
+                                 IF INFO.DATA='' THEN FOUND.OCC=1
+                              END ELSE
+                                 IF INFO.DATA EQ INFO THEN FOUND.OCC=1
+                              END
+                        END CASE
+                     NEXT Y
+                     IF OPERATOR = 'AP' THEN
+                        IF FOUND.OCC THEN
+                           RULES<1,-1>=FIELD
+                           RULES<2,-1>=OPERATOR
+                           RULES<3,-1>=INFO
+                           RESULT=1
+                        END
+                     END
+                     IF OPERATOR = 'NA' THEN
+                        IF NOT(FOUND.OCC) THEN
+                           RULES<1,-1>=FIELD
+                           RULES<2,-1>=OPERATOR
+                           RULES<3,-1>=INFO
+                           RESULT=1
+                        END
+                     END
+
+                  CASE 1
+                     NUM.ITEMS = DCOUNT(FIELD.INFO,@VM)
+                     FOR Y = 1 TO NUM.ITEMS
+
+*ADD SUBGROUP.DA UPDATE HERE
+*SUBGROUP.DA<1>=FIELD (mv)
+*SUBGROUP.DA<2>=FIELD.INFO (SV Positionally dependant on <1>) DATA FROM PRO.REC
+*SUBGROUP.DA<3>='Y/N' Y-Passed ONE of the test, N-Failed ALL of the tests SV Tied to #2
+*SUBGROUP.DA<4>=Operator of the test (For the Rules Output SV NOT TIED TO SV of #2)
+*SUBGROUP.DA<5>=Operand (Number that the Bill Data was Tested Against Output SV NOT TIED TO SV of #2)
+
+                        INFO.DATA=FIELD.INFO<1,Y>
+                        LOCATE FIELD IN SUBGROUP.DA<1> BY 'AL' SETTING FIELD.POS THEN
+                           INS OPERATOR BEFORE SUBGROUP.DA<4,FIELD.POS,-1>
+                           INS INFO BEFORE SUBGROUP.DA<5,FIELD.POS,-1>
+                        END ELSE
+                           INS FIELD BEFORE SUBGROUP.DA<1,FIELD.POS>
+
+                           TEMP=" ":INFO.DATA      ; * Add a space to prevent the NULL Thing
+                           INS TEMP BEFORE SUBGROUP.DA<2,FIELD.POS>
+                           SUBGROUP.DA<2,FIELD.POS>=SUBGROUP.DA<2,FIELD.POS>[2,999]        ; * Remove the Space
+                           INS "N" BEFORE SUBGROUP.DA<3,FIELD.POS>     ; * Default to No
+                           INS OPERATOR BEFORE SUBGROUP.DA<4,FIELD.POS>
+                           INS INFO BEFORE SUBGROUP.DA<5,FIELD.POS>
+                        END
+                        FIELD.TRUE=0
+
+                        BEGIN CASE
+                           CASE FIELD = 'CONS'     ; * JMK04
+                              SPECIAL.FLAG=1       ; * JMK04
+                           CASE FIELD = 'CVCIR'    ; * JMK04
+                              SPECIAL.FLAG=1       ; * JMK04
+                           CASE FIELD = 'CVNAME'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'OCITY'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'DCITY'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'EXPSE'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'BOL'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'POD'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'PRO'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'ACC'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'DST'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'OST'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'SVC'      ; * JMK03
+                              SPECIAL.FLAG=1       ; * JMK03
+                           CASE FIELD = 'DIV'
+                              SPECIAL.FLAG=1
+                           CASE FIELD = 'OREF'     ; * JMK06
+                              SPECIAL.FLAG=1       ; * JMK06
+                           CASE FIELD = 'DREF'     ; * JMK06
+                              SPECIAL.FLAG=1       ; * JMK06
+                           CASE FIELD = 'PTYP'     ; * JMK06
+                              SPECIAL.FLAG=1       ; * JMK06
+                           CASE FIELD = 'REF1'     ; * JMK06
+                              SPECIAL.FLAG=1       ; * JMK06
+                           CASE FIELD = 'REF2'     ; * JMK06
+                              SPECIAL.FLAG=1       ; * JMK06
+                           CASE FIELD = 'REF3'     ; * JMK06
+                              SPECIAL.FLAG=1       ; * JMK06
+                           CASE FIELD = 'REF4'     ; * JMK06
+                              SPECIAL.FLAG=1       ; * JMK06
+                           CASE FIELD = 'REF5'     ; * JMK06
+                              SPECIAL.FLAG=1       ; * JMK06
+                           CASE FIELD = 'DADDR'    ; * JMK06
+                              SPECIAL.FLAG=1       ; * JMK06
+                           CASE FIELD = 'OADDR'    ; * JMK06
+                              SPECIAL.FLAG=1       ; * JMK06
+                           CASE 1
+                              SPECIAL.FLAG=0
+                        END CASE
+                        BEGIN CASE
+                           CASE OPERATOR = 'EQ'
+                              INFO.DAT.LEN = LEN(INFO)
+                              FIRST.CHAR = INFO[1,1]
+                              LAST.CHAR = INFO[INFO.DAT.LEN,1]
+                              BEGIN CASE
+                                 CASE FIRST.CHAR ='[' & LAST.CHAR =']' & SPECIAL.FLAG
+                                    TEMP.INFO.DAT = INFO[2,9999]
+                                    TEMP.INFO.DAT = TEMP.INFO.DAT[1,LEN(INFO)-2]
+
+                                    IF INDEX(INFO.DATA,TEMP.INFO.DAT,1) THEN FIELD.TRUE=1
+                                 CASE FIRST.CHAR ='[' & SPECIAL.FLAG
+
+                                    TEMP.LEN = INFO.DAT.LEN-1
+                                    INFO.LEN = LEN(INFO.DATA)
+                                    IF INFO[2,TEMP.LEN] = INFO.DATA[INFO.LEN-TEMP.LEN+1,TEMP.LEN] THEN FIELD.TRUE=1
+                                 CASE LAST.CHAR =']' & SPECIAL.FLAG
+                                    TEMP.LEN = INFO.DAT.LEN-1
+
+                                    IF INFO[1,TEMP.LEN] = INFO.DATA[1,TEMP.LEN] THEN FIELD.TRUE=1
+                                 CASE 1
+
+                                    IF OCONV(INFO,'MCU')='NULL' THEN
+                                       IF INFO.DATA='' THEN FIELD.TRUE=1
+                                    END ELSE
+                                       IF INFO.DATA EQ INFO THEN FIELD.TRUE=1
+                                    END
+                              END CASE
+
+                           CASE OPERATOR = 'GE'
+                              IF INFO.DATA GE INFO THEN FIELD.TRUE=1
+                           CASE OPERATOR = 'GT'
+                              IF INFO.DATA GT INFO THEN FIELD.TRUE=1
+                           CASE OPERATOR = 'LE'
+                              IF INFO.DATA LE INFO THEN FIELD.TRUE=1
+                           CASE OPERATOR = 'LT'
+                              IF INFO.DATA LT INFO THEN FIELD.TRUE=1
+                           CASE OPERATOR = 'NE'
+                              INFO.DAT.LEN = LEN(INFO)
+                              FIRST.CHAR = INFO[1,1]
+                              LAST.CHAR = INFO[INFO.DAT.LEN,1]
+                              BEGIN CASE
+                                 CASE FIRST.CHAR ='[' & LAST.CHAR =']' & SPECIAL.FLAG
+                                    TEMP.INFO.DAT = INFO[2,9999]
+                                    TEMP.INFO.DAT = TEMP.INFO.DAT[1,LEN(INFO)-2]
+                                    IF INDEX(INFO.DATA,TEMP.INFO.DAT,1) ELSE FIELD.TRUE=1
+                                 CASE FIRST.CHAR ='[' & SPECIAL.FLAG
+                                    TEMP.LEN = INFO.DAT.LEN-1
+                                    INFO.LEN = LEN(INFO.DATA)
+                                    IF INFO[2,TEMP.LEN] = INFO.DATA[INFO.LEN-TEMP.LEN+1,TEMP.LEN] ELSE FIELD.TRUE=1
+                                 CASE LAST.CHAR =']' & SPECIAL.FLAG
+                                    TEMP.LEN = INFO.DAT.LEN-1
+                                    IF INFO[1,TEMP.LEN] = INFO.DATA[1,TEMP.LEN] ELSE FIELD.TRUE=1
+                                 CASE 1
+                                    IF OCONV(INFO,'MCU')='NULL' THEN
+                                       IF INFO.DATA#'' THEN FIELD.TRUE=1
+                                    END ELSE
+                                       IF INFO.DATA NE INFO THEN FIELD.TRUE=1
+                                    END
+                              END CASE
+                        END CASE
+                        LOCATE INFO.DATA IN SUBGROUP.DA<2,FIELD.POS> BY 'AR' SETTING INFO.POS THEN
+                           IF FIELD.TRUE THEN
+                              SUBGROUP.DA<3,FIELD.POS,INFO.POS>='Y'
+                           END
+                        END ELSE
+                           TEMP=" ":INFO.DATA      ; * Add a space to prevent the NULL Thing
+                           INS TEMP BEFORE SUBGROUP.DA<2,FIELD.POS,INFO.POS>
+                           SUBGROUP.DA<2,FIELD.POS,INFO.POS>=SUBGROUP.DA<2,FIELD.POS,INFO.POS>[2,999]          ; * Remove the Space
+                           IF FIELD.TRUE THEN
+                              INS 'Y' BEFORE SUBGROUP.DA<3,FIELD.POS,INFO.POS>
+                           END ELSE
+                              INS 'N' BEFORE SUBGROUP.DA<3,FIELD.POS,INFO.POS>
+                           END
+                        END
+                     NEXT Y
+               END CASE
+            NEXT SUBGROUP
+            IF SUBGROUP.DA#'' THEN
+               FIELD.TIMES=DCOUNT(SUBGROUP.DA<1>,@VM)
+               FOR X = 1 TO FIELD.TIMES
+                  ALL.YES=1
+                  INFO.TIMES=DCOUNT(SUBGROUP.DA<2,X>,@SVM)
+                  FOR Y = 1 TO INFO.TIMES
+                     IF SUBGROUP.DA<3,X,Y>='N' THEN ALL.YES=0
+                  NEXT Y
+                  IF ALL.YES=1 THEN
+*               Flag this "OR" as passing
+*               Add all of the rules associated with this rule to the Rules array
+                     RESULT=1
+                     REASON.TIMES=DCOUNT(SUBGROUP.DA<4,X>,@SVM)
+                     FOR Y = 1 TO REASON.TIMES
+                        RULES<1,-1>=SUBGROUP.DA<1,X>         ; * Field Name
+                        RULES<2,-1>=SUBGROUP.DA<4,X,Y>       ; * Operator
+                        RULES<3,-1>=SUBGROUP.DA<5,X,Y>       ; * Operand (From EXPENSEs)
+                     NEXT Y
+                  END
+               NEXT X
+            END
+            IF RESULT=0 THEN GO SKIP.RULE
+         NEXT GROUP
+
+*****************************************
+*If you made it this far do the "rule"
+*****************************************
+
+         GO FOUND.EXPENSE
+
+SKIP.RULE: ***
+      NEXT RULE
+
+** NO.EXPENSE Found
+      VOUT=''
+      GO EXIT.PROGRAM
+**************************************************************** 
+FOUND.EXPENSE:
+**************************************************************** 
+*DFIF USER='DAVID' THEN CALL ELINE('PRESS BREAK')
+      VOUT = ''
+      IF INDEX(EXPENSE.CODE,"~",1) THEN
+         DUMMY.EXPENSE.CODE=CHANGE(EXPENSE.CODE,"~",@AM)
+         EXPENSE.CODE=''
+         NUM.OF.ITEMS=DCOUNT(DUMMY.EXPENSE.CODE,@AM)
+         ACTUAL=1
+         FOR XX = 1 TO NUM.OF.ITEMS
+            IF ACTUAL THEN
+               EXPENSE.CODE=EXPENSE.CODE:DUMMY.EXPENSE.CODE<XX>
+               ACTUAL=0
+            END ELSE
+               IF INDEX(DUMMY.EXPENSE.CODE<XX>,"[",1) THEN
+                  CODE.ID=FIELD(DUMMY.EXPENSE.CODE<XX>,"[",1)
+               END ELSE
+                  CODE.ID=DUMMY.EXPENSE.CODE<XX>
+               END
+               LOCATE CODE.ID IN EXPENSE.FIELDS<1> SETTING XX.POS THEN
+                  CODE.FIELD.NUM = EXPENSE.FIELDS<3,XX.POS>
+                  CODE.FIELD.INFO = PRO.REC<CODE.FIELD.NUM>
+                  CODE.FIELD.INFO = OCONV(CODE.FIELD.INFO,'MCU')
+               END
+               IF INDEX(DUMMY.EXPENSE.CODE<XX>,"[",1) THEN
+                  RANGE=FIELD(DUMMY.EXPENSE.CODE<XX>,"[",2)
+                  RANGE=RANGE[1,LEN(RANGE)-1]
+                  EXPENSE.CODE=EXPENSE.CODE:CODE.FIELD.INFO:"[":RANGE
+               END ELSE
+                  EXPENSE.CODE=EXPENSE.CODE:CODE.FIELD.INFO
+               END
+               ACTUAL=1
+            END
+         NEXT XX
+      END
+      LOOP                               ; * JMK05
+      WHILE INDEX(EXPENSE.CODE,'{',1) DO           ; * JMK05
+         CALC=0                          ; * JMK02
+         IF INDEX(EXPENSE.CODE,'{',1) THEN         ; * JMK02
+            DUMMY.EXPENSE.CODE=FIELD(EXPENSE.CODE,'{',2)     ; * JMK02
+            DUMMY.EXPENSE.CODE=FIELD(DUMMY.EXPENSE.CODE,'}',1)         ; * JMK02
+            IF INDEX(DUMMY.EXPENSE.CODE,"[",1) THEN          ; * JMK02
+               CODE.ID=FIELD(DUMMY.EXPENSE.CODE,"[",1)       ; * JMK02
+               RANGE=FIELD(DUMMY.EXPENSE.CODE,"[",2)         ; * JMK02
+               RANGE=FIELD(RANGE,"]",1)  ; * JMK02
+               BRANGE=FIELD(RANGE,",",1)           ; * JMK02
+               ERANGE=FIELD(RANGE,",",2)           ; * JMK02
+            END ELSE                     ; * JMK02
+               CODE.ID=DUMMY.EXPENSE.CODE          ; * JMK02
+               BRANGE=0                  ; * JMK02
+               ERANGE=0                  ; * JMK02
+            END                          ; * JMK02
+            LOCATE CODE.ID IN EXPENSE.FIELDS<1> SETTING XX.POS THEN    ; * JMK02
+               BEGIN CASE                ; * JMK02
+                  CASE CODE.ID='CONS'    ; * JMK04
+                     ADD.IN=OCONV(PRO.REC<17>,'TVEND.CUST,':CLIENT.ID:';X;;2')   ; * JMK04
+                  CASE CODE.ID='DIV'     ; * JMK02
+                     ADD.IN=PRO.REC<9>   ; * JMK02
+                  CASE 1                 ; * JMK02
+                     ADD.IN=''           ; * JMK04
+               END CASE                  ; * JMK02
+               IF BRANGE#0 THEN          ; * JMK02
+                  ADD.IN=ADD.IN[BRANGE,ERANGE]     ; * JMK02
+               END                       ; * JMK02
+               EXPENSE.CODE=FIELD(EXPENSE.CODE,'{',1):ADD.IN:FIELD(EXPENSE.CODE,'}',2)     ; * JMK02
+               READ TEMP FROM F.EXP,EXPENSE.CODE ELSE        ; * JMK02
+                  TEMP=EXPENSE.CODE      ; * JMK02
+                  WRITE TEMP ON F.EXP,EXPENSE.CODE           ; * JMK02
+               END
+            END                          ; * JMK02
+         END                             ; * JMK02
+      REPEAT                             ; * JMK05
+      READ TEMP FROM F.EXP,EXPENSE.CODE THEN
+         IF TEMP<5>='I' THEN
+            EXPENSE.CODE=''
+         END
+      END ELSE
+         EXPENSE.CODE=''
+      END
+      VOUT<1>=EXPENSE.CODE
+      IF CLIENT.ID='30028' THEN          ; * JMK01
+         VOUT<1>=EXPENSE.CODE:'.':PRO.REC<236>:'.':PRO.REC<237>        ; * JMK01
+      END                                ; * JMK01
+      IF RULES # '' THEN
+         VOUT<2> = RULES<1>
+         VOUT<3> = RULES<2>
+         VOUT<4> = RULES<3>
+      END
+      GO EXIT.PROGRAM
+**************************************************************** 
+EXIT.PROGRAM: ***
+**************************************************************** 
+      RETURN

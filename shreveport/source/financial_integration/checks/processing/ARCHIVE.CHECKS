@@ -1,0 +1,196 @@
+*************************************************************************
+* Program : ARCHIVE.CHECKS
+*           Copy data from 3 files. FB.CHECK.DATE.XREF, FB.CHECKS.DTL, 
+*           and FB.CHECKS.HDR
+* Author  : David R. Friend
+* Date    : October 30, 2013
+*
+* Copyright (c) 2002 by AFS Logistics, LLC. - All Rights Reserved
+*************************************************************************
+*     -----------------------------------------------------------------
+*************************************************************************
+
+* Initialize general variables
+      PROMPT''
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='ARCHIVE.CHECKS'
+      PROG.DESC='Archive Checks'
+      PACK.NAME='Freight Billing'
+      MASK.CHAR='-'
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'ARCHIVE.CHECKS' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+
+* Write screen header
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+
+* Restrict program usage
+      VALID.USER=1
+      BEGIN CASE
+         CASE USER.NAME='DAVID'
+         CASE USER.NAME='GBINO'
+         CASE 1
+            VALID.USER=0
+      END CASE
+
+      IF NOT(VALID.USER) THEN
+         TEMP='**  This is a restricted access application  **'
+         CALL CENTER(TEMP,80)
+         CRT @(0,12):TEMP
+         GOTO THE.END
+      END
+
+* Initialize program variables
+      LATEST.YEAR=OCONV(DATE(),'DY4')
+      LATEST.YEAR=LATEST.YEAR-4
+      LATEST.DATE=ICONV('01/01/':LATEST.YEAR,'D4/')
+      SELECT.DATE=LATEST.DATE
+
+* Open Files
+      OPEN '','FB.CHECK.DATE.XREF' TO F.XREF ELSE
+         CALL OPEN.ABORT('FB.CHECK.DATE.XREF', PROG.NAME)
+      END
+      OPEN '','FB.CHECK.DATE.XREF.ARCHIVE' TO F.XREF.ARCHIVE ELSE
+         CALL OPEN.ABORT("FB.CHECK.DATE.XREF.ARCHIVE",PROG.NAME)
+      END
+      OPEN '','FB.CHECKS.HDR' TO F.CHECKS.HDR ELSE
+         CALL OPEN.ABORT("FB.CHECKS.HDR",PROG.NAME)
+      END
+      OPEN '','FB.CHECKS.HDR.ARCHIVE' TO F.CHECKS.HDR.ARCHIVE ELSE
+         CALL OPEN.ABORT("FB.CHECKS.HDR.ARCHIVE",PROG.NAME)
+      END
+      OPEN '','FB.CHECKS.DTL' TO F.CHECKS.DTL ELSE
+         CALL OPEN.ABORT("FB.CHECKS.DTL",PROG.NAME)
+      END
+      OPEN '','FB.CHECKS.DTL.ARCHIVE' TO F.CHECKS.DTL.ARCHIVE ELSE
+         CALL OPEN.ABORT("FB.CHECKS.DTL.ARCHIVE",PROG.NAME)
+      END
+
+* Enter date to archive
+GET.DATE:***
+      CRT @(0,3):@(-3)
+      CRT @(0,10):'Archive Date: '
+      MASK=SELECT.DATE'D4-'
+      HELP='Enter the date to select prior checks to archive, At least 10 years back'
+      CALL GEN.IN(27,10,MASK,'',Q,0,10,'','',2,27,10,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=SELECT.DATE'D4-'
+      BEGIN CASE
+         CASE QI='EX' OR QI='EXI' OR QI='EXIT'
+            GOTO THE.END
+         CASE QI='X'
+            GOTO THE.END
+      END CASE
+      SELECT.DATE=ICONV(QI,'D')
+      IF SELECT.DATE GT LATEST.DATE THEN 
+         CALL ELINE('You cannot archive bills for less than 10 years ago.')
+         GOTO GET.DATE
+      END
+      TEMP.DATE=SELECT.DATE'D2-'
+      IF TEMP.DATE[1,5]='01-01' ELSE
+         CALL ELINE('You must enter January 01 of a year')
+         GOTO GET.DATE
+      END
+      CRT @(27,10):SELECT.DATE'D4/'
+CONFIRM:***
+      MASK=STR(MASK.CHAR,2)
+      HELP='Entry Options: [Y]es [N]o [X]=Back [EX]it'
+      CALL GEN.IN(0,21,'Is this information correct? ':MASK,'',Q,0,2,'','',2,-2,21,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X' OR QI='N'
+            GOTO GET.DATE
+         CASE QI='Y'
+            NULL
+         CASE 1
+            GOTO CONFIRM
+      END CASE
+
+* Process the three files to archive
+
+      TEXT='Selecting, Coping, and Deleting FB.CHECKS.DTL. (1 of 3)'
+      CALL CENTER(TEXT,80)
+      CRT @(0,12):TEXT
+      EX.REC='SSELECT FB.CHECKS.DTL'
+      EX.REC :=' WITH CHECK.DT LT "':SELECT.DATE'D2/':'" '
+      EXECUTE EX.REC CAPTURING OUTPUT
+      NUM.ITMS=@SELECTED
+      IF @SELECTED < 1 THEN
+         TEXT='No transactions in FB.CHECKS.DTL file.'
+         CALL CENTER(TEXT,80)
+         CRT @(0,13):TEXT
+         GOTO GET.HDR
+      END
+      COUNTER=0
+      LOOP
+         READNEXT DTL.ID ELSE DTL.ID=''
+         COUNTER=COUNTER+1
+      UNTIL DTL.ID='' DO
+         CALL PROG.BAR(13,COUNTER,NUM.ITMS,PER)
+         READ DTL.REC FROM F.CHECKS.DTL,DTL.ID ELSE DTL.REC=''
+         WRITE DTL.REC ON F.CHECKS.DTL.ARCHIVE,DTL.ID
+         DELETE F.CHECKS.DTL,DTL.ID
+      REPEAT
+GET.HDR:***
+
+      TEXT='Selecting, Coping, and Deleting FB.CHECKS.HDR. (2 of 3)'
+      CALL CENTER(TEXT,80)
+      CRT @(0,15):TEXT
+      EX.REC='SSELECT FB.CHECKS.HDR'
+      EX.REC :=' WITH CHECK.DATE LT "':SELECT.DATE'D2/':'" '
+      EXECUTE EX.REC CAPTURING OUTPUT
+      NUM.ITMS=@SELECTED
+      IF @SELECTED < 1 THEN
+         TEXT='No transactions in FB.CHECKS.HDR file.'
+         CALL CENTER(TEXT,80)
+         CRT @(0,16):TEXT
+         GOTO GET.XREF
+      END
+      COUNTER=0
+      LOOP
+         READNEXT HDR.ID ELSE HDR.ID=''
+         COUNTER=COUNTER+1
+      UNTIL HDR.ID='' DO
+         CALL PROG.BAR(16,COUNTER,NUM.ITMS,PER)
+         READ HDR.REC FROM F.CHECKS.HDR,HDR.ID ELSE HDR.REC=''
+         WRITE HDR.REC ON F.CHECKS.HDR.ARCHIVE,HDR.ID
+         DELETE F.CHECKS.HDR,HDR.ID
+      REPEAT
+GET.XREF:***
+
+      TEXT='Selecting, Coping, and Deleting FB.CHECK.DATE.XREF. (3 of 3)'
+      CALL CENTER(TEXT,80)
+      CRT @(0,18):TEXT
+      EX.REC='SSELECT FB.CHECK.DATE.XREF'
+      EX.REC :=' WITH DATE LT "':SELECT.DATE'D2/':'" '
+      EXECUTE EX.REC CAPTURING OUTPUT
+      NUM.ITMS=@SELECTED
+      IF @SELECTED < 1 THEN
+         TEXT='No transactions in FB.CHECK.DATE.XREF file.'
+         CALL CENTER(TEXT,80)
+         CRT @(0,19):TEXT
+         GOTO GET.FINISH
+      END
+      COUNTER=0
+      LOOP
+         READNEXT XREF.ID ELSE XREF.ID=''
+         COUNTER=COUNTER+1
+      UNTIL XREF.ID='' DO
+         CALL PROG.BAR(19,COUNTER,NUM.ITMS,PER)
+         READ XREF.REC FROM F.XREF,XREF.ID ELSE XREF.REC=''
+         WRITE XREF.REC ON F.XREF.ARCHIVE,XREF.ID
+         DELETE F.XREF,XREF.ID
+      REPEAT
+GET.FINISH:***
+      CRT @(0,21):'Processing...Done':@(-3)
+
+      CALL ELINE(''); * To hold the screen for viewing
+    
+*************************************************************************
+
+THE.END:***
+      CRT @(0,23):
+      END

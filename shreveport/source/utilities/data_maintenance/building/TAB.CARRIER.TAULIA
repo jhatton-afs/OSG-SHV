@@ -1,0 +1,294 @@
+****************************************
+* Program name : TAB.CARRIER.TAULIA
+* Author       : Greg Bino
+* Date written : March 24 2021
+* Library      : FBBP
+* COPYRIGHT (c) : AFS, LLC 2021, All Rights Reserved.
+*
+* Build CARRIER file for export to taulia
+* Last updated by afs (AFSLOGISTICS\gbino) at 06:53:01 on 04/26/2021.
+*
+* Start modification history
+* Mod nn  mm/dd/yy, init, req #, description
+
+* End modification history
+*
+*******************************************
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'TAB.CARRIER.TAULIA' ; UPL.VOUT = ''
+      CALL GET.USER.NEW(USER,CH.NUM)
+      UPL.VIN<3> = USER
+      UPL.VIN<4> = CH.NUM
+          CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+
+      PROG.NAME = "TAB.CARRIER.TAULIA"
+      PROG.DESC = "CARRIER EXTRACT FOR TAULIA"
+      PACK.NAME='FREIGHT BILLING'
+      CALL AFS.SCR.HEAD('','','',PROG.NAME,PROG.DESC,PACK.NAME,"AFS, LLC",TIME.DATE,1)
+
+      OPEN 'CARRIERS' TO FILE.CARR ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN 'CLIENTS' TO FILE.CLI ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN 'FB.BILLS.LOCKED' TO FILE.LOCK ELSE
+         CALL OPEN.ABORT("FB.BILLS.LOCKED",PROG.NAME)
+      END
+      OPEN 'FB.BILLS.LOCKED.HIST' TO FILE.LOCK.HIST ELSE
+         CALL OPEN.ABORT("FB.BILLS.LOCKED.HIST",PROG.NAME)
+      END
+      OPEN 'GRB' TO FILE.EXP ELSE STOP
+      OPEN 'QPGW' TO FILE.QPGW ELSE STOP
+
+      DIM CARRIER(200),BILLS(200)
+
+      MAT CARRIER = '' ; MAT BILLS =''
+      DATA.REC = ""
+      CNT = 0
+      CARRIER.DATA.REC = ""
+      INVOICE.DATA.REC=""
+      TAB = ","
+      LF = CHAR(10)
+      AM = CHAR(254)
+      SHV = "SHV"
+      EOJ=0
+      **   CMD = "GET-LIST GB.CAR"
+
+      GOSUB UNLOCK.FB.BILLS.LOCKED
+
+      * select fb.bills.locked WITH NO ATT 2
+      * ID LOOKS LIKE THIS  02038*00114*209477619*0
+      CMD = 'SELECT FB.BILLS.LOCKED WITH NO DUE.DT'
+
+      EXECUTE CMD RTNLIST BILL.LIST CAPTURING OUTPUT
+      LOOP
+         READNEXT ID FROM BILL.LIST ELSE EOJ= 1
+
+      UNTIL EOJ DO
+         CLIENT.ID = FIELD(ID,"*",1)"R%5"
+         CARRIER.ID = FIELD(ID,"*",2)"R%5"
+         BILL.ID = FIELD(ID,"*",2,3)
+
+         * read carrier info if carrier has been sent AND GET TERMS TO BUILD ATT 2
+         * IF NOT SENT THEN SEND.CARRIER = 1
+READV CLIENT.NAME FROM FILE.CLI,CLIENT.ID,2 ELSE CLIENT.NAME = "NOF"
+	CONVERT "*" TO "" IN CLIENT.NAME
+         MATREAD CARRIER FROM FILE.CARR,CARRIER.ID THEN
+            IF CARRIER(131)<1,2> = "" THEN
+               GOSUB GET.CARRIER.DATA
+               CARRIER(131)<1,2> = DATE()          ; * WRITE CARRIER SENT  SO WE DO NOT SEND IT AGAIN
+               MATWRITE CARRIER ON FILE.CARR,CARRIER.ID ELSE
+                  CRT "UNABLE TO WRITE TO CARRIER FILE"
+               END
+            END
+            CARRIER.TERMS = CARRIER(23)
+
+            GOSUB GET.INVOICE.DATA
+            TERMS.DATE = BILLS(1) + CARRIER.TERMS
+            ***       WRITEV TERMS.DATE ON FILE.LOCK,ID,2
+
+            CNT = CNT + 1
+            IF NOT(REM(CNT,100)) THEN
+               CRT @(10,10):CNT
+            END
+            RELEASE FILE.CARR,CARRIER.ID
+         END
+
+      REPEAT
+
+      WRITE CARRIER.DATA.REC TO FILE.EXP,"GB.ADD1"
+      READ DATA1 FROM FILE.EXP,"GB.ADD1" ELSE NULL
+      CONVERT AM TO LF IN DATA1
+      DATE.STAMP = OCONV(DATE(),"D4-")
+      DATE.STAMP = DATE.STAMP[7,4]:DATE.STAMP[1,2]:DATE.STAMP[4,2]
+      TIME.STAMP = TIME()[1,5]
+     WRITE DATA1 ON FILE.QPGW,"SUPPLIER_":DATE.STAMP:TIME.STAMP:".csv"           ; * WHAT LOCATION OF GATEWAY
+ ***** WRITE DATA1 ON FILE.EXP,"SUPPLIER_":DATE.STAMP:TIME.STAMP:".csv"   
+      WRITE INVOICE.DATA.REC TO FILE.EXP,"GB.ADD"
+      READ DATA1 FROM FILE.EXP,"GB.ADD" ELSE NULL
+      CONVERT AM TO LF IN DATA1
+      DATE.STAMP = OCONV(DATE(),"D4-")
+      DATE.STAMP = DATE.STAMP[7,4]:DATE.STAMP[1,2]:DATE.STAMP[4,2]
+      TIME.STAMP = TIME()[1,5]
+     WRITE DATA1 ON FILE.QPGW,"INVOICE_":DATE.STAMP:TIME.STAMP:".csv"  ; * WHAT LOCATION OF GATEWAY
+   *** WRITE DATA1 ON FILE.EXP,"INVOICE_":DATE.STAMP:TIME.STAMP:".csv" 
+      STOP
+
+*************************************
+GET.CARRIER.DATA:
+*************************************
+      NAME = CARRIER(1)
+      CONVERT "," TO "" IN NAME
+
+      ID1 = QUOTE(CARRIER.ID)
+      BU = QUOTE(SHV)
+      NAME = QUOTE(NAME)
+      ADD1 = QUOTE(CARRIER(2)<1,1>)
+      ADD2 = QUOTE(CARRIER(2)<1,2>)
+      CITY = QUOTE(CARRIER(3))
+      ST = QUOTE(CARRIER(4))
+      ZIP = QUOTE(CARRIER(5))
+      COUNTRY = CARRIER(7)
+      TERMS = QUOTE(CARRIER(23))
+      BEGIN CASE
+         CASE COUNTRY = ""
+            CNTRY = "US"
+         CASE COUNTRY[1,3] = "Can"
+            CNTRY = "CA"
+         CASE COUNTRY[1,3] = "Mex"
+            CNTRY = "MX"
+         CASE COUNTRY = ",Quebec"
+            CNTRY = "CA"
+         CASE 1
+            CNTRY = "US"
+      END CASE
+      CNTRY = QUOTE(CNTRY)
+      GOSUB UPDATE.CARRIER.RECORD
+
+      RETURN
+*************************************
+UPDATE.CARRIER.RECORD:
+*************************************
+      IF CARRIER.DATA.REC = "" THEN
+         GOSUB BUILD.CARRIER.HEADER
+      END
+      LINE.REC = ID1:TAB:TAB:BU:TAB:NAME:TAB:ADD1:TAB:ADD2:TAB:TAB:CITY:TAB:ST:TAB:ZIP:TAB:TAB:TAB:TAB:CNTRY
+      LINE.REC := TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TERMS:TAB:TAB
+      CARRIER.DATA.REC<-1> =LINE.REC
+      RETURN
+*************************************
+BUILD.CARRIER.HEADER:
+*************************************
+      **   DATA.REC<-1> = "CLIENT NAME":TAB:"ADD":TAB:"CITY":TAB:"ST":TAB:"ZIP"
+      CARRIER.HDR.REC = ""
+      CARRIER.HDR.REC ="supplierNumber":TAB:"supplierSite":TAB:"businessUnit":TAB:"name":TAB:"addressStreet1":TAB:"addressStreet2":TAB:"addressStreet3"
+      CARRIER.HDR.REC :=TAB:"addressCity":TAB:"addressRegion":TAB:"addressPostalCode":TAB:"addressPoBox":TAB:"addressPoBoxCity":TAB:"addressPoBoxZipCode"
+      CARRIER.HDR.REC :=TAB:"addressCountry":TAB:"addressEmail":TAB:"addressContactPerson":TAB:"addressPhone":TAB:"addressAttachmentsList":TAB:"taxIdCountryIso"
+      CARRIER.HDR.REC :=TAB:"taxIdType":TAB:"taxIdValue":TAB:"taxIdAttachmentsList":TAB:"bankAccountNumber"
+      CARRIER.HDR.REC :=TAB:"bankNumber":TAB:"bankName":TAB:"bankBranchNumber":TAB:"bankCity":TAB:"bankRegion":TAB:"bankStreet":TAB:"bankCountry":TAB:"bankCurrency"
+      CARRIER.HDR.REC :=TAB:"bankExternalAccountHolder":TAB:"bankSwiftNumber":TAB:"bankIban":TAB:"bankControlKey":TAB:"bankAttachmentsList":TAB:"paymentMethod"
+      CARRIER.HDR.REC :=TAB:"paymentTermsDays1":TAB:"paymentTermsDays2":TAB:"paymentTermsDaysNet":TAB:"paymentTermsDescription":TAB:"paymentTermsPercent1":TAB:"paymentTermsPercent2":TAB:"paymentTermsKey"
+      CARRIER.DATA.REC<-1> =CARRIER.HDR.REC
+      RETURN
+
+*************************************
+GET.INVOICE.DATA:
+*************************************
+
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILL THEN
+
+         MATREAD BILLS FROM F.BILL,BILL.ID THEN
+
+            * INVOICE.ID ?????
+            * SUPPLIER ID
+            * SUPPLIER # / CARRIER.ID
+            * BU
+            * INVOICE DATE ?????
+            * DUE DATE
+            * INVOICE FLAG = Y
+            * GROSS AMT
+            * INVOICE DISCOUNT
+            * STATUS A
+            * CURRENCY
+            * TERMS FROM CARRIER FILE
+
+            NAME = QUOTE(CLIENT.NAME)
+            CONVERT "," TO "" IN NAME
+            PRO.NUM = FIELD(ID,"*",3)
+            PRO.NUM = QUOTE(PRO.NUM)
+            CARRIER.ID1 = QUOTE(CARRIER.ID)
+            ID1 = QUOTE(BILLS(16))
+            ID1=""
+            BU = QUOTE(SHV)
+           *** NAME = QUOTE(NAME)
+            INV.DT = OCONV(BILLS(1),"D")
+            CONVERT " " TO "-" IN INV.DT
+            INV.DT = QUOTE(INV.DT)
+            DUE.DT = BILLS(1) + CARRIER.TERMS
+            DUE.DT = OCONV(DUE.DT,"D")
+            CONVERT " " TO "-" IN DUE.DT
+            DUE.DT1 = QUOTE(DUE.DT)
+            INV.FLG = "TRUE"
+            INV.FLG =QUOTE(INV.FLG)
+            GROSS.AMT = OCONV(BILLS(8),"MR2")
+            GROSS.AMT =QUOTE(GROSS.AMT)
+            DISCOUNT = 0
+            DISCOUNT = QUOTE(DISCOUNT)
+            STATUS = "A"
+            STATUS = QUOTE(STATUS)
+            CURRENCY = "USD"
+            CURRENCY = QUOTE(CURRENCY)
+            TERMS = QUOTE(CARRIER(23))
+
+            GOSUB UPDATE.INVOICE.RECORD
+
+            READ LOCK.DAT FROM FILE.LOCK,ID THEN
+               LOCK.DAT<2> = ICONV(DUE.DT,"D")      ; * WHEN INVOICE DUE BUT ALSO INDICATES SENT TO TAULIA
+               WRITE LOCK.DAT ON FILE.LOCK.HIST,ID ELSE
+                  CRT "UNABLE TO WRITE TO LOCK HIST"
+               END
+               DELETE FILE.LOCK,ID
+            END
+
+         END
+      END
+
+      RETURN
+*************************************
+BUILD.INVOICE.HEADER:
+*************************************
+      **   DATA.REC<-1> = "CLIENT NAME":TAB:"ADD":TAB:"CITY":TAB:"ST":TAB:"ZIP"
+      INVOICE.HDR.REC = ""
+      INVOICE.HDR.REC = "erpId":TAB:"wfId":TAB:"poNumber":TAB:"number":TAB:"supplierNumber":TAB:"supplierSite":TAB:"businessUnit":TAB:"invoiceDate":TAB:"dueDate"
+      INVOICE.HDR.REC :=TAB:"invoiceIndicator":TAB:"grossAmount":TAB:"invoiceDiscountBaseAmount":TAB:"status":TAB:"currency":TAB:"postingDate":TAB:"receivingDate":TAB:"deliverDate"
+      INVOICE.HDR.REC := TAB:"statusLastUpdated":TAB:"erpStatusExplanation":TAB:"otherCurrency":TAB:"otherCurrencyExchangeRate"
+      INVOICE.HDR.REC := TAB:"deliveryNote":TAB:"referenceNumber":TAB:"netAmount":TAB:"totalAddlChargesAmount":TAB:"totalTaxAmount":TAB:"totalDiscountAmount":TAB:"comment"
+      INVOICE.HDR.REC :=TAB:"partialPayment":TAB:"paymentTermsDays1":TAB:"paymentTermsDays2":TAB:"paymentTermsDaysNet":TAB:"paymentTermsDescription":TAB:"paymentTermsPercent1"
+      INVOICE.HDR.REC :=TAB:"paymentTermsPercent2":TAB:"paymentTermsId":TAB:"eligible"
+      INVOICE.DATA.REC<-1> = INVOICE.HDR.REC
+      RETURN
+*************************************
+UPDATE.INVOICE.RECORD:
+*************************************
+      IF INVOICE.DATA.REC = "" THEN
+         GOSUB BUILD.INVOICE.HEADER
+      END
+      LINE.REC = PRO.NUM:TAB:TAB:TAB:PRO.NUM:TAB:CARRIER.ID1:TAB:TAB:BU:TAB:INV.DT:TAB:DUE.DT1:TAB:INV.FLG:TAB:GROSS.AMT:TAB:GROSS.AMT:TAB:STATUS
+      LINE.REC := TAB:CURRENCY:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:TAB:NAME:TAB:TAB:TAB:TAB:TERMS:TAB:TAB:TAB:TAB:TAB
+      INVOICE.DATA.REC<-1> =LINE.REC
+      RETURN
+
+***********************************************
+UNLOCK.FB.BILLS.LOCKED:
+***********************************************
+      * ROUTINE TO LOOP THROUGH FB.BILLS.LOCKED FOR BILLS NOT PAID AND DUE IN LT 8 DAYS
+      TODAY = DATE()
+      WINDOW = 8
+      TODAY = TODAY - WINDOW
+
+      CMD = 'SSELECT FB.BILLS.LOCKED  WITH LOCK.DT LE "' : TODAY : '"'           ; * THESE BILLS HAVE NOT BEEN CHOOSEN AND LESS THAN 8 DAYS BEFORE THEY ARE DUE
+      EXECUTE CMD CAPTURING STUFF RETURNING JUNK
+     IF @SELECTED THEN
+     	 EOJ1=0
+      LOOP
+         READNEXT LOCK.ID ELSE EOJ1 =1
+      UNTIL EOJ1 DO
+         READ LOCKED.DAT FROM FILE.LOCK,LOCK.ID THEN
+            LOCKED.DAT<5> = DATE()
+            WRITE LOCKED.DAT ON FILE.LOCK.HIST,LOCK.ID THEN
+               DELETE FILE.LOCK,LOCK.ID
+            END ELSE
+               CRT "UNABLE TO WRITE TO LOCK HIST"
+            END
+         END
+
+      REPEAT
+    END
+      RETURN
+**************************************************
+GET.BILLS.THAT.CLIENT.HAS.PAID:
+**************************************************
+      * THIS FILE WILL COME FROM SAGE
+      * IF CLIENT HAS PAID THIS PRO THEN RELEASE TO BE SENT IN UPD.SQL.CHECKS
+
+      RETURN

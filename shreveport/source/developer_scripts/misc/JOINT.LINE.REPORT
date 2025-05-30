@@ -1,0 +1,250 @@
+***********************************************************************
+*
+*
+* PROGRAM TO LIST JOINT LINE OLA INFORMATION
+*
+*
+* AUTHOR: David Friend
+*
+*                           EDIT HISTORY
+*                           ------------
+*    DATE  : NAME : DESCRIPTION
+*  ---------------------------------------------------
+***********************************************************************
+*
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+*
+* Initialize variables
+*
+      PROMPT''
+      STATUS=''
+      PROG.NAME='JOINT.LINE.REPORT'
+      SUBSTITUTE.LIST=''
+      XLS.REC=''
+      PROG.DESC='Joint Line OLA'
+      PACK.NAME='FB'
+      TEMP.NAME=''
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'JOINT.LINE.REPORT' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      ORIG.CLIENT.ID=''
+*
+* Open files
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+        CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+        CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)  ; * JCW02
+*
+      OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE   ; * NPR01
+        CALL OPEN.ABORT('CLIENTS',PROG.NAME)             ; * NPR01
+      END                                                ; * NPR01
+*
+* Display screen heading
+*
+30    CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+
+*
+* Get client number to process or all
+*
+ENTER.CLIENT:***
+      HELP='Enter the client number to report or <RETURN> for All clients.'
+      CALL GEN.IN(0,3,'Enter client number.  #####','',Q,0,8,'','',1,-5,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      ALL.ONE=''
+      BEGIN CASE
+        CASE QI='X'!QI='EX'
+          GOTO EXIT.PROGRAM
+        CASE QI=''
+          ALL.ONE='ALL'
+        CASE NOT(QI MATCHES "0N")
+          CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+          CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+          BEGIN CASE
+             CASE ITEM.LIST = ''
+                GOTO ENTER.CLIENT                    ;* START OVER
+             CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                GOTO ENTER.CLIENT                    ;* START OVER
+             CASE 1
+                IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                GOTO ENTER.CLIENT                    ;* START OVER
+          END CASE
+        CASE NUM(QI)
+        CASE 1
+           GO ENTER.CLIENT                           ;* START OVER
+      END CASE
+      QI=QI'R%5'
+      IF ALL.ONE#'ALL' THEN
+        READ CLIENT.REC FROM F.CLIENTS,QI ELSE
+          CALL ELINE('Client ':QI:' is not on file.')
+          GOTO ENTER.CLIENT
+        END
+        TEMP.NAME=CLIENT.REC<2>
+      END ELSE
+        QI='ALL'
+        TEMP.NAME='All clients.'
+      END
+      CRT@(22,3):QI:' - ':TEMP.NAME
+      IF QI#'ALL' THEN CLIENT.ID=QI ELSE CLIENT.ID=''
+      ORIG.CLIENT.ID=QI'R%5'
+ENTER.VERIFICATION:***
+      HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            GO ENTER.CLIENT
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO ENTER.VERIFICATION
+      END CASE
+*
+* Start processing
+*
+      IF ORIG.CLIENT.ID # '00ALL' THEN
+        *** PROCESS SINGLE CLIENT OPTION
+        STMT = 'SELECT CLIENTS WITH CLIENT# = "':ORIG.CLIENT.ID:'" '
+        EXECUTE STMT RTNLIST CLIENT.LIST CAPTURING OUTPUT
+        NUM.CLIENTS=@SELECTED
+        IF @SELECTED < 1 THEN
+          CALL ELINE('No records selected!')
+          GOTO EXIT.PROGRAM
+        END        
+      END ELSE
+        *** PROCESS ALL CLIENTS
+        STMT = 'SSELECT CLIENTS BY NAME'
+        EXECUTE STMT RTNLIST CLIENT.LIST CAPTURING OUTPUT
+        IF @SELECTED < 1 THEN
+          CALL ELINE('ERROR - No clients selected.')
+          GOTO EXIT.PROGRAM
+        END
+     END
+     LOOP
+        READNEXT CLIENT.ID FROM CLIENT.LIST ELSE CLIENT.ID='DONE'
+     UNTIL CLIENT.ID='DONE'
+        READ DCLIENT FROM F.CLIENTS, CLIENT.ID ELSE DCLIENT = ''
+        CL.NAME=DCLIENT<2>
+        CL.ACTIVE=DCLIENT<30>
+        CL.STR = 'Searching ':CLIENT.ID:' ':CL.NAME
+        CL.STR = CL.STR:SPACE(78-LEN(CL.STR))
+        CRT @(0,16):CL.STR
+        OPEN '','FB.AUDIT,':CLIENT.ID TO F.AUDIT ELSE
+           GOTO SKIP.AUDIT
+        END
+        READ DAUDIT FROM F.AUDIT,'SUBSTITUTE' THEN
+           SUBSTITUTE.LIST<-1>=CLIENT.ID:' has been substituted with OLA ':DAUDIT<1>
+           GOTO SKIP.CLIENT
+        END
+        OPEN '','FB.AUDIT.ZIPS,':CLIENT.ID TO F.AUDIT.ZIP ELSE
+           GOTO SKIP.CLIENT
+        END
+        STMT = 'SSELECT FB.AUDIT.ZIPS,':CLIENT.ID
+        EXECUTE STMT RTNLIST FB.AUD.ZIP CAPTURING OUTPUT
+        IF @SELECTED < 1 THEN
+           GOTO SKIP.CLIENT
+        END
+        LOOP
+           BILLS.DONE = 0
+           READNEXT FB.AUDIT.ZIP.ID FROM FB.AUD.ZIP  ELSE BILLS.DONE=1
+        UNTIL BILLS.DONE= 1 DO
+           READ DAUDIT.ZIP FROM F.AUDIT.ZIP,FB.AUDIT.ZIP.ID ELSE
+              GOTO SKIP.AUDIT
+           END
+           CARRIER.ID=FIELD(FB.AUDIT.ZIP.ID,'*',1)
+           READV CARRIER.NAME FROM F.CARRIERS,CARRIER.ID,1 ELSE CARRIE.NAME='Unknown'
+           ZIP=FIELD(FB.AUDIT.ZIP.ID,'*',2)
+           EFF.DATE=FIELD(FB.AUDIT.ZIP.ID,'*',3)
+           TYPE=FIELD(FB.AUDIT.ZIP.ID,'*',4)
+           IOT=FIELD(FB.AUDIT.ZIP.ID,'*',5)
+           EQUIPMENT=FIELD(FB.AUDIT.ZIP.ID,'*',6)
+           LOCATE "ZZZ" IN DAUDIT.ZIP<3> SETTING POS THEN
+              FLAG=DAUDIT.ZIP<4,POS>
+              TABLE=DAUDIT.ZIP<5,POS>
+           END ELSE
+              FLAG=''
+              TABLE=''
+           END
+           IF XLS.REC='' THEN GOSUB BUILD.XLS.HEADINGS
+           XLINE=CL.ACTIVE
+           XLINE<1,2>=CLIENT.ID
+           XLINE<1,3>=CL.NAME
+           XLINE<1,4>=CARRIER.ID
+           XLINE<1,5>=CARRIER.NAME
+           XLINE<1,6>=ZIP
+           XLINE<1,7>=OCONV(EFF.DATE,'D2/')
+           XLINE<1,8>=TYPE
+           XLINE<1,9>=IOT
+           XLINE<1,10>=EQUIPMENT
+           XLINE<1,11>=FLAG
+           XLINE<1,12>=TABLE
+           XLS.REC<-1>=XLINE
+SKIP.AUDIT:***
+         REPEAT
+SKIP.CLIENT:***
+      REPEAT
+
+      IF XLS.REC#'' THEN
+         ID.XLS = "JOINT_LINE.XLS"
+         TRY.CNT = 1
+        CONVERT @VM TO CHAR(9) IN XLS.REC
+TRY.WRITE :***
+         WRITE XLS.REC ON F.BILLDATA, ID.XLS ELSE
+            IF TRY.CNT LE 3 THEN
+               GOTO TRY.WRITE
+            END ELSE
+               CALL ELINE("Unable to save file ":ID.XLS:" to your U: drive")
+            END
+         END
+         CALL ELINE("File ":ID.XLS:" saved to your U: drive")
+      END
+     TRY.CNT2 = 0
+WRITE.LOG :
+*
+      TRY.CNT2 += 1
+
+      ID.LOG='SUBSTITUTE_LIST.XLS'
+      IF SUBSTITUTE.LIST#'' THEN
+         WRITE SUBSTITUTE.LIST ON F.BILLDATA, ID.LOG ELSE
+            IF TRY.CNT2 LT 3 THEN
+               CALL ELIBE("Unable to write ":ID.LOG:" to your U: drive - RETURN to try again")
+               GOTO WRITE.LOG
+            END ELSE
+               STOP
+            END
+         END
+      END
+*
+EXIT.PROGRAM:*
+*
+      STOP
+
+*
+BUILD.XLS.HEADINGS :***
+*
+         XHEAD1 = ""
+*
+         XHEAD1      = "Inactive/Active"
+         XHEAD1<1,2> = "Client #"
+         XHEAD1<1,3> = "Client Name"
+         XHEAD1<1,4> = "Carrier #"
+         XHEAD1<1,5> = "Carrier Name"
+         XHEAD1<1,6> = "Zip Code"
+         XHEAD1<1,7> = "Effective Date"
+         XHEAD1<1,8> = "Type"
+         XHEAD1<1,9> = "I/O"
+         XHEAD1<1,10> = "Equipment"
+         XHEAD1<1,11> = "Flag"
+         XHEAD1<1,12> = "Table"
+*
+         XLS.REC = XHEAD1
+*
+RETURN

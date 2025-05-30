@@ -1,0 +1,230 @@
+****************************************************
+* Program name : FB.IMPORT.FTP.ACH
+* Author       : Mike Kerbow
+* Date written : 09/2012
+* Library      : FBBP
+* COPYRIGHT (c) : AFS, LLC 2014, All Rights Reserved.
+*
+* Import Shipment Information File data
+*
+* Last updated by AFS (tgorton) at 12:06 on 09/14/2016.
+* 
+* Start modification history
+* 091416 - TAG01 - Sysaid 27036 Add Timestamp To Eod Processes
+* 060413 - JMK01 - SysAid#6115 - Change email address
+* End modification history
+
+************************************************************************
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+* Initialize general variables
+      PROMPT''
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)
+* Begin TAG01 
+      VIN1=""
+      VIN1<1> = "FB.IMPORT.FTP.ACH"
+      VIN1<2> = USER.NAME
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "S"
+      CALL PROGTRACK(VIN1,VOUT1)
+* End TAG01 
+
+      PROG.NAME='FB.IMPORT.FTP.ACH'
+      PROG.DESC='Import Invoice Payment Data'
+      PACK.NAME='Freight Payment'
+      MASK.CHAR='-'
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.IMPORT.FTP.ACH' ; UPL.VOUT = ''
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+      EMAIL.SENT=0
+      TESTING=0
+      TODAY=DATE()
+      OTODAY=OCONV(TODAY,'D4/')
+      ERROR.ARRAY=''                     ; * JMK01
+      WARNING.ARRAY=''                   ; * JMK16
+
+* Restrict program usage
+      VALID.USER=1
+      BEGIN CASE
+         CASE USER.NAME='OLEDBAFS' AND TESTING=0
+         CASE USER.NAME='SV.UVAUTO' AND TESTING=0
+         CASE USER.NAME='BFRANKLIN' AND TESTING=0
+         CASE USER.NAME='DAVID' AND TESTING=0
+         CASE USER.NAME='GBINO' AND TESTING=0
+         
+         CASE 1
+            VALID.USER=0
+      END CASE
+
+      CMD=1
+
+      IF NOT(VALID.USER) THEN
+         IF CMD THEN
+            ERROR.ARRAY<-1>='**  This is a restricted access application  **'
+         END ELSE
+            TEMP='**  This is a restricted access application  **'
+            CALL CENTER(TEMP,80)
+            CRT @(0,12):TEMP
+         END
+         GOTO THE.END
+      END
+      IF USER.NAME='DAVID' THEN
+         CALL ELINE('PRESS BREAK')
+      END
+
+      OPEN '','BILLDATA.FORMS' TO F.FORMS ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot Open BILLDATA.FORMS File!'
+            GOTO THE.END
+         END ELSE
+            CALL OPEN.ABORT('BILLDATA.FORMS',PROG.NAME)
+         END
+      END
+
+      OPEN '','FTP.AIRGAS' TO F.FTP ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot Open FTP.AIRGAS File!'
+            GOTO THE.END
+         END ELSE
+            CALL OPEN.ABORT('FTP.AIRGAS',PROG.NAME)
+         END
+      END
+
+      OPEN '','FTP.AIRGAS.HISTORY' TO F.FTP.HIST ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot Open FTP.AIRGAS.HISTORY File!'
+            GOTO THE.END
+         END ELSE
+            CALL OPEN.ABORT('FTP.AIRGAS.HISTORY',PROG.NAME)
+         END
+      END
+
+* Write screen header
+      IF CMD ELSE
+         CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+         CRT @(0,2):STR('=',79)
+      END
+
+
+100:  ***
+
+      IF CMD THEN
+         QI='Y'
+      END ELSE
+         LN='Are you ready to import ACH information for Airgas? '
+         MASK='N-'
+         HELP='[Y]=Yes [N]=No [EX]=Exit'
+         CALL GEN.IN(0,5,LN:MASK,'',Q,0,2,'','',2,-2,5,1,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+      END
+      BEGIN CASE
+         CASE QI='EX' OR QI='N' OR QI=''
+            GOTO THE.END
+         CASE QI='Y'
+            NULL
+         CASE 1
+            GOTO 100
+      END CASE
+
+* Get File Heading Record
+      READ FILE.HDR FROM F.FORMS,'AIRGAS_ACH_HEADER.XLS' ELSE
+         IF CMD THEN
+            ERROR.ARRAY<-1>='Cannot read file header. Aborting process.'
+         END ELSE
+            CALL ELINE('Cannot read file header. Aborting process.')
+         END
+         GOTO THE.END
+      END
+
+* Start processing any files
+      STMT='SSELECT FTP.AIRGAS WITH @ID = "O_1828_VENDORPI_]"'
+
+      EXECUTE STMT RTNLIST FTP.LIST CAPTURING RESULTS
+
+      NITMS=@SELECTED
+      IF NITMS=0 THEN
+         IF CMD THEN
+         END ELSE
+            CALL ELINE('No file to process.')
+         END
+         GOTO THE.END
+      END
+      ATTACH.LIST=''                     ; * JMK02
+      EOF=0
+      LOOP
+         READNEXT FTP.ID FROM FTP.LIST ELSE EOF=1
+      UNTIL EOF DO
+
+* Make sure that we have read the file completely and it is not ; * JMK06
+* still transferring via FTP.            ; * JMK06
+
+         PRV.FTP.REC=""                  ; * JMK06
+FTP.READ.AGAIN:*                        ; * JMK06
+         READ FTP.REC FROM F.FTP,FTP.ID ELSE
+            IF CMD THEN
+               ERROR.ARRAY<-1>='Cannot read ':FTP.ID:'. Aborting process.'
+            END ELSE
+               CALL ELINE('Cannot read ':FTP.ID:'. Aborting process.')
+            END
+            GOTO THE.END
+         END
+         IF FTP.REC#PRV.FTP.REC THEN     ; * JMK06
+            SLEEP 5                     ; * JMK06
+            PRV.FTP.REC=FTP.REC          ; * JMK06
+            GO FTP.READ.AGAIN            ; * JMK06
+         END                             ; * JMK06
+         ATTACH.LIST<1,-1>=FTP.ID        ; * JMK02
+
+* Read in the existing Client text file
+         NEW.FTP.REC=''
+         LOCATE FILE.HDR IN FTP.REC SETTING HDR.POS ELSE
+            NEW.FTP.REC=FILE.HDR
+         END
+         NEW.FTP.REC<-1>=FTP.REC
+         DELETE F.FTP,FTP.ID
+         WRITE NEW.FTP.REC ON F.FTP.HIST,FTP.ID
+
+* Email output of results
+         EMAIL.OUT=''
+         IF TESTING THEN
+            EMAIL.OUT<1>='MKerbow@afs.net'         ; * Troubleshooting
+         END ELSE
+
+            EMAIL.OUT<1>='AR@afs.net'    ; * JMK01
+            EMAIL.OUT<2>='pick@afs.net'              ; * CC: Email addresses
+         END
+         EMAIL.OUT<4>='Imports@afs.net'  ; * From Email address
+         EMAIL.OUT<5>='Results From Running ':PROG.NAME:' - Import Of ACH Payment Information for Airgas'
+
+* Email body
+         EMAIL.OUT<6,-1>=USER.NAME:' ran ':PROG.NAME:' (':PROG.DESC:') on ':DATE()'D2/':' at ':OCONV(TIME(),'MTHS'):' with the following results:'
+         EMAIL.OUT<6,-1>=' '
+
+         IF TESTING THEN
+            EMAIL.OUT<6,-1>=' '
+            EMAIL.OUT<6,-1>='Dont forget to remove the testing flag!!'
+         END
+
+         EMAIL.OUT<7>=1                  ; * Auto format (add carriage returns to end of text)
+         EMAIL.OUT<11,-1>='E:\FTP\Airgas\History\':FTP.ID
+         VIN=EMAIL.OUT
+         VOUT=''
+         CALL SENDMAIL(VIN,VOUT)
+         EMAIL.SENT=1
+
+         IF CMD ELSE
+            CALL ELINE('')
+         END
+      REPEAT
+THE.END:*
+* Begin TAG01 
+      VIN1=""
+      VIN1<1> = "FB.IMPORT.FTP.ACH"
+      VIN1<2> = USER.NAME
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "E"
+      CALL PROGTRACK(VIN1,VOUT1)
+* End TAG01 
+   END

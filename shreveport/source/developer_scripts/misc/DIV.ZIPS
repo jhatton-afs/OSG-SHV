@@ -1,0 +1,577 @@
+*******************************************************
+* Program name : DIV.ZIPS
+* Author       : JIM T. ROW
+* Date written : Unknown
+* Library      : FBBP
+* COPYRIGHT (C) 2016 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* Determine a division code for a client by a list of zip codes
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 09:22:51 on 03/22/2019.
+*
+* Start modification history
+*    JTR  : 12/29/95 : Program started
+*    TBS  : 06/07/99 : Changed to have more than one division per zip
+*  JMK01  : 04/12/05 : Change Screen Listing for Division Info
+*  NKH01  : 03/22/19 : ACCU-316 Modified CREATE-FILE file sizes
+* End modification history
+*
+*******************************************************
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_CLIENTS
+
+
+*
+* Internal Switches
+*
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+
+      EQU WRITE.DATA TO TRUE             ; * 1 = Write data to appropriate files
+                                         ; * 0 = Don't write data.. In Test Mode
+
+*
+* Initialize variables
+*
+      PROMPT''
+      PROG.NAME='DIV.ZIPS'
+      PROG.DESC='Zip-Division Number Maint.'
+      PACK.NAME='ZIP-DIVISION'
+      CO.NAME='AFS Logistics, LLC'
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'DIV.ZIPS' ; UPL.VOUT = ''       ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+
+      PORT.NUM = SYSTEM(19)              ; * Port user is sitting on
+*   USER.NAME = OCONV(PORT.NUM,'MCU')    ; * User's Name
+      CALL GET.USER(USER.NAME)
+
+      ZIP.CODE=''
+      ZIP.DESC=''
+      ACNT.REC=''
+      DIV.REC=''
+      CLIENT.ID=''
+      MAT CLIENT.REC = ''
+      CARRIER.NAME='' ; CARRIER.ID='' ; CARRIER.CITY='' ; CARRIER.STATE=''
+      CARRIER.REC=''
+      INVALID.DIV=0
+      BACK = FALSE
+      EXIT.IT = FALSE
+
+*----------------------------------------
+* Open inital List File
+*----------------------------------------
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN 'DICT','CLIENTS' TO F.DICT.CLIENTS ELSE
+         CALL OPEN.ABORT("DICT CLIENTS",PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN 'DICT','CARRIERS' TO F.DICT ELSE
+         CALL OPEN.ABORT("DICT CARRIERS",PROG.NAME)
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+         CALL OPEN.ABORT("ZIPS",PROG.NAME)
+      END
+*DF      OPEN '','CAN.ZIP.CODES' TO F.CAN.ZIPS ELSE
+*DF         CALL OPEN.ABORT("CAN.ZIPS",PROG.NAME)
+*DF      END
+*DF      OPEN '','MEX.ZIP.CODES' TO F.MEX.ZIPS ELSE
+*DF         CALL OPEN.ABORT("MEX.ZIPS",PROG.NAME)
+*DF      END
+      READ ZIP3.REC FROM F.ZIPS,'3.DIGIT' ELSE ZIP3.REC=''
+*
+* Display Inital screen and prompt for input
+*
+START.OVER:
+
+      CLIENT.ID = ''
+SO.1:
+      GOSUB ASK.FOR.CLIENT
+      IF EXIT.IT THEN STOP
+
+SO.2:
+      GOSUB ASK.FOR.ZIP
+      BEGIN CASE
+         CASE EXIT.IT
+            STOP
+         CASE BACK
+            GOTO SO.1
+      END CASE
+
+*----------------------------------------
+* Entry Screen
+*----------------------------------------
+
+      EXIT.IT = 0
+      LOOP
+250:
+         GOSUB DSP.CLIENT.DIVISION
+
+*
+* Main input screen
+*
+         HELP = "Enter Option Number. [DELETE]=Entire Account [X]=Back [EX]=Exit"
+         MASK = '######'
+ESN:
+         CRT @(0,22):'Enter Selection Number :':@(-4)
+         CALL GEN.IN(23,22,MASK,'',Q,0,6,'','',2,-6,22,1,QI,HELP,0,23)
+         QI = TRIM(OCONV(QI,'MCU'))
+         CRT @(0,22):@(-4)
+
+         BEGIN CASE
+            CASE QI = 'EX'
+               GOSUB ASK.ABOUT.EXITING
+
+            CASE QI='X' OR QI=''
+               IF ORGINAL.REC # ACNT.REC THEN
+                  YN.MSG = 'Changes were made! Save changes before exiting? :'
+                  YN.MASK = 'Y '
+                  GOSUB ASK.Y.OR.N
+                  BEGIN CASE
+                     CASE YN.ANSWER = 'Y'
+                        GOSUB SAVE.REC
+                     CASE YN.ANSWER = 'X'
+                        GOTO ESN
+                  END CASE
+               END
+               GOTO SO.2
+
+            CASE QI='DELETE'
+               YN.MSG = 'Delete Zip:  This Zip Code will be Erased!  Are you sure?'
+               YN.MASK = 'N '
+               GOSUB ASK.Y.OR.N
+               IF YN.ANSWER = 'Y' THEN
+                  DELETE F.XREF, ZIP.CODE
+                  GOTO START.OVER
+               END
+
+            CASE QI='SAVE'
+               GOSUB SAVE.REC
+
+            CASE NUM(QI) AND QI#''
+               IF QI GT 10 OR QI LT 1 THEN
+                  CALL ELINE('Can only set up 10 zip code to division cross references!')
+                  GO ESN
+               END ELSE
+                  LINE = QI+7
+                  SEL = QI
+                  GOSUB ENTER.CLIENT.DIVISION
+               END
+            CASE 1
+               CALL ELINE('Invalid option, Try Again.')
+               GOTO ESN
+         END CASE
+
+      WHILE NOT(EXIT.IT) DO
+      REPEAT
+
+      GOSUB SAVE.REC
+
+      RETURN
+
+
+*----------------------------------------------------------------------
+* ASK.FOR.CLIENT
+*----------------------------------------------------------------------
+ASK.FOR.CLIENT:
+      GOSUB DSP.INPUT.SCREEN
+      CRT @(0, 3):'Client ID # :':@(-4)
+      HELP = "Enter Client ID Number used by AFS.  [EX]=Exit"
+      IF CLIENT.ID # '' THEN
+         MASK = CLIENT.ID
+      END ELSE
+         MASK = '-'
+      END
+
+AFCL.1:
+      CALL GEN.IN(14,3,MASK,'',Q,0,5,'','',2,14,3,1,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'EX'
+            EXIT.IT = TRUE
+            RETURN
+         CASE QI='' AND CLIENT.ID#''
+         CASE NUM(QI)
+            CLIENT.ID = QI'R%5'
+         CASE 1
+            CALL ELINE('Invalid Client Number, Try Again.')
+            GOTO AFCL.1
+      END CASE
+
+*
+* Read Client Name and Info and display to screen
+*
+      MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         CALL ELINE("Client number ":CLIENT.ID:" is not a valid client ID number.")
+         GOTO ASK.FOR.CLIENT
+      END
+      CLIENT.NAME = CL.NAME
+      GOSUB DSP.INPUT.SCREEN
+      OPEN '','DIVISION.CODES,':CLIENT.ID TO F.DIV.CODES ELSE
+         CALL OPEN.ABORT("DIVISION.CODES",PROG.NAME)
+      END
+
+
+*
+* Attempt to open/create client file
+*
+      OPEN '','ZIP.DIV.XREF,':CLIENT.ID TO F.XREF ELSE
+         YN.MSG = 'Client ':CLIENT.ID:',':CLIENT.NAME:'is NOT setup. Set it up now? :'
+         YN.MASK = 'Y '
+         GOSUB ASK.Y.OR.N
+         IF YN.ANSWER='Y' THEN
+            CRT @(1,22):'Setting up files for client - Please wait':@(-4)
+            CRT @(1,23):@(-4):
+            EXECUTE 'CREATE-FILE DATA ZIP.DIV.XREF,':CLIENT.ID:' 23,1' PASSLIST CAPTURING OUTPUT      ; * NKH01
+            OPEN '','ZIP.DIV.XREF,':CLIENT.ID TO F.XREF ELSE
+               CALL OPEN.ABORT("ZIP.DIV.XREF,":CLIENT.ID,PROG.NAME)
+            END
+         END ELSE
+            GOTO ASK.FOR.CLIENT
+         END
+      END
+      RETURN
+
+*----------------------------------------------------------------------
+* ASK.FOR.ZIP
+*----------------------------------------------------------------------
+ASK.FOR.ZIP:
+
+      GOSUB DSP.INPUT.SCREEN
+      HELP = "Enter the CLIENT'S zip code for the NEW divsision.  [L]ist [EX] = Exit"
+      IF ZIP.CODE THEN
+         MASK = ZIP.CODE
+      END ELSE
+         MASK = '-'
+      END
+
+AFZ.1:
+      CALL GEN.IN(14, 4, MASK,'',Q,0,10,'','',2,14,4,1,QI,HELP,0,23)
+      QI = TRIM(OCONV(QI,'MCU'))
+      IF QI = '' THEN QI=ZIP.CODE
+      IF QI MATCHES '5N"-"' THEN
+         QI=CHANGE(QI,'-','M')
+      END
+      BEGIN CASE
+         CASE QI = 'EX'
+            EXIT.IT = TRUE
+            RETURN
+         CASE QI = 'L'
+            EXECUTE 'SORT ZIP.DIV.XREF,':CLIENT.ID:' 1'
+            CALL ELINE('')
+            GOTO ASK.FOR.ZIP
+         CASE QI = 'X'
+            BACK = 1
+            RETURN
+*DF      CASE NUM(QI) AND QI # ''
+         CASE (LEN(QI)=5 OR LEN(QI)=3) AND NUM(QI)
+            ZIP.CODE = QI
+         CASE LEN(QI)=6 AND QI MATCH ('1A1N1A1N1A1N')
+            ZIP.CODE = QI
+         CASE LEN(QI)=6 AND QI MATCH ('5N"M"')
+            ZIP.CODE = QI
+         CASE 1
+            CALL ELINE('Invalid Entry, Try Again.')
+            GOTO AFZ.1
+      END CASE
+      ZIP.ID = ZIP.CODE
+      GOSUB GET.ZIP
+      GOSUB DSP.INPUT.SCREEN
+
+*
+* Read XRef File
+*
+      READ ACNT.REC FROM F.XREF,ZIP.CODE THEN
+         ORGINAL.REC=ACNT.REC
+      END ELSE
+*
+* Unable to read record... Ask about adding
+*
+         CALL FB.PRINT.CENT(1,78,7,CLIENT.ID:', ':CLIENT.NAME:' -  Zip Code :':ZIP.CODE)
+         CALL FB.PRINT.CENT(1,78,8,'is not on file.  Would you like to add it?')
+         HELP = "Entry options: [Y]es, Add Zip Code,  [N]o, Don't Add  [EX]it"
+         MASK = 'N '
+AFZ.2:
+         CRT @(30,10):'Enter Option  : ':@(-4)
+         CALL GEN.IN(46, 10, MASK,'',Q,0,2,'','',2,-2,10,1,QI,HELP,0,23)
+         IF QI='' THEN QI=MASK
+         QI = TRIM(OCONV(QI,'MCU'))
+         BEGIN CASE
+            CASE QI='EX'
+               EXIT.IT=TRUE
+               RETURN
+            CASE QI='X' OR QI='N'
+               GOTO ASK.FOR.ZIP
+
+            CASE QI='Y'
+               ORGINAL.REC=''
+               ACNT.REC<1>=''
+
+            CASE 1
+               CALL ELINE('Invalid entry, Try Again.')
+               GOTO AFZ.2
+         END CASE
+
+         CRT @(0, 7):@(-4):
+         CRT @(0, 8):@(-4):
+         CRT @(0,10):@(-4):
+      END
+
+      RETURN
+
+
+
+*----------------------------------------------------------------------
+* ASK.ABOUT.EXITING - Checks to see that all fields are setup.
+*----------------------------------------------------------------------
+ASK.ABOUT.EXITING:
+
+      IF ACNT.REC<1>='' THEN
+         YN.MSG = 'The Zip has not been fully set up!! ':CHAR(7):'Do you wish to still EXIT? :'
+         YN.MASK = 'N '
+         GOSUB ASK.Y.OR.N
+         IF YN.ANSWER = 'Y' THEN EXIT.IT = 1       ; * Exit Application
+      END ELSE
+         EXIT.IT = 1                     ; * Exit Application
+      END
+
+      RETURN
+
+
+
+*----------------------------------------------------------------------
+* SAVE.REC
+*----------------------------------------------------------------------
+SAVE.REC:***
+
+      CRT @(0,22):'Saving information....':@(-4)
+
+      WRITE ACNT.REC ON F.XREF,ZIP.CODE
+      ORGINAL.REC = ACNT.REC
+      CRT @(0,22):@(-4)
+
+      RETURN
+
+
+
+*----------------------------------------------------------------------
+* Display Client Division
+*----------------------------------------------------------------------
+DSP.CLIENT.DIVISION:***
+
+      IF ACNT.REC<1>='' THEN
+         DIV.CODE = '<not set up>'
+      END ELSE
+         DIV.CODE = ACNT.REC<1>
+      END
+*     CRT @(0,6):'#  Div  City St              Description'  ; * JMK01
+*     CRT @(0,7):'- ----- -------------------- -------------'          ; * JMK01
+      CRT @(0,6):'#  Div   Zip   Description          Address              City            St'       ; * JMK01
+      CRT @(0,7):'- ----- ------ -------------------- -------------------- --------------- --'       ; * JMK01
+      DIV.COUNT = DCOUNT(ACNT.REC<1>,@VM)
+      FOR X.2 = 1 TO DIV.COUNT
+         LINE.2 = 7 + X.2
+         ZIP.ID = ZIP.CODE
+         DIV.ID = ACNT.REC<1,X.2>
+         GOSUB GET.DESC
+*        CRT @(0,LINE.2):X.2:' ':DIV.ID'L#6':ZIP.DESC'L#21':DIV.DESC'L13':@(-4)  ; * JMK01
+         CRT @(0,LINE.2):@(-4):X.2:' ':DIV.ID'R#5 ':SCR.ZIP'L#6 ':SCR.DESC'L#20 ':SCR.ADDR'L#20 ':SCR.CITY'L#15 ':SCR.STATE'L#2':  ; * JMK01
+      NEXT X.2
+      IF DIV.COUNT < 10 THEN
+         FOR X.2 = DIV.COUNT+1 TO 10
+            LINE.2 = 7 + X.2
+            CRT @(0,LINE.2):@(-4):
+         NEXT X.2
+      END
+      RETURN
+
+
+*----------------------------------------------------------------------
+* Enter Client Division
+*
+* QI is set to "X" when user has selected to BACK
+*----------------------------------------------------------------------
+ENTER.CLIENT.DIVISION:***
+
+      HELP = "Enter Division Code for Client ID # '":CLIENT.ID:"'[D]elete [X]=Back [EX]it"
+ECD:
+      INVALID.DIV=0
+      IF ACNT.REC<1,SEL> = '' THEN
+         MASK = '######'
+      END ELSE
+         MASK = ACNT.REC<1,SEL>
+      END
+      CRT @(0,LINE):SEL:' ':@(-4)
+      IF CLIENT.ID = "01675" OR CLIENT.ID = "01749" OR CLIENT.ID = "05500" OR CLIENT.ID = "05026" OR CLIENT.ID = "05548" THEN
+         CALL GEN.IN(2,LINE,MASK,'',Q,0,6,'','',2,2,LINE,1,QI,HELP,0,23)
+      END ELSE
+         CALL GEN.IN(2,LINE,MASK,'',Q,0,5,'','',2,2,LINE,1,QI,HELP,0,23)
+      END
+      IF QI='' THEN QI=ACNT.REC<1,SEL>
+      QI = TRIM(OCONV(QI,'MCU'))
+      BEGIN CASE
+         CASE QI = 'EX' OR QI='X' OR QI=''
+            GOSUB ASK.ABOUT.EXITING
+         CASE QI = 'D'
+            DEL ACNT.REC<1,SEL>
+         CASE QI='L'
+            EXECUTE 'SORT DIVISION.CODES,':CLIENT.ID:' CITY.STATE HEADING "List of all division codes for ':CLIENT.ID:' - ':CLIENT.NAME:"'CL'":'"'
+            CALL ELINE('Press <ENTER> to continue.')
+            GOSUB DSP.INPUT.SCREEN
+            GOSUB DSP.CLIENT.DIVISION
+            GO ENTER.CLIENT.DIVISION
+         CASE 1
+            DIV.ID = QI'R%5'
+            GOSUB GET.DESC
+            IF INVALID.DIV THEN
+               CALL ELINE('Invalid Division Code, please try again')
+               GO ENTER.CLIENT.DIVISION
+            END ELSE
+               ACNT.REC<1,SEL> = DIV.ID
+            END
+*DF      CASE 1
+*DF         CALL ELINE('Invalid option, Try Again.')
+*DF         GOTO ECD
+      END CASE
+
+      GOSUB DSP.CLIENT.DIVISION
+
+      RETURN
+
+
+
+
+
+*----------------------------------------------------------------------
+* ASK.Y.OR.N
+*
+* A General Yes No prompt routine.
+*
+*----------------------------------------------------------------------
+ASK.Y.OR.N:***
+
+      YN.ANSWER = ''
+
+Y.OR.N:
+
+      HELP = CHAR(7):"Entry Options: [Y]-Yes [N]-No [X]-Back"
+      CRT @(1,22):YN.MSG:@(-4)
+      MASK = YN.MASK'L#1'
+      Q=''
+      CALL GEN.IN(LEN(YN.MSG)+1,22,MASK,'',Q,0,1,'','',2,LEN(YN.MSG)+1,22,0,QI,HELP,1,23)
+      QI = OCONV(QI,'MCU')
+
+      IF QI='' THEN QI=MASK
+
+      BEGIN CASE
+         CASE QI = '0'
+            QI = 'N'
+         CASE QI = '1'
+            QI = 'Y'
+         CASE QI = 'Y'
+         CASE QI = 'N'
+         CASE QI = 'X'
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO Y.OR.N
+      END CASE
+
+      CRT @(1,22):@(-4):
+      CRT @(1,23):@(-4):
+      YN.ANSWER = QI
+
+      RETURN
+
+
+
+*----------------------------------------------------------------------
+* PROCEDURE:  Initialize Screen
+*----------------------------------------------------------------------
+INIT.SCREEN:
+
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('-',79) ; 
+      CRT @(0,21):STR('-',79) ; 
+
+      RETURN
+
+
+*----------------------------------------------------------------------
+* Client Screen
+*----------------------------------------------------------------------
+DSP.INPUT.SCREEN:
+
+      GOSUB INIT.SCREEN
+      IF CLIENT.ID THEN
+         T = CLIENT.ID:' ':CLIENT.NAME
+      END ELSE
+         T = ''
+      END
+      CRT @(0, 3):'Client ID # : ':T:@(-4)
+      IF ZIP.DESC='' THEN
+         CRT @(0, 4):'Zip Code    : ':ZIP.CODE:@(-4)
+      END ELSE
+         CRT @(0, 4):'Zip Code    : ':ZIP.CODE'L#7':ZIP.DESC:@(-4)
+      END
+      RETURN
+
+
+
+*
+*
+*********************************************************************
+GET.DESC:* SUBROUTINE TO RETRIEVE DIVISION CITY, STATE AND DESC CODE
+*********************************************************************
+*
+      READ DIV.REC FROM F.DIV.CODES,DIV.ID ELSE
+         INVALID.DIV = 1
+         RETURN
+      END
+      DIV.DESC = DIV.REC<11>
+      ZIP.DESC=''
+      ZIP.ID = DIV.REC<1>
+      SCR.ZIP=DIV.REC<1>                 ; * JMK01
+      SCR.DESC=DIV.REC<11>               ; * JMK01
+      SCR.ADDR=DIV.REC<14>               ; * JMK01
+      SCR.CITY=DIV.REC<16>               ; * JMK01
+      SCR.STATE=DIV.REC<17>              ; * JMK01
+GET.ZIP:*
+      BEGIN CASE
+         CASE LEN(ZIP.ID)=5 OR LEN(ZIP.ID)='6'
+            READ ZIP.REC FROM F.ZIPS,ZIP.ID ELSE
+               ZIP.REC = "~~~ Unknown ~~~"
+            END
+            ZIP.DESC = ZIP.REC<1> : ' ' : ZIP.REC<2>
+         CASE LEN(ZIP.ID)=3
+            ZIP.DESC = '~~~ Unknown ~~~'
+            X=DCOUNT(ZIP3.REC<1>,CHAR(253))
+            FOR I=1 TO X
+               IF ZIP.ID GE ZIP3.REC<2,I> & ZIP.ID LE ZIP3.REC<3,I> THEN
+                  ZIP.DESC = ZIP3.REC<1,I>
+                  EXIT
+               END
+            NEXT I
+*DF         CASE LEN(ZIP.ID)=6
+*DF            IF ZIP.ID[6,1]='M' THEN
+*DF               READ ZIP.REC FROM F.MEX.ZIPS,ZIP.ID ELSE
+*DF                  ZIP.REC = "~~~ Unknown ~~~"
+*DF               END
+*DF               ZIP.DESC = ZIP.REC<1> : ' ' : ZIP.REC<2>
+*DF            END ELSE
+*DF               READ ZIP.REC FROM F.CAN.ZIPS,ZIP.ID ELSE
+*DF                  ZIP.REC = "~~~ Unknown ~~~"
+*DF               END
+*DF               ZIP.DESC = ZIP.REC<1> : ' ' : ZIP.REC<2>
+*DF            END
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            ZIP.DESC='ERROR'
+      END CASE
+
+*
+      RETURN
+*
+*

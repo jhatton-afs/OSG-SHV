@@ -1,0 +1,933 @@
+$OPTIONS HEADER.EJECT
+      ERRMSG=''
+*
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+************************************************************************
+* ROUTINE TO ENTER CLIENT/CARRIER SPECIFIC PRO FORMAT
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: Original FB.11.9 by JMK  N.C.G. Pratt  Copied from FB.11.9 and modified as per JMK
+* DATE: DECEMBER 15, 2004
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE EXPRESS
+* WRITTEN CONSENT OF SAME.
+*
+********************************************************************
+* 
+*
+************************************************************************
+* Initialize variables
+************************************************************************
+
+      PROMPT''
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+      EXIT.IT = FALSE
+
+      PROG.NAME="FB.1.11.13"
+      PROG.DESC="Client/Carrier PRO Format"
+      PACK.NAME="Freight Payment"
+************************************************************************
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.1.11.13' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+* Open files
+************************************************************************
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      OPEN '','FB.PRO.FORMAT' TO F.PRO.FORMAT ELSE CALL OPEN.ABORT("FB.PRO.FORMAT",PROG.NAME)
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      CALL GET.USER(USER)
+
+*&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+*
+      DISPLAY.MODE = 0
+      * Check Digit Calculation Methods Available.
+      *
+      VIN='' ; VOUT='' ; VIN<1> = 'I'
+      CALL CHECK.DIGIT(VIN,VOUT)
+      METHODS.AVAIL=VOUT<3>
+
+      NUM.LINE = '123456789ABCDEFGHIJKLMNOP'
+
+      PRO.FORMAT.REC  = ''
+      PRO.FORMAT.HOLD = ''
+
+*
+*&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+
+
+************************************************************************
+* Enter client number.
+************************************************************************
+100:  CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      HELP="Enter client number. Word of name for search. X=Exit. EX=Exit."
+      CALL GEN.IN(0,3,'Enter Client Number: #####','',Q,0,20,'','',2,-5,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='' ! QI='EX' ! QI='X'
+            STOP
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 100
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 100
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO 100
+            END CASE
+         CASE NUM(QI)
+            Q=QI'R%5'
+         CASE 1
+            GOTO 100
+      END CASE
+      CLIENT.ID=Q
+      READ CLIENT.REC FROM F.CLIENTS,Q ELSE
+         CALL ELINE('ERROR - Client ':CLIENT.ID:' not on file.')
+         GOTO 100
+      END
+      CLIENT.NAME=CLIENT.REC<2>
+      CRT @(21,3):CLIENT.ID:' ':CLIENT.NAME
+
+************************************************************************
+* Enter carrier number.
+************************************************************************
+200:  HELP="Enter carrier number. Word of name for search. [L]ist current [X]Back [EX]it."
+      CALL GEN.IN(0,5,'Enter Carrier Number: #####','',Q,0,20,'','',2,-5,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            CRT @(0,5):@(-3):
+            GOTO 100
+         CASE QI = 'L'
+            EXECUTE 'SORT FB.PRO.FORMAT CARRIER.NAME 1 WITH CLIENT# =':CLIENT.ID:' BY CARRIER.NAME'
+            INPUT NULL
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,3):'Enter Client Number: '
+            CRT @(21,3):CLIENT.ID:' ':CLIENT.NAME
+            GO 200
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CARRIER,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 200
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 200
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO 200
+            END CASE
+         CASE NUM(QI)
+            Q=QI'R%5'
+         CASE 1
+            GOTO 200
+      END CASE
+      CARRIER.ID=Q
+      READ CARRIER.REC FROM F.CARRIERS,Q ELSE
+         CALL ELINE('ERROR - Carrier ':CARRIER.ID:' not on file.')
+         GOTO 200
+      END
+      CARRIER.NAME=CARRIER.REC<1>
+      CRT @(22,5):CARRIER.ID:' ':CARRIER.NAME:@(-4)
+
+      ID.PRO.FORMAT = CLIENT.ID:"*":CARRIER.ID
+      READ PRO.FORMAT.REC FROM F.PRO.FORMAT, ID.PRO.FORMAT ELSE PRO.FORMAT.REC = ""
+      PRO.FORMAT.HOLD = PRO.FORMAT.REC
+
+*--------------------------------------------------------------------------
+* Pro Number and Check Digit setup screen
+*--------------------------------------------------------------------------
+300:
+
+PRO.NUMBER.SETUP:
+
+      RETURN.BACK = 0
+
+*ZZ      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+
+      GOSUB DSP.PNS.HDR
+      IF DISPLAY.MODE THEN
+         OPTIONS='EX':@VM:'X':@VM
+         OPTIONS.HELP="<ENTER> to Return to the Main Screen."
+      END ELSE
+         OPTIONS='A':@VM:'D':@VM:'EX':@VM:'X':@VM
+         OPTIONS.HELP="Enter the Line Number to change or [A]dd a new line [D]elete a line"
+      END
+
+PNS.UPDATE:
+      GOSUB DSP.PNS.LIST                 ; * Inits PNS.LINES
+      IF DISPLAY.MODE THEN
+         OPTIONS.MIN.NUM = 1
+         OPTIONS.MAX.NUM = 0
+      END ELSE
+         OPTIONS.MIN.NUM = 1
+         OPTIONS.MAX.NUM = PNS.LINES
+      END
+
+PNS.1:
+
+      GOSUB CHOOSE.OPTION
+      BEGIN CASE
+            *
+            * DELETE - Remove an entry
+            *
+         CASE OPTION = 'D'
+            AFN.MSG = "Select Entry to Delete :"
+            AFN.MIN = 1
+            AFN.MAX = PNS.LINES
+            AFN.MASK = ''
+            GOSUB ASK.FOR.NUM
+            BEGIN CASE
+               CASE QI=''
+               CASE QI='EX'
+                  EXIT.IT = TRUE
+               CASE QI='X'
+                  RETURN.BACK = TRUE
+               CASE 1
+                  PNS.DEL.LINE = AFN.ANSWER
+                  GOSUB PNS.DELETE.ENTRY
+                  IF NOT(EXIT.IT) THEN GOTO PNS.UPDATE
+            END CASE
+            *
+            * ADD - Add an entry
+            *
+         CASE OPTION = 'A'
+            IF PNS.LINES >= 8 THEN
+               CALL ELINE('Maximum number of lines reached.')
+            END ELSE
+               PNS.ITEM.NUM = PNS.LINES+1
+               GOSUB PNS.EDIT.LINE
+               IF FAILURE THEN
+                  GOTO PNS.UPDATE
+               END ELSE
+                  PNS.LINES+=1
+                  GOSUB DSP.PNS.LINE
+               END
+            END
+            *
+            * X - Return to Carrier Main screen
+            *
+         CASE OPTION = '' OR OPTION='X'
+            RETURN.BACK = TRUE
+            *
+            * EX - Exit Program
+            *
+         CASE OPTION = 'EX'
+            EXIT.IT = TRUE
+            *
+            * EDIT - Edit Line
+            *
+         CASE NUM(OPTION)
+            IF OPTION > 0 AND OPTION <= PNS.LINES THEN
+               PNS.ITEM.NUM = OPTION
+               GOSUB PNS.EDIT.LINE
+               GOSUB DSP.PNS.LINE
+            END ELSE
+               CALL ELINE('Line number out of range - Please select from the above list.')
+            END
+      END CASE
+
+      IF EXIT.IT THEN RETURN.BACK = TRUE
+      IF NOT(RETURN.BACK) THEN GOTO PNS.1
+      RETURN.BACK = 0
+
+************************************************************************
+* Verify selection criteria is correct.
+************************************************************************
+400:  HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            GOTO 300
+         CASE QI='EX'
+            STOP
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO 400
+      END CASE
+
+*&&&&&&
+
+      IF PRO.FORMAT.REC NE PRO.FORMAT.HOLD THEN
+         PRO.FORMAT.REC<10> = USER     ;* Revised position relates to Attr 61 on CARRIERS file
+         PRO.FORMAT.REC<11> = DATE()   ;* Revised position relates to Attr 61 on CARRIERS file
+         PRO.FORMAT.REC<12> = TIME()   ;* New attr. not on CARRIERS file
+         WRITE PRO.FORMAT.REC ON F.PRO.FORMAT, ID.PRO.FORMAT
+      END
+
+*&&&&&
+
+      GO 100
+*ZZ      RETURN
+
+*--------------------------------------------------------------------------
+* CHOOSE.OPTION
+*--------------------------------------------------------------------------
+CHOOSE.OPTION:
+      NUM.OPTIONS = DCOUNT(OPTIONS,@VM)
+PCO.1:
+      CRT @(0,22):'Option: ':@(-4)
+      MASK = ''
+      CALL GEN.IN(8,22,MASK,'',Q,0,3,'','',2,8,22,0,QI,OPTIONS.HELP,0,23)
+
+      QI=TRIM(OCONV(QI,"MCU"))
+      NQI = NUM(QI)
+      LOCATE QI IN OPTIONS<1>,1 SETTING LQI ELSE LQI = 0
+      BEGIN CASE
+         CASE LQI > 0
+         CASE QI=''
+         CASE NQI >= OPTIONS.MIN.NUM AND NQI <= OPTIONS.MAX.NUM
+         CASE 1
+            IF DISPLAY.MODE THEN
+               CALL ELINE('Invalid Option - View Only')
+            END ELSE
+               CALL ELINE('Invalid Option.  Please try again')
+            END
+            GOTO PCO.1
+      END CASE
+      OPTION = QI
+      RETURN
+
+*--------------------------------------------------------------------------
+*
+*--------------------------------------------------------------------------
+PNS.DELETE.ENTRY:
+      *
+      * Delete the selected entry -
+      *
+      * PROGRAMMER WARNING!  Be aware that if you delete the line that
+      * you have currently initialized then they will be reloaded with the
+      * new line.
+      *
+*      DEL CARRIER.REC<51,PNS.DEL.LINE>
+*      DEL CARRIER.REC<47,PNS.DEL.LINE>
+*      DEL CARRIER.REC<52,PNS.DEL.LINE>
+*      DEL CARRIER.REC<53,PNS.DEL.LINE>
+*      DEL CARRIER.REC<54,PNS.DEL.LINE>
+*      DEL CARRIER.REC<55,PNS.DEL.LINE>
+*      DEL CARRIER.REC<56,PNS.DEL.LINE>
+*      DEL CARRIER.REC<57,PNS.DEL.LINE>
+*      DEL CARRIER.REC<58,PNS.DEL.LINE>
+*      DEL CARRIER.REC<61,PNS.DEL.LINE>
+*      DEL CARRIER.REC<62,PNS.DEL.LINE>
+
+      DEL PRO.FORMAT.REC<1,PNS.DEL.LINE>
+      DEL PRO.FORMAT.REC<2,PNS.DEL.LINE>
+      DEL PRO.FORMAT.REC<3,PNS.DEL.LINE>
+      DEL PRO.FORMAT.REC<4,PNS.DEL.LINE>
+      DEL PRO.FORMAT.REC<5,PNS.DEL.LINE>
+      DEL PRO.FORMAT.REC<6,PNS.DEL.LINE>
+      DEL PRO.FORMAT.REC<7,PNS.DEL.LINE>
+      DEL PRO.FORMAT.REC<8,PNS.DEL.LINE>
+      DEL PRO.FORMAT.REC<9,PNS.DEL.LINE>
+*      DEL PRO.FORMAT.REC<10,PNS.DEL.LINE>    ;* Is this multivalue ??
+*      DEL PRO.FORMAT.REC<11,PNS.DEL.LINE>    ;* Is this multivalue ??
+*      DEL PRO.FORMAT.REC<12,PNS.DEL.LINE>    ;* Is this multivalue ??
+      *
+      * Did the user delete on the current line/entry?
+      *
+      IF PNS.DEL.LINE = PNS.ITEM.NUM THEN
+         PNS.LINES-=1
+         IF PNS.ITEM.NUM > PNS.LINES THEN PNS.ITEM.NUM = PNS.LINES
+         GOSUB INIT.PNS.LINE
+      END
+      RETURN
+
+*--------------------------------------------------------------------------
+*
+*--------------------------------------------------------------------------
+DSP.PNS.LIST:
+
+      PNS.LINES=DCOUNT(PRO.FORMAT.REC<1>,@VM)
+*ZZ      FOR X = 1 TO 8
+*ZZ         PNS.Y.POS = X*2+4
+      FOR X = 1 TO 6
+         PNS.Y.POS = X*2+9
+         IF X <= PNS.LINES THEN
+            PNS.ITEM.NUM = X
+            GOSUB INIT.PNS.LINE
+            GOSUB DSP.PNS.LINE
+         END ELSE
+            CRT @(0,PNS.Y.POS):@(-4)
+            CRT @(0,PNS.Y.POS+1):@(-4)
+         END
+      NEXT X
+      RETURN
+
+*--------------------------------------------------------------------------
+*
+*--------------------------------------------------------------------------
+PNS.EDIT.LINE:
+      *
+      * This assumes that the local variables have
+      * already been loaded for this entry to edit
+      *
+*ZZ      PNS.Y.POS = PNS.ITEM.NUM*2+4
+      PNS.Y.POS = PNS.ITEM.NUM*2+9
+      FAILURE = 0
+      GOSUB INIT.PNS.LINE
+      GOSUB DSP.PNS.LINE
+      CRT @(0,22):@(-4)
+
+      *---------------------------
+      * Mask Active Flag
+      *---------------------------
+PEL.ACT:
+*     HELP="Enter [Y]es this format is active or [N]o for Inactive/Disabled."    ; * JMK01
+      HELP="Enter [Y] for active, [N] for inactive or [L] for lookup only."      ; * JMK01
+      BACK = 0
+PEL.ACT.1:
+      MASK = MASK.ACTIVE'L#3'
+      CALL GEN.IN(3,PNS.Y.POS,MASK,'',Q,0,3,'','',2,3,PNS.Y.POS,0,QI,HELP,0,23)
+      IF QI='' THEN QI=MASK
+      QI=TRIM(OCONV(QI,"MCU"))
+      BEGIN CASE
+         CASE QI='X' OR QI=''
+            FAILURE = 1
+            RETURN
+         CASE QI='EX'
+            FAILURE = 1
+            EXIT.IT = 1
+            RETURN
+         CASE QI='Y' OR QI='YES' OR QI='1'
+            MASK.ACTIVE = 'Y'
+            MASK.ACTIVE.STR = 'Yes'
+         CASE QI='L' OR QI='LOOK'
+            MASK.ACTIVE='L'
+            MASK.ACTIVE.STR='Lkp'
+         CASE QI='N' OR QI='NO' OR QI='0'
+            MASK.ACTIVE = 'N'
+            MASK.ACTIVE.STR = 'No'
+         CASE 1
+            CALL ELINE('Invalid Option.  Please try again')
+            GOTO PEL.ACT.1
+      END CASE
+      CRT @(3,PNS.Y.POS):MASK.ACTIVE.STR'L#3'
+
+      *---------------------------
+      * Pro Mask Entry Routine
+      *---------------------------
+PEL.MASK:
+*   HELP="Enter the mask for the pro number."
+      HELP="Enter Mask, Samples: NNNN=4N, NN-NNN=2N'-'3N, NNNAANN=3N2A2N"
+      BACK = 0
+PEL.MASK.1:
+      MASK = PRO.FORMAT:' '
+      CALL GEN.IN(7,PNS.Y.POS,MASK,'',Q,0,18,'','',2,7,PNS.Y.POS,0,QI,HELP,0,23)
+      IF QI='' THEN QI=MASK
+      IF INDEX(QI,'-',1) THEN
+         IF INDEX(QI,"'",1)=0 THEN
+            CALL ELINE("Cannot Contain a dash and not a single quote")
+            GO PEL.MASK.1
+         END
+      END
+      QI=TRIM(OCONV(QI,"MCU"))
+      BEGIN CASE
+         CASE QI='X'
+            BACK = 1
+         CASE QI='EX'
+            FAILURE = 1
+            EXIT.IT = 1
+            RETURN
+         CASE QI#''
+            T.PRO.FORMAT = QI
+            VIN=T.PRO.FORMAT
+            CALL MASK(VIN,VOUT)
+            IF VOUT<1>='' THEN GOTO PEL.MASK
+            PRO.EXAMPLE = VOUT<1>
+            PRO.FORMAT = T.PRO.FORMAT
+            PRO.NUM.LINE = NUM.LINE[1,LEN(PRO.EXAMPLE)]
+         CASE 1
+            CALL ELINE('Invalid Option.  Please try again')
+            GOTO PEL.MASK.1
+      END CASE
+      CRT @(7,PNS.Y.POS):PRO.FORMAT'L#18'
+      CRT @(26,PNS.Y.POS):PRO.EXAMPLE'L#18'
+      CRT @(26,PNS.Y.POS+1):PRO.NUM.LINE'L#18'
+      IF BACK THEN GOTO PEL.ACT
+
+      *---------------------------
+      * Check Digit YN
+      *---------------------------
+PEL.YN:
+      HELP="Enter [Y]es there is a check digit in the format or [N]o Check Digit."
+      BACK = 0
+PEL.YN.1:
+      MASK = CHECK.DIG.ACTIVE:' '
+      CALL GEN.IN(45,PNS.Y.POS,MASK,'',Q,0,2,'','',2,45,PNS.Y.POS,0,QI,HELP,0,23)
+      IF QI='' THEN QI=MASK
+      QI=TRIM(OCONV(QI,"MCU"))
+      BEGIN CASE
+         CASE QI='X'
+            BACK = 1
+         CASE QI='EX'
+            FAILURE = 1
+            EXIT.IT = 1
+            RETURN
+         CASE QI='Y' OR QI='N'
+            CHECK.DIG.ACTIVE = QI
+         CASE 1
+            CALL ELINE('Invalid Option.  Please try again')
+            GOTO PEL.YN.1
+      END CASE
+      CRT @(45,PNS.Y.POS):CHECK.DIG.ACTIVE
+      IF BACK THEN GOTO PEL.MASK
+      IF CHECK.DIG.ACTIVE = 'N' THEN GOTO PEL.OLD.BEG
+
+      *---------------------------
+      * Check Digit Pos
+      *---------------------------
+PEL.POS:
+      HELP="Enter the character position of the Check Digit. Values are 1-":PRO.NUM.LINE[LEN(PRO.EXAMPLE),1]
+      BACK = 0
+PEL.POS.1:
+      MASK = CHECK.DIG.POS.STR:' '
+      CALL GEN.IN(49,PNS.Y.POS,MASK,'',Q,0,2,'','',2,49,PNS.Y.POS,0,QI,HELP,0,23)
+      IF QI='' THEN QI=MASK
+      QI=TRIM(OCONV(QI,"MCU"))
+      IF QI='' THEN DIG.POS = 0 ELSE DIG.POS = INDEX(PRO.NUM.LINE,QI,1)
+      BEGIN CASE
+         CASE QI='X'
+            BACK = 1
+         CASE QI='EX'
+            FAILURE = 1
+            EXIT.IT = 1
+            RETURN
+         CASE DIG.POS > 0
+            CHECK.DIG.POS = DIG.POS
+            CHECK.DIG.POS.STR=NUM.LINE[CHECK.DIG.POS,1]
+         CASE 1
+            CALL ELINE('Invalid Option.  Try Again.')
+            GOTO PEL.POS.1
+      END CASE
+      CRT @(49,PNS.Y.POS):CHECK.DIG.POS.STR
+      IF BACK THEN GOTO PEL.YN
+
+      *---------------------------
+      * Seed Beg Digit (starting)
+      *---------------------------
+PEL.SEED.BEG:
+      HELP="Enter the starting character position that the Check Digit is calculated from"
+      BACK = 0
+PEL.SEED.BEG.1:
+      MASK = SEED.BEG.POS.STR:' '
+      CALL GEN.IN(52,PNS.Y.POS,MASK,'',Q,0,2,'','',2,52,PNS.Y.POS,0,QI,HELP,0,23)
+      IF QI='' THEN QI=MASK
+      QI=TRIM(OCONV(QI,"MCU"))
+      IF QI='' THEN BEG.POS = 0 ELSE BEG.POS = INDEX(PRO.NUM.LINE,QI,1)
+      BEGIN CASE
+         CASE QI='X'
+            BACK = 1
+         CASE QI='EX'
+            FAILURE = 1
+            EXIT.IT = 1
+            RETURN
+         CASE BEG.POS = CHECK.DIG.POS
+            CALL ELINE('Beginning Position can not contain the Check Digit.  Please try again' )
+            GOTO PEL.SEED.BEG.1
+         CASE BEG.POS > 0
+            SEED.BEG.POS = BEG.POS
+            SEED.BEG.POS.STR=NUM.LINE[SEED.BEG.POS,1]
+         CASE 1
+            CALL ELINE('Invalid Option.  Try Again')
+            GOTO PEL.SEED.BEG.1
+      END CASE
+      CRT @(52,PNS.Y.POS):SEED.BEG.POS.STR
+      IF BACK THEN GOTO PEL.POS
+
+      *---------------------------
+      * Seed End Digit (ending)
+      *---------------------------
+PEL.SEED.END:
+      HELP="Enter the ending character position that the Check Digit is calculated from"
+      BACK = 0
+PEL.SEED.END.1:
+      MASK = SEED.END.POS.STR:' '
+      CALL GEN.IN(54,PNS.Y.POS,MASK,'',Q,0,2,'','',2,54,PNS.Y.POS,0,QI,HELP,0,23)
+      IF QI='' THEN QI=MASK
+      QI=TRIM(OCONV(QI,"MCU"))
+      IF QI='' THEN END.POS = 0 ELSE END.POS = INDEX(PRO.NUM.LINE,QI,1)
+      BEGIN CASE
+         CASE QI='X'
+            BACK = 1
+         CASE QI='EX'
+            FAILURE = 1
+            EXIT.IT = 1
+            RETURN
+         CASE END.POS > 0
+            BEGIN CASE
+               CASE END.POS<SEED.BEG.POS
+                  CALL ELINE('Invalid Entry!  Ending Position is before the Starting Position')
+                  GOTO PEL.SEED.END.1
+               CASE SEED.BEG.POS <= CHECK.DIG.POS AND END.POS >= CHECK.DIG.POS
+                  CALL ELINE('Ending Position can not contain the Check Digit.  Please try again' )
+                  GOTO PEL.SEED.END.1
+               CASE 1
+                  SEED.END.POS = END.POS
+                  SEED.END.POS.STR=NUM.LINE[SEED.END.POS,1]
+            END CASE
+         CASE 1
+            CALL ELINE('Invalid Option.  Try Again')
+            GOTO PEL.SEED.END.1
+      END CASE
+      CRT @(54,PNS.Y.POS):SEED.END.POS.STR
+      IF BACK THEN GOTO PEL.SEED.BEG
+
+      *---------------------------
+      * Method Selection
+      *---------------------------
+PEL.METHOD:
+      HELP="Enter the Calculation method to use to determine the Check Digit."
+      BACK = 0
+PEL.METHOD.1:
+      CRT @(0,22):'METHODS AVAIL :':CHANGE(METHODS.AVAIL,@VM,' ')
+      MASK = METHOD.STR:' '
+      CALL GEN.IN(57,PNS.Y.POS,MASK,'',Q,0,6,'','',2,57,PNS.Y.POS,0,QI,HELP,0,23)
+      IF QI='' THEN QI=MASK
+      QI=TRIM(OCONV(QI,"MCU"))
+      LOCATE QI IN METHODS.AVAIL<1> SETTING METHOD.POS ELSE METHOD.POS = 0
+      BEGIN CASE
+         CASE QI='X'
+            BACK = 1
+         CASE QI='EX'
+            FAILURE = 1
+            EXIT.IT = 1
+            RETURN
+         CASE METHOD.POS > 0
+            METHOD.STR = METHODS.AVAIL<1,METHOD.POS>
+         CASE 1
+            CALL ELINE('Invalid Option.  Try Again')
+            GOTO PEL.METHOD.1
+      END CASE
+      CRT @(57,PNS.Y.POS):METHOD.STR
+      CRT @(0,22):@(-4)
+      IF BACK THEN GOTO PEL.SEED.END
+
+      *---------------------------
+      * Old Beg Digit (starting)
+      *---------------------------
+PEL.OLD.BEG:
+      HELP="Enter the range of characters to use when looking up an old style pro number."
+      BACK = 0
+PEL.OLD.BEG.1:
+      MASK = OLD.BEG.POS.STR:' '
+      CALL GEN.IN(68,PNS.Y.POS,MASK,'',Q,0,2,'','',2,68,PNS.Y.POS,0,QI,HELP,0,23)
+      IF QI='' THEN QI=MASK
+      QI=TRIM(OCONV(QI,"MCU"))
+      IF QI='' THEN BEG.POS = 0 ELSE BEG.POS = INDEX(PRO.NUM.LINE,QI,1)
+      BEGIN CASE
+         CASE QI='X'
+            BACK = 1
+         CASE QI='EX'
+            FAILURE = 1
+            EXIT.IT = 1
+            RETURN
+         CASE QI = ''
+            OLD.BEG.POS=''
+            OLD.BEG.POS.STR=''
+         CASE BEG.POS > 0
+            OLD.BEG.POS = BEG.POS
+            OLD.BEG.POS.STR=NUM.LINE[OLD.BEG.POS,1]
+         CASE 1
+            CALL ELINE('Invalid Option.  Try Again')
+            GOTO PEL.OLD.BEG.1
+      END CASE
+      CRT @(68,PNS.Y.POS):OLD.BEG.POS.STR
+      IF BACK THEN
+         BEGIN CASE
+            CASE CHECK.DIG.ACTIVE = 'N'
+               GOTO PEL.YN
+            CASE 1
+               GOTO PEL.METHOD
+         END CASE
+      END
+
+      *---------------------------
+      * Old End Digit (ending)
+      *---------------------------
+PEL.OLD.END:
+      HELP="Enter the range of characters to use when looking up an old style pro number."
+      BACK = 0
+PEL.OLD.END.1:
+      MASK = OLD.END.POS.STR:' '
+      CALL GEN.IN(72,PNS.Y.POS,MASK,'',Q,0,2,'','',2,72,PNS.Y.POS,0,QI,HELP,0,23)
+      IF QI='' THEN QI=MASK
+      QI=TRIM(OCONV(QI,"MCU"))
+      IF QI='' THEN END.POS = 0 ELSE END.POS=INDEX(PRO.NUM.LINE,QI,1)
+      BEGIN CASE
+         CASE QI='X'
+            BACK = 1
+         CASE QI='EX'
+            FAILURE = 1
+            EXIT.IT = 1
+            RETURN
+         CASE QI=''
+            OLD.END.POS=''
+            OLD.END.POS.STR=''
+
+         CASE END.POS>0
+            BEGIN CASE
+               CASE END.POS<OLD.BEG.POS
+                  CALL ELINE('Invalid Entry!  Ending Position is before the Starting Position')
+                  GOTO PEL.OLD.END.1
+               CASE BEG.POS = 1 AND END.POS = LEN(PRO.NUM.LINE)
+                  CALL ELINE('Error! The Old Pro range you entered covers the entire pro number!')
+                  GOTO PEL.OLD.END.1
+               CASE 1
+                  OLD.END.POS= END.POS
+                  OLD.END.POS.STR=NUM.LINE[OLD.END.POS,1]
+            END CASE
+         CASE 1
+            CALL ELINE('Invalid Option.  Try Again')
+            GOTO PEL.OLD.END.1
+      END CASE
+      CRT @(72,PNS.Y.POS):OLD.END.POS.STR
+      IF BACK THEN GOTO PEL.OLD.BEG
+
+      GOSUB STORE.PNS.LINE
+
+      RETURN
+
+*--------------------------------------------------------------------------
+*
+*--------------------------------------------------------------------------
+INIT.PNS.LINE:
+      MASK.ACTIVE=PRO.FORMAT.REC<2,PNS.ITEM.NUM>
+      BEGIN CASE
+         CASE MASK.ACTIVE='Y'
+            MASK.ACTIVE.STR='Yes'
+         CASE MASK.ACTIVE='N'
+            MASK.ACTIVE.STR='No'
+         CASE MASK.ACTIVE='L'
+            MASK.ACTIVE.STR='Lkp'
+         CASE 1
+            MASK.ACTIVE.STR='???'
+      END CASE
+      PRO.FORMAT=PRO.FORMAT.REC<1,PNS.ITEM.NUM>
+      VIN=PRO.FORMAT
+      CALL MASK(VIN,VOUT)
+      PRO.EXAMPLE=VOUT<1>[1,16]          ; * Trim to size - Just in case!
+      PRO.NUM.LINE = NUM.LINE[1,LEN(PRO.EXAMPLE)]
+
+
+      CHECK.DIG.ACTIVE = PRO.FORMAT.REC<3,PNS.ITEM.NUM>
+      CHECK.DIG.POS    = PRO.FORMAT.REC<4,PNS.ITEM.NUM>
+      SEED.BEG.POS     = PRO.FORMAT.REC<5,PNS.ITEM.NUM>
+      SEED.END.POS     = PRO.FORMAT.REC<6,PNS.ITEM.NUM>
+      METHOD.STR       = PRO.FORMAT.REC<7,PNS.ITEM.NUM>
+      OLD.BEG.POS      = PRO.FORMAT.REC<8,PNS.ITEM.NUM>
+      OLD.END.POS      = PRO.FORMAT.REC<9,PNS.ITEM.NUM>
+
+      *
+      * The following lines were added to support older
+      * proformat setup entries.
+      *
+      IF CHECK.DIG.POS='' THEN
+         CHECK.DIG.POS.STR=''
+      END ELSE
+         CHECK.DIG.POS.STR=NUM.LINE[CHECK.DIG.POS,1]
+      END
+
+      IF SEED.BEG.POS='' THEN
+         SEED.BEG.POS.STR=''
+      END ELSE
+         SEED.BEG.POS.STR=NUM.LINE[SEED.BEG.POS,1]
+      END
+
+      IF SEED.END.POS='' THEN
+         SEED.END.POS.STR=''
+      END ELSE
+         SEED.END.POS.STR=NUM.LINE[SEED.END.POS,1]
+      END
+
+      IF OLD.BEG.POS='' THEN
+         OLD.BEG.POS.STR=''
+      END ELSE
+         OLD.BEG.POS.STR=NUM.LINE[OLD.BEG.POS,1]
+      END
+
+      IF OLD.END.POS='' THEN
+         OLD.END.POS.STR=''
+      END ELSE
+         OLD.END.POS.STR=NUM.LINE[OLD.END.POS,1]
+      END
+
+      IF PRO.FORMAT # '' AND MASK.ACTIVE = '' THEN
+         MASK.ACTIVE ='Y'
+         PRO.FORMAT.REC<2,PNS.ITEM.NUM>='Y'
+      END
+
+      IF CHECK.DIG.ACTIVE='' THEN
+         CHECK.DIG.ACTIVE = 'N'
+         PRO.FORMAT.REC<3,PNS.ITEM.NUM> = 'N'
+      END
+      RETURN
+
+*--------------------------------------------------------------------------
+*
+*--------------------------------------------------------------------------
+STORE.PNS.LINE:
+
+      CHANGE.FLAG=0
+      IF PRO.FORMAT.REC<1,PNS.ITEM.NUM> # PRO.FORMAT THEN CHANGE.FLAG=1
+
+      IF PRO.FORMAT.REC<2,PNS.ITEM.NUM> # MASK.ACTIVE THEN CHANGE.FLAG=1
+      IF PRO.FORMAT.REC<3,PNS.ITEM.NUM> # CHECK.DIG.ACTIVE THEN CHANGE.FLAG=1
+      IF PRO.FORMAT.REC<4,PNS.ITEM.NUM> # CHECK.DIG.POS THEN CHANGE.FLAG=1
+      IF PRO.FORMAT.REC<5,PNS.ITEM.NUM> # SEED.BEG.POS THEN CHANGE.FLAG=1
+      IF PRO.FORMAT.REC<6,PNS.ITEM.NUM> # SEED.END.POS THEN CHANGE.FLAG=1
+
+      IF PRO.FORMAT.REC<7,PNS.ITEM.NUM> # METHOD.STR THEN CHANGE.FLAG=1
+      IF PRO.FORMAT.REC<8,PNS.ITEM.NUM> # OLD.BEG.POS THEN CHANGE.FLAG=1
+      IF PRO.FORMAT.REC<9,PNS.ITEM.NUM> # OLD.END.POS THEN CHANGE.FLAG=1
+
+      PRO.FORMAT.REC<1,PNS.ITEM.NUM> = PRO.FORMAT
+
+      PRO.FORMAT.REC<2,PNS.ITEM.NUM> = MASK.ACTIVE
+      PRO.FORMAT.REC<3,PNS.ITEM.NUM> = CHECK.DIG.ACTIVE
+      PRO.FORMAT.REC<4,PNS.ITEM.NUM> = CHECK.DIG.POS
+      PRO.FORMAT.REC<5,PNS.ITEM.NUM> = SEED.BEG.POS
+      PRO.FORMAT.REC<6,PNS.ITEM.NUM> = SEED.END.POS
+
+      PRO.FORMAT.REC<7,PNS.ITEM.NUM> = METHOD.STR
+      PRO.FORMAT.REC<8,PNS.ITEM.NUM> = OLD.BEG.POS
+      PRO.FORMAT.REC<9,PNS.ITEM.NUM> = OLD.END.POS
+
+*??      IF CHANGE.FLAG THEN
+*??          PRO.FORMAT.REC<10,PNS.ITEM.NUM> = USER     ;* Revised position relates to Attr 61 on CARRIERS file
+*??          PRO.FORMAT.REC<11,PNS.ITEM.NUM> = DATE()   ;* Revised position relates to Attr 61 on CARRIERS file
+*??          PRO.FORMAT.REC<12,PNS.ITEM.NUM> = TIME()   ;* New attr. not on CARRIERS file
+*??       END
+
+      RETURN
+
+*--------------------------------------------------------------------------
+*
+*--------------------------------------------------------------------------
+DSP.PNS.LINE:
+      LINE = PNS.ITEM.NUM'R%2'
+      LINE:= ' '
+      LINE:= MASK.ACTIVE.STR'L#3'
+      LINE:= ' '
+      LINE:= PRO.FORMAT'L#18'
+      LINE:= ' '
+      LINE:= PRO.EXAMPLE'L#18'
+      LINE:= ' '
+      LINE:= CHECK.DIG.ACTIVE'L#2'
+      LINE:= ' '
+      LINE:= ' ':CHECK.DIG.POS.STR'L#1':' '
+      LINE:= ' '
+      LINE:= SEED.BEG.POS.STR'L#1':'-':SEED.END.POS.STR'L#1':' '
+      LINE:= ' '
+      LINE:= METHOD.STR'L#6'
+      LINE:= SPACE(5)
+      LINE:= OLD.BEG.POS.STR'L#1':' - ':OLD.END.POS.STR'L#1'
+
+      CRT @(0,PNS.Y.POS):LINE
+      CRT @(0,PNS.Y.POS+1):@(-4)
+      RETURN
+
+*--------------------------------------------------------------------------
+*
+*--------------------------------------------------------------------------
+DSP.PNS.HDR:
+
+*ZZ      CALL FB.PRINT.CENT(1,80,1,'(':CARRIER.ID'R%5':'), ':CARRIER.REC<1>)
+
+*ZZ      CRT @(0,2):STR('=',79):
+
+      LINE1 = SPACE(7)
+      LINE1:= STR('-',12):' Pro Number ':STR('-',13)
+      LINE1:= ' '
+      LINE1:= STR('-',3):' Check Digit ':STR('-',2)
+      LINE1:= SPACE(3)
+      LINE1:= 'Old Style'
+
+      LINE2 = 'Ln'
+      LINE2:= ' '
+      LINE2:= 'Act'
+      LINE2:= '   '
+      LINE2:= SPACE(5):'Mask':SPACE(7)
+      LINE2:= ' '
+      LINE2:= SPACE(5):'Example':SPACE(4)
+      LINE2:= SPACE(3)
+      LINE2:= 'YN'
+      LINE2:= ' '
+      LINE2:= 'Pos'
+      LINE2:= ' '
+      LINE2:= 'Seed'
+      LINE2:= ' '
+      LINE2:= 'Method'
+      LINE2:= SPACE(5)
+      LINE2:= 'Range'
+
+      LINE3 = '--'
+      LINE3:= ' '
+      LINE3:= '---'
+      LINE3:= ' '
+      LINE3:= STR('-',18)
+      LINE3:= ' '
+      LINE3:= STR('-',18)
+      LINE3:= ' '
+      LINE3:= STR('-',2)
+      LINE3:= ' '
+      LINE3:= STR('-',3)
+      LINE3:= ' '
+      LINE3:= STR('-',4)
+      LINE3:= ' '
+      LINE3:= STR('-',6)
+      LINE3:= SPACE(5)
+      LINE3:= STR('-',5)
+
+      CRT @(0,7):STR('=',79):
+      CRT @(0,8):LINE1:
+      CRT @(0,9):LINE2:
+      CRT @(0,10):LINE3:
+
+      RETURN
+
+*----------------------------------------------------------------------
+* ASK.FOR.NUM
+*
+* A General NUMBER prompt routine.
+*
+* AFN.MIN  - MIN VALUE ALLOWABLE
+* AFN.MAX  - MAX VALUE ALLOWABLE
+* AFN.MSG  - MESSAGE TO DISPLAY
+* AFN.MASK - DEFAULT VALUE
+*----------------------------------------------------------------------
+ASK.FOR.NUM:***
+      AFN.ANSWER = ''
+AFN.1:
+      HELP = "Entry Options: [":AFN.MIN:"-":AFN.MAX:"] [X]-Back"
+      CRT @(0,22):AFN.MSG:@(-4)
+      MASK = AFN.MASK:' '
+      Q=''
+      CALL GEN.IN(LEN(AFN.MSG)+1,22,MASK,'',Q,0,LEN(AFN.MAX),'','',2,LEN(AFN.MSG)+1,22,0,QI,HELP,0,23)
+      IF QI='' THEN QI=MASK
+      QI = TRIM(OCONV(QI,'MCU'))
+
+      BEGIN CASE
+         CASE QI = 'X' OR QI='EX' OR QI=''
+         CASE QI>=AFN.MIN AND QI<=AFN.MAX
+         CASE 1
+            CALL ELINE('Invalid entry. Please try again.')
+            GOTO AFN.1
+      END CASE
+
+      AFN.ANSWER=QI
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+
+      RETURN

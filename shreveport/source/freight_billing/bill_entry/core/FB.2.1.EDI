@@ -1,0 +1,535 @@
+  SUBROUTINE FB.2.1.EDI(VIN,VOUT,PROREC)
+*****************************************************************************
+* Program name : FB.2.1.EDI
+* Author       : Jim T. Row
+* Date written : 
+* Library      : FBBP
+* COPYRIGHT (C) 2015 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* To view all the information pertaining to an EDI BILL
+* Last updated by afs (AFSLOGISTICS\gbino) at 13:24:56 on 08/30/2019.
+*
+* Start modification history
+*     JTR : 07/12/96 : Project Started.
+*     JTR : 07/10/98 : Added the ability to print EDI Invoices
+*     JTR : 07/14/98 : Changed DCHARGES to use TABLE 150 from EDI.ELEMENTS
+*   JMK01 : 05/06/05 : Add new logo for EDI printing
+*   JCW01 : 06/16/06 : Use EDI.BILLS.HIST,CLIENT.ID
+* 101811 - JMK01 - SysAid#87 - Charge Breakdown Error
+* End modification history
+*
+******************************************************************************
+      $INCLUDE PROG.ADMIN INC_OPTIONS
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+
+*
+* Mail facility to inform programmer of MINOR problems that the
+* users may over-look and not tell the programmer.
+*
+      EQU PROGRAMMER.MAIL TO 'helpdesk@afs.net'    ; * JMK01
+      EQU NOTIFY.PROGRAMMER.BY.MAIL TO TRUE
+      EQU UPDATE.USER.PERFORMANCE TO FALSE
+
+*
+* Globals
+*
+      TERM.TYPE=SYSTEM(7)                ; * JMK01
+      BEGIN CASE                         ; * JMK01
+         CASE TERM.TYPE='REGENT60'       ; * JMK01
+            REVON = CHAR(14)             ; * Reverse Text ON
+            REVOFF = CHAR(15)            ; * Reverse Text OFF
+         CASE 1                          ; * JMK01
+            REVON = @(-13)               ; * JMK01
+            REVOFF = @(-14)              ; * JMK01
+      END CASE                           ; * JMK01
+
+*
+* Internal Switches
+*
+      WRITE.DATA = 1                     ; * 1 = Write data to appropriate files
+                                         ; * 0 = Don't write data.. In Test Mode
+
+      RESTRICT.ACCESS = 0                ; * 1 = Restrict Access to the program
+
+*
+* Initialize variables
+*
+      PROMPT''
+
+      CALL GET.USER.NEW(USER.NAME,CH.NUM)
+ 
+      PROG.NAME='FB.2.1.EDI'
+      PROG.DESC='EDI Bill Information'
+      PACK.NAME='USER :':USER.NAME
+      CO.NAME='AFS Logistics, LLC'
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.2.1.EDI' ; UPL.VOUT = ''             ;* NPR_UPL 04/23/2010
+      UPL.VIN<3> = USER.NAME
+      UPL.VIN<4> = CH.NUM
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                           ;* NPR_UPL 04/23/2010
+
+      CLIENT.NAME='' ; CLIENT.ID=''
+      CARRIER.NAME='' ; CARRIER.ID='' ; CARRIER.CITY='' ; CARRIER.STATE=''
+      CLIENT.REC = ''
+      DEBUG.MSG=''
+
+*
+* Record Variables
+*
+      EDI.REC=''                         ; * The orginal AFS EDI Record that was
+                                         ; * read from EDI.BILLS which was already
+                                         ; * created by EDI.1.1 from RAW X.12 data
+
+      OLD.PRO.REC = ''                   ; *  An Existing OLD.PRO.REC that was found
+                                         ; *  in FB.BILLS.HIST - This is NOT an
+                                         ; *  EDI file but a freight bill that
+                                         ; *  already exists.
+*
+* Open general files
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN 'DICT','CLIENTS' TO F.DICT.CLIENTS ELSE
+         CALL OPEN.ABORT("DICT CLIENTS",PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN 'DICT','CARRIERS' TO F.DICT ELSE
+         CALL OPEN.ABORT("DICT CARRIERS",PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT("FB.TABLES",PROG.NAME)
+      END
+      OPEN '','EDI.ELEMENTS' TO F.EDI.ELEMENTS ELSE
+         CALL OPEN.ABORT("FB.EDI.ELEMENTS",PROG.NAME)
+      END
+
+      READ TABLE150 FROM F.EDI.ELEMENTS,'150*3040' ELSE TABLE150=''
+      READ TABLE122 FROM F.EDI.ELEMENTS,'122*3040' ELSE TABLE122=''
+      READ DMETHOD FROM F.TABLES,'SHP*EDI' ELSE DMETHOD=''
+      READ DEXCEPT FROM F.TABLES,'DELIVERY.EXCEPTION.CODES' ELSE DEXCEPT=''
+      READ DDISASTER FROM F.TABLES,'DISASTER.EXCEPTION.CODES' ELSE DDISASTER=''
+
+*
+* Open EDI Files
+*
+      OPEN '','EDI.REMITTANCE' TO F.REMITTANCE ELSE
+         CALL OPEN.ABORT('EDI.REMITTANCE',PROG.NAME)
+      END
+      OPEN '','EDI.RAW.DATA' TO F.RAW.DATA ELSE
+         CALL OPEN.ABORT('EDI.RAW.DATA',PROG.NAME)
+      END
+
+*
+* Check for Restricted Access
+*
+      GOSUB INIT.SCREEN
+      IF RESTRICT.ACCESS THEN
+             CALL FB.PRINT.CENT(1,80,10,'** UNDER CONSTRUCTION * DO NOT USE **')
+            CALL FB.PRINT.CENT(1,80,12,'Restricted Access Application')
+            CALL ELINE('Access Denied! See IT for Access')
+            RETURN
+         END
+
+      OLD.PRO.REC = PROREC
+      EDI.RECORD.NAME = OLD.PRO.REC<88>
+      CALL PARSE.EDI.ID(EDI.RECORD.NAME, CLIENT.ID, EDI.HIST.ID)       ; * JCW01
+      OPEN 'EDI.BILLS.HIST,':CLIENT.ID TO F.EDI.HIST ELSE    ; * JCW01
+         CALL ELINE("ERROR - Unable to open EDI.BILLS.HIST,":CLIENT.ID)          ; * JCW01
+         RETURN                          ; * JCW01
+      END                                ; * JCW01
+
+      READ EDI.REC FROM F.EDI.HIST, EDI.HIST.ID ELSE         ; * JCW01
+         CALL ELINE("ERROR - Unable to read from F.EDI.BILLS")
+         RETURN
+      END
+
+      CLIENT.ID = VIN<1>
+      CARRIER.ID = VIN<2>
+      PRO = VIN<3>
+
+      AIR.CARRIER = (CARRIER.ID = '00015' OR CARRIER.ID = '00365' OR CARRIER.ID='01075' OR CARRIER.ID = '00143' OR CARRIER.ID = '00044' OR CARRIER.ID='20114' OR CARRIER.ID='12047' OR CARRIER.ID='12790' OR CARRIER.ID='15258')     ; * 1=AIR; 0=LTL
+*
+* Load GFX Overlays and Carrier Logo Images
+*
+      RPVIN='FORMS'
+      RPVIN<2>='INVOICES'
+      IF AIR.CARRIER THEN
+         OVERLAY.NAME = 'AIREDI.PRN'
+      END ELSE
+         OVERLAY.NAME = 'EDI3.PRN'
+      END
+      RPVIN<3>=OVERLAY.NAME
+*DFIF USER.NAME='DAVID' THEN CALL ELINE('PRESS BREAK')
+      CALL READ.PCFILE(RPVIN,RPVOUT)
+      IF RPVOUT[1,5]='ERROR' THEN
+         CALL ELINE('CAN NOT LOAD ':OVERLAY.NAME:' OVERLAY')
+         RPVOUT='(FORM ':OVERLAY.NAME:' OVERLAY NOT AVAILABLE)'
+      END
+      INVOICE.OVERLAY = RPVOUT
+
+      RPVIN='BILLDATA'                   ; * JMK01
+      RPVIN<2>='FORMS'                   ; * JMK01
+      RPVIN<3>='AFSEDILOGOLLC.PCL'       ; * JMK01
+      CALL READ.SEQ.FILE(RPVIN,RPVOUT)   ; * JMK01
+      IF RPVOUT[1,5]='ERROR' THEN
+         CALL ELINE('CAN NOT LOAD AFSEDILOGOLLC.PCL LOGO IMAGE')       ; * JMK01
+         RETURN
+      END
+      SMALLAFS.LOGO = RPVOUT
+
+      RPVIN='FORMS'
+      RPVIN<2>='IMAGES'
+      RPVIN<3>=CARRIER.ID
+      CALL READ.PCFILE(RPVIN,RPVOUT)
+      IF RPVOUT[1,5]='ERROR' THEN
+         RPVOUT = 'Carrier Logo #':CARRIER.ID:' not on file.'
+      END
+      CARRIER.LOGO = RPVOUT
+
+      GOSUB READ.CARRIER.INFO
+      GOSUB READ.CLIENT.INFO
+      GOSUB SET.DSP.DATA
+
+*
+* Display EDI information
+*
+      GOSUB DSP.EXP.SCN
+      GOSUB DSP.EXP.DATA
+
+VIEW.1:
+      CRT @(0,22):'OPTION:':@(-4)
+      MASK = 'X '
+      HELP = "OPTIONS: [1]-EDI Details [2]-Carrier Charge Breakdown [3]-Print Bill [X]-Back"
+      CALL GEN.IN(8,22,MASK,'',Q,0,4,'','',2,8,22,0,QI,HELP,0,23)
+      IF QI='' THEN QI=MASK
+      QI = TRIM(OCONV(QI,'MCU'))
+      BEGIN CASE
+         CASE QI='X'
+         CASE QI='1'
+            GOSUB DSP.EXP.SCN
+            GOSUB DSP.EXP.DATA
+            GOTO VIEW.1
+         CASE QI='2'
+            GOSUB DSP.COST.SPLIT
+            GOTO VIEW.1
+         CASE QI='3'
+            IF AIR.CARRIER THEN
+*
+* PRINT EDI AIR BILLS
+*
+               EDI.VIN=''
+               EDI.VIN<1>=CLIENT.ID
+               EDI.VIN<2>=CARRIER.ID
+               EDI.VIN<3>=EDI.RECORD.NAME
+               EDI.VIN<4>=PRO
+               EDI.VOUT=''
+               CALL PRINT.EDI.AIR(EDI.VIN, EDI.VOUT, CARRIER.REC, CLIENT.REC, INVOICE.OVERLAY, CARRIER.LOGO, SMALLAFS.LOGO, '', EDI.REC,TABLE150,TABLE122,DMETHOD,DEXCEPT,DDISASTER)
+
+            END ELSE
+*
+* PRINT EDI LTL BILLS
+*
+               EDI.VIN=''
+               EDI.VIN<1>=CLIENT.ID
+               EDI.VIN<2>=CARRIER.ID
+               EDI.VIN<3>=EDI.RECORD.NAME
+               EDI.VIN<4>=PRO
+               EDI.VOUT=''
+               CALL PRINT.EDI.LTL(EDI.VIN, EDI.VOUT, CARRIER.REC, CLIENT.REC, INVOICE.OVERLAY, CARRIER.LOGO, SMALLAFS.LOGO, '', EDI.REC)
+            END
+            GOTO VIEW.1
+         CASE QI='PRD'
+            EDI.VIN=''
+            EDI.VIN<1>=EDI.REC<7>
+            EDI.VIN<2>=USER.NAME
+            EDI.VOUT=''
+            CALL PRD(EDI.VIN,EDI.VOUT,F.RAW.DATA)
+            GOTO VIEW.1
+         CASE 1
+            CALL ELINE('Invalid Option.  Please try again.')
+            GOTO VIEW.1
+      END CASE
+
+
+      RETURN
+
+***********************************************************************
+DSP.COST.SPLIT: *** Display Cost Breakdown on Split Screen
+***********************************************************************
+
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CALL FB.DRAW.BOX(0,3,79,3,' ',' ')
+      CALL FB.PRINT.CENT(0,79,4,'CARRIER CHARGE BREAK-DOWN FOR EDI BILL')
+      CALL FB.DRAW.BOX(0,5,79,17,' ',' ')
+      SEND.NOTICE = FALSE
+      NOTICE.MSG = ''
+
+*
+* Display Charge Descriptions
+*
+      TIMES = DCOUNT(EDI.REC<65>,@VM)
+      FOR Y = 1 TO TIMES
+         CODE = EDI.REC<65,Y>
+         IF CODE#'' THEN
+*
+* TRY TABLE 150
+*
+            LOCATE CODE IN TABLE150<1> SETTING WHERE THEN
+               DESC=TABLE150<2,WHERE>
+            END ELSE
+               DESC='{Unknown Service Code ':CODE:'-Call Programming}'
+               SEND.NOTICE = TRUE
+               NOTICE.MSG:=' ':CODE
+            END
+         END ELSE
+*
+* TRY TABLE 122
+*
+            CODE = EDI.REC<94,1,Y>
+            LOCATE CODE IN TABLE122<1> SETTING WHERE THEN
+               DESC=TABLE122<2,WHERE>
+            END ELSE
+               DESC='{Unknown Service Code ':CODE:'-Call Programming}'
+               SEND.NOTICE = TRUE
+               NOTICE.MSG:=' ':CODE
+            END
+         END
+
+         CALL FB.PRINT.CENT(0,79,6+Y,DESC'L#40':' ':EDI.REC<64,Y>'MR26#8')
+      NEXT Y
+
+*
+* Did we get a service code that was unknown?  If so, Send Mail to
+* the programmer
+*
+      IF NOTIFY.PROGRAMMER.BY.MAIL THEN
+         IF SEND.NOTICE THEN
+            SUBJ='Unknown Service Code in ':PROG.NAME
+            TEXT=''
+            TEXT<1,1>='The following service codes are not known '
+            TEXT<1,2>=NOTICE.MSG
+            MVIN=''
+            MVIN<1>=PROGRAMMER.MAIL      ; * TO Email address
+            MVIN<2>=''                   ; * CC Email address
+            MVIN<3>=''                   ; * BCC Email address
+            MVIN<4>=''                   ; * FROM email address
+            MVIN<5>='Unknown EDI Service Code in ':PROG.NAME           ; * SUBJECT
+            MVIN<6>=TEXT                 ; * body of message
+            MVIN<7>=1                    ; * 1=Add Linefeeds, other=No Linefeeds.
+*           CALL SENDMAIL.TXT(MVIN,MVOUT)          ; * JMK01
+            CALL SENDMAIL(MVIN,MVOUT)    ; * JMK01
+         END
+      END
+
+      RETURN
+
+***********************************************************************
+SET.DSP.DATA: ***
+***********************************************************************
+
+      BILL.DATE = OLD.PRO.REC<1>
+      DUE.DATE = OLD.PRO.REC<38>
+      IN.OUT = OLD.PRO.REC<2>
+      DIVISION = OLD.PRO.REC<9>
+
+      ORIG.ZIP = OLD.PRO.REC<3>
+      ORIG.CITY = OLD.PRO.REC<27>
+      ORIG.STATE = OLD.PRO.REC<25>
+      DEST.ZIP = OLD.PRO.REC<4>
+      DEST.CITY = OLD.PRO.REC<28>
+      DEST.STATE = OLD.PRO.REC<26>
+
+      BOL = OLD.PRO.REC<16>
+      EXPENSE.CODE = OLD.PRO.REC<31>
+      EXPENSE.CODE.DESC = ''
+      CONSIGN.DESC = OLD.PRO.REC<17>
+      CLASS=''
+      CLASS<1> = OLD.PRO.REC<50>
+      CLASS<2> = OLD.PRO.REC<58>
+      MILEAGE = OLD.PRO.REC<19>
+      WEIGHT = OLD.PRO.REC<6>
+      CARRIER.CHG = OLD.PRO.REC<7>
+      ACTUAL.CHG = OLD.PRO.REC<8>
+      VARIANCE = CARRIER.CHG-ACTUAL.CHG
+      MISROUTING = OLD.PRO.REC<63>
+      AIR.PIECES = OLD.PRO.REC<57>
+
+      PROC.DATE = OLD.PRO.REC<37>
+      ENTERED.TIME = OLD.PRO.REC<85>
+      ENTERED.DATE = OLD.PRO.REC<86>
+
+* These fields MAY be empty...
+
+      CUST.AMT = OLD.PRO.REC<13>
+      CHECK.NUM = FIELD(OLD.PRO.REC<14>,'*',1)
+      CHECK.DATE = OLD.PRO.REC<15>
+      PROC.DATE = OLD.PRO.REC<37>
+      BANK.ID = OLD.PRO.REC<40>
+
+      RETURN
+
+***********************************************************************
+INIT.SCREEN: ***
+***********************************************************************
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('-',79) ;
+
+      RETURN
+
+***********************************************************************
+DSP.EXP.SCN: *** Display Expense Screen
+***********************************************************************
+      GOSUB INIT.SCREEN
+
+      CRT @(0, 3):'Client :' ; CRT @(49, 3):'Division Num:'
+      CRT @(0, 4):'Carrier:' ; CRT @(49, 4):'Invoice Date:'
+
+      CRT @(0, 6):'Bill To:' ; CRT @(46, 6):'Act#:'
+      CRT @(7, 7): ':' ; CRT @(46, 7):'Inv#:'
+      CRT @(7, 8): ':' ; CRT @(46, 8):'Pro#:'
+
+      CRT @(0,10):'Sender :' ; CRT @(46,10):'Shipped Date  :'
+      CRT @(7,11): ':' ;
+
+      CRT @(7,12): ':' ;
+      CRT @(7,13): ':' ; CRT @(46,13):'Act#:'
+
+      CRT @(0,15):'Recip. :' ; CRT @(46,15):'Delivered Date:'
+      CRT @(7,16): ':' ; CRT @(46,16):'Delivered Time:'
+      CRT @(7,17): ':' ; CRT @(46,17):'Signed:'
+      CRT @(7,18): ':' ; CRT @(46,18):'Act#:'
+
+      CRT @(0,20):'Customer Reference :'
+      CRT @(0,21):STR('-',79):
+
+      RETURN
+
+***********************************************************************
+DSP.EXP.DATA: ***Display Expense Data
+***********************************************************************
+*
+* Fill in the screen details -
+*
+      TEMP=CLIENT.ID:', ':CLIENT.REC<2>
+      CRT @( 9, 3):TEMP'L#37'            ; * Client Number & Name
+      TEMP=CARRIER.ID:', ':CARRIER.NAME:' ':CARRIER.CITY:', ':CARRIER.STATE
+      CRT @( 9, 4):TEMP'L#37'            ; * Carrier number and name
+      CRT @(63, 3):DIVISION              ; * Division Number
+      CRT @(63, 4):BILL.DATE'D2/'        ; * Invoice Date
+
+*
+* Bill-To  Information
+*
+      CRT @( 9, 6):EDI.REC<10>           ; * Bill to Name
+      CRT @( 9, 7):EDI.REC<12>           ; * Bill to Address
+      TEMP = EDI.REC<14>:', ':EDI.REC<15>:' ':EDI.REC<16>
+      CRT @( 9, 8):TEMP                  ; * Bill to City, State Zip
+
+      CRT @(52, 6):EDI.REC<18>           ; * Bill to Acct#
+      CRT @(52, 7):EDI.REC<1>            ; * Invoice Number
+      CRT @(52, 8):PRO                   ; * Pro/Tracking Number
+
+*
+* Shipper Information
+*
+      CRT @( 9,10):EDI.REC<19>           ; * Shipper Name
+      CRT @( 9,11):EDI.REC<20>           ; * Shipper Name #2
+      CRT @( 9,12):EDI.REC<21>           ; * Shipper Address
+      TEMP = ORIG.CITY:', ':ORIG.STATE:' ':ORIG.ZIP
+      CRT @( 9,13):TEMP                  ; * Shipper City, State Zip
+
+      CRT @(62,10):EDI.REC<39>'D2/'      ; * Shipped Date
+
+      BEGIN CASE
+         CASE EDI.REC<72> = 'CC'         ; * Bill Recipient
+            CRT @(46,11):'~ Bill Recipient ~'
+         CASE EDI.REC<72> = 'PP'         ; * Bill Sender
+            CRT @(46,11):'~ Bill Sender ~'
+         CASE EDI.REC<72> = 'TP'         ; * Bill Third Party
+            CRT @(46,11):'~ Bill 3rd Party ~'
+      END CASE
+
+      BEGIN CASE
+         CASE IN.OUT='I'
+            CRT @(46,12):'~ INBOUND ~'
+         CASE IN.OUT='O'
+            CRT @(46,12):'~ OUTBOUND ~'
+         CASE IN.OUT='T'
+            CRT @(46,12):'~ THIRD PARTY ~'
+      END CASE
+      CRT @(52,13):EDI.REC<27>           ; * Shipper Accnt Number
+
+*
+* Consignee Information
+*
+      CRT @( 9,15):EDI.REC<28>           ; * Consignee Name
+      CRT @( 9,16):EDI.REC<29>           ; * Consignee Name 2
+      CRT @( 9,17):EDI.REC<30>           ; * Consignee Address
+      TEMP = DEST.CITY:', ':DEST.STATE:' ':DEST.ZIP
+      CRT @( 9,18):TEMP                  ; * Consignee City, State Zip
+
+      CRT @(54,17):EDI.REC<43>           ; * Signed
+      CRT @(52,18):EDI.REC<36>           ; * Consignee Act# Number
+
+      CRT @(62,15):EDI.REC<41>'D2/'      ; * Delivered Date
+      CRT @(62,16):OCONV(EDI.REC<42>,'MTHS')       ; * Delivered Time
+
+      T=EDI.REC<9>
+      IF T='' THEN T='{NO CUSTOMER REFERENCE DATA FROM BOL}'
+      CRT @(21,20):EDI.REC<9>            ; * Customer reference (Bill of Lading)
+
+      RETURN
+
+***********************************************************************
+READ.CLIENT.INFO:
+***********************************************************************
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         CALL ELINE("ERROR - Client ":CLIENT.ID:" not on file.")
+         STOP
+      END
+      CLIENT.NAME = CLIENT.REC<2>
+      ZIP.LEN = CLIENT.REC<17>
+      OPEN '','FB.BILLS,':CLIENT.ID TO F.BILLS ELSE
+         CALL ELINE("ERROR - Cannot open FB.BILLS for client ":CLIENT.ID)
+         STOP                            ; * START OVER
+      END
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.HIST ELSE
+         CALL ELINE("Cannot open FB.BILLS.HIST for client ":CLIENT.ID)
+         STOP                            ; * START OVER
+      END
+
+      RETURN
+
+***********************************************************************
+READ.CARRIER.INFO:
+***********************************************************************
+*
+* Get Carrrier Information
+*
+      READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE
+         CALL ELINE("ERROR - Carrier ":CARRIER.ID:" not on file.")
+         STOP
+      END
+      CARRIER.NAME = CARRIER.REC<1>
+      CARRIER.CITY = CARRIER.REC<3>
+      CARRIER.STATE = CARRIER.REC<4>
+
+      RETURN
+
+***********************************************************************
+DEBUG:
+***********************************************************************
+*
+* Was a special debug message passed? If not, Use the default.
+*
+      IF DEBUG.MSG = '' THEN DEBUG.MSG='DEBUG POINT - BREAK IT!'
+      CRT @(0,0):DEBUG.MSG:
+      INPUT NULL,1
+      CRT @(0,0):SPACE(LEN(DEBUG.MSG)):
+      DEBUG.MSG=''                       ; * Clear it to prevent reuse of special.
+
+      RETURN
+

@@ -1,0 +1,402 @@
+$OPTIONS HEADER.EJECT
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+ERRMSG=''
+*
+* PROGRAM FB.1.11.15.UPLOAD
+*
+* PROGRAM TO UPLOAD FROM XLS/TAB DELIMITED FILE THE CHILDREN /CUSTOMER/CLIENTS PER PARENT ACROSS THE SYSTEM.
+*
+* FREIGHT BILLING PACKAGE
+*
+* COPIED FROM FB.1.11.15
+*
+* JUNE 2008  BY N PRATT
+*
+* Initialize variables
+*
+10
+*
+      PROMPT''
+      PROG.NAME='FB.1.11.15.UPLOAD'
+      PROG.DESC = "PARENT CHILD XREF UPLOAD FROM XLS FILE"
+      PACK.NAME='FREIGHT BILLING'
+*
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.1.11.15.UPLOAD' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      CALL AFS.SCR.HEAD(CO.ID,"",'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      FILE.ID = "1000.1"
+      CALL GET.USER(USER.NAME)
+      BEGIN CASE
+        *
+        * Authorized users
+        *
+        CASE USER.NAME = 'DAVID'
+        CASE USER.NAME = 'OWEN'
+        CASE USER.NAME = 'NPRATT'
+        CASE USER.NAME = 'MKERBOW'
+        *
+        * Restrict everyone else
+        *
+        CASE 1
+          SUBJ="Unauthorized Program Access by ":USER.NAME
+          TEXT=''
+          TEXT<1,-1>=USER.NAME:' ':DATE()'D2/':' ':OCONV(TIME(),'MTHS'):' ':PROG.NAME
+          TEXT<1,-1>='User ':USER.NAME:' tried to access ':PROG.DESC
+          TEXT<1,-1>="(This user's name was not included in the program to allow access)"
+          MVIN=''
+******          MVIN<1> = "npratt@afs.net"
+          MVIN<2>=''
+          MVIN<4>='AFS'
+          MVIN<5>=SUBJ
+          MVIN<6>=TEXT
+          CALL SENDMAIL(MVIN,MVOUT)
+          CALL FB.PRINT.CENT(1,80,12,'Restricted Access Application...')
+          CALL FB.PRINT.CENT(1,80,14,'Access Denied! Contact the IS Help Desk for Access')
+          CALL ELINE('')
+          STOP
+      END CASE
+
+*
+* Open files
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      OPEN '','VOC' TO F.VOC ELSE CALL OPEN.ABORT('VOC',PROG.NAME)
+      OPEN '','FB.TABLES' TO F.TABLES ELSE CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+      OPEN '','GLOBAL.CLIENT.XREF' TO F.CL.XREF ELSE CALL OPEN.ABORT('GLOBAL.CLIENT.XREF',PROG.NAME)
+      OPEN '','BILLDATA.':USER.NAME TO F.DATA ELSE CALL OPEN.ABORT('BILLDATA.':USER.NAME,PROG.NAME)
+*
+*
+      OPEN '','GLOBAL.AF.CUST' TO F.AF.CUST ELSE
+         VOC.REC<3> = 'AF.CUST.':FILE.ID
+         WRITE VOC.REC ON F.VOC, "GLOBAL.AF.CUST"
+         OPEN '','GLOBAL.AF.CUST' TO F.AF.CUST ELSE CALL OPEN.ABORT("GLOBAL.AF.CUST",PROG.NAME)
+      END
+*
+*
+      OPEN '','GLOBAL.BR.CUST' TO F.BR.CUST ELSE
+         VOC.REC<3> = 'BR.CUST.':FILE.ID
+         WRITE VOC.REC ON F.VOC, "GLOBAL.BR.CUST"
+         OPEN '','GLOBAL.BR.CUST' TO F.BR.CUST ELSE CALL OPEN.ABORT("GLOBAL.BR.CUST",PROG.NAME)
+      END
+*
+*
+      OPEN '','GLOBAL.INT.CUST' TO F.INT.CUST ELSE
+         VOC.REC<3> = 'INT.CUST.':FILE.ID
+         WRITE VOC.REC ON F.VOC, "GLOBAL.INT.CUST"
+         OPEN '','GLOBAL.INT.CUST' TO F.INT.CUST ELSE CALL OPEN.ABORT("GLOBAL.INT.CUST",PROG.NAME)
+      END
+*
+      ERR.REC = ""
+      EQU TABX TO CHAR(9)
+*
+20 :
+*
+        CALL SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+        CRT ; CRT
+        HELP = "Reset GLOBAL.CLIENT.XREF and related references in related AF,BR & INT modules Y/N, ''=Exit."
+        CALL GEN.IN(10,10,"Clear Xref Y/N",'',Q,0,31,'','',1,38,10,0,QI,HELP,0,21)
+        Q = OCONV(Q,'MCU')
+*
+        IF Q = "" OR Q = "EX" THEN CRT @(-1) ; STOP
+*
+        IF Q = "Y" THEN
+           CLEAR.XREF = "N"
+           HELP = "Are you sure 'YES' to clear, ''=Exit."
+           W.STR = "Enter 'YES' to clear GLOBAL.CLIENT.XREF and related references "
+           CALL GEN.IN(10,12,W.STR,'',Q,0,31,'','',1,LEN(W.STR)+10,12,0,QI,HELP,0,21)
+           IF Q = "" OR Q = "EX" THEN CRT @(-1) ; STOP
+           IF Q = "YES" THEN
+              CLEAR.XREF = "Y"
+           END ELSE
+              CALL ELINE("Invalid response")
+              GOTO 20
+           END
+        END
+*
+*
+* Select and display available options
+*
+50 :
+*
+        CALL SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+        CRT ; CRT
+        HELP = "Enter File Name,''=Exit."
+        CALL GEN.IN(10,10,"Enter File Name please. ",'',Q,0,31,'','',1,38,10,0,QI,HELP,0,23)
+        Q = OCONV(Q,'MCU')
+*
+        IF Q = "" OR Q = "EX" THEN CRT @(-1) ; STOP
+*
+        ID.DATA = Q
+        READ DATA.REC FROM F.DATA, ID.DATA ELSE
+           CALL ELINE("File ":Q:" Not found ")
+           GOTO 50
+        END
+*
+100 :
+*
+        HELP = "Enter Module - BR, AF, INT, 'A'll three or ''=Exit."
+        CALL GEN.IN(10,12,"Enter Module",'',Q,0,31,'','',1,38,12,0,QI,HELP,0,23)
+        Q = OCONV(Q,'MCU')
+*
+        IF Q = "" OR Q = "EX" THEN CRT @(-1) ; STOP
+*
+        MODULES = ""
+*
+        IF Q = "BR" OR Q = "AF" OR Q = "INT" OR Q = "A" THEN
+           IF Q = "A" THEN
+              MODULES = "BR,AF,INT"
+           END ELSE
+              IF CLEAR.XREF = "Y" THEN
+                 CALL ELINE("All needs to be selected if the GLOBAL.CLIENT.XREF files is going to be cleared out")
+                 GOTO 100
+              END ELSE
+                 MODULES =Q
+              END
+           END
+        END ELSE
+           CALL ELINE("Invalid selection - Enter Module - BR, AF or INT")
+           GOTO 100
+        END
+*
+        ID.ERR = ID.DATA:"_ERRORS.XLS"
+        DELETE F.DATA, ID.ERR
+*
+        ERR = ""
+*
+        IF CLEAR.XREF = "Y" THEN GOSUB CLEAR.XREF
+*
+        GOTO FILE.FORMAT2   ;*ZZ
+*
+        N.LINES = DCOUNT(DATA.REC,CHAR(254))
+        FOR I.LINES = 1 TO N.LINES
+           W.LINE   = DATA.REC<I.LINES>
+*          W.CHILD      = FIELD(W.LINE,",",1)
+*           W.CHILD.NAME = FIELD(W.LINE,",",2)
+*           W.PARENT     = FIELD(W.LINE,",",3)
+*
+           BR.PARENT     = FIELD(W.LINE,TABX,1)
+           BR.CHILD      = FIELD(W.LINE,TABX,2)  
+*
+           INT.PARENT    = FIELD(W.LINE,TABX,6)
+           INT.CHILD     = FIELD(W.LINE,TABX,7)
+*
+           AF.PARENT     = FIELD(W.LINE,TABX,11)
+           AF.CHILD      = FIELD(W.LINE,TABX,12)        
+*
+           N.MODULES = DCOUNT(MODULES,",")
+           FOR I.MODULE = 1 TO N.MODULES
+              MODULE = FIELD(MODULES,",",I.MODULE)
+              GOSUB PROCESS
+           NEXT I.MODULE
+           IF ERR NE "" THEN
+              ERR.REC<-1> = ERR
+           END
+        NEXT I.LINES
+*
+FILE.FORMAT2 :
+*
+*
+        N.LINES = DCOUNT(DATA.REC,CHAR(254))
+        FOR I.LINES = 1 TO N.LINES
+           W.LINE   = DATA.REC<I.LINES>
+*
+           CHILD         = FIELD(W.LINE,TABX,1)
+           PARENT        = FIELD(W.LINE,TABX,4)
+           MODULE        = FIELD(W.LINE,TABX,3)
+*
+           GOSUB PROCESS.FORMAT2
+*
+           IF ERR NE "" THEN
+              ERR.REC<-1> = ERR
+           END
+        NEXT I.LINES
+*
+*
+        IF ERR.REC NE "" THEN
+           ID.ERR = ID.DATA:"_ERRORS.XLS"
+           WRITE ERR.REC ON F.DATA, ID.ERR
+           CALL ELINE("Errors detected see file - ":ID.ERR:" for details")
+        END
+*
+STOP
+*
+PROCESS:* Process SS Line
+*
+*
+   BEGIN CASE
+      CASE MODULE = "BR"
+         IF BR.PARENT = "" OR BR.CHILD = "" THEN RETURN
+         IF NUM(BR.PARENT) AND NUM(BR.CHILD) THEN NULL ELSE RETURN
+         ID.CLIENT = BR.PARENT "R%5"
+         ID.CUST   = BR.CHILD "R%5"
+      CASE MODULE = "INT"
+         IF INT.PARENT = "" OR INT.CHILD = "" THEN RETURN
+         IF NUM(INT.PARENT) AND NUM(INT.CHILD) THEN NULL ELSE RETURN
+         ID.CLIENT = INT.PARENT "R%5"
+         ID.CUST   = INT.CHILD "R%5"
+      CASE MODULE = "AF"
+         IF AF.PARENT = "" OR AF.CHILD = "" THEN RETURN
+         IF NUM(AF.PARENT) AND NUM(AF.CHILD) THEN NULL ELSE RETURN
+         ID.CLIENT = AF.PARENT "R%5"
+         ID.CUST   = AF.CHILD "R%5"
+   END CASE
+*
+   READ CLIENT.REC FROM F.CLIENTS, ID.CLIENT ELSE
+      ERR = "In Module ":MODULE:" - Client ":ID.CLIENT:" Not on file "
+      RETURN
+   END
+*
+   READ XREF.REC FROM F.CL.XREF, ID.CLIENT ELSE XREF.REC = ""
+   XREF.REC.HOLD = XREF.REC
+*
+* CRT MODULE:" ":ID.CLIENT:"    ":ID.CUST
+*
+   BEGIN CASE
+      CASE MODULE = "BR"
+         READ CUST.REC FROM F.BR.CUST, ID.CUST THEN
+            W.CUST.PARENT = CUST.REC<52>
+            IF W.CUST.PARENT = "" OR CLEAR.XREF = "Y" THEN
+               CUST.REC<52> = ID.CLIENT
+               WRITE CUST.REC ON F.BR.CUST, ID.CUST
+            END ELSE
+               IF W.CUST.PARENT NE ID.CLIENT THEN
+                  ERR = "In Module ":MODULE:" - Child Customer ":ID.CUST:" Has parent Client ":W.CUST.PARENT:" Assigned - No updating done "
+                  RETURN
+               END
+            END
+         END
+         LOCATE ID.CUST IN XREF.REC<2> BY 'AR' SETTING SPOS ELSE
+            INS ID.CUST BEFORE XREF.REC<2,SPOS>
+         END
+      CASE MODULE = "AF"
+         READ CUST.REC FROM F.AF.CUST, ID.CUST THEN
+            W.CUST.PARENT = CUST.REC<52>
+            IF W.CUST.PARENT = "" OR CLEAR.XREF = "Y" THEN
+               CUST.REC<52> = ID.CLIENT
+               WRITE CUST.REC ON F.AF.CUST, ID.CUST
+            END ELSE
+               IF W.CUST.PARENT NE ID.CLIENT THEN
+                  ERR ="In Module ":MODULE:" - Child Customer ":ID.CUST:" Has parent Client ":W.CUST.PARENT:" Assigned - No updating done "
+                  RETURN
+               END
+            END
+         END
+         LOCATE ID.CUST IN XREF.REC<3> BY 'AR' SETTING SPOS ELSE
+            INS ID.CUST BEFORE XREF.REC<3,SPOS>
+         END
+      CASE MODULE = "INT"
+         READ CUST.REC FROM F.INT.CUST, ID.CUST THEN
+            W.CUST.PARENT = CUST.REC<52>
+            IF W.CUST.PARENT = "" OR CLEAR.XREF = "Y" THEN
+               CUST.REC<52> = ID.CLIENT
+               WRITE CUST.REC ON F.INT.CUST, ID.CUST
+            END ELSE
+               IF W.CUST.PARENT NE ID.CLIENT THEN
+                  ERR = "In Module ":MODULE:" - Child Customer ":ID.CUST:" Has parent Client ":W.CUST.PARENT:" Assigned - No updating done "
+                  RETURN
+               END
+            END
+         END
+         LOCATE ID.CUST IN XREF.REC<4> BY 'AR' SETTING SPOS ELSE
+            INS ID.CUST BEFORE XREF.REC<4,SPOS>
+         END
+* CRT ID.CLIENT:"    ":ID.CUST:"   <4> - ":XREF.REC<4>
+*
+   END CASE 
+*
+   LOCATE ID.CLIENT IN XREF.REC<1> BY 'AR' SETTING SPOS ELSE
+      INS ID.CLIENT BEFORE XREF.REC<1,SPOS>
+   END
+*
+   IF XREF.REC NE XREF.REC.HOLD THEN
+      WRITE XREF.REC ON F.CL.XREF, ID.CLIENT
+   END   
+*
+RETURN
+*
+PROCESS.FORMAT2:* Process SS Line
+*
+   IF PARENT = "" OR CHILD = "" THEN RETURN
+   IF NUM(PARENT) AND NUM(CHILD) THEN NULL ELSE RETURN
+*
+   ID.CLIENT = PARENT "R%5"
+   ID.CUST   = CHILD  "R%5"
+*
+   READ CLIENT.REC FROM F.CLIENTS, ID.CLIENT ELSE
+      ERR = "In Module ":MODULE:" - Client ":ID.CLIENT:" Not on file "
+      RETURN
+   END
+*
+   READ XREF.REC FROM F.CL.XREF, ID.CLIENT ELSE XREF.REC = ""
+   XREF.REC.HOLD = XREF.REC
+*
+* CRT MODULE:" ":ID.CLIENT:"    ":ID.CUST
+*
+   BEGIN CASE
+      CASE MODULE = "BR"
+         READ CUST.REC FROM F.BR.CUST, ID.CUST THEN
+            W.CUST.PARENT = CUST.REC<52>
+            IF W.CUST.PARENT = "" OR CLEAR.XREF = "Y" THEN
+               CUST.REC<52> = ID.CLIENT
+               WRITE CUST.REC ON F.BR.CUST, ID.CUST
+            END ELSE
+               IF W.CUST.PARENT NE ID.CLIENT THEN
+                  ERR = "In Module ":MODULE:" - Child Customer ":ID.CUST:" Has parent Client ":W.CUST.PARENT:" Assigned - No updating done "
+                  RETURN
+               END
+            END
+         END
+         LOCATE ID.CUST IN XREF.REC<2> BY 'AR' SETTING SPOS ELSE
+            INS ID.CUST BEFORE XREF.REC<2,SPOS>
+         END
+      CASE MODULE = "AF"
+         READ CUST.REC FROM F.AF.CUST, ID.CUST THEN
+            W.CUST.PARENT = CUST.REC<52>
+            IF W.CUST.PARENT = "" OR CLEAR.XREF = "Y" THEN
+               CUST.REC<52> = ID.CLIENT
+               WRITE CUST.REC ON F.AF.CUST, ID.CUST
+            END ELSE
+               IF W.CUST.PARENT NE ID.CLIENT THEN
+                  ERR ="In Module ":MODULE:" - Child Customer ":ID.CUST:" Has parent Client ":W.CUST.PARENT:" Assigned - No updating done "
+                  RETURN
+               END
+            END
+         END
+         LOCATE ID.CUST IN XREF.REC<3> BY 'AR' SETTING SPOS ELSE
+            INS ID.CUST BEFORE XREF.REC<3,SPOS>
+         END
+      CASE MODULE = "INT"
+         READ CUST.REC FROM F.INT.CUST, ID.CUST THEN
+            W.CUST.PARENT = CUST.REC<52>
+            IF W.CUST.PARENT = "" OR CLEAR.XREF = "Y" THEN
+               CUST.REC<52> = ID.CLIENT
+               WRITE CUST.REC ON F.INT.CUST, ID.CUST
+            END ELSE
+               IF W.CUST.PARENT NE ID.CLIENT THEN
+                  ERR = "In Module ":MODULE:" - Child Customer ":ID.CUST:" Has parent Client ":W.CUST.PARENT:" Assigned - No updating done "
+                  RETURN
+               END
+            END
+         END
+         LOCATE ID.CUST IN XREF.REC<4> BY 'AR' SETTING SPOS ELSE
+            INS ID.CUST BEFORE XREF.REC<4,SPOS>
+         END
+*
+   END CASE 
+*
+   LOCATE ID.CLIENT IN XREF.REC<1> BY 'AR' SETTING SPOS ELSE
+      INS ID.CLIENT BEFORE XREF.REC<1,SPOS>
+   END
+*
+   IF XREF.REC NE XREF.REC.HOLD THEN
+      WRITE XREF.REC ON F.CL.XREF, ID.CLIENT
+   END   
+*
+RETURN
+*
+CLEAR.XREF :
+*
+EXECUTE \CLEAR-FILE DATA GLOBAL.CLIENT.XREF\
+*
+RETURN

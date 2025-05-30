@@ -1,0 +1,842 @@
+*======================================================================
+*  PROGRAM:    Correct Misroute Amount
+*
+*  PROGRAMMER: James M. Barberousse, 04-2001, 08-2001
+*
+*  PURPOSE:    This program has been modified to read and display the list
+*              of values in attributes 22 and 23 in the file FB.BILLS.HIST.
+*              Attribute 22 is a list of approved dollar amounts, and attribute
+*              23 is a list of approved carrier numbers that go with these amounts.
+*              The user is allowed to make changes to the existing amounts and
+*              carriers, add carriers and amounts, and delete carriers and amounts
+*              subject to the following rules:
+*
+*              (1)  The first amount cannot be changed to be more than the actual amount.
+*              (2)  Each successive value must be greater than the value previous.
+*              (3)  carrier names cannot appear twice in the list
+*
+*              Once the user has finished entering the changes, the new attributes
+*              22 and 23 are written to the file and then attributes 63 and 69 are
+*              updated with the first values in attributes 22 and 23.
+*======================================================================
+* PICK COMPILER INFORMATION
+* ~~~~~~~~~~~~~~~~~~~~~~~~~
+*  ~PICK-FILE: FBBP
+*  ~PICK-RECORD: FB.ADJ.MISROUTE
+*  ~PICK-FILE: BP
+*  ~PICK-RECORD: JIM
+*  ~COMPILE-REC: YES
+*  ~AUTO-ANSWER: NO
+*  ~RUN-REC: YES
+*======================================================================
+*   COPYRIGHT (C) 1995 - 2001 by AFS LOGISTICS LLC - ALL RIGHTS RESERVED
+*       ----------------------------------------------------
+*  This program is sole property of AFS Logistics, LLC (AUTOMATED
+*  FREIGHT SYSTEMS) and may not be used, copied, or modified without
+*  the express written consent of Brian Barker of AFS Logistics, LLC.
+*======================================================================
+* 112202 - JMK01 - IF DM IS DELETED THEN REMOVE FROM FB.LOGISTICS FILE
+* 122002 - JMK02 - UPDATE COGNOS.UPDATE FILE FOR ANY UPDATES
+* 012103 - JMK03 - DISABLE COGNOS.UPDATE PROCESS
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_CLIENTS
+
+*-----------------------------------------------
+* Initialize app variables
+*-----------------------------------------------
+      PROMPT''
+      MASK.CHAR='-'
+      PORT.NUM=SYSTEM(19)                ; * Port user is sitting on
+      CALL GET.USER(USER.NAME)
+      USER.NAME=TRIM(OCONV(USER.NAME,'MCU'))
+      PROG.NAME='FB.ADJ.MISROUTE'
+      PROG.DESC='Correct Misroute Amount'
+      PACK.NAME='USER:':USER.NAME
+      CO.NAME='AFS Logistics, LLC'
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.ADJ.MISROUTE' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+
+      CLIENT.ID=''
+      CLIENT.REC1=''
+      CLIENT.NAME=''
+      CLIENT.ADDRESS=''
+      CLIENT.CITY=''
+      CLIENT.STATE=''
+      CLIENT.ZIP=''
+
+      CARRIER.ID=''
+      CARRIER.REC=''
+      CARRIER.NAME=''
+      CARRIER.ADDRESS=''
+      CARRIER.CITY=''
+      CARRIER.STATE=''
+      CARRIER.ZIP=''
+
+      PRO.NUMBER=''
+
+*-----------------------------------------------
+* Open general files
+*-----------------------------------------------
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','FB.LOGISTICS' TO F.LOGS ELSE        ; * JMK01
+         CALL OPEN.ABORT('FB.LOGISTICS',PROG.NAME)           ; * JMK01
+      END                                ; * JMK01
+*     OPEN '','COGNOS.UPDATE' TO F.COGNOS.UPDATE ELSE        ; * JMK02; * JMK03
+*        CALL OPEN.ABORT('F.COGNOS.UPDATE',PROG.NAME)        ; * JMK02; * JMK03
+*     END                                ; * JMK02; * JMK03
+
+*-----------------------------------------------
+* Display the beginning screen
+*-----------------------------------------------
+      GOSUB INIT.SCREEN
+
+*-----------------------------------------------
+* Get client ID
+*-----------------------------------------------
+GET.CLIENT:
+      IF CLIENT.ID='' THEN MASK=STR(MASK.CHAR,5) ELSE MASK=CLIENT.ID'%5'
+      HELP='Enter Client ID Number or Letters for Search. [X]=Exit [EX]=Exit'
+      CALL GEN.IN(13,3,MASK,'',Q,0,5,'','',2,-5,3,1,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      BEGIN CASE
+         CASE QI='EX' OR QI='X'
+            GOTO THE.END
+         CASE NUM(QI) AND QI#''
+            CLIENT.ID=QI'R%5'
+         CASE NOT(QI MATCHES '0N') AND QI#''
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOSUB INIT.SCREEN
+                  GOTO GET.CLIENT
+               CASE DCOUNT(ITEM.LIST,@AM) GT 1
+                  GOSUB INIT.SCREEN
+                  GOTO GET.CLIENT
+               CASE 1
+                  DATA ITEM.LIST
+                  GOSUB INIT.SCREEN
+                  GOTO GET.CLIENT
+            END CASE
+         CASE QI=''
+            IF CLIENT.ID='' THEN
+               GOTO GET.CLIENT
+            END
+         CASE 1
+            CALL ELINE('Invalid Client ID. Try again.')
+            CLIENT.ID=''
+            GOTO GET.CLIENT
+      END CASE
+
+*-----------------------------------------------
+* Read client record
+*-----------------------------------------------
+      READ CLIENT.REC1 FROM F.CLIENTS,CLIENT.ID THEN
+         CLIENT.NAME=CLIENT.REC1<2>
+         CLIENT.ADDRESS=CLIENT.REC1<3>
+         CLIENT.CITY=CLIENT.REC1<4>
+         CLIENT.STATE=CLIENT.REC1<5>
+         CLIENT.ZIP=CLIENT.REC1<6>
+         GOSUB DSP.SCREEN.DATA
+      END ELSE
+         CLIENT.NAME=''
+         CLIENT.ADDRESS=''
+         CLIENT.CITY=''
+         CLIENT.STATE=''
+         CLIENT.ZIP=''
+         GOSUB DSP.SCREEN.DATA
+         CALL ELINE('Client ':CLIENT.ID:' is not a valid client number.')
+         CLIENT.ID=''
+         GOTO GET.CLIENT
+      END
+
+*-----------------------------------------------
+* Open FB.BILLS.HIST:CLIENT.ID
+*-----------------------------------------------
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.HIST ELSE
+         CALL ELINE('Cannot open FB.BILLS.HIST,':CLIENT.ID:'. Check the Client Number and try again.')
+         CLIENT.ID=''
+         GOSUB DSP.SCREEN.DATA
+         GOTO GET.CLIENT
+      END
+      OPEN '','VEND.CUST,':CLIENT.ID TO F.VC ELSE  ; * JMK01
+         CALL OPEN.ABORT('VEND.CUST,':CLIENT.ID,PROG.NAME)   ; * JMK01
+      END                                ; * JMK01
+
+*-----------------------------------------------
+* Get carrier
+*-----------------------------------------------
+GET.CARRIER:
+      IF CARRIER.ID='' THEN MASK=STR(MASK.CHAR,5) ELSE MASK=CARRIER.ID'%5'
+      HELP='Enter Carrier ID Number or Letters for Search. [X]=Back [EX]=Exit'
+      CALL GEN.IN(13,7,MASK,'',Q,0,5,'','',2,-5,7,1,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            GOSUB DSP.SCREEN.DATA
+            GOTO GET.CLIENT
+         CASE NUM(QI) AND QI#''
+            CARRIER.ID=QI'R%5'
+         CASE NOT(QI MATCHES '0N')
+            CALL SOUNDEX.DISPLAY(QI,'CARRIERS','SDX.CARRIER,NAME','1,3,4',ITEM.LIST)
+            GOSUB INIT.SCREEN
+            GOSUB DSP.SCREEN.DATA
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOSUB INIT.SCREEN
+                  GOSUB DSP.SCREEN.DATA
+                  GOTO GET.CARRIER
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOSUB INIT.SCREEN
+                  GOSUB DSP.SCREEN.DATA
+                  GOTO GET.CARRIER
+               CASE ITEM.LIST#''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOSUB INIT.SCREEN
+                  GOSUB DSP.SCREEN.DATA
+                  GOTO GET.CARRIER
+            END CASE
+         CASE QI=''
+            IF CARRIER.ID='' THEN
+               GOTO GET.CARRIER
+            END
+         CASE 1
+            CALL ELINE('Invalid Carrier Number. Try again.')
+            CARRIER.ID=''
+            GOTO GET.CARRIER
+      END CASE
+
+*-----------------------------------------------
+* Read carrier records
+*-----------------------------------------------
+      READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID THEN
+         CARRIER.NAME=CARRIER.REC<1>
+         CARRIER.ADDRESS=CARRIER.REC<2>
+         CARRIER.CITY=CARRIER.REC<3>
+         CARRIER.STATE=CARRIER.REC<4>
+         CARRIER.ZIP=CARRIER.REC<5>
+         GOSUB DSP.SCREEN.DATA
+      END ELSE
+         CARRIER.NAME=''
+         CARRIER.ADDRESS=''
+         CARRIER.CITY=''
+         CARRIER.STATE=''
+         CARRIER.ZIP=''
+         GOSUB DSP.SCREEN.DATA
+         CALL ELINE('"':CARRIER.ID:'" is an invalid Carrier Number. Try again.')
+         CARRIER.ID=''
+         GOTO GET.CARRIER
+      END
+
+*-----------------------------------------------
+* Get PRO.NUMBER
+*-----------------------------------------------
+GET.PRO.NUMBER:
+      IF PRO.NUMBER='' THEN MASK=STR(MASK.CHAR,20) ELSE MASK=PRO.NUMBER
+      HELP='Enter the Bill Pro Number. [X]=Back [EX]=Exit'
+      CALL GEN.IN(13,11,MASK,'',Q,0,20,'','',2,13,11,1,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            GOSUB DSP.SCREEN.DATA
+            GOTO GET.CARRIER
+         CASE QI=''
+            IF PRO.NUMBER='' THEN
+               GOTO GET.PRO.NUMBER
+            END
+         CASE 1
+            PRO.NUMBER=QI
+      END CASE
+
+      PRO.ID=CARRIER.ID:'*':PRO.NUMBER:'*':'0'
+
+*-----------------------------------------------
+* Read FB.BILLS.HIST file
+*-----------------------------------------------
+      READU PRO.REC FROM F.HIST,PRO.ID ELSE
+         CALL ELINE('"Bill ':PRO.ID:'" was not found. Try again.')
+         PRO.NUMBER=''
+         GOTO GET.PRO.NUMBER
+      END
+
+      GOSUB DSP.SCREEN.DATA
+
+      IF PRO.REC<22>='' THEN PRO.REC<22>=PRO.REC<63>
+      IF PRO.REC<23>='' THEN PRO.REC<23>=PRO.REC<69>
+
+      * Debugging and testing statements
+      * PRO.REC<22,-1>=ICONV(140.21,'MR2'); PRO.REC<23,-1>=00001
+      * PRO.REC<22,-1>=ICONV(210.87,'MR2'); PRO.REC<23,-1>=00050
+      * PRO.REC<22,-1>=ICONV(789.43,'MR2'); PRO.REC<23,-1>=00714
+      * PRO.REC<22,-1>=ICONV(1402.22,'MR2'); PRO.REC<23,-1>=02302
+      * PRO.REC<22,-1>=ICONV(1507.43,'MR2'); PRO.REC<23,-1>=00212
+      * PRO.REC<22,-1>=ICONV(1743.21,'MR2'); PRO.REC<23,-1>=00004
+      * PRO.REC<22,-1>=ICONV(1810.87,'MR2'); PRO.REC<23,-1>=00030
+      * Debugging and testing statements
+
+*-----------------------------------------------
+* Allow user to edit, add, or delete approved
+* amounts and carriers
+*-----------------------------------------------
+
+      * Draw table headings
+      GOSUB DRAW.TABLE.HEADINGS
+
+GET.NUMBER.APPROVED:
+      * Get number of approved amounts/carriers
+      * These should always be equal, so assume that is ALWAYS TRUE
+      NUMBER.APPROVED=DCOUNT(PRO.REC<22>,@VM)      ; * =DCOUNT(PRO.REC<23>,@VM)
+
+      * Assign initial starting and ending values for paging of the table
+      IF NUMBER.APPROVED+0=0 THEN
+         * Use values that will cause nothing to display
+         START.TABLE=1
+         END.TABLE=0
+      END ELSE
+         START.TABLE=1
+         IF NUMBER.APPROVED>5 THEN
+            END.TABLE=5
+         END ELSE
+            END.TABLE=NUMBER.APPROVED
+         END
+      END
+
+DISPLAY.ITEMS:
+      GOSUB DSP.TABLE.DATA
+
+      * Prompt for and get response
+GET.ITEM:
+      CRT @(0,21):'Select :':@(-4)
+      CRT @(0,22):@(-4)
+      MASK=STR(MASK.CHAR,4)
+      HELP='Enter Item to Edit. [A]=Add [U]=Update [CR]=Next [P]=Prev [X]=Back [EX]=Exit'
+      CALL GEN.IN(9,21,MASK,'',Q,0,4,'','',2,9,21,1,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            GOSUB INIT.SCREEN
+            GOSUB DSP.SCREEN.DATA
+            GOTO GET.PRO.NUMBER
+         CASE QI='P'
+            IF START.TABLE>1 THEN
+               START.TABLE=START.TABLE-5
+               END.TABLE=START.TABLE+4
+            END
+            GOTO DISPLAY.ITEMS
+         CASE QI=''                      ; * CR
+            IF (END.TABLE+1)<=NUMBER.APPROVED THEN
+               START.TABLE=END.TABLE+1
+               IF (START.TABLE+4)<=NUMBER.APPROVED THEN
+                  END.TABLE=START.TABLE+4
+               END ELSE
+                  END.TABLE=NUMBER.APPROVED
+               END
+            END
+            GOTO DISPLAY.ITEMS
+         CASE QI='U'
+            GOTO CONFIRM.UPDATE
+         CASE QI='A'
+            GOTO ADD.ITEM
+         CASE NUM(QI) AND (QI>=START.TABLE) AND (QI<=END.TABLE)
+            * Never get in here if there are no items to edit
+            ITEM.TO.EDIT=QI
+            GOTO EDIT.DELETE.ITEM
+         CASE 1
+            CALL ELINE('Invalid Entry. Try again.')
+            GOTO GET.ITEM
+      END CASE
+
+
+ADD.ITEM:
+      NEW.AMOUNT=0
+      NEW.CARRIER.ID=0
+ADD.AMOUNT:
+      CRT @(0,21):' Add':@(-4)
+      IF NEW.AMOUNT+0=0 THEN
+         MASK='#########'
+      END ELSE
+         MASK=NEW.AMOUNT'R26,$#11'
+      END
+      HELP='Enter Approved Amount. [X]=Back [EX]=Exit'
+      CALL GEN.IN(9,21,MASK,'AMT2',Q,0,9,'','',2,9,21,1,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      IF QI='' THEN
+         QI=NEW.AMOUNT
+         Q=NEW.AMOUNT
+      END
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            GOTO GET.ITEM
+         CASE NUM(QI)
+            IF (NUMBER.APPROVED=0) AND (Q>PRO.REC<8>) THEN
+               CALL ELINE('Approved Amount for this Item must be less than Actual Charge. Try again.')
+               GOTO ADD.AMOUNT
+            END
+            NEW.AMOUNT=Q
+         CASE 1
+            CALL ELINE('Invalid Entry. Try again.')
+            GOTO ADD.AMOUNT
+      END CASE
+ADD.CARRIER:
+      CRT @(0,21):' Add':@(9,21):NEW.AMOUNT'R26,$#11':@(23,21):@(-4)
+      IF NEW.CARRIER.ID+0=0 THEN
+         MASK=STR(MASK.CHAR,5)
+      END ELSE
+         MASK=NEW.CARRIER.ID
+      END
+      HELP='Enter Approved Carrier ID or Letters to Search.  [X]=Back [EX]=Exit'
+      CALL GEN.IN(23,21,MASK,'',Q,0,20,'','',2,23,21,1,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      IF QI='' THEN QI=NEW.CARRIER.ID
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            GOTO ADD.AMOUNT
+         CASE NUM(QI)
+            NEW.CARRIER.ID=QI'R%5'
+            READV NEW.CARRIER.NAME FROM F.CARRIERS,NEW.CARRIER.ID,1 THEN
+               CRT @(23,21):NEW.CARRIER.ID:'  ':NEW.CARRIER.NAME
+               LOCATE NEW.CARRIER.ID IN PRO.REC<23> SETTING REC.POS THEN
+                  CALL ELINE('This Carrier already exists. Try again.')
+                  GOTO ADD.CARRIER
+               END
+            END ELSE
+               NEW.CARRIER.NAME='**  Carrier ID Not Found  **'
+               CRT @(23,21):NEW.CARRIER.ID:'  ':NEW.CARRIER.NAME
+               CALL ELINE('This Carrier ID was not found. Try again.')
+               GOTO ADD.CARRIER
+            END
+            YN.MSG='Is the new information correct?'
+            YN.MASK='Y'
+            GOSUB ASK.Y.OR.N
+            IF YN.ANSWER='X' THEN GOTO ADD.CARRIER
+            IF YN.ANSWER='N' THEN GOTO ADD.AMOUNT
+            * Put in the added amount and the added carrier name in order by amount
+            LOCATE NEW.AMOUNT IN PRO.REC<22> BY 'AR' SETTING REC.POS THEN
+               NULL
+            END
+            * Whether or not the amount was matched exactly, insert at REC.POS
+            INS NEW.AMOUNT BEFORE PRO.REC<22,REC.POS>
+            INS NEW.CARRIER.ID BEFORE PRO.REC<23,REC.POS>
+            GOTO GET.NUMBER.APPROVED
+         CASE NOT(QI MATCHES '0N')
+            CALL SOUNDEX.DISPLAY(QI,'CARRIERS','SDX.CARRIER,NAME','1,3,4',ITEM.LIST)
+            GOSUB INIT.SCREEN
+            GOSUB DSP.SCREEN.DATA
+            GOSUB DRAW.TABLE.HEADINGS
+            GOSUB DSP.TABLE.DATA
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO ADD.CARRIER
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO ADD.CARRIER
+               CASE ITEM.LIST#''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO ADD.CARRIER
+            END CASE
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO ADD.CARRIER
+      END CASE
+
+
+EDIT.DELETE.ITEM:
+      CRT @(0,21):ITEM.TO.EDIT'R#4':SPACE(5):'Select :':@(-4)
+      MASK=STR(MASK.CHAR,2)
+      HELP='Enter Option. [E]=Edit Item [D]=Delete Item [X]=Back [EX]=Exit'
+      CALL GEN.IN(18,21,MASK,'',Q,1,2,'','',2,18,21,0,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            GOTO DISPLAY.ITEMS
+         CASE QI='D'
+            YN.MSG='Delete Item ':ITEM.TO.EDIT:'?'
+            YN.MASK='N'
+            GOSUB ASK.Y.OR.N
+            IF (YN.ANSWER='X') OR (YN.ANSWER='N') THEN GOTO EDIT.DELETE.ITEM
+            IF (NUMBER.APPROVED>1) AND (ITEM.TO.EDIT=1) AND (PRO.REC<22,2> > PRO.REC<8>) THEN
+               CALL ELINE('This will make Item 2 the new Item 1 and greater than the Actual Amount.')
+               GOTO EDIT.DELETE.ITEM
+            END ELSE
+               DEL PRO.REC<22,ITEM.TO.EDIT>
+               DEL PRO.REC<23,ITEM.TO.EDIT>
+               VC.ID=PRO.REC<17>         ; * JMK01
+               LOC.ZIP=PRO.REC<4>        ; * JMK01
+               READ VC.REC FROM F.VC,VC.ID THEN    ; * JMK01
+                  LOCATE LOC.ZIP IN VC.REC<11> SETTING LOC.POS THEN    ; * JMK01
+                     LOCATE PRO.ID IN VC.REC<16,LOC.POS> SETTING PRO.POS THEN    ; * JMK01
+                        LTR.DATE=VC.REC<17,LOC.POS,PRO.POS>  ; * JMK01
+                        CONF.NUM=LTR.DATE:'*':CLIENT.ID:'*':VC.ID:'*':LOC.ZIP    ; * JMK01
+                        DELETE F.LOGS,CONF.NUM     ; * JMK01
+                     END                 ; * JMK01
+                  END                    ; * JMK01
+               END                       ; * JMK01
+               GOTO GET.NUMBER.APPROVED
+            END
+         CASE QI='E'
+            NEW.AMOUNT=PRO.REC<22,ITEM.TO.EDIT>
+            NEW.CARRIER.ID=PRO.REC<23,ITEM.TO.EDIT>
+EDIT.AMOUNT:
+            CRT @(9,21):@(-4)
+            MASK=NEW.AMOUNT'R26,$#11'
+            HELP='Enter the new Approved Amount for this Item. [X]=Back [EX]=Exit'
+            CALL GEN.IN(9,21,MASK,'AMT2',Q,0,9,'','',2,9,21,1,QI,HELP,0,23)
+            QI=TRIM(OCONV(QI,'MCU'))
+            IF QI='' THEN
+               QI=NEW.AMOUNT
+               Q=NEW.AMOUNT
+            END
+            BEGIN CASE
+               CASE QI='EX'
+                  GOTO THE.END
+               CASE QI='X'
+                  GOTO EDIT.DELETE.ITEM
+               CASE NUM(QI)
+                  IF NUMBER.APPROVED=1 THEN
+                     IF (ITEM.TO.EDIT=1) AND (Q>PRO.REC<8>) THEN
+                        CALL ELINE('Approved Amount for this Item must be less than Actual Charge.  Try again.')
+                        GOTO EDIT.AMOUNT
+                     END
+                  END ELSE
+                     IF (ITEM.TO.EDIT=1) AND (Q>PRO.REC<8>) AND (PRO.REC<22,2> > PRO.REC<8>) THEN
+                        CALL ELINE('Approved Amount for this Item must be less than Actual Charge.  Try again.')
+                        GOTO EDIT.AMOUNT
+                     END
+                  END
+                  NEW.AMOUNT=Q
+               CASE 1
+                  CALL ELINE('Invalid Entry. Try again.')
+                  GOTO EDIT.AMOUNT
+            END CASE
+EDIT.CARRIER:
+            CRT @(0,21):ITEM.TO.EDIT'R#4':@(9,21):NEW.AMOUNT'R26,$#11':@(23,21):@(-4)
+            MASK=NEW.CARRIER.ID
+            HELP='Enter the new Approved Carrier ID for this Item. [X]=Back [EX]=Exit'
+            CALL GEN.IN(23,21,MASK,'',Q,0,20,'','',2,23,21,1,QI,HELP,0,23)
+            QI=TRIM(OCONV(QI,'MCU'))
+            IF QI='' THEN QI=NEW.CARRIER.ID
+            BEGIN CASE
+               CASE QI='EX'
+                  GOTO THE.END
+               CASE QI='X'
+                  GOTO EDIT.AMOUNT
+               CASE NUM(QI)
+                  NEW.CARRIER.ID=QI'R%5'
+                  READV NEW.CARRIER.NAME FROM F.CARRIERS,NEW.CARRIER.ID,1 THEN
+                     CRT @(23,21):NEW.CARRIER.ID:', ':NEW.CARRIER.NAME
+                     IF NEW.CARRIER.ID <> PRO.REC<23,ITEM.TO.EDIT> THEN
+                        LOCATE NEW.CARRIER.ID IN PRO.REC<23> SETTING REC.POS THEN
+                           CALL ELINE('This Carrier already exists. Try again.')
+                           GOTO EDIT.CARRIER
+                        END
+                     END
+                  END ELSE
+                     NEW.CARRIER.NAME='**  Carrier ID Not Found  **'
+                     CRT @(23,21):NEW.CARRIER.ID:'  ':NEW.CARRIER.NAME
+                     CALL ELINE('This Carrier ID was not found. Try again.')
+                     GOTO EDIT.CARRIER
+                  END
+                  YN.MSG='Is the new information correct?'
+                  YN.MASK='Y'
+                  GOSUB ASK.Y.OR.N
+                  IF YN.ANSWER='X' THEN GOTO EDIT.CARRIER
+                  IF YN.ANSWER='N' THEN GOTO EDIT.AMOUNT
+                  * Put in the changed amount and changed carrier name in order by amount
+                  * CRT @(0,2):@(-4):@(0,2):'NEW.AMOUNT=':NEW.AMOUNT:@(20,2):'PRO.REC=':PRO.REC<22,ITEM.TO.EDIT>; * DEBUG
+                  LOCATE NEW.AMOUNT IN PRO.REC<22> BY 'AR' SETTING REC.POS THEN
+                     NULL
+                  END
+                  * REC.POS points to either the found amount or the position to add it
+                  DEL PRO.REC<22,ITEM.TO.EDIT>
+                  DEL PRO.REC<23,ITEM.TO.EDIT>
+                  IF REC.POS>ITEM.TO.EDIT THEN
+                     * The item just deleted was before the one to add, so everything shifted
+                     * up one position.  So use REC.POS - 1
+                     INS NEW.AMOUNT BEFORE PRO.REC<22,REC.POS-1>
+                     INS NEW.CARRIER.ID BEFORE PRO.REC<23,REC.POS-1>
+                  END ELSE
+                     INS NEW.AMOUNT BEFORE PRO.REC<22,REC.POS>
+                     INS NEW.CARRIER.ID BEFORE PRO.REC<23,REC.POS>
+                  END
+                  VC.ID=PRO.REC<17>      ; * JMK01
+                  LOC.ZIP=PRO.REC<4>     ; * JMK01
+                  READ VC.REC FROM F.VC,VC.ID THEN           ; * JMK01
+                     LOCATE LOC.ZIP IN VC.REC<11> SETTING LOC.POS THEN           ; * JMK01
+                        LOCATE PRO.ID IN VC.REC<16,LOC.POS> SETTING PRO.POS THEN           ; * JMK01
+                           LTR.DATE=VC.REC<17,LOC.POS,PRO.POS>         ; * JMK01
+                           CONF.NUM=LTR.DATE:'*':CLIENT.ID:'*':VC.ID:'*':LOC.ZIP           ; * JMK01
+                           READU LOG.REC FROM F.LOGS,CONF.NUM THEN     ; * JMK01
+                              LOG.REC<2>=NEW.AMOUNT          ; * JMK01
+                              WRITE LOG.REC ON F.LOGS,CONF.NUM         ; * JMK01
+                           END           ; * JMK01
+                           RELEASE F.LOGS,CONF.NUM           ; * JMK01
+                        END              ; * JMK01
+                     END                 ; * JMK01
+                  END                    ; * JMK01
+                  GOTO DISPLAY.ITEMS
+               CASE NOT(QI MATCHES '0N')
+                  CALL SOUNDEX.DISPLAY(QI,'CARRIERS','SDX.CARRIER,NAME','1,3,4',ITEM.LIST)
+                  GOSUB INIT.SCREEN
+                  GOSUB DSP.SCREEN.DATA
+                  GOSUB DRAW.TABLE.HEADINGS
+                  GOSUB DSP.TABLE.DATA
+                  BEGIN CASE
+                     CASE ITEM.LIST=''
+                        GOTO EDIT.CARRIER
+                     CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                        GOTO EDIT.CARRIER
+                     CASE ITEM.LIST#''
+                        IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                        GOTO EDIT.CARRIER
+                  END CASE
+               CASE 1
+                  CALL ELINE('Invalid entry. Try again.')
+                  GOTO EDIT.CARRIER
+            END CASE
+         CASE 1
+            CALL ELINE('Invalid entry. Try again')
+            GOTO EDIT.DELETE.ITEM
+      END CASE
+
+
+CONFIRM.UPDATE:
+      OLD.MISROUTE.AMOUNT=PRO.REC<63>
+      OLD.MISROUTE.CARRIER.ID=PRO.REC<69>
+      READV OLD.MISROUTE.CARRIER FROM F.CARRIERS,OLD.MISROUTE.CARRIER.ID,1 ELSE
+         OLD.MISROUTE.CARRIER='**  Carrier ID Not Found  **'
+      END
+
+      NEW.MISROUTE.AMOUNT=PRO.REC<22,1>  ; * First of the approved amounts
+      NEW.MISROUTE.CARRIER.ID=PRO.REC<23,1>        ; * First of the approved carrier IDs
+      READV NEW.MISROUTE.CARRIER FROM F.CARRIERS,NEW.MISROUTE.CARRIER.ID,1 ELSE
+         NEW.MISROUTE.CARRIER='**  Carrier ID Not Found  **'
+      END
+
+      CRT @(0,21):'Old M/R: ':OLD.MISROUTE.AMOUNT'R26,$#11':SPACE(3):OLD.MISROUTE.CARRIER.ID:', ':OLD.MISROUTE.CARRIER'L30'
+      IF NUMBER.APPROVED=0 THEN
+         CRT @(0,22):'New M/R: ':@(-4)
+      END ELSE
+         CRT @(0,22):'New M/R: ':NEW.MISROUTE.AMOUNT'R26,$#11':SPACE(3):NEW.MISROUTE.CARRIER.ID:', ':NEW.MISROUTE.CARRIER'L30'
+      END
+
+      YN.MSG='Is this correct?'
+      YN.MASK='Y'
+      GOSUB ASK.Y.OR.N
+      IF YN.ANSWER='X' OR YN.ANSWER='N' THEN GOTO GET.ITEM
+      REASON=''
+
+ENTER.REASON:
+      CRT @(0,21):'Reason:':@(-4)
+      CRT @(0,22):@(-4)
+      MASK=REASON
+      HELP='Please enter the reason for this change. [X]=Back [EX]=Exit'
+      CALL GEN.IN(8,21,MASK,'',Q,0,30,'','',2,8,21,1,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            GOTO CONFIRM.UPDATE
+         CASE QI#''
+            REASON=QI
+            CRT @(0,21):'Reason: ':REASON'L30':@(-4)
+         CASE 1 OR QI=''
+            CALL ELINE('You must enter a reason for this change.')
+            GOTO ENTER.REASON
+      END CASE
+
+UPDATE.FILES:
+      CRT @(0,22):'Select:'
+      MASK='U':MASK.CHAR
+      HELP='Enter Option. [U]=Update Files [X]=Back [EX]=Exit'
+      CALL GEN.IN(8,22,MASK,'',Q,0,2,'','',2,8,22,1,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      IF QI='' THEN QI='U'
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            GOTO ENTER.REASON
+         CASE QI='U'
+            IF (NEW.MISROUTE.AMOUNT#OLD.MISROUTE.AMOUNT) OR (NEW.MISROUTE.CARRIER.ID#OLD.MISROUTE.CARRIER.ID) THEN
+               PRO.REC<84,-1>=USER.NAME
+               PRO.REC<85,-1>=TIME()
+               PRO.REC<86,-1>=DATE()
+               PRO.REC<111,-1>=USER.NAME
+               IF (NEW.MISROUTE.AMOUNT#OLD.MISROUTE.AMOUNT) THEN
+                  PRO.REC<112,-1>=OLD.MISROUTE.AMOUNT
+               END
+               IF (NEW.MISROUTE.CARRIER.ID#OLD.MISROUTE.CARRIER.ID) THEN
+                  PRO.REC<113,-1>=OLD.MISROUTE.CARRIER.ID
+               END
+               PRO.REC<114,-1>=DATE()
+               PRO.REC<115,-1>=REASON
+            END
+            PRO.REC<63>=NEW.MISROUTE.AMOUNT
+            PRO.REC<69>=NEW.MISROUTE.CARRIER.ID
+
+            WRITE PRO.REC ON F.HIST,PRO.ID THEN
+*              COS.UPD=1                 ; * JMK02; * JMK03
+*              IF PRO.REC<37>="" THEN COS.UPD=0    ; * JMK02; * JMK03
+*              IF PRO.REC<39>="R" THEN COS.UPD=0   ; * JMK02; * JMK03
+*              IF FIELD(PRO.ID,'*',3)#"0" THEN COS.UPD=0     ; * JMK02; * JMK03
+*              IF COS.UPD THEN           ; * JMK02; * JMK03
+*                 WRITE PRO.REC ON F.COGNOS.UPDATE,CARRIER.ID:'*':PRO.NUMBER     ; * JMK02; * JMK03
+*              END                       ; * JMK02; * JMK03
+               OPEN '','FB.BILLS,':CLIENT.ID TO F.BILLS THEN
+                  READV BILLS.NAME FROM F.BILLS,PRO.ID,1 THEN
+                     WRITE PRO.REC ON F.BILLS,PRO.ID ELSE
+                        NULL
+                     END
+                  END ELSE
+                     NULL
+                  END
+               END
+            END
+            GOTO GET.ITEM
+         CASE 1
+            CALL ELINE('Invalid entry. Try again')
+            GOTO UPDATE.FILES
+      END CASE
+
+
+*******************************************************************************
+* Internal Subroutines
+*******************************************************************************
+
+ASK.Y.OR.N:
+* A General Yes/No prompt routine
+
+      YN.ANSWER=''
+Y.OR.N:
+      HELP=YN.MSG:' [Y]=Yes [N]=No [X]=Back'
+      MASK=YN.MASK
+      CALL GEN.IN(LEN(HELP)+1,23,MASK,'',Q,0,1,'','',2,-1,23,0,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      IF QI='' THEN QI=MASK
+      BEGIN CASE
+         CASE QI='X'
+            NULL
+         CASE QI='Y' OR QI='1'
+            QI='Y'
+         CASE QI='N' OR QI='0'
+            QI='N'
+
+         CASE 1
+            CALL ELINE('Invalid Entry.')
+            GOTO Y.OR.N
+      END CASE
+      CRT @(0,23):@(-4):
+      YN.ANSWER=QI
+
+      RETURN
+
+
+INIT.SCREEN:
+* Display heading and input prompts
+
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79) ; 
+
+      CRT @(0, 3):'Client ID  :':@(-4)
+      CRT @(0, 7):'Carrier ID :':@(-4)
+      CRT @(0,11):'Pro Number :':@(-4)
+
+      RETURN
+
+
+DSP.SCREEN.DATA:
+* Display Screen Data
+
+      * Display client information
+      IF CLIENT.ID#'' THEN
+         CRT @(13, 3):CLIENT.ID:@(-4)
+         CRT @(20, 3):CLIENT.NAME:@(-4)
+         CRT @(20, 4):CLIENT.ADDRESS:@(-4)
+         CRT @(20, 5):CLIENT.CITY:' ':CLIENT.STATE:' ':CLIENT.ZIP:@(-4)
+      END ELSE
+         CRT @(13, 3):@(-4)
+         CRT @(13, 4):@(-4)
+         CRT @(13, 5):@(-4)
+      END
+
+      * Display carrier information
+      IF CARRIER.ID#'' THEN
+         CRT @(13, 7):CARRIER.ID:@(-4)
+         CRT @(20, 7):CARRIER.NAME:@(-4)
+         CRT @(20, 8):CARRIER.ADDRESS:@(-4)
+         CRT @(20, 9):CARRIER.CITY:' ':CARRIER.STATE:' ':CARRIER.ZIP:@(-4)
+      END ELSE
+         CRT @(13,7):@(-4)
+         CRT @(13,8):@(-4)
+         CRT @(13,9):@(-4)
+      END
+
+      * Display pro number
+      IF PRO.NUMBER#'' THEN
+         CRT @(13,11):PRO.NUMBER'L#20'
+      END ELSE
+         CRT @(13,11):@(-4)
+      END
+
+      RETURN
+
+
+DRAW.TABLE.HEADINGS:
+* Put table headings on the screen for approved amounts and carriers
+
+      CRT @(0,12):STR('-',79)
+      CRT @(0,13):'Item':@(9,13):'Appr Amount':@(23,13):'Appr Carrier'
+      CRT @(0,14):STR('-',79)
+      CRT @(0,20):STR('-',79)
+
+      RETURN
+
+
+DSP.TABLE.DATA:
+*  Display table data
+
+      * Display actual charge
+      CRT @(52,11):'Actual Charge : ':PRO.REC<8>'R26,$#11'
+
+      * Clear the screen of previous items and display new items
+      FOR X=1 TO 5
+         CRT @(0,14+X):@(-4)
+      NEXT X
+
+      * Display up to 5 amounts and carriers at a time
+      FOR X=START.TABLE TO END.TABLE
+         CRT @(0,15+X-START.TABLE):X'R#4'
+         CRT @(9,15+X-START.TABLE):PRO.REC<22,X>'R26,$#11'
+         APPROVED.CARRIER.ID=PRO.REC<23,X>
+         READV APPROVED.CARRIER.NAME FROM F.CARRIERS,APPROVED.CARRIER.ID,1 ELSE
+            APPROVED.CARRIER.NAME='**  Carrier ID Not Found  **'
+         END
+         CRT @(23,15+X-START.TABLE):PRO.REC<23,X>:', ':APPROVED.CARRIER.NAME
+      NEXT X
+
+      RETURN
+
+
+THE.END:
+*  End the program
+
+      CRT @(0,0):@(-3):@(0,21):PROG.NAME:@(0,22):CO.NAME
+
+   END

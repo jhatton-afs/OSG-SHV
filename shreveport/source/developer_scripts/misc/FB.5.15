@@ -1,0 +1,428 @@
+$OPTIONS HEADER.EJECT
+      ERRMSG=''
+*
+$OPTIONS EXEC.EQ.PERF
+$OPTIONS INFO.ABORT
+*
+* PROGRAM FB.5.15
+* PROGRAM TO INQUIRE ON CARRIER CHECKS
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: Brian M. Queen
+* DATE: September 1, 1993
+*
+* 042005 - JMK01 - MAKE ADJUSTMENTS FOR /1 STC BILLS
+* 011606 - JMK02 - ADD READ FROM BROKERAGE ACCOUNTS
+* 091206 - JCW01 - USE NEW FB.CHECKS FILES
+* 050207 - JCW02 - Get detail data from FB.CHECKS.DTL if not available in FB.BILLS.CRX
+* 021115 - JMK03 - SysAid#15313 - Bank T - in Truckload Advantage 
+*
+* Initialize variables
+*
+      PROMPT''
+      PROG.NAME='FB.5.15'
+      PROG.DESC='CARRIER CHECK INQUIRY'
+      PACK.NAME='FREIGHT BILLING'
+      CO.NAME='AFS Logistics, LLC'
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'fb.5.15' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      CLIENT.ID='' ; CLIENT.NAME='' ; CARRIER.ID=''
+      CARRIER.NAME=''
+*
+* Open general files
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+*     OPEN '','FB.CHECKS' TO F.CHECKS ELSE CALL OPEN.ABORT("FB.CHECKS",PROG.NAME) ; * JMK02
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         EXECUTE 'CREATE-FILE FB.BILLS.CRX 1 103' PASSLIST CAPTURING OUTPUT
+         OPEN '','FB.BILLS.CRX' TO F.CRX ELSE CALL OPEN.ABORT("FB.BILLS.CRX",PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE CALL OPEN.ABORT("FB.TABLES",PROG.NAME)
+      READ ADJ.CODE FROM F.TABLES,'CHECK.ADJUST' ELSE
+         CALL ELINE('Cannot read CHECK.ADJUST from FB,TABLES')
+         STOP
+      END
+      GOSUB 8000                         ; * Display screen
+*
+* Enter check number
+*
+100:  HELP="Enter check number. [cr]=Exit."
+      CALL GEN.IN(8,3,'######','',Q,0,6,'','',1,-6,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X' ! QI='EX' ! QI=''
+            STOP
+         CASE NUM(QI)
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO 100
+      END CASE
+      CHECK.NUM=Q'R%6'
+      CRT @(8,3):CHECK.NUM
+*
+* Get bank type
+*
+*DF200:  HELP="Enter bank type. [cr]=Accept. [X]=Back to check. [EX]=Abort."
+200:  HELP="Enter bank type. [cr]=Accept. [EX]=Abort."
+      CALL GEN.IN(14,3,'*F','',Q,0,2,'','',1,-1,3,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+*DF         CASE QI='X'
+*DF            CRT @(14,3):'  ':
+*DF            GOTO 100
+         CASE QI='EX'
+            STOP
+         CASE QI=''
+            Q='F'
+         CASE ALPHA(QI)
+            NULL
+         CASE 1
+            CALL ELINE('Invalid bank type.')
+            GOTO 200
+      END CASE
+      BANK.TYPE=QI
+      CRT @(14,3):'*':BANK.TYPE'L#2'
+      BEGIN CASE                         ; * JMK02
+*NPR01         CASE BANK.TYPE='B'              ; * JMK02
+*        CASE BANK.TYPE='B' OR BANK.TYPE='I'            ; * JMK02  ;*NPR01 ; * JMK03
+         CASE BANK.TYPE='B' OR BANK.TYPE='I' OR BANK.TYPE='T'          ; * JMK02  ;*NPR01 ; * JMK03
+            OPEN '','ALL.CHECKS.1000.1' TO F.CHECKS ELSE CALL OPEN.ABORT("ALL.CHECKS.1000.1",PROG.NAME)        ; * JMK02
+         CASE 1                          ; * JMK02
+*           OPEN '','FB.CHECKS' TO F.CHECKS ELSE CALL OPEN.ABORT("FB.CHECKS",PROG.NAME)    ; * JMK02  ; * JCW01
+            OPEN '','FB.CHECKS.HDR' TO F.CHECKS ELSE CALL OPEN.ABORT("FB.CHECKS.HDR",PROG.NAME)       ; * JCW01
+            OPEN '','FB.CHECKS.DTL' TO F.CHECKS.D ELSE CALL OPEN.ABORT("FB.CHECKS.DTL",PROG.NAME)     ; * JCW01
+      END CASE                           ; * JMK02
+*
+* Get check item
+*
+      CHECK.ID=CHECK.NUM:'*':BANK.TYPE
+      READ CHECK.REC FROM F.CHECKS,CHECK.ID THEN
+         PRO.ARR=''
+         CLIENT.ARR=''  ; * JCW02
+***         IF BANK.TYPE = 'B' THEN  ; * JCW01
+         IF BANK.TYPE='B' OR BANK.TYPE='I' THEN
+            NUM.PROS=DCOUNT(CHECK.REC<7>,CHAR(253))
+            FOR I=1 TO NUM.PROS
+               PRO.ARR<-1>=CHECK.REC<7,I>
+            NEXT I
+            IF NUM.PROS=0 THEN NUM.PROS=1
+            NO.PROS = (CHECK.REC<7> = '')                                 ; * JCW01
+         END ELSE                                                         ; * JCW01
+            IF CHECK.REC<7> = 'Void' THEN                                 ; * JCW01
+               NUM.PROS = 1                                               ; * JCW01
+            END ELSE                                                      ; * JCW01
+               NUM.PROS = CHECK.REC<25> + 0                               ; * JCW01
+               FOR I = 1 TO NUM.PROS                                      ; * JCW01
+                  DTL.ID = CHECK.ID:'*':I                                 ; * JCW01
+*                 READV PRO.NUM FROM F.CHECKS.D, DTL.ID, 1 THEN           ; * JCW01 ; * JCW02
+                  READ DTL.REC FROM F.CHECKS.D, DTL.ID THEN                         ; * JCW02
+*                    PRO.ARR<-1> = PRO.NUM                                ; * JCW01 ; * JCW02
+                     PRO.ARR<I> = DTL.REC<1>                                        ; * JCW02
+                     DTL.CLIENT = DTL.REC<3>                                        ; * JCW02
+                     IF DTL.CLIENT = '' THEN DTL.CLIENT = 'NO CLIENT'               ; * JCW02
+                     CLIENT.ARR<I> = DTL.CLIENT                                     ; * JCW02
+                  END                                                     ; * JCW01
+               NEXT I                                                     ; * JCW01
+            END                                                           ; * JCW01
+            IF NUM.PROS=0 THEN NUM.PROS=1                                 ; * JCW01
+            NO.PROS = (CHECK.REC<25>+0 = 0)                               ; * JCW01
+         END                                                              ; * JCW01
+*        IF CHECK.REC<7>#'' AND CHECK.REC<7>#'Void' THEN                  ; * JCW01
+         IF NOT(NO.PROS) AND CHECK.REC<7>#'Void' THEN                     ; * JCW01
+            IF CHECK.REC<14>#'' THEN NUM.PROS=NUM.PROS+1
+         END                                                              ; * JCW01
+         DATE=CHECK.REC<2>
+         CARRIER.ID=CHECK.REC<3>
+         AMOUNT=CHECK.REC<4>
+         CLEARED=CHECK.REC<5>
+         IF CARRIER.ID#'0' THEN
+            READV CARRIER.NAME FROM F.CARRIERS,CARRIER.ID,1 ELSE CARRIER.NAME='Unknown'
+         END ELSE
+            CARRIER.NAME=CHECK.REC<15>
+         END
+         CRT @(27,3):AMOUNT'R26,#11'
+         CRT @(49,3):DATE'D2/'
+         CRT @(71,3):CLEARED'D2/'
+         CRT @(8,4):CARRIER.ID:' ':CARRIER.NAME
+      END ELSE
+         CALL ELINE('Check ':CHECK.ID:' not on file.')
+         CRT @(8,3):SPACE(9)
+         GOTO 100
+      END
+*
+* Request display or print
+*
+400:  HELP="[cr]=Next check. [X]=Back to bank. [EX]it. [D]isplay. [P]rint ":NUM.PROS:" records."
+      CALL GEN.IN(0,22,'Enter selection please. ##','',Q,0,2,'','',1,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            GOSUB 8000                   ; * Display screen
+            DATA CHECK.NUM
+            GOTO 100
+         CASE QI='EX'
+            STOP
+         CASE QI=''
+            GOSUB 8000                   ; * Display screen
+            GOTO 100
+         CASE QI='D'
+            LAST.PAGE=INT(NUM.PROS/15)
+            IF REM(NUM.PROS,15) THEN LAST.PAGE=LAST.PAGE+1
+            PAGE=1
+            GOSUB 8100                   ; * Display check detail
+         CASE QI='P'
+            GOSUB 8200                   ; * Print check detail
+            GOSUB 8000                   ; * Display screen
+         CASE 1
+            CALL ELINE('Invalid entry.')
+      END CASE
+      GOTO 400
+*------------------------------------------------------------------------
+*
+* INTERNAL SUBROUTINES
+*
+*------------------------------------------------------------------------
+*
+* Display screen
+*
+8000: CALL SCR.HEAD('','','',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,3):'Check #':@(21,3):'Amount':@(44,3):'Date':@(63,3):'Cleared'
+      CRT @(0,4):'Carrier':@(40,4)
+      CRT @(0,5):STR('-',79)
+      RETURN
+*
+* Display check detail
+*
+8100: START.POS=(PAGE*15)-14
+      STOP.POS=START.POS+14
+      IF STOP.POS GT NUM.PROS THEN STOP.POS=NUM.PROS
+      CRT @(0,6):@(-3):'Client.............. Pro Number.......... Carrier Chgs  Actual Chgs     Variance'
+      LN=6
+      ADJ.ALREADY.PRN='N'
+      VOID.ALREADY.PRN='N'
+      MANUAL.ALREADY.PRN='N'
+      FOR I=START.POS TO STOP.POS
+         BEGIN CASE
+            CASE CHECK.REC<7>='Void'
+               IF VOID.ALREADY.PRN='N' THEN
+                  TEXT='Void - ':CHECK.REC<8>
+                  CARR.CHGS=CHECK.REC<4>
+                  ACT.CHGS=CHECK.REC<4>
+                  VOID.ALREADY.PRN='Y'
+               END ELSE
+                  TEXT=''
+                  CARR.CHGS=''
+                  ACT.CHGS=''
+               END
+*           CASE CHECK.REC<7>=''  ; * JCW01
+            CASE NO.PROS          ; * JCW01
+               IF MANUAL.ALREADY.PRN='N' THEN
+                  TEXT='Manual Check - ':CHECK.REC<16>
+                  CARR.CHGS=CHECK.REC<4>
+                  ACT.CHGS=CHECK.REC<4>
+                  MANUAL.ALREADY.PRN='Y'
+               END ELSE
+                  TEXT=''
+                  CARR.CHGS=''
+                  ACT.CHGS=''
+               END
+            CASE 1
+               CURR.CLIENT = 'X0X' ; * JCW02
+               PRO.ID=PRO.ARR<I>
+               PRO.CARRIER=FIELD(PRO.ID,'*',1)     ; * JMK01
+               PRO.NO=FIELD(PRO.ID,'*',2)          ; * JMK01
+               PRO.SEQ=FIELD(PRO.ID,'*',3)         ; * JMK01
+*              READ PRO.REC FROM F.CRX,PRO.ID ELSE PRO.REC=''
+               READ PRO.REC FROM F.CRX,PRO.ID THEN
+                  READV CLIENT.NAME FROM F.CLIENTS,PRO.REC<1>,2 ELSE CLIENT.NAME='Unknown'
+                  PRO.NUM=FIELD(PRO.ID,'*',2)
+                  TEXT=CLIENT.NAME'L#20':' ':PRO.NUM'L#20'
+                  CARR.CHGS=PRO.REC<7>
+                  ACT.CHGS=PRO.REC<8>
+               END ELSE
+                  PRO.ID=PRO.CARRIER:'*':FIELD(PRO.NO,'/',1):'*':PRO.SEQ         ; * JMK01
+                  READ PRO.REC FROM F.CRX,PRO.ID THEN        ; * JMK01
+                     READV CLIENT.NAME FROM F.CLIENTS,PRO.REC<1>,2 ELSE CLIENT.NAME='Unknown'        ; * JMK01
+                     PRO.NUM=FIELD(PRO.ID,'*',2)   ; * JMK01
+                     TEXT=CLIENT.NAME'L#20':' ':PRO.NUM'L#20' ; * JMK01
+                     CARR.CHGS=PRO.REC<7>          ; * JMK01
+                     ACT.CHGS=PRO.REC<8>           ; * JMK01
+                  END ELSE               ; * JMK01
+                     *** Try to get detail data from the FB.BILLS.HIST file
+                     IF CURR.CLIENT # CLIENT.ARR<I> THEN  ; * JCW02
+                        CURR.CLIENT = CLIENT.ARR<I>       ; * JCW02
+                        OPEN 'FB.BILLS.HIST,':CURR.CLIENT TO F.HIST THEN  ; * JCW02
+                           FILE.OPEN = 1                  ; * JCW02
+                        END ELSE                          ; * JCW02
+                           FILE.OPEN = 0                  ; * JCW02
+                        END                               ; * JCW02
+                     END                                  ; * JCW02
+                     HIST.REC = ''                        ; * JCW02
+                     IF FILE.OPEN THEN                    ; * JCW02
+                        PRO.ID = PRO.ARR<I>               ; * JCW02
+                        READ HIST.REC FROM F.HIST, PRO.ID THEN ; * JCW02
+                           READV CLIENT.NAME FROM F.CLIENTS, CURR.CLIENT, 2 ELSE CLIENT.NAME='Unknown' ; * JCW02
+                           PRO.NUM=FIELD(PRO.ID,'*',2)              ; * JCW02
+                           TEXT=CLIENT.NAME'L#20':' ':PRO.NUM'L#20' ; * JCW02
+                           CARR.CHGS = HIST.REC<7>                  ; * JCW02
+                           ACT.CHGS = HIST.REC<8>                   ; * JCW02
+                        END                                         ; * JCW02
+                     END                                            ; * JCW02
+                     IF FILE.OPEN = 0 OR HIST.REC = '' THEN         ; * JCW02
+                     *  IF CHECK.REC<7>#'' AND CHECK.REC<7>#'Void' AND CHECK.REC<14>#'' AND ADJ.ALREADY.PRN#'Y' AND PRO.ID='' THEN ; * JCW01
+                        IF NOT(NO.PROS) AND CHECK.REC<7>#'Void' AND CHECK.REC<14>#'' AND ADJ.ALREADY.PRN#'Y' AND PRO.ID='' THEN    ; * JCW01
+                           TEXT='Adjustment - '
+                           LOCATE CHECK.REC<13> IN ADJ.CODE<1> SETTING POS THEN
+                              TEXT=TEXT:ADJ.CODE<2,POS>
+                           END
+                           CARR.CHGS=CHECK.REC<14>
+                           ACT.CHGS=CHECK.REC<14>
+                           ADJ.ALREADY.PRN='Y'
+                        END ELSE
+                        *  TEXT=''          ; * JMK01
+                        *  TEXT=PRO.ID:' not on FB.BILLS.CRX file.' ; * JMK01 ; * JCW02
+                           TEXT=PRO.ID:' details not found.'                  ; * JCW02
+                           CARR.CHGS=''
+                           ACT.CHGS=''
+                        END
+                     END
+                  END
+               END
+         END CASE
+         VAR=CARR.CHGS-ACT.CHGS
+         LN=LN+1
+         CRT @(0,LN):TEXT'L#41':CARR.CHGS'R26,#13':ACT.CHGS'R26,#13':VAR'R26,#13'
+      NEXT I
+      ADJ.ALREADY.PRN='N'
+      VOID.ALREADY.PRN='N'
+      MANUAL.ALREADY.PRN='N'
+*
+8110: HELP="Enter selection. [B]=Back page. [F]=Forward page. [X]=Exit display. [EX]=Exit."
+      CALL GEN.IN(0,22,'Enter selection ##','',Q,0,2,'','',1,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='B'
+            PAGE=PAGE-1
+            IF PAGE=0 THEN PAGE=LAST.PAGE
+            GOTO 8100
+         CASE QI='F' ! QI=''
+            PAGE=PAGE+1
+            IF PAGE GT LAST.PAGE THEN PAGE=1
+            GOTO 8100
+         CASE QI='X'
+            CRT @(0,6):@(-3)
+            RETURN
+         CASE QI='EX'
+            STOP
+      END CASE
+      CALL ELINE('Invalid entry.')
+      GOTO 8110
+*
+* Print check detail
+*
+8200: CRT @(0,7):
+      HED=" 'L' Check # ":CHECK.ID'L#8':"     Amount ":AMOUNT'R26,#11'
+      HED=HED:"   Date ":DATE'D2/':"       Cleared ":CLEARED'D2/'
+      HED=HED:" 'L'Carrier ":CARRIER.ID'R%5':" ":CARRIER.NAME
+      HED=HED:" 'L'":STR('-',79)
+*DF      HED=HED:" 'L'Client.............. Pro Number.......... Carrier Chgs  Actual Chgs   Invoice #"
+      HED=HED:" 'L'Client.............. Pro Number.......... Carrier Chgs  Actual Chgs    Variance"
+      VIN=''
+      VIN<3>='N'
+      CALL LASER.CODE(VIN,VOUT)
+      IF VOUT<3>#'' THEN EXECUTE VOUT<3>
+      PRINTER ON
+      IF VOUT<2>#'' THEN PRINT VOUT<2>:
+      HEADING HED
+      ADJ.ALREADY.PRN='N'
+      VOID.ALREADY.PRN='N'
+      MANUAL.ALREADY.PRN='N'
+      FOR I=1 TO NUM.PROS
+         BEGIN CASE
+            CASE CHECK.REC<7>='Void'
+               IF VOID.ALREADY.PRN='N' THEN
+                  TEXT='Void - ':CHECK.REC<8>
+                  CARR.CHGS=CHECK.REC<4>
+                  ACT.CHGS=CHECK.REC<4>
+                  VOID.ALREADY.PRN='Y'
+               END ELSE
+                  TEXT=''
+                  CARR.CHGS=''
+                  ACT.CHGS=''
+               END
+*           CASE CHECK.REC<7>=''  ; * JCW01
+            CASE NO.PROS          ; * JCW01
+               IF MANUAL.ALREADY.PRN='N' THEN
+                  TEXT='Manual Check - ':CHECK.REC<16>
+                  CARR.CHGS=CHECK.REC<4>
+                  ACT.CHGS=CHECK.REC<4>
+                  MANUAL.ALREADY.PRN='Y'
+               END ELSE
+                  TEXT=''
+                  CARR.CHGS=''
+                  ACT.CHGS=''
+               END
+            CASE 1
+               CURR.CLIENT = 'X0X' ; * JCW02
+               PRO.ID=PRO.ARR<I>
+*              READ PRO.REC FROM F.CRX,PRO.ID ELSE PRO.REC=''
+               READ PRO.REC FROM F.CRX,PRO.ID THEN
+                  READV CLIENT.NAME FROM F.CLIENTS,PRO.REC<1>,2 ELSE CLIENT.NAME='Unknown'
+                  PRO.NUM=FIELD(PRO.ID,'*',2)
+                  TEXT=CLIENT.NAME'L#20':' ':PRO.NUM'L#20'
+                  CARR.CHGS=PRO.REC<7>
+                  ACT.CHGS=PRO.REC<8>
+               END ELSE
+                  *** Try to get detail data from the FB.BILLS.HIST file
+                  IF CURR.CLIENT # CLIENT.ARR<I> THEN  ; * JCW02
+                     CURR.CLIENT = CLIENT.ARR<I>       ; * JCW02
+                     OPEN 'FB.BILLS.HIST,':CURR.CLIENT TO F.HIST THEN  ; * JCW02
+                        FILE.OPEN = 1                  ; * JCW02
+                     END ELSE                          ; * JCW02
+                        FILE.OPEN = 0                  ; * JCW02
+                     END                               ; * JCW02
+                  END                                  ; * JCW02
+                  HIST.REC = ''                        ; * JCW02
+                  IF FILE.OPEN THEN                    ; * JCW02
+                     PRO.ID = PRO.ARR<I>               ; * JCW02
+                     READ HIST.REC FROM F.HIST, PRO.ID THEN ; * JCW02
+                        READV CLIENT.NAME FROM F.CLIENTS, CURR.CLIENT, 2 ELSE CLIENT.NAME='Unknown' ; * JCW02
+                        PRO.NUM=FIELD(PRO.ID,'*',2)              ; * JCW02
+                        TEXT=CLIENT.NAME'L#20':' ':PRO.NUM'L#20' ; * JCW02
+                        CARR.CHGS = HIST.REC<7>                  ; * JCW02
+                        ACT.CHGS = HIST.REC<8>                   ; * JCW02
+                        INV.NUM = HIST.REC<94>
+                     END                                         ; * JCW02
+                  END                                            ; * JCW02
+                  IF FILE.OPEN = 0 OR HIST.REC = '' THEN         ; * JCW02
+*                    IF CHECK.REC<7>#'' AND CHECK.REC<7>#'Void' AND CHECK.REC<14>#'' AND ADJ.ALREADY.PRN#'Y' AND PRO.ID='' THEN  ; * JCW01
+                     IF NOT(NO.PROS) AND CHECK.REC<7>#'Void' AND CHECK.REC<14>#'' AND ADJ.ALREADY.PRN#'Y' AND PRO.ID='' THEN     ; * JCW01
+                        TEXT='Adjustment - '
+                        LOCATE CHECK.REC<13> IN ADJ.CODE<1> SETTING POS THEN
+                           TEXT=TEXT:ADJ.CODE<2,POS>
+                        END
+                        CARR.CHGS=CHECK.REC<14>
+                        ACT.CHGS=CHECK.REC<14>
+                        ADJ.ALREADY.PRN='Y'
+                     END ELSE
+*                       TEXT=''                           ; * JCW02
+                        TEXT=PRO.ID:' details not found.' ; * JCW02
+                        CARR.CHGS=''
+                        ACT.CHGS=''
+                     END
+                  END
+               END
+         END CASE
+         VAR=CARR.CHGS-ACT.CHGS
+         PRINT TEXT'L#41':CARR.CHGS'R26,#13':ACT.CHGS'R26,#13':VAR'R26,#12'
+*DF         PRINT TEXT'L#41':CARR.CHGS'R26,#13':ACT.CHGS'R26,#13':' ':INV.NUM'L#11'
+      NEXT I
+      ADJ.ALREADY.PRN='N'
+      HEADING ''
+      PAGE 0
+      PRINTER OFF
+      PRINTER CLOSE
+      RETURN

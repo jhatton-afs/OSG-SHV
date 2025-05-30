@@ -1,0 +1,411 @@
+*************************************************************************
+* Program : FB.IMPORT.RR.BOL
+*           Import BOL data from Robroy
+* Author  : James Barberousse
+* Date    : March 2002
+*
+* Copyright (c) 2002 by AFS Logistics, LLC. - All Rights Reserved
+*************************************************************************
+* Format of RR Text file                     Format of FB.BOL.CRX,01349 or 01350
+* Fixed length with possible spaces          ITEM ID = Order Number
+* ----------------------------------------------------------------------
+* (1) BOL             Len=15                 H< 1> Amount (flat)
+* (2) Carrier Desc    Len=20                 H< 2> Ship Date (flat)
+* (3) Ship Date       Len=8                  A< 3> Total Amount (flat)
+* (4) City            Len=15                 A< 4> Last Date Updated (flat)
+* (5) State           Len=2                  A< 5> Amount by Pro (mv)
+* (6) Zip             Len=5                  A< 6> Pro Numbers (mv)
+* (7) Consignee       Len=25                 A< 7> Date of Pro (mv)
+* (8) City            Len=15                 H< 8> Order Number-Suffix
+* (9) State           Len=2                  H< 9> Account
+*(10) Zip             Len=5                  H<10> Carrier Description
+*(11) Pro Number      Len=20                 H<11> Ship Date
+*(12) Weight          Len=9                  H<12> Ship City
+*(13) RR Carrier Code Len=4                  H<13> Ship State
+*                                            H<14> Ship Zip
+*                                            H<15> Consignee
+*                                            H<16> Cons City
+*                                            H<17> Cons State
+*                                            H<18> Cons Zip
+*                                            H<19> Pro Number
+*                                            H<20> Weight
+*                                            H<21> RR Carrier Code
+*************************************************************************
+* 122205 - JMK01 - ADD PRO.BOL.XREF FILE FOR ASSISTANCE WITH EDI
+* 012306 - JMK02 - ADD WEIGHT TO THE IMPORTED INFORMATION FOR PRO RATING
+* 031306 - JMK03 - ADD RR CARRIER CODE FOR MATCHING AND REPORTING INFORMATION
+* 082206 - JMK04 - ADD JOHN ESPOSITO TO VALID USERS
+* 082506 - JMK05 - CHANGE RR PRO NUMBER TO UPPER CASE
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+* Initialize general variables
+      PROMPT''
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='FB.IMPORT.RR.BOL'
+      PROG.DESC='Import Robroy BOL Data'
+      PACK.NAME='Freight Payment'
+      MASK.CHAR='-'
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.IMPORT.RR.BOL' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+
+* Write screen header
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+
+* Restrict program usage
+      VALID.USER=1
+      BEGIN CASE
+         CASE USER.NAME='OWEN'
+         CASE USER.NAME='MYRA'
+         CASE USER.NAME='DAVID'
+         CASE USER.NAME='MKERBOW'
+         CASE USER.NAME='JESPOSITO'      ; * JMK04 
+         CASE 1
+            VALID.USER=0
+      END CASE
+
+      IF NOT(VALID.USER) THEN
+         TEMP='**  This is a restricted access application  **'
+         CALL CENTER(TEMP,80)
+         CRT @(0,12):TEMP
+         GOTO THE.END
+      END
+
+* Open client file and read record for client
+      CLIENT.NUMBER='01349'
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      READ CLIENT.REC FROM F.CLIENTS,CLIENT.NUMBER ELSE
+         CALL ELINE('Could not read client file.')
+         GOTO THE.END
+      END
+
+100:***
+      LN='Are you ready to import BOL codes from ':CLIENT.NUMBER:' ':CLIENT.REC<2>:'? '
+      MASK='N-'
+      HELP='[Y]=Yes [N]=No [EX]=Exit'
+      CALL GEN.IN(0,5,LN:MASK,'',Q,0,2,'','',2,-2,5,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX' OR QI='N' OR QI=''
+            GOTO THE.END
+         CASE QI='Y'
+            NULL
+         CASE 1
+            GOTO 100
+      END CASE
+
+* Open other files
+      OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+         OPEN '','VOC' TO F.VOC ELSE
+            CALL ELINE('Unable to open VOC file - Call IS Department.')
+            GOTO THE.END
+         END
+         READ BILLDATA.REC FROM F.VOC,'BILLDATA' ELSE
+            CALL ELINE('Unable to open VOC BILLDATA.')
+            GOTO THE.END
+         END
+         BILLDATA.REC<2>:='\':USER.NAME
+         WRITE BILLDATA.REC ON F.VOC,'BILLDATA.':USER.NAME ELSE
+            CALL ELINE('Your user name ':USER.NAME:' is not in the BILLDATA folder - Call IS Department.')
+            GOTO THE.END
+         END
+         OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+            CALL ELINE('Unable to open BILLDATA.':USER.NAME:'.')
+            GOTO THE.END
+         END
+      END
+      OPEN '','PRO.BOL.XREF' TO F.PBX ELSE         ; * JMK01
+         CALL ELINE('Unable to open PRO.BOL.XREF.')          ; * JMK01
+      END                                ; * JMK01
+
+* Set update date
+      UPDATE.DATE=CLIENT.REC<82>+1       ; * Last processed + 1 day
+      IF UPDATE.DATE<DATE() THEN
+         UPDATE.DATE=DATE()
+      END
+
+* Read in the existing Robroy text file
+      READ RR.IMPORT FROM F.BILLDATA,'RR.TXT' ELSE
+         CALL ELINE('RR.TXT does not exist.')
+         GOTO THE.END
+      END
+      RR.IMPORT=CHANGE(RR.IMPORT,CHAR(12),'')
+      RR.LAST.IMPORT=RR.IMPORT           ; * Save file for writing as "last"
+
+* Status lines
+      NATT=DCOUNT(RR.IMPORT,@AM)
+      CRT @(0,5):'Total items in import file = ':NATT:@(-4)
+      CRT @(0,7):'Total Items processed'
+      CRT @(0,8):'---------------------'
+
+* Set counters for processing
+      ALREADY.THERE=0
+      ALREADY.THERE.BOTH.MATCH=0
+      ALREADY.THERE.AMOUNTS.MATCH=0
+      ALREADY.THERE.DATES.MATCH=0
+      ALREADY.THERE.NEITHER.MATCH=0
+
+      ALREADY.THERE.NULL=0
+      NOT.THERE=0
+
+      RESULTS.ARRAY=''
+      ERROR.ARRAY=''
+      PERC=0
+      PREV.CLIENT.NUMBER=''
+
+* Prepare the file for processing
+      FOR ATT=1 TO NATT
+         CRT @(0,9):ATT'R#21'
+         CALL PROG.BAR(11,ATT,NATT,PERC)
+         RR.LINE=RR.IMPORT<ATT>
+         RR.BOL =TRIM(RR.LINE[ 1,15])    ; * BOL
+         RR.CARRIER=TRIM(RR.LINE[ 18,20])          ; * Carrier Description
+         RR.SDATE =TRIM(RR.LINE[ 40, 8])           ; * Ship Date
+         RR.SDATE =ICONV(RR.SDATE,'D')   ; * CONVERT TO INTERNAL FORMAT
+         RR.SCITY =TRIM(RR.LINE[ 51,15])           ; * City
+         RR.SST =TRIM(RR.LINE[ 68, 2])   ; * State
+         RR.SZIP =TRIM(RR.LINE[ 72, 5])  ; * Zip
+         RR.CONS =TRIM(RR.LINE[ 79,25])  ; * Consignee
+         RR.CCITY =TRIM(RR.LINE[106,15])           ; * City
+         RR.CST =TRIM(RR.LINE[123, 2])   ; * State
+         RR.CZIP =TRIM(RR.LINE[127, 5])  ; * Zip
+         RR.PRO =TRIM(RR.LINE[135,20])   ; * Pro
+         RR.PRO=OCONV(RR.PRO,'MCU')      ; * JMK05
+         RR.WT =TRIM(RR.LINE[155, 9])    ; * Weight ; * JMK02
+         RR.CCODE =TRIM(RR.LINE[167, 4])           ; * Carrier Code ; * JMK03
+
+         CLIENT.NUMBER='01349'
+         IF RR.BOL[1,3]='MLB' THEN CLIENT.NUMBER='01350'
+         IF CLIENT.NUMBER#PREV.CLIENT.NUMBER THEN
+            OPEN '','FB.BOL.CRX,':CLIENT.NUMBER TO F.BOL ELSE
+               CALL OPEN.ABORT('FB.BOL.CRX,':CLIENT.NUMBER,PROG.NAME)
+            END
+            PREV.CLIENT.NUMBER=CLIENT.NUMBER
+         END
+
+         IF RR.BOL#'' THEN
+            READ BOL.ITEM FROM F.BOL,RR.BOL THEN
+               ALREADY.THERE+=1
+               BEGIN CASE
+                  CASE RR.BOL=BOL.ITEM<8> AND RR.SDATE=BOL.ITEM<2>
+                     * Numbers match, and invoice dates match
+                     ALREADY.THERE.BOTH.MATCH+=1
+                     BOL.ITEM<20>=RR.WT  ; * JMK02
+
+                  CASE RR.BOL=BOL.ITEM<8> AND RR.SDATE#BOL.ITEM<2>
+                     * Numbers match, but invoice dates do not match
+                     ALREADY.THERE.AMOUNTS.MATCH+=1
+                     BOL.ITEM<20>=RR.WT  ; * JMK02
+                     LINE=''
+                     LINE<1,1>='BOL ITEM.ID ':RR.BOL
+                     LINE<1,2>='Order numbers match, but Order Dates do not match. File not changed.'
+                     LINE<1,3>='Sales Order Number    = ':RR.BOL
+                     LINE<1,4>='Existing Order Date   = ':BOL.ITEM<2>'D4-'
+                     LINE<1,5>='New Order Date        = ':RR.SDATE'D4-'
+                     ERROR.ARRAY<-1>=LINE
+                     ERROR.ARRAY<-1>=' '
+                     ERROR.ARRAY<-1>=' '
+
+                  CASE RR.BOL#BOL.ITEM<8> AND RR.SDATE=BOL.ITEM<2>
+                     * Numbers do not match, but invoice dates match
+                     ALREADY.THERE.DATES.MATCH+=1
+                     BOL.ITEM<20>=RR.WT  ; * JMK02
+                     LINE=''
+                     LINE<1,1>='BOL ITEM.ID ':RR.BOL
+                     LINE<1,2>='Numbers do not match, but Order Dates match. File not changed.'
+                     LINE<1,3>='Existing Order Number = ':BOL.ITEM<8>
+                     LINE<1,4>='New Order Number      = ':RR.BOL
+                     LINE<1,5>='Order Date            = ':BOL.ITEM<2>'D4-'
+                     ERROR.ARRAY<-1>=LINE
+                     ERROR.ARRAY<-1>=' '
+                     ERROR.ARRAY<-1>=' '
+
+                  CASE RR.BOL#BOL.ITEM<8> AND RR.SDATE#BOL.ITEM<2>
+                     * Numbers do not match, and invoice dates do not match
+                     ALREADY.THERE.NEITHER.MATCH+=1
+                     BOL.ITEM<20>=RR.WT  ; * JMK02
+                     LINE=''
+                     LINE<1,1>='BOL ITEM.ID ':RR.BOL
+                     LINE<1,2>='Numbers do not match, and Order Dates do not match. File not changed.'
+                     LINE<1,3>='Existing Order Number = ':BOL.ITEM<8>
+                     LINE<1,4>='New Order Number      = ':RR.BOL
+                     LINE<1,5>='Existing Order Date   = ':BOL.ITEM<2>'D4-'
+                     LINE<1,6>='New Order Date        = ':RR.SDATE'D4-'
+                     ERROR.ARRAY<-1>=LINE
+                     ERROR.ARRAY<-1>=' '
+                     ERROR.ARRAY<-1>=' '
+               END CASE
+
+               IF (BOL.ITEM<8>)="" THEN  ; * Existing number is null
+                  ALREADY.THERE.NULL+=1
+                  LINE=''
+                  LINE<1,1>='BOL ITEM.ID ':RR.BOL
+                  LINE<1,2>='Existing Number was null. Updated to New Number.'
+                  LINE<1,3>='Existing Order Number = ':BOL.ITEM<8>
+                  LINE<1,4>='New Order Number      = ':RR.BOL
+                  ERROR.ARRAY<-1>=LINE
+                  ERROR.ARRAY<-1>=' '
+                  ERROR.ARRAY<-1>=' '
+                  BOL.ITEM<2>=RR.SDATE
+                  BOL.ITEM<4>=UPDATE.DATE
+                  BOL.ITEM<8>=RR.BOL
+                  BOL.ITEM<10>=RR.CARRIER
+                  BOL.ITEM<11>=RR.SDATE
+                  BOL.ITEM<12>=RR.SCITY
+                  BOL.ITEM<13>=RR.SST
+                  BOL.ITEM<14>=RR.SZIP
+                  BOL.ITEM<15>=RR.CONS
+                  BOL.ITEM<16>=RR.CCITY
+                  BOL.ITEM<17>=RR.CST
+                  BOL.ITEM<18>=RR.CZIP
+                  BOL.ITEM<19>=RR.PRO
+                  BOL.ITEM<20>=RR.WT     ; * JMK02
+                  BOL.ITEM<21>=RR.CCODE  ; * JMK03
+               END
+               LOCATE(RR.PRO,BOL.ITEM,19;BPOS) ELSE
+                  NVAL=DCOUNT(BOL.ITEM<19>,@VM)+1  ; * JMK03
+                  BOL.ITEM<10,NVAL>=RR.CARRIER
+                  BOL.ITEM<11,NVAL>=RR.SDATE
+                  BOL.ITEM<12,NVAL>=RR.SCITY
+                  BOL.ITEM<13,NVAL>=RR.SST
+                  BOL.ITEM<14,NVAL>=RR.SZIP
+                  BOL.ITEM<15,NVAL>=RR.CONS
+                  BOL.ITEM<16,NVAL>=RR.CCITY
+                  BOL.ITEM<17,NVAL>=RR.CST
+                  BOL.ITEM<18,NVAL>=RR.CZIP
+                  BOL.ITEM<19,NVAL>=RR.PRO
+                  BOL.ITEM<20,NVAL>=RR.WT          ; * JMK02
+                  BOL.ITEM<21,NVAL>=RR.CCODE       ; * JMK03
+               END
+            END ELSE
+               NOT.THERE+=1
+               BOL.ITEM=''
+               BOL.ITEM<2>=RR.SDATE
+               BOL.ITEM<4>=UPDATE.DATE
+               BOL.ITEM<8>=RR.BOL
+               BOL.ITEM<10>=RR.CARRIER
+               BOL.ITEM<11>=RR.SDATE
+               BOL.ITEM<12>=RR.SCITY
+               BOL.ITEM<13>=RR.SST
+               BOL.ITEM<14>=RR.SZIP
+               BOL.ITEM<15>=RR.CONS
+               BOL.ITEM<16>=RR.CCITY
+               BOL.ITEM<17>=RR.CST
+               BOL.ITEM<18>=RR.CZIP
+               BOL.ITEM<19>=RR.PRO
+               BOL.ITEM<20>=RR.WT        ; * JMK02
+               BOL.ITEM<21>=RR.CCODE     ; * JMK03
+            END
+            WRITE BOL.ITEM ON F.BOL,RR.BOL
+            NVAL=DCOUNT(BOL.ITEM<19>,@VM)          ; * JMK01
+            FOR VAL=1 TO NVAL            ; * JMK01
+               RR.PRO=BOL.ITEM<19,VAL>   ; * JMK01
+               RR.WT=BOL.ITEM<20,VAL>    ; * JMK01
+               IF RR.WT='' THEN RR.WT='0.00'       ; * JMK01
+               PRO.NO=CHANGE(RR.PRO,'-','')        ; * JMK01
+               PRO.NO=CHANGE(PRO.NO,' ','')        ; * JMK01
+               CHR.POS=0                 ; * JMK01
+               CHR.EXIT=0                ; * JMK01
+               LOOP                      ; * JMK01
+                  CHR.POS+=1             ; * JMK01
+                  CHR=PRO.NO[CHR.POS,1]  ; * JMK01
+                  IF CHR#'0' THEN CHR.EXIT=1       ; * JMK01
+                  IF CHR.POS>LEN(PRO.NO) THEN CHR.EXIT=1     ; * JMK01
+               UNTIL CHR.EXIT DO         ; * JMK01
+               REPEAT                    ; * JMK01
+               PRO.NO=PRO.NO[CHR.POS,9999]         ; * JMK01
+               IF PRO.NO#'' THEN         ; * JMK01
+                  READ PBX.REC FROM F.PBX,PRO.NO ELSE PBX.REC=''       ; * JMK01
+                  PBX.ORG=PBX.REC        ; * JMK01
+                  LOCATE(RR.BOL,PBX.REC,1;SPOS) ELSE         ; * JMK01
+                     PBX.REC<1,-1>=RR.BOL          ; * JMK01
+                     PBX.REC<2,-1>=RR.WT           ; * JMK01
+                  END                    ; * JMK01
+                  IF PBX.REC#PBX.ORG THEN          ; * JMK01
+                     WRITE PBX.REC ON F.PBX,PRO.NO           ; * JMK01
+                  END                    ; * JMK01
+               END                       ; * JMK01
+            NEXT VAL                     ; * JMK01
+         END
+      NEXT ATT
+
+* Update files
+      WRITE RR.LAST.IMPORT ON F.BILLDATA,'RR-LAST.TXT' THEN
+         WRITE RR.LAST.IMPORT ON F.BILLDATA,'RR-':TIMEDATE():'.TXT'
+         DELETE F.BILLDATA,'RR.TXT'      ; * Delete the original HK text file
+      END ELSE
+         CALL ELINE('Could not write RR-LAST.TXT. Not deleting RR.TXT. Call James.')
+      END
+
+* Screen output of results
+      CRT @(0,12):'Items already existing in the BOL cross reference file:'
+      CRT @(0,13):'   1 Same Order Numbers, Same Order Dates             (not changed) = ':ALREADY.THERE.BOTH.MATCH'R#8'
+      CRT @(0,14):'   2 Same Order Numbers, Different Order Dates        (not changed) = ':ALREADY.THERE.AMOUNTS.MATCH'R#8'
+      CRT @(0,15):'   3 Different Order Numbers, Same Order Dates        (not changed) = ':ALREADY.THERE.DATES.MATCH'R#8'
+      CRT @(0,16):'   4 Different Order Numbers, Different Order Dates   (not changed) = ':ALREADY.THERE.NEITHER.MATCH'R#8'
+      CRT @(0,17):'---- Total items already in the file                                = ':ALREADY.THERE'R#8'
+
+      CRT @(0,19):'   5 Zero or Null Order Number (occurs as 1-4 above)      (changed) = ':ALREADY.THERE.NULL'R#8'
+      CRT @(0,20):'---- Total items not in the file                          (written) = ':NOT.THERE'R#8'
+
+* Email output of results
+      RESULTS.ARRAY<-1>='Items already existing in the BOL cross reference file:'
+      RESULTS.ARRAY<-1>='   1 Same Order Numbers, Same Order Dates             (not changed) = ':ALREADY.THERE.BOTH.MATCH'R#8'
+      RESULTS.ARRAY<-1>='   2 Same Order Numbers, Different Order Dates        (not changed) = ':ALREADY.THERE.AMOUNTS.MATCH'R#8'
+      RESULTS.ARRAY<-1>='   3 Different Order Numbers, Same Order Dates        (not changed) = ':ALREADY.THERE.DATES.MATCH'R#8'
+      RESULTS.ARRAY<-1>='   4 Different Order Numbers, Different Order Dates   (not changed) = ':ALREADY.THERE.NEITHER.MATCH'R#8'
+      RESULTS.ARRAY<-1>='---- Total items already in the file                                = ':ALREADY.THERE'R#8'
+      RESULTS.ARRAY<-1>=' '
+      RESULTS.ARRAY<-1>='   5 Zero or Null Order Number (occurs as 1-4 above)      (changed) = ':ALREADY.THERE.NULL'R#8'
+      RESULTS.ARRAY<-1>='---- Total items not in the file                          (written) = ':NOT.THERE'R#8'
+
+      EMAIL.OUT=''
+      EMAIL.OUT<1,1>='oweninfo@afs.net'       ; * To: Email addresses
+*****      EMAIL.OUT<1,2>='Myra@afs.net'
+*     EMAIL.OUT<1,3>='David@afs.net'
+*     EMAIL.OUT<1,4>='J-ames@afs.net'
+      EMAIL.OUT<2>=''                    ; * CC: Email addresses
+      EMAIL.OUT<3>=''                    ; * BCC: Email addresses
+      EMAIL.OUT<4>='Reports@afs.net'      ; * From Email address
+      EMAIL.OUT<5>='Results From Running ':PROG.NAME:' - Import Of New BOL Data For ':CLIENT.NUMBER:' ':CLIENT.REC<2>    ; * Subject of Email
+
+      * Email body
+      EMAIL.OUT<6,-1>=USER.NAME:' ran ':PROG.NAME:' (':PROG.DESC:') on ':DATE()'D2/':' at ':OCONV(TIME(),'MTHS'):' with the following results:'
+      EMAIL.OUT<6,-1>=' '
+      NUM=DCOUNT(RESULTS.ARRAY,@AM)
+      FOR X=1 TO NUM
+         EMAIL.OUT<6,-1>='   ':RESULTS.ARRAY<X>
+      NEXT X
+
+      IF ERROR.ARRAY#'' THEN
+         EMAIL.OUT<6,-1>=' '
+         EMAIL.OUT<6,-1>=' '
+         EMAIL.OUT<6,-1>=' '
+         EMAIL.OUT<6,-1>='The following conflicts occurred between existing data and new data:'
+         EMAIL.OUT<6,-1>=' '
+         NUM=DCOUNT(ERROR.ARRAY,@AM)
+         FOR X=1 TO NUM
+            EMAIL.OUT<6,-1>='   ':ERROR.ARRAY<X>
+         NEXT X
+      END
+
+      EMAIL.OUT<7>=1                     ; * Auto format (add carriage returns to end of text)
+
+      VIN=EMAIL.OUT
+      VOUT=''
+      CALL SENDMAIL(VIN,VOUT)
+
+      CALL ELINE('')
+
+*************************************************************************
+
+THE.END:***
+* End of program
+      CRT @(0,23):
+   END

@@ -1,0 +1,179 @@
+*---- PROGRAM: GET.W9.CARRIER.DATA
+* AUTHOR: JAY WEBERT
+* DATE: JANUARY 10, 2007
+* DESCRIPTION: GET DATA FOR NON-EXEMPT CARRIERS FOR W9 PURPOSES
+*
+* THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS
+* AND MAY NOT BE USED, COPIED OR MODIFIED WITHOUT THE EXPRESS
+* WRITTEN CONSENT OF SAME.
+*-----------------------------------------------------------------------
+*
+* Initialize variables
+*
+      CALL GET.USER(USER.NAME)
+      PROG.NAME='GET.W9.CARRIER.DATA'
+      PROG.DESC='Check Totals for Non-Exempt Carriers'
+      PACK.NAME='Freight Billing'
+      EXECUTE 'CLR'
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'GET.W9.CARRIER.DATA' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      *** Set beginning and ending dates
+      CURR.DATE = OCONV(DATE(),'D4/')
+      CURR.YEAR = CURR.DATE[7,4]
+      RPT.YEAR4 = CURR.YEAR - 1
+      RPT.YEAR2 = RPT.YEAR4[3,2]
+      BEG.DATE = '01/01/':RPT.YEAR2
+      END.DATE = '12/31/':RPT.YEAR2
+      *** Set Report Variables
+      GRAND.TOTAL = 0
+      OUTPUT.REC = ''
+      HEAD = ''
+      HEAD<-1> = 'PayerID'
+      HEAD<-1> = 'PayerName'
+      HEAD<-1> = 'PayerAddr1'
+      HEAD<-1> = 'PayerAddr2'
+      HEAD<-1> = 'PayerCity'
+      HEAD<-1> = 'PayerState'
+      HEAD<-1> = 'PayerZip'
+      HEAD<-1> = 'RecipientID'
+      HEAD<-1> = 'RecipientName'
+      HEAD<-1> = 'RecipientAddr1'
+      HEAD<-1> = 'RecipientAddr2'
+      HEAD<-1> = 'RecipientCity'
+      HEAD<-1> = 'RecipientState'
+      HEAD<-1> = 'RecipientZip'
+      HEAD<-1> = 'NonExempt'
+      HEAD<-1> = 'AmtFunded'
+      CONVERT CHAR(254) TO CHAR(9) IN HEAD
+      OUTPUT.REC<-1> = HEAD
+      *** Set Company Data
+      STD.LINE = ''
+      STD.LINE<-1> = '72-1130766'           ; * CO ID
+      STD.LINE<-1> = 'AFS LOGISTICS, LLC.'  ; * CO NAME
+      STD.LINE<-1> = 'P. O. DRAWER 18170'   ; * CO ADDR1
+      STD.LINE<-1> = ' '                    ; * CO ADDR2
+      STD.LINE<-1> = 'SHREVEPORT'           ; * CO CITY
+      STD.LINE<-1> = 'LA'                   ; * CO STATE
+      STD.LINE<-1> = '71138'                ; * CO ZIP
+
+*
+* Open files
+*
+      OPEN 'CARRIERS' TO F.CARRIERS ELSE
+        CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN 'FB.CHECKS.HDR' TO F.FCH ELSE
+        CALL OPEN.ABORT('FB.CHECKS.HDR',PROG.NAME)
+      END
+      OPEN 'VOC' TO F.VOC ELSE
+        CALL OPEN.ABORT('VOC',PROG.NAME)
+      END
+      READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE
+         CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')
+         STOP
+      END
+      BILLDATA.REC<2>:='\':USER.NAME
+      WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER.NAME ELSE
+         CALL ELINE("YOUR USER NAME '":USER.NAME:"' IS NOT IN THE BILLDATA FOLDER - PLEASE SEE OWEN/DAVID")
+         STOP
+      END
+      OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+         CALL ELINE('UNABLE TO OPEN "BILLDATA."':USER.NAME:"'")
+         STOP
+      END
+
+*
+* Select Carriers
+*
+      TEXT='Selecting Carriers.'
+      CALL CENTER(TEXT,80)
+      CRT @(0,12):TEXT
+      STMT = 'SSELECT CARRIERS WITH 101 = "Y" BY 1'
+      EXECUTE STMT RTNLIST CAR.LIST CAPTURING OUTPUT
+      ITEMS = @SELECTED
+      IF @SELECTED < 1 THEN
+        CALL ELINE('ERROR - No carriers selected.')
+        GOTO EXIT.PROGRAM
+      END
+      COUNTER.1=0
+      PER.1=0
+      LOOP
+        READNEXT CAR.ID FROM CAR.LIST ELSE CAR.ID='DONE'
+      UNTIL CAR.ID='DONE' DO
+        COUNTER.1=COUNTER.1+1
+        READ CAR.REC FROM F.CARRIERS, CAR.ID ELSE
+          CALL ELINE('Could not read carrier record ':CAR.ID:'; program stopped.')
+          GOTO EXIT.PROGRAM
+        END
+        *** Load carrier data
+        CAR.NAME = CAR.REC<1>
+        LINE = STD.LINE
+        LINE<-1> = CAR.REC<96>       ; * CARRIER TAX ID
+        LINE<-1> = CAR.NAME          ; * CARRIER NAME
+        LINE<-1> = CAR.REC<2,1>:' '  ; * CARRIER ADDR1
+        LINE<-1> = CAR.REC<2,2>:' '  ; * CARRIER ADDR2
+        LINE<-1> = CAR.REC<3>        ; * CARRIER CITY
+        LINE<-1> = CAR.REC<4>        ; * CARRIER STATE
+        LINE<-1> = CAR.REC<5>        ; * CARRIER ZIP
+        LINE<-1> = CAR.REC<101>      ; * CARRIER NON-EXEMPT FLAG
+        CALL PROG.BAR(20,COUNTER.1,ITEMS,PER.1)
+        CRT @(0,17):CAR.ID:" ":CAR.NAME:" - Now selecting check records...":@(-4):
+
+*
+* Select and Process Freight Bill Records
+*
+        STMT = 'SELECT FB.CHECKS.HDR WITH 3 = "':CAR.ID:'"'
+        STMT := ' AND WITH 2 >= "':BEG.DATE:'" AND WITH 2 <= "':END.DATE:'"'
+        STMT := ' AND WITH BANK.ID = "F"'
+        EXECUTE STMT RTNLIST CHECKS.LIST CAPTURING RESULTS
+        NUM.CHECKS = @SELECTED
+        CRT @(0,17):CAR.ID:" ":CAR.NAME:" - Now processing ":NUM.CHECKS:" Check Records":@(-4):
+        COUNTER.2=0
+        TOT.AMT = 0
+        LOOP
+          DONE=0
+          READNEXT CHECK.ID FROM CHECKS.LIST ELSE DONE=1
+        UNTIL DONE=1 DO
+          COUNTER.2=COUNTER.2+1
+          CALL PROG.BAR(22,COUNTER.2,NUM.CHECKS,PER.2)
+          READV CHECK.AMT FROM F.FCH, CHECK.ID, 4 THEN
+            TOT.AMT += CHECK.AMT
+          END ELSE
+            CALL ELINE('COULD NOT READ FB.CHECKS.HDR RECORD ':CHECK.ID:' PROGRAM STOPPED.')
+            GOTO EXIT.PROGRAM
+          END
+        REPEAT
+        *** Update report record
+        IF TOT.AMT > 0 THEN
+          LINE<-1> = OCONV(TOT.AMT,'MD2,$')
+          CONVERT CHAR(254) TO CHAR(9) IN LINE
+          OUTPUT.REC<-1> = LINE
+          GRAND.TOTAL += TOT.AMT
+        END
+      REPEAT
+      *** Add grand total line
+      LINE = ''
+      LINE<16> = OCONV(GRAND.TOTAL,'MD2,$')
+      CONVERT CHAR(254) TO CHAR(9) IN LINE
+      OUTPUT.REC<-1> = LINE
+
+*
+* Write report to U drive
+*
+      D = DATE()'D4/'
+      T = OCONV(TIME(),'MT')
+      OUTPUT.ID = D[7,4]:D[1,2]:D[4,2]
+      OUTPUT.ID := '-':T[1,2]:T[4,2]
+      OUTPUT.ID := ' W-9 Information for ':RPT.YEAR4:'.XLS'
+      WRITE OUTPUT.REC TO F.BILLDATA, OUTPUT.ID
+      FOR I = 12 TO 21
+        CRT @(0,I):@(-4)
+      NEXT I
+      CRT @(0,12):'Report file  "':OUTPUT.ID:'"'
+      CRT @(0,13):'has been written to the BILLDATA/':USER.NAME:' folder'
+      CALL ELINE(' ')
+
+EXIT.PROGRAM:***
+      STOP
+

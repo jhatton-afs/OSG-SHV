@@ -1,0 +1,490 @@
+***********************************************************************
+* PROGRAM NAME : FB.2.16
+* PURPOSE      : TO EVALUATE AND CALCULATE THE LEAST COST CARRIER AMOUNT
+*                IN THE CASE OF A POTENTIAL LESS COSTLY CARRIER CHOICE
+*
+* AUTHOR       : JMK
+*
+*
+* 110802 - JMK01 - ADD MINIMUM VARIANCE TO SKIP
+* 122002 - JMK02 - CHANGE LCC FIELDS FOR UPDATE
+* 012103 - JMK03 - ADD MAX.LTL FOR PROCESSING
+* 070805 - DRF   - CHANGED TO USE THE SUBSTITUTE FOR AUDIT, TABLES AND ZIPS
+* 050806 - JCW01 - CHANGES TO '@SELECTED', 'CLEARSELECT', AND 'STMT<X>'
+* 121907 - JMK04 - C070443 - Create process to update SQL data tables from Universe
+* 012011 - DRF01 - Add manditory line item based on zip codes. Can be used for any code but mostly for HIGH High cost delivery area.
+* 011618 - NKH01 - Modified to call Carrier Connect XL
+***********************************************************************
+*
+$INCLUDE FILE.DEFS INC_CLIENTS
+*
+*PRINT @(-1):"Now sleeping for 1hr"
+*EXECUTE 'SLEEP 3600'
+      CRT @(-1)
+      ODATE=OCONV(DATE(),'D4/')
+      RPTDATE=ODATE[7,4]:ODATE[1,2]:ODATE[4,2]
+      CALL CHANNEL(CH.NUM)
+      CALL GET.USER(USER)
+      AUTO.USER=''
+      NOTIFY=''
+      MSG=''
+      IF USER=AUTO.USER THEN
+         NOTIFY='EMAIL'
+      END
+      PROG.NAME='LCC.MISROUTE'
+      EXPORT.REC=''
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         IF NOTIFY='EMAIL' THEN
+            MSG<1,-1>='Cannot open CLIENTS from ':PROG.NAME
+         END ELSE
+            CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+         END
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         IF NOTIFY='EMAIL' THEN
+            MSG<1,-1>='Cannot open CARRIERS from ':PROG.NAME
+         END ELSE
+            CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+         END
+      END
+      OPEN '','FB.MISROUTE.CHECK' TO F.FB.MISROUTE.CHECK ELSE
+         IF NOTIFY='EMAIL' THEN
+            MSG<1,-1>='Cannot open FB.MISROUTE.CHECK from ':PROG.NAME
+         END ELSE
+            CALL OPEN.ABORT('FB.MISROUTE.CHECK',PROG.NAME)
+         END
+      END
+      OPEN '','FB.NFSC' TO F.NFSC ELSE
+         IF NOTIFY='EMAIL' THEN
+            MSG<1,-1>='Cannot open FB.NFSC from ':PROG.NAME
+         END ELSE
+            CALL OPEN.ABORT('FB.NFSC',PROG.NAME)
+         END
+      END
+      OPEN '','PCIN' TO F.PCIN ELSE
+         IF NOTIFY='EMAIL' THEN
+            MSG<1,-1>='Cannot open PCIN from ':PROG.NAME
+         END ELSE
+            CALL OPEN.ABORT('PCIN',PROG.NAME)
+         END
+      END
+      OPEN '','PCOUT' TO F.PCOUT ELSE
+         IF NOTIFY='EMAIL' THEN
+            MSG<1,-1>='Cannot open PCOUT from ':PROG.NAME
+         END ELSE
+            CALL OPEN.ABORT('PCOUT',PROG.NAME)
+         END
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         IF NOTIFY='EMAIL' THEN
+            MSG<1,-1>='Cannot open FB.TABLES from ':PROG.NAME
+         END ELSE
+            CALL OPEN.ABORT('FB.TABLES',PROG.NAME)
+         END
+      END
+      OPEN '','ZIP.LINE.ITEM' TO F.ZIP.LINE.ITEM ELSE       ; *DRF01
+         IF NOTIFY='EMAIL' THEN                             ; *DRF01
+            MSG<1,-1>='Cannot open ZIP.LINE.ITEM from ':PROG.NAME        ; *DRF01
+         END ELSE                                           ; *DRF01
+            CALL OPEN.ABORT('ZIP.LINE.ITEM',PROG.NAME)      ; *DRF01
+         END                                                ; *DRF01
+      END                                                   ; *DRF01
+      OPEN '','BILLDATA.':USER TO BILLDATA ELSE
+         OPEN 'VOC' TO F.VOC ELSE
+            IF NOTIFY='EMAIL' THEN
+               MSG<1,-1>='Cannot open VOC from ':PROG.NAME
+            END ELSE
+               CALL OPEN.ABORT('VOC',PROG.NAME)
+            END
+         END
+         READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE
+            IF NOTIFY='EMAIL' THEN
+               MSG<1,-1>='UNABLE TO OPEN "VOA BILLDATA"'
+            END ELSE
+               CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')
+            END
+            GO 99999
+         END
+         BILLDATA.REC<2>:='\':USER
+         WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER ELSE
+            IF NOTIFY='EMAIL' THEN
+               MSG<1,-1>="YOUR USER NAME '":USER:"' IS NOT IN THE BILLDATA FOLDER - PLEASE SEE OWEN/TAMI/DAVID"
+            END ELSE
+               CALL ELINE("YOUR USER NAME '":USER:"' IS NOT IN THE BILLDATA FOLDER - PLEASE SEE OWEN/TAMI/DAVID")
+            END
+            GO 99999
+         END
+         OPEN '','BILLDATA.':USER TO BILLDATA ELSE
+            IF NOTIFY='EMAIL' THEN
+               MSG<1,-1>='UNABLE TO OPEN "BILLDATA.":USER'
+            END ELSE
+               CALL ELINE('UNABLE TO OPEN "BILLDATA.":USER')
+            END
+            GO 99999
+         END
+      END
+      READ DTARIFF.DATE.XREF FROM F.TABLES,'TARIFF.DATE.XREF' ELSE DTARIFF.DATE.XREF=''
+      READ DTARIFFS FROM F.TABLES,'TARIFFS' ELSE DTARIFFS=''
+      READ LI.CODES FROM F.TABLES,'LI.CODES' ELSE LI.CODES=''
+      HDG.REC='Least Cost Misroute Found On ':ODATE
+      EXPORT.REC<-1>=HDG.REC
+      EXPORT.REC<-1>=' '
+      COL.REC=''
+      COL.REC<1,-1>='Client'
+      COL.REC<1,-1>='Client Name'
+      COL.REC<1,-1>='Carrier'
+      COL.REC<1,-1>='Carrier Name'
+      COL.REC<1,-1>='Pro Number'
+      COL.REC<1,-1>='Bill Date'
+      COL.REC<1,-1>='Actual Charge'
+      COL.REC<1,-1>='LCC Charge'
+      COL.REC<1,-1>='LCC Car#'
+      COL.REC<1,-1>='LCC Carrier Name'
+      COL.REC<1,-1>='Process Date'
+      CONVERT CHAR(253) TO CHAR(9) IN COL.REC
+      EXPORT.REC<-1>=COL.REC
+      *
+* SELECT CLIENT FILE
+*
+      TEXT='Selecting Bills to Check.'
+      CALL CENTER(TEXT,80)
+      CRT @(0,10):TEXT
+*
+      STMT="SSELECT FB.MISROUTE.CHECK BY CLIENT"
+      PRINT STMT
+*STMT="SELECT FB.MISROUTE.CHECK '00883*00018*2534809860*0'"
+      EXECUTE STMT RTNLIST SECOND.LIST CAPTURING OUTPUT
+      SECOND.ITEMS = @SELECTED
+      CRT @(0,17):"Now processing ":SECOND.ITEMS:" Freight Bills":@(-4):
+      COUNTER.2=0
+      EOF.2=0
+      LOOP
+         READNEXT CHECK.ID FROM SECOND.LIST ELSE EOF.2=1
+      UNTIL EOF.2=1 DO
+         COUNTER.2=COUNTER.2+1
+         PRINT @(0,23):COUNTER.2'R(#4  )':CHECK.ID:
+         IF SECOND.ITEMS>0 THEN CALL PROG.BAR(22,COUNTER.2,SECOND.ITEMS,PER.2)
+         CLIENT.ID=FIELD(CHECK.ID,'*',1)
+         MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE MAT CLIENT.REC=''
+         IF CL.AUTO.MISROUTE # "Y" THEN GO SKIP.BILL
+         LCC.MIN.AMT=CLIENT.REC(148)     ; * JMK01
+         MAX.LTL=15000                   ; * JMK03
+         IF CLIENT.REC(150)#'' THEN MAX.LTL=CLIENT.REC(150)  ; * JMK03
+         CARRIER.ID=FIELD(CHECK.ID,'*',2)
+         READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE CARRIER.REC=''
+         CARRIER.NAME=CARRIER.REC<1>
+         OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS.HIST ELSE
+            GO SKIP.BILL
+         END
+         OPEN '','FB.AUDIT,':CLIENT.ID TO F.AUDIT THEN
+            READV SUB.CLIENT FROM F.AUDIT,'SUBSTITUTE',1 THEN
+               AUDIT.CLIENT.ID = SUB.CLIENT
+               OPEN '','FB.AUDIT,':AUDIT.CLIENT.ID TO F.AUDIT ELSE GO SKIP.BILL
+            END ELSE
+               AUDIT.CLIENT.ID = CLIENT.ID
+            END
+         END ELSE
+            GO SKIP.BILL
+         END
+         OPEN '','FB.AUDIT.TABLES,':AUDIT.CLIENT.ID TO F.AUDIT.TABLES ELSE
+            ABORT
+*           EXECUTE 'CREATE-FILE DATA FB.AUDIT.TABLES,':CLIENT.ID:' 7,1' CAPTURING OUTPUT
+            OPEN '','FB.AUDIT.TABLES,':CLIENT.ID TO F.AUDIT.TABLES ELSE
+               IF NOTIFY='EMAIL' THEN
+                  MSG<1,-1>='Error Cannot open FB.AUDIT.TABLES,':CLIENT.ID:' No On-Line Audit Allowed!'
+               END ELSE
+                  CALL ELINE('Error Cannot open FB.AUDIT.TABLES,':CLIENT.ID:' No On-Line Audit Allowed!')
+               END
+               CLIENT.AUDIT=0
+            END
+         END
+         OPEN '','FB.AUDIT.ZIPS,':AUDIT.CLIENT.ID TO F.AUDIT.ZIPS ELSE
+            ABORT
+*            EXECUTE 'CREATE-FILE DATA FB.AUDIT.ZIPS,':CLIENT.ID:' 7,1' CAPTURING OUTPUT
+            OPEN '','FB.AUDIT.ZIPS,':CLIENT.ID TO F.AUDIT.ZIPS ELSE
+               IF NOTIFY='EMAIL' THEN
+                  MSG<1,-1>='Error Cannot open FB.AUDIT.ZIPS,':CLIENT.ID:' No On-Line Audit Allowed!'
+               END ELSE
+                  CALL ELINE('Error Cannot open FB.AUDIT.ZIPS,':CLIENT.ID:' No On-Line Audit Allowed!')
+               END
+               CLIENT.AUDIT=0
+            END
+         END
+         PRO.ID=OCONV(CHECK.ID,'G1*3')
+         READ DBILL FROM F.BILLS.HIST,PRO.ID THEN
+            DBILL.ORG=DBILL
+            PROCESS.DATE=DBILL<37>
+            BILL.DATE=DBILL<1>
+            IOT=DBILL<2>
+            IF IOT='T' THEN GO SKIP.BILL
+            ORIG.ZIP=DBILL<3>
+            CAR.CHG=DBILL<7>
+            ACT.CHG=DBILL<8>
+            ORIG.CITY=DBILL<27>
+            ORIG.STATE=DBILL<25>
+            DEST.ZIP=DBILL<4>
+            DEST.CITY=DBILL<28>
+            DEST.STATE=DBILL<26>
+            TOT.WGT=DBILL<6>
+            MISC.CHG=DBILL<70>
+            CLASS.WGT=''
+            CLASS.WGT<1>=DBILL<74>
+            CLASS.WGT<2>=DBILL<75>
+            LOGISTICS=DBILL<51>
+            MRA.VIN=''
+            MRA.VIN<3>=BILL.DATE
+            MRA.VIN<11>=CLIENT.ID
+            MRA.VIN<12>=IOT
+            MRA.VIN<13,1>=ORIG.ZIP
+            MRA.VIN<13,2>=ORIG.CITY
+            MRA.VIN<13,3>=ORIG.STATE
+            MRA.VIN<14,1>=DEST.ZIP
+            MRA.VIN<14,2>=DEST.CITY
+            MRA.VIN<14,3>=DEST.STATE
+            MRA.VIN<16>=USER
+            MRA.VIN<18>=CLASS.WGT<1>
+            MRA.VIN<19>=CLASS.WGT<2>
+            MRA.VIN<21>=MISC.CHG<1>
+            MRA.VIN<25>=''
+            MRA.VIN<35>=CL.LOG.FSC='N'   ; * Flag to NOT Calculate Log FSC
+            MRA.VIN<46>=MAX.LTL          ; * JMK03
+*---- Find all Good Carriers on a Misrouted Bill
+            GOSUB FIND.GOOD.CARRIER
+            IF MISROUTE.ARRAY#'' THEN
+               IF MISROUTE.AMOUNT > LCC.MIN.AMT THEN         ; * JMK01
+*                 DBILL<22>=MISROUTE.ARRAY<1>      ; * JMK02
+*                 DBILL<23>=MISROUTE.ARRAY<2>      ; * JMK02
+*                 DBILL<63>=MISROUTE.AMOUNT        ; * JMK02
+*                 DBILL<69>=MISROUTE.CARRIER       ; * JMK02
+                  DBILL<143>=MISROUTE.AMOUNT
+                  DBILL<145>=MISROUTE.ARRAY<1>     ; * JMK02
+                  DBILL<146>=MISROUTE.ARRAY<2>     ; * JMK02
+                  DBILL<147>=MISROUTE.CARRIER      ; * JMK02
+               END                       ; * JMK01
+            END
+            IF DBILL.ORG#DBILL THEN
+               WRITE DBILL ON F.BILLS.HIST,PRO.ID
+
+               READ CLIENT.ITM FROM F.CLIENTS,CLIENT.ID ELSE CLIENT.ITM=''       ; * JMK04
+               OPEN '','EDI.BILLS.HIST,':CLIENT.ID TO F.EDI.BILLS.HIST THEN      ; * JMK04
+                  READ EDI.HIST.REC FROM F.EDI.BILLS.HIST,PRO.ID ELSE            ; * JMK04
+                     EDI.HIST.REC=''     ; * JMK04
+                  END                    ; * JMK04
+               END ELSE                  ; * JMK04
+                  EDI.HIST.REC=''        ; * JMK04
+               END                       ; * JMK04
+               IF CLIENT.ITM<12>='Y' THEN          ; * JMK04
+                  OPEN '','DIVISION.CODES,':CLIENT.ID TO F.DIV THEN    ; * JMK04
+                     READ DIV.ITM FROM F.DIV,DBILL<9> ELSE   ; * JMK04
+                        DIV.ITM=''       ; * JMK04
+                     END                 ; * JMK04
+                  END ELSE               ; * JMK04
+                     DIV.ITM=''          ; * JMK04
+                  END                    ; * JMK04
+               END ELSE                  ; * JMK04
+                  DIV.ITM=''             ; * JMK04
+               END                       ; * JMK04
+               OPEN '','VEND.CUST,':CLIENT.ID TO F.VC THEN   ; * JMK04
+                  READ VC.ITM FROM F.VC,DBILL<17> ELSE       ; * JMK04
+                     VC.ITM=''           ; * JMK04
+                  END                    ; * JMK04
+               END ELSE                  ; * JMK04
+                  VC.ITM=''              ; * JMK04
+               END                       ; * JMK04
+               SQLVIN=''                 ; * JMK04
+               SQLVIN<1>=USER            ; * JMK04
+               SQLVIN<2>=CLIENT.ID       ; * JMK04
+               SQLVIN<3>=PRO.ID          ; * JMK04
+               SQLVOUT=''                ; * JMK04
+*              CALL UPD.SQL.FBHIST.SUB(SQLVIN,SQLVOUT,CLIENT.ITM,DIV.ITM,VC.ITM,DBILL,EDI.HIST.REC)          ; * JMK04
+
+               LINE.REC=''
+               LINE.REC<1,-1>=CLIENT.ID
+               LINE.REC<1,-1>=CL.NAME
+               LINE.REC<1,-1>=CARRIER.ID
+               LINE.REC<1,-1>=CARRIER.NAME
+               LINE.REC<1,-1>=OCONV(PRO.ID,'G1*2')
+               LINE.REC<1,-1>=BILL.DATE'D2/'
+               LINE.REC<1,-1>=TRIM(ACT.CHG 'R26#15')
+               LINE.REC<1,-1>=TRIM(MISROUTE.AMOUNT 'R26#15')
+               LINE.REC<1,-1>=MISROUTE.CARRIER
+               READV MISROUTE.CARRIER.NAME FROM F.CARRIERS,MISROUTE.CARRIER,1 ELSE MISROUTE.CARRIER.NAME=MISROUTE.CARRIER:' Not On File'
+               LINE.REC<1,-1>=MISROUTE.CARRIER.NAME
+               LINE.REC<1,-1>=PROCESS.DATE'D4-'
+               CONVERT CHAR(253) TO CHAR(9) IN LINE.REC
+               EXPORT.REC<-1>=LINE.REC
+            END
+         END
+*OH      RELEASE F.BILLS.HIST,PRO.ID
+SKIP.BILL:***
+         DELETE F.FB.MISROUTE.CHECK,CHECK.ID
+      REPEAT
+      VERSION=0
+NEXT.VERSION:***
+      VERSION=VERSION+1
+      BILLDATA.ID=PROG.NAME:'_':RPTDATE:'_':VERSION'R%3':'.xls'
+      READ DUMMY FROM BILLDATA,BILLDATA.ID THEN
+         GOTO NEXT.VERSION
+      END
+      WRITE EXPORT.REC ON BILLDATA,BILLDATA.ID ELSE
+         IF NOTIFY='EMAIL' THEN
+            MSG<1,-1>='This report is currently open and cannot be updated.  Please close this report.'
+         END ELSE
+            CALL ELINE('This report is currently open and cannot be updated.  Please close this report.')
+         END
+         WRITE EXPORT.REC ON BILLDATA,BILLDATA.ID ELSE
+            IF NOTIFY='EMAIL' THEN
+               MSG<1,-1>='This report cannot be updated.  Please try again.'
+            END ELSE
+               CALL ELINE('This report cannot be updated.  Please try again.')
+            END
+         END
+      END
+      IF NOTIFY='EMAIL' THEN
+         MSG<1,-1>='This report can be found on your "U:" drive as ':BILLDATA.ID
+      END ELSE
+         CALL ELINE('This report can be found on your "U:" drive as ':BILLDATA.ID)
+      END
+99999:* End Of Processing
+      IF MSG#'' THEN
+         TOADDR=''
+         CCADDR=''
+         BCCADDR=''
+         FROMADDR='AFS'
+         SUBJECT='LCC Processing - ':RPTDATE
+         VIN=''
+         VOUT=''
+         VIN<1>=TOADDR
+         VIN<2>=CCADDR
+         VIN<3>=BCCADDR
+         VIN<4>=FROMADDR
+         VIN<5>=SUBJECT
+         VIN<6>=MSG
+         VIN<7>=1
+         IF TOADDR # '' OR CCADDR # '' OR BCCADDR # '' THEN
+            CALL SENDMAIL(VIN,VOUT)
+         END
+      END
+      STOP
+FIND.GOOD.CARRIER:***
+*CRT "@ FIND.GOOD.CARRIER:***" ; INPUT NUL
+      SAVE.MRA.VIN=MRA.VIN
+      MISROUTE.ARRAY=''                  ; *<1>=Amount (MV Lowest to Highest) <2>=Carrier #
+      IF CLIENT.ID='10225' AND CARRIER.ID='00510' THEN
+*      Secial Override for R&M Energy & Levinge .. No Misroutes
+         RETURN
+      END
+      STMT= 'SELECT FB.AUDIT,':AUDIT.CLIENT.ID
+      STMT:=' WITH 1 = "LTLALL"'
+      STMT:=' AND WITH 11 = "ENABLE"'
+      STMT:=' AND WITH 13 = "Y"'         ; * Core Carrier Flag = "Y"
+      STMT:=' AND WITH CARRIER# NE "':CARRIER.ID:'"'
+      EXECUTE STMT RTNLIST MISR.LIST CAPTURING OUTPUT
+      IF @SELECTED < 1 THEN RETURN TO SKIP.BILL    ; * JCW01
+GET.NEXT.CARRIER:
+      READNEXT MISR.CARRIER.ID FROM MISR.LIST THEN
+*** PICK BEST (IF ANY) CARRIER
+         IF MISR.CARRIER.ID = CARRIER.ID THEN GOTO GET.NEXT.CARRIER
+      READ MISR.CARRIER.REC FROM F.CARRIERS,MISR.CARRIER.ID ELSE ; *DRF01
+         MISR.CARRIER.REC='~~ Not On File ~~' ; *DRF01
+      END                                     ; *DRF01
+         READ DMRA.AUDIT FROM F.AUDIT,MISR.CARRIER.ID ELSE GOTO GET.NEXT.CARRIER
+         IF DMRA.AUDIT<11>='DISABLE' THEN GOTO GET.NEXT.CARRIER:
+         CRT MISR.CARRIER.ID
+         MRA.VIN=SAVE.MRA.VIN
+      TOT.WGT=SUM(CLASS.WGT<2>)     ; *DRF01
+      TEMP.MISC.CHG=MISC.CHG           ; *DRF01
+      LOCATE TOT.WGT IN MISR.CARRIER.REC<70> BY "AR" SETTING WEIGHT.POS ELSE NULL     ; *DRF01
+      TEMP.TRANSPORT.MODE = OCONV(MISR.CARRIER.REC<71,WEIGHT.POS>,'MCU')     ; *DRF01
+      ZIP.LINE.ID=MISR.CARRIER.ID:'*':CLIENT.ID:'*':TEMP.TRANSPORT.MODE:'*':IOT     ; *DRF01
+      READ DZIP.LINE FROM F.ZIP.LINE.ITEM,ZIP.LINE.ID ELSE     ; *DRF01
+         ZIP.LINE.ID=MISR.CARRIER.ID:'*ALL*':TEMP.TRANSPORT.MODE:'*':IOT     ; *DRF01
+         READ DZIP.LINE FROM F.ZIP.LINE.ITEM,ZIP.LINE.ID ELSE DZIP.LINE=''     ; *DRF01
+      END                              ; *DRF01
+
+      IF DZIP.LINE#'' THEN             ; *DRF01
+         LOCATE ORIG.ZIP IN DZIP.LINE<1> BY 'AR' SETTING ZIP.POS THEN     ; *DRF01
+            ZIP.POS=ZIP.POS+1          ; *DRF01
+         END                           ; *DRF01
+         IF ZIP.POS > 1 THEN           ; *DRF01
+            ZIP.POS=ZIP.POS-1          ; *DRF01
+            IF DZIP.LINE<2,ZIP.POS> >= ORIG.ZIP THEN     ; *DRF01
+               NUM.OF.SVM = DCOUNT(DZIP.LINE<3,ZIP.POS>,@SVM)     ; *DRF01
+               FOR Z = 1 TO NUM.OF.SVM ; *DRF01
+                  IF DZIP.LINE<4,ZIP.POS,Z>='O' OR DZIP.LINE<4,ZIP.POS,Z>='B' THEN     ; *DRF01
+                     LOCATE DZIP.LINE<3,ZIP.POS,Z> IN TEMP.MISC.CHG<1> SETTING DUMMY.POS ELSE     ; *DRF01
+                        INS DZIP.LINE<3,ZIP.POS,Z> BEFORE TEMP.MISC.CHG<1,1>     ; *DRF01
+                     END               ; *DRF01
+                  END                  ; *DRF01
+               NEXT Z                  ; *DRF01
+            END                        ; *DRF01
+         END                           ; *DRF01
+         LOCATE DEST.ZIP IN DZIP.LINE<1> BY 'AR' SETTING ZIP.POS THEN     ; *DRF01
+           ZIP.POS=ZIP.POS+1           ; *DRF01
+         END                           ; *DRF01
+         IF ZIP.POS > 1 THEN           ; *DRF01
+            ZIP.POS=ZIP.POS-1          ; *DRF01
+            IF DZIP.LINE<2,ZIP.POS> >= DEST.ZIP THEN     ; *DRF01
+               NUM.OF.SVM = DCOUNT(DZIP.LINE<3,ZIP.POS>,@SVM)     ; *DRF01
+               FOR Z = 1 TO NUM.OF.SVM ; *DRF01
+                  IF DZIP.LINE<4,ZIP.POS,Z>='D' OR DZIP.LINE<4,ZIP.POS,Z>='B' THEN     ; *DRF01
+                     LOCATE DZIP.LINE<3,ZIP.POS,Z> IN TEMP.MISC.CHG<1> SETTING DUMMY.POS ELSE     ; *DRF01
+                        INS DZIP.LINE<3,ZIP.POS,Z> BEFORE TEMP.MISC.CHG<1,1>     ; *DRF01
+                     END               ; *DRF01
+                  END                  ; *DRF01
+               NEXT Z                  ; *DRF01
+            END                        ; *DRF01
+         END                           ; *DRF01
+      END                              ; *DRF01
+
+*DF      MRA.VIN<21>=MISC.CHG<1>       ; *DRF01
+      MRA.VIN<21>=TEMP.MISC.CHG<1>     ; *DRF01
+*DF      END ELSE                         ; *DRF01
+*DF      MRA.VIN<21>=MISC.CHG<1>
+*DF      END                              ; *DRF01
+         MRA.VIN<10>=MISR.CARRIER.ID     ; * Correct to "Test" Carrier Number
+         MRA.VIN<17>=1                   ; * Looking for misroute flag
+         MRA.VIN<24>=0                   ; ** No Logistics Calcs Needed on Misroutes
+         MRA.VIN<25>=''
+         READ DMRA.BENCH.FSC FROM F.NFSC,MISR.CARRIER.ID ELSE DMRA.BENCH.FSC=''
+         READ DMRA.CONTR.FSC FROM F.NFSC,MISR.CARRIER.ID:"*":AUDIT.CLIENT.ID ELSE DMRA.CONTR.FSC=DMRA.BENCH.FSC
+         IF DMRA.BENCH.FSC<30>='DISABLE' THEN
+            DMRA.BENCH.FSC=''            ; ** No Effect
+            DMRA.CONTR.FSC=''
+         END
+         IF CLIENT.REC(27) < 13455 THEN
+            DMRA.BENCH.FSC=DMRA.CONTR.FSC
+         END
+         CALL FB.AUTO.V2(MRA.VIN,MRA.VOUT,DMRA.AUDIT,DMRA.CONTR.FSC,DMRA.BENCH.FSC,DTARIFFS,DTARIFF.DATE.XREF,LI.CODES,F.AUDIT.TABLES,F.AUDIT.ZIPS,F.PCIN,F.PCOUT,F.TABLES)   ; * NKH01
+         WHY=MRA.VOUT<24>                ; * FOR DEBUG PURPOSES
+         MRA.VOUT<24>=''
+         IF MRA.VOUT<2>='Y' THEN
+            MIS.CONTR.AMT=MRA.VOUT<8>
+            LOCATE MIS.CONTR.AMT IN MISROUTE.ARRAY<1> BY 'AR' SETTING POS ELSE NULL
+            INS MIS.CONTR.AMT BEFORE MISROUTE.ARRAY<1,POS>
+            INS MISR.CARRIER.ID BEFORE MISROUTE.ARRAY<2,POS>
+         END
+         GOTO GET.NEXT.CARRIER
+      END
+      MISROUTE.AMOUNT=MISROUTE.ARRAY<1,1>
+      MISROUTE.CARRIER=MISROUTE.ARRAY<2,1>
+      LOCATE CARRIER.ID IN MISROUTE.ARRAY<2> SETTING MISROUTE.POS THEN
+         IF MISROUTE.AMOUNT >= MISROUTE.ARRAY<1,MISROUTE.POS> THEN
+            MISROUTE.AMOUNT=''
+            MISROUTE.CARRIER=''
+            MISROUTE.ARRAY=''
+         END
+      END
+      IF MISROUTE.AMOUNT#'' THEN
+         IF MISROUTE.AMOUNT >= ACT.CHG THEN
+            MISROUTE.AMOUNT=''
+            MISROUTE.CARRIER=''
+            MISROUTE.ARRAY=''
+         END
+      END
+      IF MISROUTE.CARRIER#'' THEN
+         READV MISROUTE.NAME FROM F.CARRIERS,MISROUTE.CARRIER,1 ELSE
+            MISROUTE.NAME='Unkown Carrier'
+         END
+      END
+      RETURN

@@ -1,0 +1,1292 @@
+* PROGRAM: FB.3.19
+* Misrouted Freight Bills Report
+*
+*  THIS PROGRAM IS A PROPRIETARY PRODUCT OF AUTOMATED FREIGHT SYSTEMS.
+*
+* FREIGHT BILLING PACKAGE
+*
+*  AUTHOR       :
+*  DATE CREATED :
+*  DESCRIPTION  :  This program builds a work file for all the bills
+*                  paid during the specified dates and prints a
+*                  detailed report.  The summary of charges prints on
+*                  a separate page and is used for billing purposes.
+*                  Then, for applicable clients, it prints an
+*                  expense report and/or a division report.
+*
+***********************************************************************
+*
+* 050908 - JMK04 - T081285 - Report: 1,3,19,5 possibly picking up Approved Carrier for Misroute instead of Appr. Carr for LCC
+* 122002 - JMK03 - LCC CHANGES FOR REPORT
+* 111902 - JMK02 - ADD DIVISION SELECTION TO REPORT
+* 110102 - JMK01 - EXCLUDE LEAST COST CARRIER MISROUTES
+* Last updated by AFS.SOURCE (valerie) at 11:11:37 on 08/25/1994.
+*   FAX SUMMARY OF CHARGES TO CLIENTS.
+* Last updated by AFS.SOURCE (valerie) at 14:27:54 on 04/29/1994.
+*   UPDATED CODE FOR DIVISIONS AND INSERTS
+* Last updated by AFS (valerie) at 11:34:22 on 03/13/1994.
+*   Updated for migration to UNIVERSE and did a little housecleaning
+*   for locking and printer problems.
+*
+* INSERT DECKS
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_DIVISION.CODES
+*
+* Initialize variables.
+*
+      INPUT PROCESS.TYPE
+      LCC.FLG=0                          ; * JMK01
+      IF PROCESS.TYPE[1,3]='LCC' THEN    ; * JMK01
+         LCC.FLG=1                       ; * JMK01
+         PROCESS.TYPE=PROCESS.TYPE[4,9999]         ; * JMK01
+      END                                ; * JMK01
+*
+      ESC=CHAR(27)
+*OH   BOLD.ON=ESC:'(s3B'
+*OH   BOLD.OFF=ESC:'(s0B'
+      BOLD.ON='' ; BOLD.OFF=''
+      PROMPT''
+      ERRMSG=''
+      PROG.NAME='FB.3.19'
+*      USER=OCONV(SYSTEM(19),'MCU')
+      CALL GET.USER(USER)
+      IF LCC.FLG=1 THEN                  ; * JMK01
+         PROG.DESC="Least Cost Carrier Freight Bill Report by Client by Carrier"           ; * JMK01
+      END ELSE                           ; * JMK01
+         PROG.DESC="Misrouted Freight Bill Report by Client by Carrier"
+      END                                ; * JMK01
+      BACK.FLAG=0                        ; * JMK02
+      PACK.NAME="Freight Billing"
+      CALL CHANNEL(CH.NUM)
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.3.19' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      MAT DIV.REC = ''
+      EXPS=''
+      DIVS=''
+      DIST.MIDS=''
+      DIST.IDS=''
+      DIST.AMTS=''
+      CHAR.PER.IN = 16.7
+      FIRST.TIME=1
+*
+* Open general files
+*
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN '','FB.COMPANY' TO F.COMPANY ELSE
+         CALL OPEN.ABORT("FB.COMPANY",PROG.NAME)
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','FB.ADJUSTS' TO F.ADJUSTS ELSE
+         CALL OPEN.ABORT("FB.ADJUSTS",PROG.NAME)
+      END
+      OPEN '','FB.REPORT' TO F.REPORT ELSE
+         CALL OPEN.ABORT("FB.REPORT",PROG.NAME)
+      END
+      OPEN '','ZIPS.CODES' TO F.ZIPS ELSE
+         CALL OPEN.ABORT("ZIPS",PROG.NAME)
+      END
+      READ ZIP.REC FROM F.ZIPS,'3.DIGIT' ELSE ZIP.REC=''
+*
+* Enter client number.
+*
+100:  CALL AFS.SCR.HEAD(CO.ID, FILE.ID, '', PROG.NAME, PROG.DESC, PACK.NAME, CO.NAME, TIME.DATE, 1)
+      HELP="Enter client number. Word of name for search. X=Exit. EX=Exit."
+      CALL GEN.IN(0,3,'Enter client number #####','',Q,0,20,'','',2,-5,3,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='' ! QI='EX' ! QI='X'
+            STOP
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO 100
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO 100
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO 100
+            END CASE
+         CASE NUM(QI)
+            Q=QI'R%5'
+         CASE 1
+            GOTO 100
+      END CASE
+*
+      CLIENT=Q
+      READ CLIENT.REC FROM F.CLIENTS,Q ELSE
+         CALL ELINE('ERROR - Client ':CLIENT:' not on file.')
+         GOTO 100
+      END
+      DIVISION=CLIENT.REC<12>
+      COMPANY.CODE=CLIENT.REC<92>
+      IF COMPANY.CODE='' THEN COMPANY.CODE='A'
+      READV COMPANY.NAME FROM F.COMPANY,COMPANY.CODE,1 ELSE
+         COMPANY.NAME='AFS Logistics, LLC'
+      END
+*
+      CLIENT.NAME=CLIENT.REC<2>
+      EXPENSE=CLIENT.REC<13>
+      VARIANCE=CLIENT.REC<7>
+      CRT @(0,3):'Enter Client Number ':CLIENT'R%5':
+      CRT ' ':CLIENT.NAME:@(-4):
+*
+* Open client's files.
+*
+      IF VARIANCE='Y' THEN
+         OPEN '','VARIANCE.CODES,':CLIENT TO F.VARIANCE ELSE
+            CALL OPEN.ABORT("VARIANCE.CODES,":CLIENT,PROG.NAME)
+         END
+      END
+      IF DIVISION='Y' THEN
+         OPEN '','DIVISION.CODES,':CLIENT TO F.DIVISION ELSE
+            CALL OPEN.ABORT("DIVISION.CODES,":CLIENT,PROG.NAME)
+         END
+      END
+      OPEN '','FB.REPORT,':CLIENT TO F.CLNT.REPORT ELSE
+         HUSH ON
+         EXECUTE 'CREATE-FILE DATA FB.REPORT,':CLIENT:' 101'
+         HUSH OFF
+         OPEN '','FB.REPORT,':CLIENT TO F.CLNT.REPORT ELSE
+            CALL OPEN.ABORT("FB.REPORT,":CLIENT,PROG.NAME)
+         END
+      END
+      OPEN '','FB.BILLS.HIST,':CLIENT TO F.HIST ELSE
+         CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT,PROG.NAME)
+      END
+*
+* Initialize files
+*
+      CLEARFILE F.CLNT.REPORT
+      READ FORMAT.REC FROM F.REPORT,CLIENT ELSE
+         CALL ELINE('Can not read report format for ':CLIENT.NAME)
+         GOTO 100
+      END
+*
+* Repair format record if needed
+*
+      UPDATE=0
+      TOTAL.CHARS.USED=0
+      FOR X = 2 TO 999 UNTIL FORMAT.REC<X>=''
+         ACTUAL=FORMAT.REC<X,1>
+         CHARS=FORMAT.REC<X,3>
+         IF FORMAT.REC<X,1>#11 THEN
+            TOTAL.CHARS.USED += CHARS+1  ; * Add 1 for the Blank Between Fields
+         END
+         TEST=TRIM(ACTUAL)
+         BEGIN CASE
+            CASE ACTUAL='PRO'
+            CASE ACTUAL='SPACE'
+            CASE ACTUAL='COST'
+            CASE TEST=0
+               CALL ELINE('Error.. Value column on line ':X-1:' cannot be 0 in report format for ':CLIENT.NAME)
+               GOTO 100
+            CASE ACTUAL MATCHES '0N'
+            CASE TEST[1,3]='PRO' & ACTUAL#'PRO'
+               FORMAT.REC<X,1>='PRO' ; UPDATE=1
+            CASE TEST[1,5]='SPACE' & ACTUAL#'SPACE'
+               FORMAT.REC<X,1>='SPACE' ; UPDATE=1
+            CASE NOT(ACTUAL MATCHES '0N') & TEST MATCHES '0N'
+               FORMAT.REC<X,1>=TEST ; UPDATE=1
+            CASE NOT(NUM(TEST)) & NOT(NUM(ACTUAL))
+               CALL ELINE('Error in Value column on line ':X-1:' of report format for ':CLIENT.NAME)
+               GOTO 100
+         END CASE
+      NEXT X
+      IF UPDATE THEN WRITE FORMAT.REC ON F.REPORT,CLIENT
+*** Add Approved Carrier Column ***
+      ORIG.LEN=FORMAT.REC<1,1>
+      MISR.CAR.LEN=37
+      IF TOTAL.CHARS.USED+MISR.CAR.LEN > ORIG.LEN THEN
+         BEGIN CASE
+            CASE ORIG.LEN=132 ; NEW.LEN=170
+            CASE ORIG.LEN=170 ; NEW.LEN=198
+            CASE ORIG.LEN=198
+               NEW.LEN=198
+               MISR.CAR.LEN=ORIG.LEN-TOTAL.CHARS.USED
+               IF MISR.CAR.LEN < 16 THEN
+                  CALL ELINE('Format to wide. Only the first ':MISR.CAR.LEN:' characters of the approved carrier will print')
+               END
+         END CASE
+         FORMAT.REC<1,1>=NEW.LEN
+      END
+*** Take Care to Only Add what Will Fit on the Report
+      NEW.LINE=69                        ; * Attribute of Carrier #
+      NEW.LINE<1,2>='ML'                 ; * Make It All Left Justified
+      NEW.LINE<1,3>=MISR.CAR.LEN-1       ; * 5 (id) 1 (Space) 30 Carrier Name
+      NEW.LINE<1,4>='N'                  ; * Don't Total
+      NEW.LINE<1,5>='Approved Carrier'[1,MISR.CAR.LEN]       ; * Title
+      FORMAT.REC<-1>=NEW.LINE
+
+*
+* Enter file selections.
+*
+150:  HELP="Enter selection number 1 or 2. X=Back to Client Entry. EX=Exit."
+      LN="Enter 1 for the Temp File or 2 for the History File #"
+      CALL GEN.IN(0,5,LN,'',Q,1,2,'','',0,-1,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE Q=1
+            FILE="FB.BILLS,":CLIENT
+         CASE Q=2
+            FILE="FB.BILLS.HIST,":CLIENT
+         CASE QI='X'
+            CRT @(0,5):@(-3):
+            GOTO 100
+         CASE QI='EX'
+            STOP
+         CASE 1
+            GOTO 150
+      END CASE
+      OPEN FILE TO FB.BILLS ELSE CALL OPEN.ABORT(FILE,PROG.NAME)
+
+*
+* Enter beginning date.
+*
+160:
+      HELP="Enter beginning date. nn=Day. nn/nn=Month & Day. X=Back to file. EX=Exit."
+      LN='Enter the beginning date of the report. ':DATE()'D2/'
+      CALL GEN.IN(0,7,LN,'DATE',Q,0,8,'','',0,-8,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,7):@(-3):
+            GOTO 150
+         CASE QI='EX'
+            STOP
+      END CASE
+      BEG.DATE=Q
+      CRT @(40,7):BEG.DATE'D2/'
+
+*
+* Enter ending date.
+*
+170:
+      HELP="Enter ending date. nn=Day. nn/nn=Month & Day. X=Back to Beg Date. EX=Exit."
+      LN='Enter the ending date of the report.    ':DATE()'D2/'
+      CALL GEN.IN(0,9,LN,'DATE',Q,0,9,'','',0,-8,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,9):@(-3):
+            GOTO 160
+         CASE QI='EX'
+            STOP
+      END CASE
+      END.DATE=Q
+      IF BEG.DATE GT END.DATE THEN
+         IF PROCESS.TYPE='STD' THEN
+            CALL ELINE('Beginning date cannot exceed ending date.')
+         END
+         GOTO 170
+      END
+      DAYS=END.DATE-BEG.DATE+1
+      CRT @(40,9):END.DATE'D2/'
+
+*
+************************************************************************
+172:
+      SELECTED.REPORTS = 'IOTB'
+
+************************************************************************
+175:
+      HELP="Options: Y-Yes, N-No, X-Back, EX-EXIT"
+      CALL GEN.IN(0,11,'Do you wish to print the Inbound? Y','',Q,0,3,'','',0,-1,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU') ; IF QI='' THEN QI='Y'
+      BEGIN CASE
+         CASE QI='Y'
+            SELECTED.REPORTS[1,1] = 'I'
+         CASE QI='N'
+            SELECTED.REPORTS[1,1] = ' '
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            CRT @(0,11):@(-3):
+            GO 170
+         CASE 1
+            CALL ELINE("Must be 'X', 'EX', 'Y', or 'N'")
+            GO 175
+      END CASE
+      CRT @(34,11):QI'L#3'
+
+************************************************************************
+176:
+      HELP="Options: Y-Yes, N-No, X-Back, EX-EXIT"
+      CALL GEN.IN(0,12,'Do you wish to print the Outbound? Y','',Q,0,2,'','',0,-1,12,0,QI,HELP,2,23)
+      QI=OCONV(QI,'MCU') ; IF QI='' THEN QI='Y'
+      BEGIN CASE
+         CASE QI='Y'
+            SELECTED.REPORTS[2,1] = 'O'
+         CASE QI='N'
+            SELECTED.REPORTS[2,1] = ' '
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            CRT @(0,12):@(-3):
+            GO 175
+         CASE 1
+            CALL ELINE("Must be 'X', 'EX', 'Y', or 'N'")
+            GO 176
+      END CASE
+      CRT @(35,12):QI'L#3'
+
+************************************************************************
+177:
+      HELP="Options: Y-Yes, N-No, X-Back, EX-EXIT"
+      CALL GEN.IN(0,13,'Do you wish to print the Third Party? Y','',Q,0,2,'','',0,-1,13,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU') ; IF QI='' THEN QI='Y'
+      BEGIN CASE
+         CASE QI='Y'
+            SELECTED.REPORTS[3,1] = 'T'
+         CASE QI='N'
+            SELECTED.REPORTS[3,1] = ' '
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            CRT @(0,13):@(-3):
+            GO 176
+         CASE 1
+            CALL ELINE("Must be 'X', 'EX', 'Y', or 'N'")
+            GO 177
+      END CASE
+      CRT @(38,13):QI'L#3'
+
+************************************************************************
+
+178:
+      HELP="Options: Y-Yes, N-No, X-Back, EX-EXIT"
+      CALL GEN.IN(0,15,'Do you wish to print the Combination of Inbound, Outbound and Third Party? Y','',Q,0,2,'','',0,-1,15,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU') ; IF QI='' THEN QI='Y'
+      BEGIN CASE
+         CASE QI='Y'
+            SELECTED.REPORTS[4,1] = 'B'
+         CASE QI='N'
+            SELECTED.REPORTS[4,1] = ' '
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            CRT @(0,15):@(-3):
+            GO 178
+         CASE 1
+            CALL ELINE("Must be 'X', 'EX', 'Y', or 'N'")
+            GO 177
+      END CASE
+      CRT @(75,15):QI'L#3'
+
+
+
+************************************************************************
+*
+* Ask for hold file
+*
+180:
+      HELP="Enter Y to send report to hold file."
+      CALL GEN.IN(0,17,'Send report to hold file? N','',Q,0,2,'','',1,-1,17,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X' ; GO 178
+         CASE QI='EX' ; GO 9999
+         CASE QI='Y'
+            HOLD.STAT=1
+            EXECUTE 'SP-ASSIGN HSF0'
+         CASE 1
+            HOLD.STAT=0
+            QI='N'
+      END CASE
+      CRT @(26,17):QI'L#2'
+*
+************************************************************************
+190:
+350:  IF DIVISION = 'N' THEN             ; * JMK02
+         IF BACK.FLAG = 1 THEN           ; * JMK02
+            BACK.FLAG = 0                ; * JMK02
+            GO 300                       ; * JMK02
+         END ELSE                        ; * JMK02
+            SEPARATE.DIVISIONS = 0
+            GO 375                       ; * JMK02
+         END                             ; * JMK02
+      END                                ; * JMK02
+      SEPARATE.DIVISIONS = 0
+      IF DIVISION#'Y' THEN
+         IF QI='X' THEN GO 180
+         GO 300
+      END
+      HELP="Enter Y to print a separate report for each division"
+      CALL GEN.IN(0,19,'Separate Report for Each Division  N','',Q,0,2,'','',1,-1,19,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='Y' ; SEPARATE.DIVISIONS = 1
+         CASE QI='N' ; NULL
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GO 180
+         CASE 1
+            CALL ELINE("Must be 'X', 'EX', 'Y', or 'N'")
+            GO 190
+      END CASE
+      CRT @(34,19):QI'L#2'
+
+375:  IF SEPARATE.DIVISIONS=0 AND BACK.FLAG = 1 THEN         ; * JMK02
+         GO 350                          ; * JMK02
+      END ELSE                           ; * JMK02
+         IF BACK.FLAG = 1 AND DIVISION = 'N' THEN GO 300     ; * JMK02
+      END                                ; * JMK02
+      IF SEPARATE.DIVISIONS=0 THEN GO 400          ; * JMK02
+      DIVISIONAL.ID = 'ALL'              ; * JMK02
+      HELP="Enter ALL or specify a division code L=List"     ; * JMK02
+      CALL GEN.IN(40,19,'Enter Division: ALL','',Q,0,5,'','',1,-3,19,0,QI,HELP,0,23)       ; * JMK02
+      QI=OCONV(QI,'MCU')                 ; * JMK02
+      IF QI='' THEN QI='ALL'             ; * JMK02
+      BEGIN CASE                         ; * JMK02
+         CASE QI='ALL'                   ; * JMK02
+            Q='ALL'                      ; * JMK02
+         CASE QI='X'                     ; * JMK02
+            GO 350                       ; * JMK02
+         CASE QI='EX'                    ; * JMK02
+            STOP                         ; * JMK02
+         CASE NUM(QI)                    ; * JMK02
+            Q = QI'R%5'                  ; * JMK02
+         CASE QI='L'                     ; * JMK02
+            EXECUTE 'SORT DIVISION.CODES,':CLIENT:' CITY.STATE HEADING "List of all division codes for ':CLIENT:' - ':CLIENT.NAME:"'CL'":'"'           ; * JMK02
+            CALL ELINE('Press <ENTER> to continue.')         ; * JMK02
+            CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)          ; * JMK02
+            CRT @(0,3):'Enter Client Number ':CLIENT'R%5':   ; * JMK02
+            CRT ' ':CLIENT.NAME:@(-4):   ; * JMK02
+            CRT@(0,7):'Enter the beginning date of the report. ':
+            CRT @(40,7):BEG.DATE'D2/'
+            CRT@(0,9):'Enter the ending date of the report.    ':
+            CRT @(40,9):END.DATE'D2/'
+            CRT@(0,11):'Do you wish to print the Inbound?'
+            BEGIN CASE
+               CASE SELECTED.REPORTS[1,1]='I'
+                  CRT @(34,11):"Y"'L#3'
+               CASE 1
+                  CRT @(34,11):"N"'L#3'
+            END CASE
+            CRT@(0,12):'Do you wish to print the Outbound?'
+            BEGIN CASE
+               CASE SELECTED.REPORTS[2,1]='O'
+                  CRT @(35,12):"Y"'L#3'
+               CASE 1
+                  CRT @(35,12):"N"'L#3'
+            END CASE
+            CRT@(0,13):'Do you wish to print the Third Party?'
+            BEGIN CASE
+               CASE SELECTED.REPORTS[3,1]='T'
+                  CRT @(38,13):"Y"'L#3'
+               CASE 1
+                  CRT @(38,13):"N"'L#3'
+            END CASE
+            CRT@(0,15):'Do you wish to print the Compination of Inbound, Outbound and Third Party?'
+            BEGIN CASE
+               CASE SELECTED.REPORTS[4,1]='B'
+                  CRT @(75,15):"Y"'L#3'
+               CASE 1
+                  CRT @(75,15):"N"'L#3'
+            END CASE
+            CRT@(0,17):'Send report to hold file?'
+            BEGIN CASE
+               CASE HOLD.STAT=1
+                  CRT @(26,17):"Y"'L#2'
+               CASE 1
+                  CRT @(26,17):"N"'L#2'
+            END CASE
+            CRT@(0,19):'Separate Report for Each Division'
+            BEGIN CASE
+               CASE SEPARATE.DIVISIONS=1
+                  CRT @(34,19):"Y"'L#2'
+               CASE 1
+                  CRT @(34,19):"N"'L#2'
+            END CASE
+            GO 375                       ; * JMK02
+         CASE 1                          ; * JMK02
+            CALL ELINE("Must be 'X', 'EX', 'Y', or 'N'")     ; * JMK02
+            GO 375                       ; * JMK02
+      END CASE                           ; * JMK02
+******************************************************************; * JMK02
+      IF Q='ALL' THEN DIVISIONAL.ID='ALL' ELSE     ; * JMK02
+         DIVISIONAL.ID = Q'R%5'          ; * JMK02
+      END                                ; * JMK02
+      IF DIVISIONAL.ID #'ALL' AND DIVISION = 'Y' THEN        ; * JMK02
+         READ DDIV FROM F.DIVISION,DIVISIONAL.ID ELSE        ; * JMK02
+            CALL ELINE('Division ':DIVISIONAL.ID:' has not been set up.')        ; * JMK02
+            GO 375                       ; * JMK02
+         END                             ; * JMK02
+      END                                ; * JMK02
+      DIVS=''                            ; * JMK02
+      CRT @(56,19):DIVISIONAL.ID         ; * JMK02
+
+400:* ; * JMK02
+************************************************************************
+* Verify selection criteria is correct.
+*
+300:  HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            GOTO 190
+         CASE QI='EX'
+            STOP
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO 300
+      END CASE
+*     IF DIVISION = 'Y' THEN
+*        EXECUTE 'SSELECT DIVISION.CODES,':CLIENT PASSLIST CAPTURING OUTPUT
+*        NUM.ITMS = @SELECTED
+*        DONE = 0
+*        CNTR = 0
+*        LOOP
+*           READNEXT DIV.ID ELSE DONE = 1
+*        UNTIL DONE DO
+*           MATREAD DIV.REC FROM F.DIVISION, DIV.ID THEN
+*              CNTR += 1
+*              DIVS<1,CNTR> = DIV.ID'R%5'
+*           END
+*        REPEAT
+*     END
+*
+* Set up body copies
+*
+      COPIES=1
+      CALL FB.FORM(F.NUM)
+*OH   IF HOLD.STAT ELSE EXECUTE 'SP-ASSIGN C':COPIES:'F':F.NUM
+*
+* Build column headings and break lines
+*
+      COL.HEAD=''
+      SINGLE.BREAK=''
+      DOUBLE.BREAK=''
+      X=DCOUNT(FORMAT.REC,CHAR(254))
+*CRT '1ST PROCESSING OF FORMAT.REC FOR HEADINGS ';;INPUT NUL
+*DF         FOR I=2 TO X
+      I=2
+      LOOP
+      UNTIL FORMAT.REC<I>='' DO
+         IF FORMAT.REC<I,1>=11 THEN
+            FORMAT.REC=DELETE(FORMAT.REC,I)
+         END ELSE
+            WIDTH=FORMAT.REC<I,3>
+            TOT.FLG=FORMAT.REC<I,4>
+            DESC=FORMAT.REC<I,5>
+            BEGIN CASE
+               CASE FORMAT.REC<I,1>=8
+                  IF LCC.FLG THEN        ; * JMK04
+                     FORMAT.REC<I,1>=143           ; * JMK04 ; * Change Actual to Least Cost Carrier
+                  END ELSE               ; * JMK04
+                     FORMAT.REC<I,1>=63     ; * Change Actual to Misroute
+                  END                    ; * JMK04
+                  DESC='Approved Carr.'
+                  WIDTH=15
+               CASE FORMAT.REC<I,1>=7
+                  DESC='Actual Charges'
+                  WIDTH=15
+               CASE FORMAT.REC<I,1>=9 OR FORMAT.REC<I,1>=10
+                  FORMAT.REC<I,1>=9
+                  DESC='Overpaid'
+                  WIDTH=10
+               CASE 1
+                  NULL
+            END CASE
+            FORMAT.REC<I,3>=WIDTH        ; * Temporary Change Width in Format Rec
+            IF DESC='' THEN DESC=' '
+            COL.HEAD=COL.HEAD:OCONV(DESC,'ML#':WIDTH+1)
+            IF TOT.FLG='Y' THEN
+               SINGLE.BREAK=SINGLE.BREAK:STR('-',WIDTH):' '
+               DOUBLE.BREAK=DOUBLE.BREAK:STR('=',WIDTH):' '
+            END ELSE
+               SINGLE.BREAK=SINGLE.BREAK:STR(' ',WIDTH):' '
+               DOUBLE.BREAK=DOUBLE.BREAK:STR(' ',WIDTH):' '
+            END
+            I=I+1
+         END
+      REPEAT
+*DF         NEXT I
+*
+* Start processing
+*
+*     IF SEPARATE.DIVISIONS THEN
+*       TEXT="Now Processing Division: ":DIVS<1,DIV.COUNT>:"  Which is # ":DIV.COUNT:" of ":NUM.DIVS
+*     END ELSE
+*       TEXT="Processing Report - Please Wait."
+*     END
+*
+* Select bills to process.
+*
+      STMT='SSELECT ':FILE:' WITH VERSION = "0"'
+      IF FILE='FB.BILLS,':CLIENT THEN
+         STMT:=' AND WITH 30 GE "':OCONV(BEG.DATE,'D2/')
+         STMT:='" AND WITH 30 LE "':OCONV(END.DATE,'D2/'):'"'
+      END ELSE
+         STMT:=' AND WITH 37 GE "':OCONV(BEG.DATE,'D2/')
+         STMT:='" AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'
+      END
+      IF LCC.FLG=1 THEN                  ; * JMK01
+         STMT:=' AND WITH 143 # ""'      ; * JMK01
+      END ELSE                           ; * JMK01
+         IF CLIENT='00891' THEN
+            STMT:=' AND WITH 63 # "0"'   ; * JMK01; * JMK03
+* Let negative Misroutes through for Zexel Decatur
+         END ELSE
+            STMT:=' AND WITH 63 > "0" AND MR.OVG.AMT GT "0"'           ; * JMK01
+         END
+      END                                ; * JMK01
+      STMT:=' AND WITH 39 # "R"'
+      IF DIVISIONAL.ID # 'ALL' AND SEPARATE.DIVISIONS THEN   ; * JMK02
+         STMT:=' AND WITH DIV = "':DIVISIONAL.ID:'"'         ; * JMK02
+      END                                ; * JMK02
+      STMT:=' BY CARRIER.NAME BY 2 BY 1 BY PRO'
+*
+      TEXT="Now Selecting Freight Bills To Process - Please Wait."
+      CALL CENTER(TEXT,80)
+      CRT @(0,13):@(-3):TEXT
+      *IF USER = 'TAMI' THEN CALL ELINE(STMT)
+      EXECUTE STMT PASSLIST CAPTURING OUTPUT
+      IF SYSTEM(11) ELSE
+*       IF SEPARATE.DIVISIONS THEN GO 395
+*        PRINTER OFF
+         IF PROCESS.TYPE='STD' THEN
+            CALL ELINE('No transactions on file.')
+         END
+         GOTO 100
+      END
+
+      EXECUTE 'SAVE-LIST ':CH.NUM PASSLIST CAPTURING OUTPUT
+
+      IF INDEX(SELECTED.REPORTS,'I',1) THEN
+         REPORT.TYPE = 'I'
+         GOSUB GENERATE.REPORT
+      END
+
+      IF INDEX(SELECTED.REPORTS,'O',1) THEN
+         REPORT.TYPE = 'O'
+         GOSUB GENERATE.REPORT
+      END
+
+      IF INDEX(SELECTED.REPORTS,'T',1) THEN
+         REPORT.TYPE = 'T'
+         GOSUB GENERATE.REPORT
+      END
+
+      IF INDEX(SELECTED.REPORTS,'B',1) THEN
+         REPORT.TYPE = 'B'
+         GOSUB GENERATE.REPORT
+      END
+
+*OH   EXECUTE 'SP-ASSIGN C1F':F.NUM
+      EXECUTE 'TERM ,,,,,,132'
+
+      PRINTER OFF
+      PRINTER CLOSE
+
+9999:***
+
+      STOP
+
+*----------------------------------------------------------------------
+* GENERATE.REPORT
+*----------------------------------------------------------------------
+
+GENERATE.REPORT:
+
+      EXECUTE 'GET-LIST ':CH.NUM PASSLIST CAPTURING OUTPUT
+
+
+      STMT='SSELECT ':FILE:' WITH VERSION = "0"'
+      IF FILE='FB.BILLS,':CLIENT THEN
+         STMT:=' AND WITH 30 GE "':OCONV(BEG.DATE,'D2/')
+         STMT:='" AND WITH 30 LE "':OCONV(END.DATE,'D2/'):'"'
+      END ELSE
+         STMT:=' AND WITH 37 GE "':OCONV(BEG.DATE,'D2/')
+         STMT:='" AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'
+      END
+      IF REPORT.TYPE = 'I' THEN STMT:=' AND WITH 2 EQ "I"'
+      IF REPORT.TYPE = 'O' THEN STMT:=' AND WITH 2 EQ "O"'
+      IF REPORT.TYPE = 'T' THEN STMT:=' AND WITH 2 EQ "T"'
+      IF LCC.FLG=1 THEN                  ; * JMK01
+         STMT:=' AND WITH 143 # ""'      ; * JMK01
+      END ELSE                           ; * JMK01
+         STMT:=' AND WITH 63 > "0"'      ; * JMK01
+      END                                ; * JMK01
+      STMT:=' AND WITH 39 # "R"'
+      IF REPORT.TYPE = 'B' THEN
+         STMT:=' BY CARRIER BY 1 BY PRO'
+      END ELSE
+         STMT:=' BY 21 BY 2 BY 1 BY PRO'
+      END
+*
+      TEXT="Now Selecting Freight Bills To Process - Please Wait."
+      CALL CENTER(TEXT,80)
+      CRT @(0,13):@(-3):TEXT
+*IF USER = 'TAMI' THEN CALL ELINE(STMT)
+      EXECUTE STMT PASSLIST CAPTURING OUTPUT
+      IF USER='OWEN' THEN
+         CRT STMT
+         CRT
+         CRT
+         CRT OUTPUT
+         INPUT NUL
+      END
+      IF SYSTEM(11) ELSE
+*       IF SEPARATE.DIVISIONS THEN GO 395
+*        PRINTER OFF
+         IF PROCESS.TYPE='STD' THEN
+            CALL ELINE('No transactions on file.')
+         END
+         RETURN
+      END
+
+      NUM.ITEMS = @SELECTED
+      CLEARFILE F.CLNT.REPORT
+
+*
+* Start processing report.
+*
+500:  CARRIER.COUNT=0 ; TOT.CARR.BILL.NO=0 ; CARRIER.BILL.NO=0
+      CAR.CAR.TOT=0 ; CAR.ACT.TOT=0 ; CAR.EXP.TOT=0 ; GRAND.EXP.TOT=0
+      TOT.CAR.CAR.TOT=0 ; TOT.CAR.ACT.TOT=0 ; NUM.OUT.PAID=0
+      NUM.IN.PAID=0 ; Y.NUM.OUT.PAID=0 ; Y.NUM.IN.PAID=0
+      OUT.CAR.CHG=0 ; Y.OUT.CAR.CHG=0 ; IN.CAR.CHG=0 ; Y.IN.CAR.CHG=0
+      Y.DUP.NOT.PAID=0 ; OUT.CHG.DUE=0 ; Y.OUT.CHG.DUE=0
+      IN.CHG.DUE=0 ; Y.IN.CHG.DUE=0 ; FAD=0 ; Y.FAD=0 ; FBD=0 ; Y.FBD=0
+      CLIENT.BD.OVC=0 ; CLIENT.BD.DIS=0 ; CLIENT.BD.CON=0 ; C.OVER.VAR=0
+      C.DISC.VAR=0 ; C.CONS.VAR=0 ; 
+
+*
+* Get next item to process.
+*
+      COUNTER=0
+      DONE = 0
+      PREV.CARRIER=''
+      LOOP
+         READNEXT PRO.ID ELSE DONE = 1
+      UNTIL DONE DO
+         COUNTER=COUNTER+1
+         CALL PROG.BAR(22,COUNTER,NUM.ITEMS,PER)
+*
+         READ PRO.REC FROM FB.BILLS,PRO.ID THEN
+            DUP.NUM=FIELD(PRO.ID,'*',3)
+            PRO.NUM=FIELD(PRO.ID,'*',2)
+            LPRO=LEN(PRO.NUM)
+            DUP=FIELD(PRO.ID,'*',3)
+            DFLAG=0
+            IF DUP GT 0 ELSE
+               IF PRO.REC<31>='' THEN PRO.REC<31>=PRO.REC<5>
+               IF PRO.REC<33>='' THEN PRO.REC<33>=PRO.REC<8>
+               IF PRO.REC<31>='' THEN PRO.REC<31>=' '
+               IF PRO.REC<33>='' THEN PRO.REC<33>=' '
+*
+               X=DCOUNT(PRO.REC<31>,CHAR(253))
+               FOR I=1 TO X
+                  ECD=PRO.REC<31,I>
+                  ESB=PRO.REC<32,I>
+                  IF ESB='' THEN ESB=ECD
+                  LOCATE(ECD,DIST.MIDS;EVL;'AR') ELSE
+                     INS ECD BEFORE DIST.MIDS<EVL>
+                     INS ECD BEFORE DIST.IDS<EVL>
+                     INS 0 BEFORE DIST.AMTS<EVL>
+                  END
+                  LOCATE ESB IN DIST.IDS<EVL>,1 BY 'AR' SETTING SVL ELSE
+                     INS ESB BEFORE DIST.IDS<EVL,SVL>
+                     INS 0 BEFORE DIST.AMTS<EVL,SVL>
+                  END
+                  DIST.AMTS<EVL,SVL>=DIST.AMTS<EVL,SVL>+PRO.REC<33,I>
+               NEXT I
+               NEW.REC=''
+               NEW.REC<1>=PRO.REC<1>
+               NEW.REC<2>=PRO.REC<2>
+               NEW.REC<3>=PRO.REC<3>
+               NEW.REC<4>=PRO.REC<4>
+               NEW.REC<6>=PRO.REC<6>
+               NEW.REC<7>=PRO.REC<7>
+               NEW.REC<8>=PRO.REC<8>
+               IF LCC.FLG=1 THEN         ; * JMK03
+                  NEW.REC<9>=PRO.REC<8>-PRO.REC<143>         ; * JMK03
+               END ELSE                  ; * JMK03
+                  NEW.REC<9>=PRO.REC<8>-PRO.REC<63>
+               END                       ; * JMK03
+               NEW.REC<13>=PRO.REC<9>
+               IF SEPARATE.DIVISIONS THEN
+                  DIV=PRO.REC<9>
+                  IF DIVS='' THEN DIVS=PRO.REC<9> ELSE
+                     LOCATE DIV IN DIVS<1> BY 'AR' SETTING POS ELSE
+                        INS DIV BEFORE DIVS<1,POS>
+                     END
+                  END
+               END
+               NEW.REC<14>=FIELD(PRO.REC<14>,'*',1)
+               NEW.REC<16>=PRO.REC<16>
+*******************************************************************
+               IF PRO.REC<17> MATCHES "5N" THEN
+                  VC.ID = PRO.REC<17>
+                  OPEN '','VEND.CUST,':CLIENT TO F.VC THEN
+                     READV DESC FROM F.VC,VC.ID,1 THEN
+                        NEW.REC<17> = DESC
+                     END ELSE
+                        CALL ELINE('ERROR - VEND/CUST ':VC.ID:' DOES NOT EXIST')
+                     END
+                  END ELSE
+                     CALL ELINE('ERROR - VENDOR/CUSTOMER FILE FOR ':CLIENT:' DOES NOT EXIST')
+                  END
+               END ELSE
+                  NEW.REC<17>=PRO.REC<17>
+               END
+*******************************************************************
+               NEW.REC<19>=PRO.REC<19>
+               NEW.REC<24>=PRO.REC<24>
+               IF PRO.REC<27> EQ '' THEN
+                  NEW.REC<25>=PRO.REC<25>
+               END ELSE
+                  NEW.REC<25>=PRO.REC<27>:', ':PRO.REC<25>
+               END
+               IF PRO.REC<28> EQ '' THEN
+                  NEW.REC<26>=PRO.REC<26>
+               END ELSE
+                  NEW.REC<26>=PRO.REC<28>:', ':PRO.REC<26>
+               END
+               TIMES=DCOUNT(PRO.REC,CHAR(254))
+               FOR X = 31 TO TIMES
+                  NEW.REC<X>=PRO.REC<X>
+               NEXT X
+               WRITE NEW.REC ON F.CLNT.REPORT,PRO.ID
+            END
+         END
+      REPEAT
+      NUM.DIVS=DCOUNT(DIVS<1>,@VM)
+      DIV.COUNT=0
+
+
+395:***
+      IF USER='OWEN' THEN CALL ELINE('Owen Press Break, Now Processing Report')
+      DIV.COUNT+=1
+      IF SEPARATE.DIVISIONS THEN
+*        IF DIV.COUNT>NUM.DIVS THEN GO 9999
+         IF DIV.COUNT>NUM.DIVS THEN RETURN
+      END
+*
+* Print weekly report detail section
+*
+      CRT @(0,19):
+      IF SEPARATE.DIVISIONS THEN
+         DIV.ID=DIVS<1,DIV.COUNT>
+         READ DDIV FROM F.DIVISION, DIV.ID THEN
+            ZIP.VAR=DDIV<1>
+            CALL FB.READ.ZIP(ZIP.VAR,CITY,STATE)
+         END ELSE
+            CITY='' ; STATE=''
+         END
+         IF CITY='' OR STATE='' THEN CITY.STATE='' ELSE
+            CITY.STATE=CITY:', ':STATE
+         END
+         TEXT="Now Processing Division: ":DIVS<1,DIV.COUNT>:"  Which is # ":DIV.COUNT:" of ":NUM.DIVS
+      END ELSE
+         TEXT="Processing Report - Please Wait."
+      END
+      CALL CENTER(TEXT,80)
+      CRT @(0,13):@(-3):TEXT
+*     COPIES=CLIENT.REC<100,1>'R0'
+      COPIES=1                           ; * Per Owen 03-21-01
+      ODATE='Bills Processed From ':BEG.DATE'D2/':' to ':END.DATE'D2/'
+      IF COPIES NE 0 THEN
+*OH      IF HOLD.STAT ELSE EXECUTE 'SP-ASSIGN C':COPIES:'F':F.NUM
+         BEGIN CASE
+            CASE REPORT.TYPE='I'
+               TITLE.1='Inbound Misrouted Freight Bill Report By Carrier'
+            CASE REPORT.TYPE='O'
+               TITLE.1='Outbound Misrouted Freight Bill Report By Carrier'
+            CASE REPORT.TYPE='T'
+               TITLE.1='Third Party Misrouted Freight Bill Report By Carrier'
+            CASE REPORT.TYPE='B'
+               TITLE.1='Misrouted Freight Bill Report By Carrier'
+         END CASE
+         IF LCC.FLG THEN                 ; * JMK04
+            TITLE.1=CHANGE(TITLE.1,'Misrouted','Least Cost Carrier')   ; * JMK04
+         END                             ; * JMK04
+         TITLE.2='For Client: ':CLIENT:' ':CLIENT.NAME
+         IF SEPARATE.DIVISIONS THEN
+            DIV.ID=DIVS<1,DIV.COUNT>
+            READ DDIV FROM F.DIVISION, DIV.ID THEN
+               ZIP.VAR=DDIV<1>
+               CALL FB.READ.ZIP(ZIP.VAR,CITY,STATE)
+            END ELSE
+               CITY='' ; STATE=''
+            END
+            IF CITY='' OR STATE='' THEN CITY.STATE='' ELSE
+               CITY.STATE=" ":CITY:', ':STATE
+            END
+            TITLE.2:="  Division: ":DIVS<1,DIV.COUNT>:CITY.STATE
+         END
+         WIDTH=FORMAT.REC<1,1>
+         DEPTH=FORMAT.REC<1,2>
+         LPI=FORMAT.REC<1,3>
+*
+* Set up printer
+*
+         CALL PAGE.HEAD(PROG.NAME,COMPANY.NAME,TITLE.1,TITLE.2,ODATE,WIDTH,HED)
+         IF FIRST.TIME THEN
+            FIRST.TIME=0
+            PRINTER ON
+            IF HOLD.STAT ELSE
+               BEGIN CASE
+                  CASE WIDTH LE 132
+                     GOSUB 8110          ; * Report format
+                  CASE WIDTH LE 170
+                     GOSUB 8100          ; * Sideways format
+                  CASE 1
+                     GOSUB 8115
+               END CASE
+            END
+         END
+*DF         PAGE 1
+         IF LEN(COL.HEAD) GT WIDTH THEN COL.HEAD = LEFT(COL.HEAD,WIDTH)
+         HEADING HED:" 'L'":COL.HEAD
+
+*
+* Print report
+*
+         PREV.CARRIER=''
+         CARRIER.TOTAL=''
+         GRAND.TOTAL=''
+         I.GRAND.TOTAL=''
+         O.GRAND.TOTAL=''
+         T.GRAND.TOTAL=''
+*
+*        EXECUTE 'GET-LIST ':CH.NUM PASSLIST CAPTURING OUTPUT
+         STMT='SSELECT FB.REPORT,':CLIENT
+         STMT:=' BY 21 BY 2 BY 1 BY PRO'
+         IF SEPARATE.DIVISIONS THEN
+            STMT='SSELECT FB.REPORT,':CLIENT
+            STMT:=' BY 21 BY 2 BY 1 BY PRO'
+            STMT=STMT:' AND WITH DIV = "':DIVS<1,DIV.COUNT>:'"'
+*IF USER = 'TAMI' THEN CALL ELINE(STMT)
+            EXECUTE STMT CAPTURING OUTPUT
+            IF SYSTEM(11) ELSE
+               IF SEPARATE.DIVISIONS THEN GO 395
+            END
+         END ELSE
+            STMT='GET-LIST ':CH.NUM
+            EXECUTE STMT PASSLIST CAPTURING OUTPUT
+         END
+         NUM.ITMS = @SELECTED
+         COUNTER=0
+*CRT 'PRESS BREAK' ; INPUT NUL
+         DONE = 0
+*IF USER = "OWEN" THEN
+*CRT 'PRESS BREAK ':
+*INPUT NUL
+*END
+         PAGE 1
+         LOOP
+            READNEXT PRO.ID ELSE DONE = 1
+         UNTIL DONE = 1 DO
+            PRO.TOTAL=''
+            COUNTER=COUNTER+1
+            CALL PROG.BAR(22,COUNTER,NUM.ITMS,PER)
+            READ PRO.REC FROM F.CLNT.REPORT,PRO.ID THEN
+               CARRIER=FIELD(PRO.ID,'*',1)
+               IF CARRIER NE PREV.CARRIER THEN GOSUB 8000    ; * Carrier break
+               FORMAT.ATTR=1
+               LN=''
+               LN.POS=0
+               NUM.LINES=0
+1000:          FORMAT.ATTR=FORMAT.ATTR+1
+*IF USER='OWEN' THEN
+* IF FORMAT.ATTR=18 THEN
+*  CALL ELINE('Owen Press Break.... FORMAT.ATTR=10')
+* END
+* IF FORMAT.REC<FORMAT.ATTR>='' THEN
+*  OPEN 'TEMP' TO TEMP ELSE ABORT
+*  WRITE FORMAT.REC ON TEMP,'OWEN'
+* END
+*END
+               IF FORMAT.REC<FORMAT.ATTR>='' THEN GOTO 2000
+               TOT.FLG=FORMAT.REC<FORMAT.ATTR,4>
+*
+               BEGIN CASE
+                  CASE FORMAT.REC<FORMAT.ATTR,1>='PRO'
+                     PRO=FIELD(PRO.ID,'*',2)
+                     LN.POS=LN.POS+1
+                     LN<LN.POS>=PRO
+                     IF NUM.LINES=0 THEN NUM.LINES=1
+                     CARRIER.TOTAL<FORMAT.ATTR> += 1
+                     GRAND.TOTAL<FORMAT.ATTR> += 1
+                     BEGIN CASE
+                        CASE PRO.REC<2>='I'
+                           I.GRAND.TOTAL<FORMAT.ATTR> += 1
+                        CASE PRO.REC<2>='O'
+                           O.GRAND.TOTAL<FORMAT.ATTR> += 1
+                        CASE 1
+                           T.GRAND.TOTAL<FORMAT.ATTR> += 1
+                     END CASE
+*
+                  CASE FORMAT.REC<FORMAT.ATTR,1>='SPACE'
+                     LN.POS=LN.POS+1
+                     LN<LN.POS>=' '
+                     IF NUM.LINES=0 THEN NUM.LINES=1
+*
+                  CASE FORMAT.REC<FORMAT.ATTR,1>=69
+                     IF LCC.FLG THEN     ; * JMK04
+                        MR.ID=PRO.REC<146>         ; * JMK04
+                     END ELSE            ; * JMK04
+                        MR.ID=PRO.REC<69>
+                     END                 ; * JMK04
+                     IF MR.ID='' THEN MR.CAR.NAME='' ELSE
+                        READV MR.CAR.NAME FROM F.CARRIERS,MR.ID,1 ELSE
+                           MR.CAR.NAME=''
+                        END
+                     END
+                     LN.POS=LN.POS+1
+*                   LN<LN.POS>=MR.ID:' ':MR.CAR.NAME
+* No need to display account number.
+                     LN<LN.POS>=MR.CAR.NAME
+                     LN<LN.POS>=LN<LN.POS>[1,MISR.CAR.LEN]
+
+                  CASE NUM(FORMAT.REC<FORMAT.ATTR,1>)
+*CRT '2ND PROCESSING OF FORMAT.REC -> NUMBER CASE STMT ':;INPUT NUL
+                     LN.POS=LN.POS+1
+                     ATTR=FORMAT.REC<FORMAT.ATTR,1>
+                     IF ATTR=7 THEN ATTR=8         ; * Sub. Actual$ for Carrier$
+                     X=DCOUNT(PRO.REC<ATTR>,CHAR(253))
+                     FOR I=1 TO X STEP 1
+                        LN<LN.POS,I>=PRO.REC<ATTR,I>
+                        IF TOT.FLG='Y' THEN
+                           PRO.TOTAL<FORMAT.ATTR> += PRO.REC<ATTR,I>
+                           CARRIER.TOTAL<FORMAT.ATTR> += PRO.REC<ATTR,I>
+                           GRAND.TOTAL<FORMAT.ATTR> += PRO.REC<ATTR,I>
+                           BEGIN CASE
+                              CASE PRO.REC<2>='I'
+                                 I.GRAND.TOTAL<FORMAT.ATTR>+=PRO.REC<ATTR,I>
+                              CASE PRO.REC<2>='O'
+                                 O.GRAND.TOTAL<FORMAT.ATTR>+=PRO.REC<ATTR,I>
+                              CASE 1
+                                 T.GRAND.TOTAL<FORMAT.ATTR>+=PRO.REC<ATTR,I>
+                           END CASE
+                        END
+                     NEXT I
+                     IF X GT NUM.LINES THEN NUM.LINES=X
+               END CASE
+               GOTO 1000
+            END ELSE
+               GOTO 2100
+            END
+*
+* Print pro detail
+*
+2000:       LN.COUNT=DCOUNT(LN,CHAR(254))
+            FOR I=1 TO NUM.LINES
+               PRT.LINE=''
+               FOR J=1 TO LN.COUNT
+                  WIDTH=FORMAT.REC<J+1,3>
+                  FORMAT=FORMAT.REC<J+1,2>
+                  BEGIN CASE
+                     CASE LN<J,I>=''
+                        PRT.LINE=PRT.LINE:SPACE(WIDTH):' '
+                     CASE FORMAT[1,1] = 'D'
+                        PRT.LINE=PRT.LINE:OCONV(LN<J,I>,FORMAT):' '
+                     CASE 1
+                        FORMAT=FORMAT:'#':WIDTH
+                        PRT.LINE=PRT.LINE:OCONV(LN<J,I>,FORMAT):' '
+                  END CASE
+               NEXT J
+               PRINT PRT.LINE
+            NEXT I
+*
+* Print pro totals
+*
+            IF NUM.LINES GT 1 THEN
+               IF SYSTEM(4) LE 3 THEN PAGE
+               PRINT SINGLE.BREAK
+               TOT.LN=''
+               X=DCOUNT(PRO.TOTAL,CHAR(254))
+               FOR I=2 TO X
+                  WIDTH=FORMAT.REC<I,3>
+                  FORMAT=FORMAT.REC<I,2>
+                  FORMAT=FORMAT:'#':WIDTH
+                  IF PRO.TOTAL<I> = '' THEN
+                     TOT.LN=TOT.LN:SPACE(WIDTH):' '
+                  END ELSE
+                     TOT.LN=TOT.LN:OCONV(PRO.TOTAL<I>,FORMAT):' '
+                  END
+               NEXT I
+               PRINT TOT.LN
+            END
+2100:    REPEAT
+         CARRIER=''
+         GOSUB 8000                      ; * Carrier totals
+*
+* Print grand totals
+*
+         PRINT
+         TOT.LN=''
+         X=DCOUNT(GRAND.TOTAL,CHAR(254))
+         FOR I=2 TO X
+            WIDTH=FORMAT.REC<I,3>
+            FORMAT=FORMAT.REC<I,2>
+            FORMAT=FORMAT:'#':WIDTH
+            IF GRAND.TOTAL<I> = '' THEN
+               TOT.LN=TOT.LN:SPACE(WIDTH):' '
+            END ELSE
+               TOT.LN=TOT.LN:OCONV(GRAND.TOTAL<I>,FORMAT):' '
+            END
+         NEXT I
+         I.TOT.LN=''
+         X=DCOUNT(I.GRAND.TOTAL,CHAR(254))
+         FOR I=2 TO X
+            WIDTH=FORMAT.REC<I,3>
+            FORMAT=FORMAT.REC<I,2>
+            FORMAT=FORMAT:'#':WIDTH
+            IF I.GRAND.TOTAL<I> = '' THEN
+               I.TOT.LN=I.TOT.LN:SPACE(WIDTH):' '
+            END ELSE
+               I.TOT.LN=I.TOT.LN:OCONV(I.GRAND.TOTAL<I>,FORMAT):' '
+            END
+         NEXT I
+         O.TOT.LN=''
+         X=DCOUNT(O.GRAND.TOTAL,CHAR(254))
+         FOR I=2 TO X
+            WIDTH=FORMAT.REC<I,3>
+            FORMAT=FORMAT.REC<I,2>
+            FORMAT=FORMAT:'#':WIDTH
+            IF O.GRAND.TOTAL<I> = '' THEN
+               O.TOT.LN=O.TOT.LN:SPACE(WIDTH):' '
+            END ELSE
+               O.TOT.LN=O.TOT.LN:OCONV(O.GRAND.TOTAL<I>,FORMAT):' '
+            END
+         NEXT I
+         T.TOT.LN=''
+         X=DCOUNT(T.GRAND.TOTAL,CHAR(254))
+         FOR I=2 TO X
+            WIDTH=FORMAT.REC<I,3>
+            FORMAT=FORMAT.REC<I,2>
+            FORMAT=FORMAT:'#':WIDTH
+            IF T.GRAND.TOTAL<I> = '' THEN
+               T.TOT.LN=T.TOT.LN:SPACE(WIDTH):' '
+            END ELSE
+               T.TOT.LN=T.TOT.LN:OCONV(T.GRAND.TOTAL<I>,FORMAT):' '
+            END
+         NEXT I
+
+         IF SYSTEM(4) LE 6 THEN PAGE
+         IF REPORT.TYPE ='I' OR REPORT.TYPE ='B' THEN PRINT 'Inbound ':I.TOT.LN[9,999]
+         IF REPORT.TYPE ='O' OR REPORT.TYPE ='B' THEN PRINT 'Outbound':O.TOT.LN[9,999]
+         IF REPORT.TYPE ='T' OR REPORT.TYPE ='B' THEN PRINT 'T/P     ':T.TOT.LN[9,999]
+         IF REPORT.TYPE ='B' THEN
+            PRINT SINGLE.BREAK
+            PRINT 'Total''L#8':TOT.LN[9,999]
+         END
+         PRINT DOUBLE.BREAK
+      END
+
+      IF SEPARATE.DIVISIONS THEN GO 395
+
+      RETURN
+
+
+*----------------------------------------------------------------------
+*
+* INTERNAL SUBROUTINES
+*
+*----------------------------------------------------------------------
+*
+* Carrier break
+*
+8000: IF PREV.CARRIER='' ELSE
+         PRINT SINGLE.BREAK
+         TOT.LN=''
+         X=DCOUNT(CARRIER.TOTAL,CHAR(254))
+         FOR I=2 TO X
+            WIDTH=FORMAT.REC<I,3>
+            FORMAT=FORMAT.REC<I,2>
+            FORMAT=FORMAT:'#':WIDTH
+            IF CARRIER.TOTAL<I> = '' THEN
+               TOT.LN=TOT.LN:SPACE(WIDTH):' '
+            END ELSE
+               TOT.LN=TOT.LN:OCONV(CARRIER.TOTAL<I>,FORMAT):' '
+            END
+         NEXT I
+         IF SYSTEM(4) LE 3 THEN PAGE
+         PRINT TOT.LN
+         PRINT DOUBLE.BREAK
+      END
+      IF CARRIER NE '' THEN
+         PRINT
+         PREV.CARRIER=CARRIER
+         READ CARRIER.REC FROM F.CARRIERS,CARRIER ELSE CARRIER.REC=''
+         PRINT '~~~~ ':CARRIER:' ':CARRIER.REC<1>:'  ':CARRIER.REC<2>:'  ':CARRIER.REC<3>:', ':CARRIER.REC<4>:' ':CARRIER.REC<5>
+         PRINT
+      END
+      CARRIER.TOTAL=''
+      RETURN
+*
+* Set up laser
+*
+** Sideways format
+*
+8100: LASER=''
+      LASER<1>=1                         ; * Landscape
+      LASER<2>=LPI                       ; * Lines per inch
+      LASER<3>=DEPTH                     ; * Page length
+      LASER<4>=CHAR.PER.IN               ; * Characters per inch
+      LASER<5>=0
+      LASER<6>=0
+      LASER<7>=1
+      LASER<8>=0
+      GOTO 8120
+*
+** Report format
+*
+8110: LASER=''
+      LASER<1>=0                         ; * Portrait
+      LASER<2>=6                         ; * Lines per inch
+      LASER<3>=DEPTH                     ; * Page length
+      LASER<4>=CHAR.PER.IN               ; * Characters per inch
+      LASER<5>=0
+      LASER<6>=0
+      LASER<7>=1
+      LASER<8>=0
+*
+8115: LASER=''
+      LASER<1>=1                         ; * LANDSCAPE
+      LASER<2>=8                         ; * Lines per inch
+      LASER<3>=DEPTH                     ; * Page length
+      LASER<4>=19                        ; * Characters per inch
+      LASER<5>=0
+      LASER<6>=0
+      LASER<7>=1
+      LASER<8>=0
+      LASER<9>="4102"
+      GOTO 8120
+*
+8120: IF WIDTH GT 154 THEN TEMP=154 ELSE TEMP=WIDTH
+      LENGTH=LASER<3>-1
+*JR    EXECUTE 'TERM ,,,,,,':TEMP:',':LENGTH
+      EXECUTE 'TERM ,,,,,,198,':LENGTH
+*
+      MARGIN=0
+      PRINT ESC:"E"
+      PRINT ESC:"&l":LASER<1>:"O":       ; * Set portrait
+      PRINT ESC:"&l":LASER<2>:"D":       ; * Lines per inch
+      PRINT ESC:"&l":LASER<3>:"F":       ; * Page length
+      PRINT ESC:"(s":LASER<4>:"h":       ; * Set pitch
+      PRINT LASER<5>:"p":                ; * Proportional printing
+      PRINT LASER<6>:"s":                ; * Italics off
+*     PRINT "7v":; * Points
+*OH   PRINT "6T":                        ; * Font
+      PRINT "0T":                        ; * Line Printer Font
+      PRINT ESC:"&l":LASER<7>:"H"        ; * Bin selection
+      PRINT ESC:"&a":MARGIN:"L"
+      PRINT ESC:'"g':LASER<8>:'F'        ; * Paper output
+*     PRINTER CLOSE
+      RETURN
+*

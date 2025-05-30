@@ -1,0 +1,747 @@
+***********************************************************************
+* Program : FB.8.1 - Outstanding Returned Bills Report
+* Author  : James Barberousse
+* Date    : April 19, 2002
+*
+* Copyright (c) 2002 by AFS Logistics, LLC. - All Rights Reserved
+***********************************************************************
+* Start modification history
+* 091808 - NPR01 - T081999 Add Initiating Salesman and Account Manager.
+* 101411 - RLM01 - Retreive Account Manager ID from file CLIENTS instead of salesman file
+* 051412 - JMK01 - SysAid#2661 - Rejection Report & SysAid#2491 - Multiple issues with rejection report output
+* 051612 - JMK02 - SysAid#2661 - Rejection Report
+* 120612 - JMK03 - CHANGE REPORT FILE NAME TO IDENTIFY CONTENTS
+* 011013 - JMK04 - SysAid#4976 - Need AccuTerm access to 1.1.8
+* 071013 - JMK05 - SysAid#6462 - Rejected vs processed bills
+* 021714 - JMK06 - SysAid#8619 - Josh Clark Position Change
+* 061015 - SWB01 - SysAid#17976 - Added Kenya Sears
+* 070115 - DRF01 - SysAid 18393 - Gave Robbie Jester access
+* 071816 - GRB01 - SysAid 25889 - add operator table
+* 062717 - GRB02 - SysAid 33530 REMOVE BD AND AD FROM REPORT
+* 102522 - NKH01 - ACCU-1934 Added automated process
+* End modification history*
+***********************************************************************
+
+$INCLUDE PROG.ADMIN INC_OPTIONS
+
+* Initialize general variables
+      PROMPT''
+      CALL GET.USER(USER.NAME)      
+      USER.SV=0                                ; * NKH01
+      IF USER.NAME[1,3]='SV.' THEN USER.SV=1   ; * NKH01
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='FB.8.1'
+      PROG.DESC='Outstanding Returned Bills Report'
+      PACK.NAME='Freight Payment'
+      TAB=CHAR(9)
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.8.1' ; UPL.VOUT = ''         ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      ESC=CHAR(27)
+      MASK.CHAR='-'
+
+* Initialize input variables with their defaults
+      CLIENT.ID=''
+      CLIENT.SAVE=''
+      CARRIER.ID=''
+      CARRIER.SAVE=''
+      LAST.ACTIVITY.DATE=''
+
+*Assign column positions for columns that are being adjusted   ; * SWB01
+      BILLED.POS = 7                     ; * SWB01
+      AUDITOR.POS = 8                    ; * SWB01
+      ENTERED.BY.POS = 9                 ; * SWB01
+      RETURNED.BY.POS = 10               ; * SWB01
+      RETURNED.ON.POS = 11               ; * SWB01
+*The following column can 'float' based on how many Reject Code Groups
+*there are. Therefore, we are only initialing the variable holding it's
+*column number.
+      FF.COL.POS = ''                    ; * SWB01
+      NO.GRP.COL.POS = ''                ; * SWB01
+      ACCT.MGR.POS = ''                  ; * SWB01
+*     SL.REC='' ; * JMK03
+      LINE.WRAP.STRING = ' & CHAR(10) & '
+      DOUBLE.LINE.WRAP.STRING = ' & CHAR(10) & CHAR(10) & '
+
+* Initialize other variables
+*     SS.FILENAME='OUTSTANDING RETURNED BILLS.XLS'           ; * Name of file written to ; * JMK03
+      REJECT.COL.CTRL = ''               ; * SWB01
+      OPEN '','OPERATOR' TO F.OP ELSE CALL OPEN.ABORT("OPERATOR",PROG.NAME)      ; * GRB01   
+* Setup the screen
+      GOSUB DISPLAY.SCREEN
+
+* Restrict program usage
+      * Begin GRB01
+*DF      READV OP.FLG FROM F.OP,USER.NAME,20 ELSE
+*DF         OP.FLG = "N"
+*DF      END
+*DF      IF OP.FLG = "Y" THEN
+       ******VALID.USER=1
+         ****    BEGIN CASE
+         **** CASE USER.NAME='BRIAN'
+         **** CASE USER.NAME='BRIANP'
+         **** CASE USER.NAME='BROSE'
+         **** CASE USER.NAME='SMATTHEWS'      ; * Ticket 080732. DRF 03/06/08
+         **** CASE USER.NAME='DAVID'
+         **** CASE USER.NAME='GBINO'        ; * NPR99
+         **** CASE USER.NAME='RCAMPER'        ; * JMK04
+         **** CASE USER.NAME='RJESTER'        ; * DRF01
+         **** CASE USER.NAME='AMY'            ; * Ticket 081872. DRF 08/01/08
+         **** CASE USER.NAME='BCLUGSTON'      ; * Ticket 081780. DRF 07/22/08
+         **** CASE USER.NAME='BJEPPSON'       ; * Ticket 081872. DRF 08/01/08
+         **** CASE USER.NAME='BSMITH'         ; * Ticket 081234. DRF 05/08/08
+         **** CASE USER.NAME='DONNA'          ; * Ticket 081872. DRF 08/01/08
+         **** CASE USER.NAME='JCLARK'         ; * JMK06
+         **** CASE USER.NAME='JSHIVERS'       ; * Ticket 3251 - DRF 07/18/12
+         **** CASE USER.NAME='KRISTY'         ; * NPR99 Access granted as per Owen 04/20/11
+         **** CASE USER.NAME='KSEARS'         ; * SWB01
+         **** CASE USER.NAME='MARY'
+         **** CASE USER.NAME='RBOEHNLEIN'     ; * Ticket 5457. DRF 03/18/13
+         **** CASE USER.NAME='SSELMAN'        ; * Ticket 081872. DRF 08/01/08
+         **** CASE USER.NAME='SSMITH'         ; * Ticket 081872. DRF 08/01/08
+         **** CASE USER.NAME='SWINSTEAD'      ; * Ticket 081872. DRF 08/01/08
+         **** CASE USER.NAME='WPETTIGREW'     ; * Ticket 080844. DRF 03/17/08
+         *****CASE 1
+         ****   VALID.USER=0
+         ****    END CASE
+
+         ****  IF NOT(VALID.USER) THEN
+*DF      END ELSE
+*DF         CALL FB.PRINT.CENT(1,80,12,'! Restricted Access Application !')
+*DF         CALL FB.PRINT.CENT(1,80,14,'Access Denied')
+*DF         CALL ELINE('')
+*DF         GOTO THE.END
+*DF      END
+* End GRB01
+* Open files
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','BILLDATA.':USER.NAME TO F.BILLDATA ELSE
+         CALL OPEN.ABORT('BILLDATA.':USER.NAME,PROG.NAME)
+      END
+      OPEN '','ORB.SPECIAL.AUTO' TO DOS.FILE.OUT ELSE                   ; * NKH01
+         CALL ELINE('Unable to open the ':DOS.FILE.OUT:' out file')     ; * NKH01
+      END                                                               ; * NKH01
+      OPEN '','FB.TRANSPORT' TO F.TRANSPORT ELSE
+         CALL OPEN.ABORT('FB.TRANSPORT',PROG.NAME)
+      END
+*
+      OPEN '','AR.SLSMAN.1000.1' TO F.AR.SLSMAN ELSE         ; *NPR01
+         CALL OPEN.ABORT('AR.SLSMAN.1000.1',PROG.NAME)       ; *NPR01
+      END                                ; *NPR01
+
+      OPEN '','FB.TABLES' TO F.TABLES ELSE         ; * SWB01
+         CALL OPEN.ABORT('FB.TABLES',PROG.NAME)    ; * SWB01
+      END                                ; * SWB01
+      OPEN '','&SAVEDLISTS&' TO F.SL ELSE
+         CALL OPEN.ABORT('&SAVEDLISTS&',PROG.NAME)
+      END
+
+* Read in transportation modes
+      TRANSPORT.MODE.LIST=''
+      EXECUTE "SSELECT FB.TRANSPORT" CAPTURING OUTPUT
+      LOOP
+         READNEXT TRANSPORT.ID ELSE TRANSPORT.ID='MODE.ENTRY.IS.FINISHED'
+      UNTIL TRANSPORT.ID='MODE.ENTRY.IS.FINISHED'
+         READ TRANSPORT.REC FROM F.TRANSPORT,TRANSPORT.ID THEN
+            TRANSPORT.MODE.LIST<1,-1>=TRANSPORT.ID
+            TRANSPORT.MODE.LIST<2,-1>=TRANSPORT.REC<1>
+         END
+      REPEAT
+      MODE.COUNT=DCOUNT(TRANSPORT.MODE.LIST<1>,@VM)
+
+      READ REJECT.CODES FROM F.TABLES, 'REJECT.CODES' THEN   ; * SWB01
+         REJECT.CODE.CNT = DCOUNT(REJECT.CODES<1>, @VM)      ; * SWB01
+      END ELSE                           ; * SWB01
+         CALL ELINE('Reject Codes table is missing. Notify I.T.')      ; * SWB01
+         STOP                            ; * SWB01
+      END                                ; * SWB01
+
+      READ REJECT.CODE.GROUPS FROM F.TABLES, 'REJECT.CODE.GROUPS' THEN           ; * SWB01
+         REJECT.GROUP.CNT = DCOUNT(REJECT.CODE.GROUPS<1>, @VM)         ; * SWB01
+      END ELSE                           ; * SWB01
+         CALL ELINE('Reject Code Groups table is missing. Notify I.T.')          ; * SWB01
+         STOP                            ; * SWB01
+      END                                ; * SWB01
+
+* Get client ID
+100:  ***
+      MASK=CLIENT.ID:STR(MASK.CHAR,5-LEN(CLIENT.ID)):@(-4)
+      HELP='Enter client ID or letters for search. [ALL] [EX]it'
+      IF NOT(USER.SV) THEN                                                 ; * NKH01
+         CALL GEN.IN(21,4,MASK,'',Q,0,20,'','',2,21,4,0,QI,HELP,0,23)
+      END ELSE                                                             ; * NKH01
+         QI='ALL'                                                          ; * NKH01
+      END                                                                  ; * NKH01
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='ALL'
+            NULL
+         CASE QI=''
+            IF CLIENT.ID#'' THEN QI=CLIENT.ID ELSE GOTO 100
+         CASE NOT(QI MATCHES '0N')
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            GOSUB DISPLAY.SCREEN
+            BEGIN CASE
+               CASE ITEM.LIST=''
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+            END CASE
+            GOTO 100
+         CASE NUM(QI)
+            QI=QI'R%5'
+         CASE 1
+            GOTO 100
+      END CASE
+      CLIENT.ID=QI
+      IF CLIENT.ID='ALL' THEN
+         CLIENT.SAVE='ALL CLIENTS'
+         CRT @(21,4):CLIENT.SAVE:@(-4)
+      END ELSE
+         READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID THEN
+            CLIENT.SAVE=CLIENT.ID:' ':CLIENT.REC<2>
+            CRT @(21,4):CLIENT.SAVE:@(-4)
+            IF CLIENT.ID='00000' THEN
+               CALL ELINE('This is not a valid account.')
+               CLIENT.ID=''
+               GOTO 100
+            END
+            IF CLIENT.ID[1,2]='99' THEN
+               CALL ELINE('Traffic Survey accounts are not allowed.')
+               CLIENT.ID=''
+               GOTO 100
+            END
+            IF CLIENT.REC<30>#'A' THEN
+               CALL ELINE('This is not an active client.')
+               CLIENT.ID=''
+               GOTO 100
+            END
+         END ELSE
+            CLIENT.SAVE=CLIENT.ID
+            CRT @(21,4):CLIENT.SAVE:@(-4)
+            CALL ELINE('Client ':CLIENT.ID:' not on file.')
+            CLIENT.ID=''
+            GOTO 100
+         END
+      END
+
+* Get carrier ID
+200:  ***
+      MASK=CARRIER.ID:STR(MASK.CHAR,5-LEN(CARRIER.ID)):@(-4)
+      HELP='Enter carrier ID or letters for search. [ALL] [X]=Back [EX]it'
+      IF NOT(USER.SV) THEN                                              ; * NKH01
+         CALL GEN.IN(21,6,MASK,'',Q,0,20,'','',2,21,6,0,QI,HELP,0,23)
+      END ELSE                                                          ; * NKH01
+         QI='ALL'                                                       ; * NKH01
+      END                                                               ; * NKH01
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            GOSUB DISPLAY.SCREEN
+            GOTO 100
+         CASE QI='ALL'
+            NULL
+         CASE QI=''
+            IF CARRIER.ID#'' THEN QI=CARRIER.ID ELSE GOTO 100
+         CASE NOT(QI MATCHES '0N')
+            CALL SOUNDEX.DISPLAY(QI,'CARRIERS','SDX.CARRIER,NAME','1,3,4',ITEM.LIST)
+            GOSUB DISPLAY.SCREEN
+            BEGIN CASE
+               CASE ITEM.LIST=''
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+            END CASE
+            GOTO 200
+         CASE NUM(QI)
+            QI=QI'R%5'
+         CASE 1
+            GOTO 200
+      END CASE
+      CARRIER.ID=QI
+      IF CARRIER.ID='ALL' THEN
+         CARRIER.SAVE='ALL CARRIERS'
+         CRT @(21,6):CARRIER.SAVE:@(-4)
+      END ELSE
+         READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID THEN
+            CARRIER.SAVE=CARRIER.ID:' ':CARRIER.REC<1>
+            CRT @(21,6):CARRIER.SAVE:@(-4)
+         END ELSE
+            CARRIER.SAVE=CARRIER.ID
+            CRT @(21,6):CARRIER.SAVE:@(-4)
+            CALL ELINE('Carrier ':CARRIER.ID:' not on file.')
+            CARRIER.ID=''
+            GOTO 200
+         END
+      END
+
+* Get last activity date
+300:  ***
+      MASK=LAST.ACTIVITY.DATE'D4-':STR(MASK.CHAR,10-LEN(LAST.ACTIVITY.DATE'D4-')):@(-4)
+      HELP='Enter date of last activity regarding bills. [T]oday [X]=Back [EX]it'
+      IF NOT(USER.SV) THEN                                              ; * NKH01
+         CALL GEN.IN(21,8,MASK,'',Q,0,10,'','',2,21,8,0,QI,HELP,0,23)   
+      END ELSE                                                          ; * NKH01
+         QI=OCONV(DATE(),'D2-')                                         ; * NKH01
+      END                                                               ; * NKH01
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            GOSUB DISPLAY.SCREEN
+            GOTO 200
+         CASE QI='T'
+            QI=DATE()'D4-'
+         CASE QI=''
+            IF LAST.ACTIVITY.DATE#'' THEN QI=LAST.ACTIVITY.DATE'D4-' ELSE GOTO 300
+         CASE QI MATCHES '0N'
+            BEGIN CASE
+               CASE LEN(QI)=4
+                  QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4-')[7,4]
+               CASE LEN(QI)=6
+                  IF QI[5,2]<50 THEN
+                     QI=QI[1,2]:'.':QI[3,2]:'.':(DATE()'D4-')[7,2]:QI[5,2]
+                  END ELSE
+                     QI=QI[1,2]:'.':QI[3,2]:'.':'19':QI[5,2]           ; * ((DATE()-365)'D4-')[7,2]:QI[5,2]
+                  END
+               CASE LEN(QI)=8
+                  QI=QI[1,2]:'.':QI[3,2]:'.':QI[5,4]
+               CASE 1
+                  CALL ELINE('Use one of the following formats: MMDD or MMDDYY or MMDDYYYY.')
+                  GOTO 300
+            END CASE
+      END CASE
+      LAST.ACTIVITY.DATE=ICONV(QI,'D')
+      IF LAST.ACTIVITY.DATE='' THEN
+         CALL ELINE('Invalid date.')
+         GOTO 300
+      END
+      CRT @(21,8):LAST.ACTIVITY.DATE'D4-':@(-4)
+
+* Verify data
+1000: ***
+      LN='Verify the entered data. Select:'
+      MASK=STR(MASK.CHAR,2)
+      HELP='[ENTER]=Continue [X]=Back [EX]it'
+      IF NOT(USER.SV) THEN                                                 ; * NKH01
+         CALL GEN.IN(0,22,LN:MASK,'',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      END ELSE                                                             ; * NKH01
+         QI=''                                                             ; * NKH01
+      END                                                                  ; * NKH01
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            GOSUB DISPLAY.SCREEN
+            GOTO 300
+         CASE QI=''
+            NULL
+         CASE 1
+            GOTO 1000
+      END CASE
+
+* Setup for processing
+      OLADATE=LAST.ACTIVITY.DATE'D4/'    ; * JMK03
+      ODATE=OLADATE[7,4]:OLADATE[1,2]:OLADATE[4,2]           ; * JMK03
+      SS.FILENAME='ORB-':CLIENT.ID:'-':CARRIER.ID:'-':ODATE:'.XLS'     ; * JMK03
+      GOSUB SET.UP.HEADINGS              ; * 4 lines of headings
+      START.POS=4
+      COUNTER=0
+
+* Select data and start processing
+      IF CLIENT.ID#'ALL' THEN
+         NUM.CLIENTS=1
+         TEXT=NUM.CLIENTS:' Client Selected'
+         CALL CENTER(TEXT,80)
+         CRT @(0,10):TEXT:@(-4)
+         COUNTER.1=0 ; PER.1=0
+         CLIENT=CLIENT.ID
+         SS.FILENAME=CLIENT.ID:' ':SS.FILENAME     ; * JMK02
+         GOTO SELECT.BILLS
+      END
+      TEXT='Selecting Clients'
+      CALL CENTER(TEXT,80)
+      CRT @(0,10):TEXT:@(-4)
+      SLEEP 1
+      EXECUTE "SELECT VOC 'FB.BILLS.HIST' *A7" RTNLIST CLIENT.LIST CAPTURING OUTPUT
+      NUM.CLIENTS=@SELECTED
+      TEXT=NUM.CLIENTS:' Clients Selected'
+      CALL CENTER(TEXT,80)
+      CRT @(0,10):TEXT:@(-4)
+      IF NUM.CLIENTS=0 THEN
+         CRT @(0,21):'No clients on file with these criteria.'
+         CRT @(0,22):SS.FILENAME:' could not be written.'
+         GOTO THE.END
+      END
+      COUNTER.1=0 ; PER.1=0
+      LOOP
+         READNEXT CLIENT FROM CLIENT.LIST ELSE CLIENT='CLIENT.ENTRY.IS.FINISHED'
+      UNTIL CLIENT='CLIENT.ENTRY.IS.FINISHED' DO
+
+SELECT.BILLS:
+         COUNTER.1+=1
+         CALL PROG.BAR(15,COUNTER.1,NUM.CLIENTS,PER.1)
+         READ CLIENT.REC FROM F.CLIENTS,CLIENT THEN
+            IF CLIENT='00000' OR CLIENT[1,2]='99' OR CLIENT.REC<30>#'A' THEN
+               GOTO SKIP.CLIENT
+            END
+            CLIENT.NAME=CLIENT.REC<2>
+         END ELSE
+            GOTO SKIP.CLIENT
+         END
+         IF @TTY # 'phantom' THEN    ;* GRB06
+            CRT @(0,13):CLIENT:' ':CLIENT.NAME:' #':COUNTER.1:' - Selecting Freight Bills':@(-4)
+         END      
+         OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS THEN
+            CUSTOMER.VENDOR=1
+            OPEN '','VEND.CUST,':CLIENT TO F.VEND.CUST ELSE CUSTOMER.VENDOR=0
+            STMT='SSELECT FB.BILLS,':CLIENT        ; * JMK02
+            STMT:=' WITH VERSION = "0"'  ; * Always exclude duplicates
+            STMT:=' AND WITH 39 = "R"'   ; * Rejected bills
+            STMT:=' AND WITH 66 = "E"'   ; * Eventual pay
+            STMT:=' AND WITH CRX.CLIENT = "':CLIENT:'"'      ; * JMK05
+            
+            IF CARRIER.ID#'ALL' THEN
+               STMT:=' AND WITH CARRIER# = "':CARRIER.ID:'"'           ; * Specify carrier
+            END
+            STMT:=' BY CARRIER BY PRO.NUMBER'      ; * Sort by carrier name and then by pro number
+            
+               EXECUTE STMT RTNLIST BILLS.LIST CAPTURING OUTPUT        ; * JMK01
+         
+            NUM.BILLS=@SELECTED
+            IF NUM.BILLS=0 THEN
+               IF CLIENT.ID='ALL' THEN
+                  GOTO SKIP.CLIENT
+               END ELSE
+                  CRT @(0,21):'No bills on file with these criteria.'
+                  CRT @(0,22):SS.FILENAME:' could not be written.'
+                  GOTO THE.END
+               END
+            END
+            IF @TTY # 'phantom' THEN   ; * NKH01
+               CRT @(0,18):CLIENT:' ':CLIENT.NAME:' - Processing ':NUM.BILLS:' Freight Bills':@(-4)
+            END                        ; * NKH01
+            COUNTER.2=0 ; PER.2=0
+            LOOP
+               READNEXT PRO.ID FROM BILLS.LIST ELSE PRO.ID='BILL.ENTRY.IS.FINISHED'
+            UNTIL PRO.ID='BILL.ENTRY.IS.FINISHED' DO
+               COUNTER.2+=1
+               CALL PROG.BAR(20,COUNTER.2,NUM.BILLS,PER.2)
+               READ BILL.REC FROM F.BILLS,PRO.ID THEN
+                  PRO.NUMBER=FIELD(PRO.ID,'*',2)    ;*GRB02
+                  PRO.CHK = LEN(PRO.NUMBER)    ;*GRB02
+                  IF PRO.NUMBER[PRO.CHK-1,2]= "BD"  OR PRO.NUMBER[PRO.CHK-1,2]= "AD" THEN CONTINUE  ;*GRB02
+                  GOSUB FIND.LATEST      ; * Find latest date and auditor
+                  IF BILL.LATEST.DATE<=LAST.ACTIVITY.DATE THEN
+                     GOSUB ASSIGN.DATA.IN          ; * Include this data
+*                    SL.REC<-1>=PRO.ID   ; * JMK03
+                  END
+               END
+SKIP.BILL:     ***
+            REPEAT
+         END                             ; * OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS THEN
+         IF CLIENT.ID#'ALL' THEN GOTO WRITE.REPORT
+SKIP.CLIENT:***
+      REPEAT
+
+WRITE.REPORT:***
+      IF COUNTER>0 THEN
+         OLD.RETURNED.BILLS=CHANGE(OLD.RETURNED.BILLS,@VM,TAB)
+*        WRITE SL.REC ON F.SL,USER.NAME:'_ORB' ; * JMK03
+         IF USER.SV THEN                                                         ; * NKH01
+            WRITE OLD.RETURNED.BILLS ON DOS.FILE.OUT,SS.FILENAME THEN            ; * NKH01
+               CRT @(0,22):SS.FILENAME:' written to Orb Special Report folder.'  ; * NKH01            
+               GOTO FINISH.REPORT                                                ; * NKH01
+            END ELSE                                                             ; * NKH01
+               CRT @(0,21):'File system error.'                                  ; * NKH01
+               CRT @(0,22):SS.FILENAME:' could not be written.'                  ; * NKH01
+            END                                                                  ; * NKH01
+         END ELSE                                                                ; * NKH01
+            WRITE OLD.RETURNED.BILLS ON F.BILLDATA,SS.FILENAME THEN
+               CRT @(0,22):SS.FILENAME:' written to BILLDATA\':USER.NAME:' folder.'            
+               GOTO FINISH.REPORT
+            END ELSE
+               CRT @(0,21):'File system error.'
+               CRT @(0,22):SS.FILENAME:' could not be written.'
+            END
+         END                                                                     ; * NKH01
+      END ELSE
+         CRT @(0,21):'No data generated with these criteria.'
+         CRT @(0,22):SS.FILENAME:' could not be written.'
+      END
+      
+FINISH.REPORT:***
+      L.IN = PROG.NAME
+      L.IN<2> = CLIENT:@VM:CARRIER:@VM:LAST.ACTIVITY.DATE
+
+      L.OUT = ""
+      CALL UPD.PROCESS.LOG(L.IN,L.OUT)
+      
+      CALL ELINE('')
+      GOTO THE.END                       ; * End of program
+
+***********************************************************************
+FIND.LATEST:***
+* Find the latest date that a bill was rejected and the auditor of it
+
+      BILL.LATEST.AUDITOR=BILL.REC<60,1,1>
+      BILL.LATEST.DATE=BILL.REC<60,1,2>
+
+      NUM.DATES=DCOUNT(BILL.REC<60>,@VM)
+      FOR X=1 TO NUM.DATES
+         IF BILL.REC<60,X,2> GE BILL.LATEST.DATE THEN
+            BILL.LATEST.AUDITOR=BILL.REC<60,X,1>
+            BILL.LATEST.DATE=BILL.REC<60,X,2>
+         END
+      NEXT X
+      NUM.DATES=DCOUNT(BILL.REC<62>,@VM)
+      FOR X=1 TO NUM.DATES
+         IF BILL.REC<62,X,2> GE BILL.LATEST.DATE THEN
+            BILL.LATEST.AUDITOR=BILL.REC<62,X,1>
+            BILL.LATEST.DATE=BILL.REC<62,X,2>
+         END
+      NEXT X
+      BILL.LATEST.AUDITOR=OCONV(BILL.LATEST.AUDITOR,'MCU')
+
+      RETURN
+
+***********************************************************************
+SET.UP.HEADINGS:***
+      OLD.RETURNED.BILLS=''
+      OLD.RETURNED.BILLS<1, 1>=PROG.DESC:' for Client ':CLIENT.SAVE:' and for Carrier ':CARRIER.SAVE:' with a Last Activity Date of ':LAST.ACTIVITY.DATE'D4-'
+      OLD.RETURNED.BILLS<2, 1>='This report was run by ':USER.NAME:' on ':DATE()'D4-':' at ':OCONV(TIME(),'MTHS')
+      OLD.RETURNED.BILLS<4, 1>='Client Number'
+      OLD.RETURNED.BILLS<4, 2>='Client Name'
+      OLD.RETURNED.BILLS<4, 3>='Carrier Number'
+      OLD.RETURNED.BILLS<4, 4>='Carrier Name'
+      OLD.RETURNED.BILLS<4, 5>='Pro Number'
+      OLD.RETURNED.BILLS<4, 6>='Bill Date'
+      OLD.RETURNED.BILLS<4,7>='Amount Billed'      ; * SWB01
+      OLD.RETURNED.BILLS<4,8>='Auditor'  ; * SWB01
+      OLD.RETURNED.BILLS<4,9>='Entered By'         ; * SWB01
+      OLD.RETURNED.BILLS<4,10>='Returned By'       ; * SWB01
+      OLD.RETURNED.BILLS<4,11>='Returned On'       ; * SWB01
+      OLD.RETURNED.BILLS<4,12>='Acct Manager #'
+      OLD.RETURNED.BILLS<4,13>='Acct Manager Name'
+      OLD.RETURNED.BILLS<4,14>='Partnership Manager #'
+      OLD.RETURNED.BILLS<4,15>='Partnership Manager Name'
+      REJECT.COL.CTRL = ''               ; * SWB01
+      REJECT.START.COL = 16              ; * SWB01
+      REJECT.COL.OFFSET = REJECT.GROUP.CNT         ; * SWB01
+      CTRL.COL = 0                       ; * SWB01
+      REJECT.END.COL = REJECT.START.COL + REJECT.COL.OFFSET - 1        ; * SWB01
+      FOR RGS = 1 TO REJECT.GROUP.CNT    ; * SWB01
+         REJ.COL.NO = REJECT.CODE.GROUPS<3, RGS>   ; * SWB01
+         LOCATE REJ.COL.NO IN REJECT.COL.CTRL<2>, 1 SETTING RCN.POS ELSE         ; * SWB01
+            REJECT.COL.CTRL = INSERT(REJECT.COL.CTRL, 2, RCN.POS, 0, REJ.COL.NO)           ; * SWB01
+            REJECT.COL.CTRL = INSERT(REJECT.COL.CTRL, 1, RCN.POS, 0, REJECT.CODE.GROUPS<1, RGS>)     ; * SWB01
+            OLD.RETURNED.BILLS<4,REJ.COL.NO>=REJECT.CODE.GROUPS<2, RGS>          ; * SWB01
+         END                             ; * SWB01
+      NEXT RGS                           ; * SWB01
+
+* Assign Reject Codes with no assigned Grouping to REM-MISC column (17)
+* Mary wanted this column removed. - DRF 09/24/13
+      NO.GRP.COL.POS = 17
+
+      RETURN
+
+***********************************************************************
+
+ASSIGN.DATA.IN:***
+* Assign data from BILL.REC to array for output
+
+      COUNTER+=1
+      ARRAY.POS=START.POS+COUNTER
+      OLD.RETURNED.BILLS<ARRAY.POS,1>=CLIENT    ;* 1 Client Number
+      OLD.RETURNED.BILLS<ARRAY.POS,2>=CLIENT.NAME         ;* 2 Client Name
+      CARRIER=FIELD(PRO.ID,'*',1)
+      OLD.RETURNED.BILLS<ARRAY.POS,3>=CARRIER         ;* 3 Carrier Number
+      READV CARRIER.NAME FROM F.CARRIERS,CARRIER,1 ELSE CARRIER.NAME=''
+      OLD.RETURNED.BILLS<ARRAY.POS,4>=CARRIER.NAME         ;* 4 Carrier Name
+      PRO.NUMBER=FIELD(PRO.ID,'*',2)
+      OLD.RETURNED.BILLS<ARRAY.POS,5>=PRO.NUMBER         ;* 5 Pro Number
+      BILL.DATE=BILL.REC<1>'D4'
+      OLD.RETURNED.BILLS<ARRAY.POS,6>=BILL.DATE         ;* 6 Bill Date
+      AMOUNT.BILLED=(BILL.REC<8>-BILL.REC<10>-BILL.REC<11>)'R26,#10'
+      OLD.RETURNED.BILLS<ARRAY.POS,BILLED.POS>=AMOUNT.BILLED         ; * 19 Amount Billed          
+      BILL.AUDITOR=OCONV(BILL.REC<89>,'MCU')
+      OLD.RETURNED.BILLS<ARRAY.POS,AUDITOR.POS>=BILL.AUDITOR         ; * 20 Auditor         
+      BILL.ENTERED.BY=OCONV(BILL.REC<53>,'MCU')
+      OLD.RETURNED.BILLS<ARRAY.POS,ENTERED.BY.POS>=BILL.ENTERED.BY          ; * 21 Bill Entered By   
+
+* 22 Bill Verified By
+*SWB01      BILL.VERIFIED.BY=OCONV(BILL.REC<54>,'MCU')
+*SWB01      OLD.RETURNED.BILLS<ARRAY.POS,22>=BILL.VERIFIED.BY
+      BILL.RETURNED.BY=BILL.LATEST.AUDITOR
+      OLD.RETURNED.BILLS<ARRAY.POS,RETURNED.BY.POS>=BILL.RETURNED.BY         ;* 23 Bill Returned By   
+      BILL.RETURNED.ON=BILL.LATEST.DATE'D4-'
+      OLD.RETURNED.BILLS<ARRAY.POS,RETURNED.ON.POS>=BILL.RETURNED.ON         ;* 24 Bill Returned On (date)   
+
+*SWB01   * 25 Rejection Reasons
+*Pass an impossibly large number as the amount of characters of text to
+*have on a line before 'wrapping' by means of a value mark in order to
+*not have to deal with artificially broken up text later when trying to
+*put in Excel line breaks (char 10)
+      VIN='9999'                         ; * SWB01
+      VIN<3>='FB.1.8'                    ; * SWB01
+      VOUT=''
+          CALL FORMAT.REJECT.REASONS(VIN,BILL.REC,VOUT)
+*
+*Now build the information for the Rejects codes and text. Each code
+*should belong to a group. Each group has a column with an additional
+*column for codes that don't have an assigned group. And, there are
+*2 more columns, 1 for 'REM' text and one for 'Free Form' text.
+
+          IF VOUT<1>=-1 THEN
+*Put the error message in the first Reject column
+         OLD.RETURNED.BILLS<ARRAY.POS,REJECT.START.COL>=VOUT<2,1>      ; * Error occurred   
+      END ELSE
+         WORK = ''                       ; * SWB01
+         FOR X=1 TO VOUT<1>
+            T=VOUT<2,X>
+* Only show the newest rejection code/text - DRF 08/19/13
+            GOSUB DETERMINE.WHICH.REJECT.COLUMN    ; * SWB01
+            IF (USER.NAME='OWEN' OR USER.NAME='MKERBOW') AND DATE()=16110 THEN
+               IF T='AU239' THEN
+                  IF T='' THEN T='    ' ELSE T=T'R#2':') '
+                  OLD.RETURNED.BILLS<ARRAY.POS,25>:=T:CHANGE(VOUT<3,X>,@VM,' '):' '
+               END
+            END ELSE
+               VOUT<3> = CHANGE(VOUT<3>, '"', '')  ; * SWB01
+               VOUT<3> = CHANGE(VOUT<3>, "'", "")  ; * SWB01
+               IF T='' THEN              ; * SWB01
+                  T='    '               ; * SWB01
+               END ELSE                  ; * SWB01
+                  T.NUM=T                ; * SWB01
+                  T=T'R#2':') '          ; * SWB01
+               END                       ; * SWB01
+
+               IF T.NUM = 1 THEN         ; * SWB01
+                  WORK<1,ASGND.REJECT.COL.POS,-1>=CHANGE(VOUT<3,X>,@VM,@SVM)     ; * SWB01
+               END ELSE                  ; * SWB01
+*T.NUM is greater than 1
+                  IF TRIM(T) # '' THEN   ; * SWB01
+*This is the beginning of a line of text as denoted by a #) so put
+*a LINE BREAK before it and put the opening double quote mark in front
+*of the text.
+                     WORK<1,ASGND.REJECT.COL.POS,-1>=CHANGE(VOUT<3,X>,@VM,@SVM)  ; * SWB01
+                  END ELSE               ; * SWB01
+*This is in the middle of a line of text so don't line break
+                     WORK<1,ASGND.REJECT.COL.POS,-1>=CHANGE(VOUT<3,X>,@VM,@SVM)  ; * SWB01
+                  END                    ; * SWB01
+               END                       ; * SWB01
+            END
+
+         NEXT X
+*Append the closing quote mark to the last line of text.
+
+*Change any pairs of "" to "
+         WORK.VAL.CNT = DCOUNT(WORK, @VM)          ; * SWB01
+         FOR WVC = 1 TO WORK.VAL.CNT     ; * SWB01
+            WORK.VAL = WORK<1, WVC>      ; * SWB01
+            IF WORK.VAL # '' THEN        ; * SWB01
+               SV.CNT = DCOUNT(WORK.VAL, @SVM)     ; * SWB01
+               FOR SC = 1 TO SV.CNT      ; * SWB01
+                  WORK<1, WVC, SC> = DQUOTE(SC 'R#2':') ':WORK<1, WVC, SC>)      ; * SWB01
+               NEXT SC                   ; * SWB01
+               WORK<1, WVC> = CHANGE(WORK<1, WVC>, @SVM, DOUBLE.LINE.WRAP.STRING)          ; * SWB01
+               OLD.RETURNED.BILLS<ARRAY.POS, WVC> = '=':WORK<1, WVC>   ; * SWB01
+            END                          ; * SWB01
+         NEXT WVC                        ; * SWB01
+      END
+
+      SERVC.SALESMAN.ID = CLIENT.REC<115>
+      SERVC.SLSMAN.NAME = " "
+      IF SERVC.SALESMAN.ID = "" THEN
+         SERVC.SALESMAN.ID = 'Not on file'
+      END ELSE
+         READ SALESMAN.REC FROM F.AR.SLSMAN,SERVC.SALESMAN.ID THEN
+            SERVC.SLSMAN.NAME = SALESMAN.REC<1>'L#25'
+         END
+      END
+*
+      OLD.RETURNED.BILLS<ARRAY.POS,14> = SERVC.SALESMAN.ID
+      OLD.RETURNED.BILLS<ARRAY.POS,15> = SERVC.SLSMAN.NAME
+*
+      ACCT.MGR = CLIENT.REC<264>         ; * RLM01
+      IF ACCT.MGR # '' THEN
+         READ ACCT.MGR.REC FROM F.AR.SLSMAN,ACCT.MGR THEN
+            ACCT.MGR.NAME = ACCT.MGR.REC<1>'L#25'
+         END
+      END ELSE
+         ACCT.MGR.NAME = 'Not on file'
+      END
+*
+      OLD.RETURNED.BILLS<ARRAY.POS,12> = ACCT.MGR
+      OLD.RETURNED.BILLS<ARRAY.POS,13> = ACCT.MGR.NAME
+      RETURN
+
+***********************************************************************
+
+DISPLAY.SCREEN:***
+* Display prompts and data on the screen
+
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79)
+
+      CRT @(0,4):'Client Number      :'
+      CRT @(0,6):'Carrier Number     :'
+      CRT @(0,8):'Last Activity Date :'
+      IF CLIENT.ID THEN
+         CRT @(21,4):CLIENT.SAVE
+      END
+      IF CARRIER.ID THEN
+         CRT @(21,6):CARRIER.SAVE
+      END
+      IF LAST.ACTIVITY.DATE THEN
+         CRT @(21,8):LAST.ACTIVITY.DATE'D4-'
+      END
+
+      RETURN
+
+******************************
+DETERMINE.WHICH.REJECT.COLUMN:           ; * SWB01
+******************************
+
+      REJECT.TYPE = UPCASE(VOUT<4,X>)    ; * SWB01
+      BEGIN CASE                         ; * SWB01
+         CASE REJECT.TYPE[1, 2] = 'CN'   ; * SWB01
+            CODE.NUM = REJECT.TYPE[3, LEN(REJECT.TYPE) - 2]  ; * SWB01
+*LOCATE the Group the Code belongs to and put the text in the column
+*for that Group.
+            ASGND.REJECT.COL.POS = NO.GRP.COL.POS  ; * SWB01
+
+            LOCATE CODE.NUM IN REJECT.CODES<1>, 1 SETTING CODE.POS THEN          ; * SWB01
+               REJECT.GROUP = REJECT.CODES<5, CODE.POS>      ; * SWB01
+               IF REJECT.GROUP # '' THEN           ; * SWB01
+                  LOCATE REJECT.GROUP IN REJECT.COL.CTRL<1>, 1 SETTING RG.POS THEN         ; * SWB01
+                     ASGND.REJECT.COL.POS = REJECT.COL.CTRL<2, RG.POS>           ; * SWB01
+                  END                    ; * SWB01
+               END                       ; * SWB01
+            END                          ; * SWB01
+         CASE REJECT.TYPE[1, 3] = 'REM'  ; * SWB01
+            REJECT.TYPE = 'REM'          ; * SWB01
+            LOCATE REJECT.TYPE IN REJECT.COL.CTRL<1>, 1 SETTING RG.POS THEN      ; * SWB01
+               ASGND.REJECT.COL.POS = REJECT.COL.CTRL<2, RG.POS>       ; * SWB01
+            END                          ; * SWB01
+         CASE 1                          ; * SWB01
+            ASGND.REJECT.COL.POS = 16    ; * SWB01
+      END CASE                           ; * SWB01
+
+      RETURN                             ; * SWB01
+
+***********************************************************************
+THE.END:***
+* End of program
+      CRT @(0,23):@(-4):
+   END

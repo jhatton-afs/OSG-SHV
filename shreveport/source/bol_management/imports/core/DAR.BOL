@@ -1,0 +1,439 @@
+*
+* DARLING BOL BUILD
+*
+*
+***********************************************************************
+* 031208 - JMK01 - T080799 - Remove duplicates in FB History Reporting
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS   ; 
+* Initialize variables
+*
+      COPIES=1
+      CARRIERS=0
+      EQU TAB TO CHAR(9)                 ; * JMK02
+*
+      PROMPT''
+      CALL GET.USER(USER.NAME)
+      CALL CHANNEL(CH.NUM)
+      STATUS=''     
+      PROG.NAME='DAR.BOL'
+      PROG.DESC='Darling #0850 / #1270 / #1433'
+      PACK.NAME='Freight Billing'
+      NO.DIV.FLAG=0
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'DAR.BOL' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      ERRMSG=''
+      YES.NO=''
+      YES.NO='NO'                        ; * Per Brian on 05-28-03
+      CALL FB.FORM(F.NUM)
+      TEMP.NAME=''
+      ORIG.CLIENT.ID=''
+      SUB4=0
+      SUB14=0                            ; * JMK04
+      SUB24=0                            ; * JMK04
+*
+* Open files
+*
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+         END
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      OPEN 'DICT','FBWORK':CH.NUM TO F.DICT.WORK ELSE
+         CALL OPEN.ABORT('DICT FBWORK':CH.NUM,PROG.NAME)
+      END
+      OPEN 'FB.BILLS.CRX' TO F.CRX ELSE
+         CALL OPEN.ABORT('FB.BILLS.CRX',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','VOC' TO F.VOC ELSE        ; * JMK02
+         CALL OPEN.ABORT('VOC',PROG.NAME)          ; * JMK02
+      END                                ; * JMK02
+      READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE           ; * JMK02
+         CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')         ; * JMK02
+         STOP                            ; * JMK02
+      END                                ; * JMK02
+      BILLDATA.REC<2>:='\':USER.NAME     ; * JMK02
+      WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER.NAME ELSE           ; * JMK02
+         CALL ELINE("YOUR USER NAME '":USER.NAME:"' IS NOT IN THE BILLDATA FOLDER - PLEASE SEE OWEN/DAVID")    ; * JMK02
+         STOP                            ; * JMK02
+      END                                ; * JMK02
+      OPEN '','BILLDATA.':USER.NAME TO BILLDATA ELSE         ; * JMK02
+         CALL ELINE('UNABLE TO OPEN "BILLDATA."':USER.NAME:"'")        ; * JMK02
+         STOP                            ; * JMK02
+      END                                ; * JMK02
+*      OPEN '','AR.SLSMAN.1000.1' TO F.SLS ELSE     ; * JMK04
+*         CALL ELINE('UNABLE TO OPEN "AR.SLSMAN.100.1"')      ; * JMK04
+*      END                                ; * JMK04
+*
+* Create work file dictionary item
+*
+      TEMP=''
+      TEMP<1>='A'
+      TEMP<2>=0
+      TEMP<3>='BOL'
+      TEMP<9>='R'
+      TEMP<10>='10'
+      WRITE TEMP ON F.DICT.WORK,'BOL'
+*
+**    New work file consists of:
+**    ATTRIBUTE    DESCRIPTION
+**    ID      BOL
+**    001      BILL AMOUNT   
+**    002      AD AMOUNT
+**    003      BD AMOUNT
+**    004      MULTI-VALUED CLIENT #
+**    005      MULTI-VALUED FREIGHT BILL AMOUNT
+**    006      MULTI-VALUED AD AMOUNT
+**    007      MULTI-VALUED BD AMOUNT
+**    008      SUB-VALUE PRO NUMBERS FOR FREIGHT BILL AMOUNT
+**    009      SUB-VALUE PRO NUMBERS FOR AD BILL AMOUNT
+**    010      SUB-VALUE PRO NUMBERS FOR BD BILL AMOUNT
+**      
+* Display screen heading
+*
+30:   CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+* Get current period beginning and ending dates
+
+CRT @(0,3):'This program exports an Excel file to your Billdata folder. Open the file then':
+CRT @(0,4):'use the VLOOKUP command to find the bill amounts by the BOL in the first column.':
+
+
+
+*
+100:  HELP='Enter the data processed beginning date.'
+      CALL GEN.IN(0,7,'Data processed beginning date.  ':DATE()'D2/','DATE',BEG.DATE,0,8,'','',1,-8,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN GOTO EXIT.PROGRAM
+      IF QI='EX' THEN GOTO EXIT.PROGRAM
+      IF QI='' THEN BEG.DATE=DATE()
+      CRT @(32,7):BEG.DATE'D2/'
+*
+* Get current period ending date
+*
+200:  HELP='Enter the data processed ending date.'
+      CALL GEN.IN(0,9,'Data processed ending date.     ':DATE()'D2/','DATE',END.DATE,0,8,'','',1,-8,9,0,QI,HELP,0,23)
+      IF QI='X' THEN GOTO 100
+      IF QI='EX' THEN GOTO EXIT.PROGRAM
+      IF QI='' THEN END.DATE=DATE()
+      IF END.DATE LT BEG.DATE THEN
+         CALL ELINE('Invalid ending date.')
+         GOTO 200
+      END
+      CRT @(32,9):END.DATE'D2/'
+*
+300:
+
+*  Verify date entry range
+*
+400:  HELP="X=Change. EX=Exit. RETURN=Continue."
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            GO 200                       ; * JMK02
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO 400
+      END CASE
+*
+* Start processing
+*
+600:  TEXT="Processing Date Range - Please Wait. "
+      CALL CENTER(TEXT,80)
+      CRT @(0,15):@(-3):TEXT
+*
+* Clear work file
+*
+      CLEARFILE F.WORK
+*
+* Select data for current client
+*
+
+***************************************************************
+      OUTPUT.REC=''                      ; * JMK02
+*
+* SELECT CLIENT FILE
+*
+      TEXT='Selecting Clients: #00850  #01270  #01433'
+      CALL CENTER(TEXT,80)
+      CRT @(0,12):TEXT
+      STMT="SELECT CLIENTS '00850''01270''01433'"
+      EXECUTE STMT RTNLIST CLIENT.LIST CAPTURING OUTPUT
+      ITEMS = @SELECTED
+      IF @SELECTED < 1 THEN ; * JCW03
+         CALL ELINE('ERROR - No clients on file.')
+         GOTO EXIT.PROGRAM
+      END
+      COUNTER.1=0
+      PER=0
+      LOOP
+         READNEXT CLIENT.ID FROM CLIENT.LIST ELSE CLIENT.ID='DONE'
+      UNTIL CLIENT.ID='DONE' DO
+         COUNTER.1=COUNTER.1+1
+         IF CLIENT.ID='FB.BILLS.HIST' OR CLIENT.ID[1,2]='99' THEN GO SKIP.CLIENT
+         READ DCLIENT FROM F.CLIENTS,CLIENT.ID THEN
+            IF DCLIENT<30> # 'A' THEN GO SKIP.CLIENT  ; * JCW02
+         END ELSE
+            DCLIENT=''
+            DCLIENT<2>='*** Not On File ***'
+            GO SKIP.CLIENT               ; * JMK06
+         END
+         CLIENT.NAME=DCLIENT<2>
+         CALL PROG.BAR(20,COUNTER.1,ITEMS,PER.1)
+         LAST.PROCESSED.DATE=DCLIENT<82>
+         IF LAST.PROCESSED.DATE#'' THEN
+            IF LAST.PROCESSED.DATE < BEG.DATE THEN GO SKIP.CLIENT
+*           No need to select if the last processed date is before the 1st selected date
+         END
+         CRT @(0,17):CLIENT.ID:" ":CLIENT.NAME:" - Now selecting freight bills":@(-4):
+         STMT='SSELECT FB.PROC.DATE.XREF,':CLIENT.ID:' WITH DATE >= "':OCONV(BEG.DATE,'D2/'):'" AND WITH DATE <= "':OCONV(END.DATE,'D2/'):'"'          ; * JMK07
+         EXECUTE STMT RTNLIST CAPTURING RESULTS  ; * JMK07
+         IF @SELECTED > 0 THEN  ; * JCW01
+            STMT = 'QSELECT FB.PROC.DATE.XREF,':CLIENT.ID  ; * JCW01
+            EXECUTE STMT PASSLIST RTNLIST CAPTURING RESULTS  ; * JCW01
+         END ELSE  ; * JCW01
+            GOTO SKIP.CLIENT  ; * JCW01
+         END  ; * JCW01
+         OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS THEN
+            STMT='SELECT FB.BILLS.HIST,':CLIENT.ID
+            STMT:=' WITH VERSION = "0"'
+            STMT:=' AND WITH 37 GE "':OCONV(BEG.DATE,'D2/'):'"'
+            STMT:=' AND WITH 37 LE "':OCONV(END.DATE,'D2/'):'"'
+*           STMT:=' SAVING UNIQUE @ID'   ; * JMK01
+            EXECUTE STMT PASSLIST RTNLIST BILLS.LIST CAPTURING OUTPUT
+            NUM.BILLS = @SELECTED
+            CRT @(0,17):CLIENT.ID:" ":CLIENT.NAME:" - Now processing ":NUM.BILLS:" Freight Bills":@(-4):
+            COUNTER.2=0
+            LOOP
+               DONE=0
+               READNEXT PRO.ID FROM BILLS.LIST ELSE DONE=1
+****
+            AD=0
+            BD=0
+            CARRIER.ID=FIELD(PRO.ID,'*',1)
+****
+            UNTIL DONE=1 DO
+               COUNTER.2=COUNTER.2+1
+               IF NUM.BILLS>0 THEN CALL PROG.BAR(22,COUNTER.2,NUM.BILLS,PER.2)
+               READ DBILL FROM F.BILLS,PRO.ID THEN
+                 BOL=DBILL<16>
+                 IF BOL='' THEN GO SKIP.BILL
+                 BOL=CHANGE(BOL,@VM,' ')
+                 BOL=TRIM(BOL)
+                 BOL=OCONV(BOL,'MCU')
+CHECK.BOL:***                 
+                 IF ALPHA(BOL[1,1]) OR NUM(BOL[1,1]) THEN 
+                    IF NUM(BOL) THEN
+                        IF LEN(BOL)=6 THEN
+                            IF BOL[1,1]=6 OR BOL[1,1]=7 THEN  BOL='0':BOL
+                        END
+                    END
+                 END
+                 ELSE 
+                    BOL.LENGTH=LEN(BOL)
+                    BOL=BOL[2,BOL.LENGTH-1]
+                    GO CHECK.BOL 
+                 END
+                 PRO=FIELD(PRO.ID,'*',2)
+                 SAVED.PRO=PRO
+                 BILL.AMT=DBILL<8>
+                 READ WORK.REC FROM F.WORK,BOL ELSE WORK.REC=''
+                 GOSUB UPDATE.WORK.REC
+                 SUFFIX='AD'
+TRY.NEXT.PRO:***
+                 PRO=PRO:SUFFIX
+                 PRO.ID=CARRIER.ID:'*':PRO:'*0'
+                 READ DBILL FROM F.BILLS,PRO.ID THEN  
+                    BILL.AMT=DBILL<8>
+                    GOSUB UPDATE.WORK.REC
+                    GO TRY.NEXT.PRO
+                 END
+                 IF SUFFIX='AD' THEN
+                    SUFFIX='BD'
+                    PRO=SAVED.PRO
+                    GO TRY.NEXT.PRO
+                 END 
+*                   CRT '"':BOL:'"'
+                 WRITE WORK.REC ON F.WORK,BOL
+               END                                 
+*
+SKIP.BILL:***
+            REPEAT
+         END  
+
+SKIP.CLIENT:***
+      REPEAT
+*
+*                             
+*     
+      OUTPUT.REC=''                 
+      OUTPUT.REC<1>=''                                 
+      OUTPUT.REC<2,1>='BOL'
+      OUTPUT.REC<2,2>='TOTAL BILL AMT'
+      OUTPUT.REC<2,3>='TOTAL AD AMT'
+      OUTPUT.REC<2,4>='TOTAL BD AMT'
+*
+      OUTPUT.REC<2,5>='CLIENT# 1'
+      OUTPUT.REC<2,6>='CLIENT NAME 1'
+      OUTPUT.REC<2,7>='BILL AMT CL.1'
+      OUTPUT.REC<2,8>='PRO CL.1'
+
+      OUTPUT.REC<2,9>='AD AMT CL.1'
+      OUTPUT.REC<2,10>='AD PRO 1 CL.1'
+      OUTPUT.REC<2,11>='AD PRO 2 CL.1'
+
+      OUTPUT.REC<2,12>='BD AMT CL.1'
+      OUTPUT.REC<2,13>='BD PRO 1 CL.1'
+      OUTPUT.REC<2,14>='BD PRO 2 CL.1'
+*
+      OUTPUT.REC<2,15>='CLIENT# 2'
+      OUTPUT.REC<2,16>='CLIENT NAME 2'
+      OUTPUT.REC<2,17>='BILL AMT CL.2'
+      OUTPUT.REC<2,18>='PRO CL.2'
+
+      OUTPUT.REC<2,19>='AD AMT CL.2'
+      OUTPUT.REC<2,20>='AD PRO 1 CL.2'
+      OUTPUT.REC<2,21>='AD PRO 2 CL.2'
+
+      OUTPUT.REC<2,22>='BD AMT CL.2'
+      OUTPUT.REC<2,23>='BD PRO 1 CL.2'
+      OUTPUT.REC<2,24>='BD PRO 2 CL.2'
+*
+      OUTPUT.REC<2,25>='CLIENT# 3'
+      OUTPUT.REC<2,26>='CLIENT NAME 3'
+      OUTPUT.REC<2,27>='BILL AMT CL.3'
+      OUTPUT.REC<2,28>='PRO CL.3'
+
+      OUTPUT.REC<2,29>='AD AMT  CL.3'
+      OUTPUT.REC<2,30>='AD PRO 1 CL.3'
+      OUTPUT.REC<2,31>='AD PRO 2 CL.3'
+
+      OUTPUT.REC<2,32>='BD AMT CL.3'
+      OUTPUT.REC<2,33>='BD PRO 1 CL.3'
+      OUTPUT.REC<2,34>='BD PRO 2 CL.3'
+*
+      CONVERT @VM TO TAB IN OUTPUT.REC 
+*
+** Select data
+*
+      COUNTER=0
+      SUB4=0
+      PREC='SSELECT FBWORK':CH.NUM
+      PREC:=' BY BOL'
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+*
+      DONE = 0
+      LOOP
+         READNEXT ID ELSE DONE = 1
+      UNTIL DONE = 1 DO
+         IF CLIENT.ID='TOTAL' ELSE                       
+            READ WORK.REC FROM F.WORK,ID THEN
+               GOSUB BUILD.DET.LINE
+*               CONVERT @VM TO TAB IN LINE       ; * JMK02
+               OUTPUT.REC<-1>=LINE    ; * JMK02
+            END
+         END
+      REPEAT
+*
+** Print total line
+*
+      COUNTER=''                       
+      RECORD.NAME='DARLING'      
+      RECORD.NAME:= '-'               
+      D=BEG.DATE'D4/'                 
+      RECORD.NAME:=D[7,4]:D[1,2]:D[4,2]         
+      RECORD.NAME:= '-'               
+      D=END.DATE'D4/'                 
+      RECORD.NAME:=D[7,4]:D[1,2]:D[4,2]         
+      RECORD.NAME:='.XLS'             
+      OUTPUT.REC=CHANGE(OUTPUT.REC,@VM,TAB)
+      WRITE OUTPUT.REC ON BILLDATA,RECORD.NAME  
+      CRT @(0,16):"File export completed.":@(-3):  
+      CRT @(0,18):"The file is in your Billdata folder: '":RECORD.NAME:"'":@(-4):        
+      CALL ELINE('Done.')        
+
+   
+*
+** END OF APPLICATION **
+GOTO EXIT.PROGRAM
+*
+UPDATE.WORK.REC:***
+*
+      PRO=FIELD(PRO.ID,'*',2)
+      START=LEN(PRO)-1
+      ADD.ATT=0
+      IF PRO[START,2]='AD' THEN ADD.ATT=1
+      IF PRO[START,2]='BD' THEN ADD.ATT=2
+*                 
+      LOCATE CLIENT.ID IN WORK.REC<4> BY 'AR' SETTING CLIENT.POS ELSE
+         INS CLIENT.ID BEFORE WORK.REC<4,CLIENT.POS>
+         INS 0         BEFORE WORK.REC<5,CLIENT.POS>
+         INS 0         BEFORE WORK.REC<6,CLIENT.POS>
+         INS 0         BEFORE WORK.REC<7,CLIENT.POS>
+         INS ''        BEFORE WORK.REC<8,CLIENT.POS>
+         INS ''        BEFORE WORK.REC<9,CLIENT.POS>
+         INS ''        BEFORE WORK.REC<10,CLIENT.POS>
+      END                     
+*
+      LOCATE PRO.ID IN WORK.REC<8+ADD.ATT,CLIENT.POS> BY 'AR' SETTING PRO.ID.POS ELSE
+         WORK.REC<1+ADD.ATT>+=BILL.AMT  ; * Amount pd/due
+         WORK.REC<5+ADD.ATT,CLIENT.POS>+=BILL.AMT   ; * multi-valued ad amount ]]]
+         INS PRO.ID BEFORE WORK.REC<8+ADD.ATT,CLIENT.POS,PRO.ID.POS>      
+      END
+RETURN
+*****
+*****
+
+BUILD.DET.LINE:***
+
+      LINE=''
+      LINE<1,1>=ID                            ; * BOL
+      LINE<1,2>=WORK.REC<1>'R26'              ; * TOTAL BILL AMT
+      LINE<1,3>=WORK.REC<2>'R26'              ; * TOTAL AD AMOUNT
+      LINE<1,4>=WORK.REC<3>'R26'              ; * TOTAL BD AMOUNT
+*     
+* 
+      SUB.LINE=''
+      NUM.CLIENTS=DCOUNT(WORK.REC<4>,@VM)     ; *     
+
+      FOR SUB.CLIENT = 1 TO NUM.CLIENTS
+        CLIENT.ID=WORK.REC<4,SUB.CLIENT>   
+        READ DCLIENT FROM F.CLIENTS,CLIENT.ID ELSE
+          DCLIENT=''
+          DCLIENT<2>='*** Not On File ***'
+        END
+        CLIENT.NAME=DCLIENT<2>
+   
+        SUB.LINE<1,1>=CLIENT.ID
+        SUB.LINE<1,2>=CLIENT.NAME
+        SUB.LINE<1,3>=WORK.REC<5,SUB.CLIENT>'R26'           ; * BILL AMT FOR CL.1
+        SUB.LINE<1,4>=WORK.REC<8,SUB.CLIENT,1>              ; * PRO FOR CL.1
+
+        SUB.LINE<1,5>=WORK.REC<6,SUB.CLIENT>'R26'           ; * AD AMOUNT FOR CL.1
+        SUB.LINE<1,6>=WORK.REC<9,SUB.CLIENT,1>              ; * AD1 PRO FOR CL.1
+        SUB.LINE<1,7>=WORK.REC<9,SUB.CLIENT,2>              ; * AD2 PRO FOR CL.1
+
+        SUB.LINE<1,8>=WORK.REC<7,SUB.CLIENT>'R26'           ; * BD AMOUNT FOR CL.1
+        SUB.LINE<1,9>=WORK.REC<10,SUB.CLIENT,1>             ; * BD1 PRO FOR CL.1
+        SUB.LINE<1,10>=WORK.REC<10,SUB.CLIENT,2>            ; * BD2 PRO FOR CL.1
+
+        LINE=LINE:@VM:SUB.LINE
+
+      NEXT SUB.CLIENT
+
+RETURN
+*
+*
+EXIT.PROGRAM:***
+STOP

@@ -1,0 +1,524 @@
+      SUBROUTINE CALC.FSC(VIN,VOUT,DFSC,F.TABLES)
+*
+      UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'CALC.FSC' ; UPL.VOUT = ''                    ;* NPR_UPL 04/22/2010
+  ********    CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/22/2010
+* 100405 - JMK01 - CORRECT FILE FORMAT OF DFSC RECORDS
+* 122807 - JMK02 - C071349 - New AFS Fuel
+* 050708 - JMK03 - TO81123 - Rawlings / fuel surcharge
+* 100608 - JMK04 - TO82273 - FSC Benchmarks ; Force FSC Benchmark to "C" when current fuel is not "AFS" or "AFN"
+* 121708 - JMK05 - TO82703 - Truckload OLA ; benchmark amount incorrect
+* 012609 - NPR01 - T090105 - Allow addition of Percentage adjustments per state and allow setting of caps.
+* 072409 - DRF01 - T090652 - FSC calucation not adjusting properly variable DFSC was being overwritten
+* 101209 - NPR02 - T091132 - Display Notes/Description relating to FSC calcs
+*
+ COMMON PROG.PARAMS(24)
+      EQU CH.NUM TO PROG.PARAMS(1)
+      EQU USER TO PROG.PARAMS(2)
+      EQU SERVER.NAME TO PROG.PARAMS(3)
+      EQU DISP.FLG TO PROG.PARAMS(4)
+      
+      
+      HOLD.DFSC=DFSC     ; * DRF01
+      BILL.DATE=VIN<1>
+      WEIGHT=VIN<2>
+      MILES=VIN<3>
+      CC=VIN<5>
+      FREIGHT.AMOUNT=VIN<6>
+      ORIG.STATE=VIN<7>                  ; * Special for Xpedx and AFS
+      DEST.STATE=VIN<8>                  ; * Special for AFS
+****************************************
+* Initialize Variables
+****************************************
+      FSC.AMOUNT=''
+      ERROR=''
+      MIN.FLAG=0
+***************************************
+* Variables used for troubleshooting
+***************************************
+      CALC.FSC.AMT=''
+      OVER.AMT=''
+      STEPS.OVER=''
+      BASE.PERC=''
+      OVER.PERC=''
+      DELAY.DAYS=''
+      SHIFT.DATE=''
+      NAT.FUEL.PRICE=''
+      NAT.INDEX.NAME=''
+      CONV.FUEL.PRICE=''
+      CALC.PERC=0
+      FORMULA=''
+      MODE=''
+      BEGIN.EFF.DATE=''
+      END.EFF.DATE=''
+      BASE.FUEL.PRICE=''
+      MAX.SETUP.PRICE=''
+      AFS.CONTRACT=''                    ; * JMK04
+      PRE.ADJ.CALC.PERC = ''             ; * NPR01
+      STATE.ADJ.ARRAY=''                 ; * NPR01
+      ADJ.VALUE=''                       ; * NPR01
+
+      DESCRIPTION = ''                   ; * NPR02
+
+   ********   CALL GET.USER(USER)
+
+
+***************************************
+* Check First and Last Effective Date
+      FIRST.DATE=DFSC<1,1>
+      LAST.DATE=DFSC<2,DCOUNT(DFSC<1>,@VM)>
+      IF BILL.DATE < FIRST.DATE THEN     ; * Is bill Before Beginning Date
+         ERROR='Bill date is earlier than 1st FSC Effective Date'
+         GO 9999
+      END
+      IF LAST.DATE#'' AND (BILL.DATE > LAST.DATE) THEN
+         ERROR='Bill date is later than last FSC Effective Date'
+         GO 9999
+      END
+* Check Actual effective dates
+      LOCATE BILL.DATE IN DFSC<1> BY 'AR' SETTING CAR.POS ELSE
+         CAR.POS=CAR.POS-1
+      END
+      IF CAR.POS < 1 THEN
+         ERROR='Serious error FSC Carrier Date POS is less than 1, Call Owen'
+         GO 9999
+      END
+      BEGIN.EFF.DATE=DFSC<1,CAR.POS>
+      END.EFF.DATE=DFSC<2,CAR.POS>
+      IF BILL.DATE < BEGIN.EFF.DATE THEN           ; * Is bill Before Beginning Date
+         ERROR='Bill is before Beginning Effective Date'
+         GO 9999                         ; * Bill Dated before 1st Setup Date
+      END
+      IF END.EFF.DATE#'' AND (BILL.DATE > END.EFF.DATE) THEN
+         ERROR='Bill is after ending effective date'
+         GO 9999                         ; * Date Range "Expired"
+      END
+      NAT.INDEX.NAME=DFSC<3,CAR.POS>
+
+      DESCRIPTION=DFSC<38,CAR.POS>   ;* NPR02
+*
+*NPR01
+*
+      GOSUB SETUP.ST.ADJ.CAP ;* NPR01
+*
+*NPR01
+*
+      IF ORIG.STATE='' THEN STATE.INDEX=0 ELSE
+         STATE.INDEX=INDEX('-CA-AZ-NV-OR-WA-',ORIG.STATE,1)
+      END
+      IF NAT.INDEX.NAME='XP' THEN
+         IF STATE.INDEX ELSE
+* Maintain XP for California, Arizona, Nevada, Oregon, & Washington
+*  otherwise change to US
+            NAT.INDEX.NAME='US'
+         END
+      END
+      DELAY.DAYS=DFSC<4,CAR.POS>
+      IF DELAY.DAYS='R1' THEN            ; * JMK03
+         BILL.ODATE=OCONV(BILL.DATE,'D2-')         ; * JMK03
+         OMO=BILL.ODATE[1,2]             ; * JMK03
+         ODY=BILL.ODATE[4,2]             ; * JMK03
+         OYR=BILL.ODATE[7,2]             ; * JMK03
+         IF ODY<15 THEN OMO-=1           ; * JMK03
+         IF OMO<1 THEN                   ; * JMK03
+            OMO+=12                      ; * JMK03
+            OYR-=1                       ; * JMK03
+         END                             ; * JMK03
+         MON=0                           ; * JMK03
+         FOR DY=1 TO 7 UNTIL MON         ; * JMK03
+            IF OCONV(ICONV(OMO:'/':DY:'/':OYR,'D'),'DW')=1 THEN        ; * JMK03
+               MON=1                     ; * JMK03
+               FIRST.MON=ICONV(OMO:'/':DY:'/':OYR,'D')       ; * JMK03
+            END                          ; * JMK03
+         NEXT DY                         ; * JMK03
+         DELAY.DAYS=BILL.DATE-FIRST.MON  ; * JMK03
+      END                                ; * JMK03
+      SHIFT.DATE=BILL.DATE-DELAY.DAYS
+      CALC.METHOD=DFSC<8,CAR.POS>
+      ADD.PERC=0
+      BEGIN CASE
+         CASE NAT.INDEX.NAME='XP'        ; * Special for Xpedx
+            TABLE.ID='FSC*CA'
+            READ DNAT.INDEX.CA FROM F.TABLES,TABLE.ID ELSE
+               ERROR='Serious Error FSC Table ':TABLE.ID:' is not on file'
+               GO 9999
+            END
+*** Get CA National Fuel Price (Based on Shifted Date) ***
+            LOCATE SHIFT.DATE IN DNAT.INDEX.CA<1> BY 'DR' SETTING NAT.POS ELSE
+* No Shift (-1) necessary, you have the value you want if you use BY 'DR'
+            END
+*DF            IF NAT.POS>1 THEN
+*DF               IF MOD(DNAT.INDEX.CA<1,NAT.POS-1>,7)#1 AND DELAY.DAYS>0 THEN
+*DF                  IF SHIFT.DATE = DNAT.INDEX.CA<1,NAT.POS-1>-1 THEN
+*DF                     NAT.POS=NAT.POS-1
+*DF                  END
+*DF               END
+*DF            END
+*DF* Added the above 6 lines to handle the entry of the fuel index on
+*DF* Tuesday. Ticket 091321. DRF 02/08/10
+* Removed after talking to Brian Jeppson the contract read 2 days after
+* the publish date not 2 days after Monday. DRF 02/09/10
+            NAT.FUEL.PRICE.CA=DNAT.INDEX.CA<2,NAT.POS>
+            TABLE.ID='FSC*WC'
+            READ DNAT.INDEX.WC FROM F.TABLES,TABLE.ID ELSE
+               ERROR='Serious Error FSC Table ':TABLE.ID:' is not on file'
+               GO 9999
+            END
+*** Get WC National Fuel Price (Based on Shifted Date) ***
+            LOCATE SHIFT.DATE IN DNAT.INDEX.WC<1> BY 'DR' SETTING NAT.POS ELSE
+* No Shift (-1) necessary, you have the value you want if you use BY 'DR'
+            END
+*DF            IF NAT.POS>1 THEN
+*DF               IF MOD(DNAT.INDEX.WC<1,NAT.POS-1>,7)#1 AND DELAY.DAYS>0 THEN
+*DF                  IF SHIFT.DATE = DNAT.INDEX.WC<1,NAT.POS-1>-1 THEN
+*DF                     NAT.POS=NAT.POS-1
+*DF                  END
+*DF               END
+*DF            END
+*DF* Added the above 6 lines to handle the entry of the fuel index on
+*DF* Tuesday. Ticket 091321. DRF 02/08/10
+* Removed after talking to Brian Jeppson the contract read 2 days after
+* the publish date not 2 days after Monday. DRF 02/09/10
+            NAT.FUEL.PRICE.WC=DNAT.INDEX.WC<2,NAT.POS>
+*  This is the special for Xpedx The average of CA + WC / 2
+            NAT.FUEL.PRICE=((NAT.FUEL.PRICE.CA+NAT.FUEL.PRICE.WC)/2)'R0'
+         CASE 1
+*           IF NAT.INDEX.NAME='AFS' THEN ; * JMK02
+            IF NAT.INDEX.NAME='AFS' OR NAT.INDEX.NAME='AFN' THEN       ; * JMK02
+               AFS.CONTRACT=NAT.INDEX.NAME         ; * JMK04
+**         If ORIG or DEST = CA then add 1.5 percent to the FSC
+
+*NPR01                IF ORIG.STATE='' THEN ORIG.STATE.INDEX=0 ELSE
+*NPR01                   ORIG.STATE.INDEX=INDEX('-CA-','-':ORIG.STATE:'-',1)
+*NPR01                END
+*NPR01                IF DEST.STATE='' THEN DEST.STATE.INDEX=0 ELSE
+*NPR01                   DEST.STATE.INDEX=INDEX('-CA-','-':DEST.STATE:'-',1)
+*NPR01                END
+
+*NPR01               IF ORIG.STATE.INDEX+DEST.STATE.INDEX THEN ADD.PERC=1500
+
+               BEGIN CASE                ; * JMK02
+                  CASE NAT.INDEX.NAME='AFS'        ; * JMK02
+                     AFS.DFSC.ID='AFS*FSC'         ; * JMK02
+                  CASE NAT.INDEX.NAME='AFN'        ; * JMK02
+                     AFS.DFSC.ID='AFN*FSC'         ; * JMK02
+               END CASE                  ; * JMK02
+               NAT.INDEX.NAME='US'
+*              READ AFS.DFSC FROM F.TABLES,'AFS*FSC' THEN    ; * JMK01 ; * JMK02
+               READ AFS.DFSC FROM F.TABLES,AFS.DFSC.ID THEN  ; * JMK01 ; * JMK02
+                  DFSC=AFS.DFSC          ; * JMK01
+                  GOSUB SETUP.ST.ADJ.CAP ; * NPR01
+                  LOCATE BILL.DATE IN DFSC<1> BY 'AR' SETTING CAR.POS ELSE       ; * JMK01
+                     CAR.POS=CAR.POS-1   ; * JMK01
+                  END                    ; * JMK01
+               END                       ; * JMK01
+            END
+            TABLE.ID='FSC*':NAT.INDEX.NAME
+            READ DNAT.INDEX FROM F.TABLES,TABLE.ID ELSE
+               ERROR='Serious Error FSC Table ':TABLE.ID:' is not on file'
+               GO 9999
+            END
+*** Get National Fuel Price (Based on Shifted Date) ***
+
+            LOCATE SHIFT.DATE IN DNAT.INDEX<1> BY 'DR' SETTING NAT.POS ELSE
+* No Shift (-1) necessary, you have the value you want if you use BY 'DR'
+            END
+*DF            IF NAT.POS>1 THEN
+*DF               IF MOD(DNAT.INDEX<1,NAT.POS-1>,7)#1 AND DELAY.DAYS>0 THEN
+*DF                  IF SHIFT.DATE = DNAT.INDEX<1,NAT.POS-1>-1 THEN
+*DF                     NAT.POS=NAT.POS-1
+*DF                  END
+*DF               END
+*DF            END
+*DF* Added the above 6 lines to handle the entry of the fuel index on
+*DF* Tuesday. Ticket 091321. DRF 02/08/10
+* Removed after talking to Brian Jeppson the contract read 2 days after
+* the publish date not 2 days after Monday. DRF 02/09/10
+            NAT.FUEL.PRICE=DNAT.INDEX<2,NAT.POS>
+      END CASE
+
+*** Find out how to calculate (Based on weight) ***
+      FORMULA=0
+      IF WEIGHT < DFSC<7,CAR.POS> THEN MODE='LTL' ELSE MODE='TL'
+*
+*IF USER = "NPRATT" THEN DEBUG
+
+      BEGIN CASE
+         CASE MODE = 'LTL'
+            FSC.MIN=DFSC<5,CAR.POS>
+            LOCATE NAT.FUEL.PRICE IN DFSC<9,CAR.POS> BY 'AR' SETTING FP.POS ELSE
+               FP.POS-=1
+               IF FP.POS < 1 THEN
+                  ERROR='Serious Error FP.POS is less than 1'
+                  GO 9999
+               END
+            END
+            IF DFSC<13,CAR.POS,FP.POS>=2 THEN
+               CONV.FUEL.PRICE=NAT.FUEL.PRICE/10   ; * Place a decimal in the Var
+               IF DFSC<14,CAR.POS,FP.POS>='Y' THEN CONV.FUEL.PRICE=CONV.FUEL.PRICE'R0'
+               CONV.FUEL.PRICE=FIELD(CONV.FUEL.PRICE,'.',1):"0"
+            END ELSE
+               CONV.FUEL.PRICE=NAT.FUEL.PRICE
+            END
+            FSC.PERC=DFSC<10,CAR.POS,FP.POS>
+            IF FSC.PERC#'F' THEN         ; * Calculate the Normal Way
+               MAX.SETUP.PRICE=DFSC<9,CAR.POS,DCOUNT(DFSC<9,CAR.POS>,@SVM)>
+*NPR01               CALC.PERC=FSC.PERC + ADD.PERC
+
+               W.CALC.PERC = FSC.PERC
+               PERC.CAP = LTL.PERC.CAP
+               GOSUB CALC.ADD.PERC
+               CALC.PERC = W.CALC.PERC
+
+               FSC.AMOUNT=FREIGHT.AMOUNT*CALC.PERC/100000
+            END ELSE
+               MAX.SETUP.PRICE=''
+               FORMULA=1
+*              BASE.FUEL.PRICE=DFSC<17,CAR.POS>    ; * JMK01
+               BASE.FUEL.PRICE=DFSC<17,CAR.POS,FP.POS>       ; * JMK01
+               OVER.AMT=CONV.FUEL.PRICE-BASE.FUEL.PRICE
+               IF OVER.AMT<0 THEN OVER.AMT=0
+*          STEPS.OVER=(OVER.AMT/DFSC<18,CAR.POS>)'R0'
+*              IF DFSC<18,CAR.POS>+0=0 THEN        ; * JMK01
+*              IF DFSC<18,CAR.POS,FP.POS>+0=0 THEN           ; * JMK01
+*                 CALL ELINE('CALC.FSC Line 205 - Division by zero call programming')
+*              END
+*              IF DFSC<18,CAR.POS>=0 THEN          ; * JMK01
+               IF DFSC<18,CAR.POS,FP.POS>+0=0 THEN           ; * JMK01
+                  STEPS.OVER=0
+               END ELSE
+*                 STEPS.OVER=INT(OVER.AMT/DFSC<18,CAR.POS>) ; * JMK01
+                  STEPS.OVER=INT(OVER.AMT/DFSC<18,CAR.POS,FP.POS>)     ; * JMK01
+               END
+*              OVER.PERC=DFSC<16,CAR.POS>*STEPS.OVER         ; * JMK01
+*              BASE.PERC=DFSC<15,CAR.POS>          ; * JMK01
+               OVER.PERC=DFSC<16,CAR.POS,FP.POS>*STEPS.OVER  ; * JMK01
+               BASE.PERC=DFSC<15,CAR.POS,FP.POS>   ; * JMK01
+
+
+*NPR01
+
+*NPR01               CALC.PERC=BASE.PERC+OVER.PERC+ADD.PERC
+
+
+               W.CALC.PERC = BASE.PERC+OVER.PERC
+               PERC.CAP = LTL.PERC.CAP
+               GOSUB CALC.ADD.PERC
+               CALC.PERC = W.CALC.PERC
+
+*NPR01
+               FSC.AMOUNT=FREIGHT.AMOUNT*CALC.PERC/100000
+
+            END
+         CASE MODE = 'TL'
+            FSC.MIN=DFSC<5,CAR.POS>
+            MAX.SETUP.PRICE=DFSC<9,CAR.POS,DCOUNT(DFSC<9,CAR.POS>,@SVM)>
+            LOCATE NAT.FUEL.PRICE IN DFSC<9,CAR.POS> BY 'AR' SETTING FP.POS ELSE
+               FP.POS-=1
+               IF FP.POS < 1 THEN
+                  ERROR='Serious Error FP.POS is less than 1'
+                  GO 9999
+               END
+            END
+            IF DFSC<13,CAR.POS,FP.POS>=2 THEN
+               CONV.FUEL.PRICE=NAT.FUEL.PRICE/10   ; * Place a decimal in the Var
+               IF DFSC<14,CAR.POS,FP.POS>='Y' THEN CONV.FUEL.PRICE=CONV.FUEL.PRICE'R0'
+               CONV.FUEL.PRICE=FIELD(CONV.FUEL.PRICE,'.',1):"0"
+            END ELSE
+               CONV.FUEL.PRICE=NAT.FUEL.PRICE
+            END
+            CALC.METHOD=DFSC<8,CAR.POS>
+            BEGIN CASE
+               CASE CALC.METHOD='PERC'
+                  FSC.PERC=DFSC<11,CAR.POS,FP.POS>
+                  IF FSC.PERC#'F' THEN   ; * Calculate the Normal Way
+
+
+*NPR01
+*NPR01               CALC.PERC=FSC.PERC+ADD.PERC
+
+                     W.CALC.PERC = FSC.PERC
+                     PERC.CAP = TL.PERC.CAP
+                     GOSUB CALC.ADD.PERC
+                     CALC.PERC = W.CALC.PERC
+
+*NPR01
+                     FSC.AMOUNT=FREIGHT.AMOUNT*CALC.PERC/100000
+
+                  END ELSE
+                     FORMULA=1
+*                    BASE.FUEL.PRICE=DFSC<27,CAR.POS>        ; * JMK01
+                     BASE.FUEL.PRICE=DFSC<27,CAR.POS,FP.POS>           ; * JMK01
+                     OVER.AMT=CONV.FUEL.PRICE-BASE.FUEL.PRICE
+                     IF OVER.AMT<0 THEN OVER.AMT=0
+*                    OVER.PERC=DFSC<26,CAR.POS>*(OVER.AMT/DFSC<28,CAR.POS>)      ; * JMK01
+*                    BASE.PERC=DFSC<25,CAR.POS>    ; * JMK01
+                     OVER.PERC=DFSC<26,CAR.POS,FP.POS>*(OVER.AMT/DFSC<28,CAR.POS,FP.POS>)  ; * JMK01
+                     BASE.PERC=DFSC<25,CAR.POS,FP.POS>       ; * JMK01
+
+*NPR01
+*NPR01               CALC.PERC=BASE.PERC+OVER.PERC+ADD.PERC
+
+
+                     W.CALC.PERC = BASE.PERC+OVER.PERC
+                     PERC.CAP = TL.PERC.CAP
+                     GOSUB CALC.ADD.PERC
+                     CALC.PERC = W.CALC.PERC
+*NPR01
+
+                     FSC.AMOUNT=FREIGHT.AMOUNT*CALC.PERC/100000
+
+                  END
+*              CASE CALC.METHOD='PERMILE'          ; * JMK06
+               CASE CALC.METHOD='MILES'            ; * JMK06
+                  IF NUM(MILES) AND MILES#'' THEN
+                     FSC.AMOUNT=MILES*DFSC<12,CAR.POS,FP.POS>/10
+                  END
+            END CASE
+      END CASE
+      FSC.AMOUNT=FSC.AMOUNT'R0'
+      IF FSC.AMOUNT<FSC.MIN THEN
+         FSC.AMOUNT=FSC.MIN
+         MIN.FLAG=1
+*      CRT 'FSC.AMOUNT: ':FSC.AMOUNT
+      END
+*
+9999: *** End of Program
+*
+      VOUT=''
+      VOUT<1>=FSC.AMOUNT
+      VOUT<2>=MIN.FLAG
+      VOUT<3>=CALC.PERC
+      VOUT<4>=ERROR
+**** The following are used for debugging purposes ***
+      VOUT<6>=CALC.FSC.AMT
+      VOUT<7>=OVER.AMT
+      VOUT<8>=STEPS.OVER
+      VOUT<9>=BASE.PERC
+      VOUT<10>=OVER.PERC
+      VOUT<11>=DELAY.DAYS
+      VOUT<12>=SHIFT.DATE
+      VOUT<13>=NAT.FUEL.PRICE
+      VOUT<14>=CONV.FUEL.PRICE
+      VOUT<15>=BEGIN.EFF.DATE
+      VOUT<16>=FORMULA                   ; * Switch 0 or 1
+      VOUT<17>=MODE
+      VOUT<18>=BASE.FUEL.PRICE
+      VOUT<19>=NAT.INDEX.NAME
+      VOUT<20>=MAX.SETUP.PRICE           ; * Highest Nat Fuel Price in Table
+      VOUT<21>=AFS.CONTRACT              ; * JMK04
+*
+*NPR01
+*
+      VOUT<22>=STATE.ADJ.ARRAY<1>  ;* Adjust State - CA,AZ etc
+      VOUT<23>=STATE.ADJ.ARRAY<2>  ;* Adjustment Value
+      VOUT<24>=STATE.ADJ.ARRAY<3>  ;* Add before or after cap
+      VOUT<25>=STATE.ADJ.ARRAY<4>  ;* Cap amount actually applied
+      VOUT<26>=STATE.ADJ.ARRAY<5>  ;* Post cap Adjustment for State, to be applied
+      VOUT<27>=PRE.ADJ.CALC.PERC
+      VOUT<28>=ADJ.VALUE           ;*State Adjustment applied
+      VOUT<29>=STATE.ADJ.ARRAY<6>  ;* Apply State Adj. to Inbound/Outbound or both types of shipments
+
+      VOUT<30> = DESCRIPTION       ;* NPR02
+*
+*      CALL MONITOR.CALC.FSC(VIN,VOUT,DFSC,F.TABLES)   ;* NPR99 Intended to be temporary for monitoring descrepancies
+*                                                        between Old and New FSC Calculations.
+*
+*NPR01
+*
+      DFSC=HOLD.DFSC   ; * DRF01
+      RETURN
+*
+      SETUP.ST.ADJ.CAP :
+*
+      STATES.WITH.ADJ = DFSC<31>
+      STATE.ADJS      = DFSC<32>
+      STATE.PERC.BA   = DFSC<33>  ;* Before or after Cap
+      STATE.PERC.IO   = DFSC<37>  ;* Apply Adj to Inbound/Outbound or both
+*
+      STATE.ADJ.ARRAY = ""  ; ST.CNT = 1
+      N.STATES = DCOUNT(STATES.WITH.ADJ,@VM)
+      FOR I.ST = 1 TO N.STATES
+         W.STATE = STATES.WITH.ADJ<1,I.ST>
+         IF W.STATE = ORIG.STATE OR W.STATE = DEST.STATE THEN
+            STATE.ADJ.ARRAY<1,ST.CNT> = W.STATE
+            STATE.ADJ.ARRAY<2,ST.CNT> = STATE.ADJS<1,I.ST>
+            STATE.ADJ.ARRAY<3,ST.CNT> = STATE.PERC.BA<1,I.ST>
+            STATE.ADJ.ARRAY<6,ST.CNT> = STATE.PERC.IO<1,I.ST>
+            ST.CNT += 1
+         END
+      NEXT I.ST
+*
+      LTL.PERC.CAP = DFSC<34>
+      TL.PERC.CAP  = DFSC<35>
+      TL.MILE.CAP  = DFSC<36>
+*
+      RETURN
+*
+      CALC.ADD.PERC :
+*
+      POST.CALC.ADJ = 0
+*
+      PRE.ADJ.CALC.PERC = W.CALC.PERC
+
+      ADJ.VALUE  = 0
+      ADD.BA.CAP = ""
+      ADD.APP.IO = ""
+
+      W.ADJ.VALUE  = 0
+      W.ADD.BA.CAP = ""
+      W.ADD.APP.IO = ""
+
+      ADJ.STATE  = STATE.ADJ.ARRAY<1,1>  ;* Adjust State - CA,AZ etc
+      ADJ.VALUE  = STATE.ADJ.ARRAY<2,1>  ;* Adjustment Value
+      ADD.BA.CAP = STATE.ADJ.ARRAY<3,1>  ;* Add before or after cap
+      ADD.APP.IO = STATE.ADJ.ARRAY<6,1>  ;* Apply State Adj to I/O or both type shipments
+
+      N.ADJ = DCOUNT(STATE.ADJ.ARRAY<1>,@VM)
+      FOR I.ADJ = 1 TO N.ADJ
+         W.ADJ.STATE  = STATE.ADJ.ARRAY<1,I.ADJ>  ;* Adjust State - CA,AZ etc
+         W.ADJ.VALUE  = STATE.ADJ.ARRAY<2,I.ADJ>  ;* Adjustment Value
+         W.ADD.BA.CAP = STATE.ADJ.ARRAY<3,I.ADJ>  ;* Add before or after cap
+         W.ADD.APP.IO = STATE.ADJ.ARRAY<6,I.ADJ>  ;* Apply State Adj to I/O or both type shipments
+
+****    Test if State Adjustments applies to Inbound/Outbound or Both types of shipment.
+
+         APPLY.ADJ = 0
+         IF W.ADJ.STATE = ORIG.STATE THEN
+            IF W.ADD.APP.IO = "" OR W.ADD.APP.IO = "B" OR W.ADD.APP.IO = "O" THEN
+               APPLY.ADJ = 1
+            END ELSE
+               IF I.ADJ = 1 THEN ADJ.VALUE = "0"
+            END
+         END
+
+         IF W.ADJ.STATE = DEST.STATE THEN
+            IF W.ADD.APP.IO = "" OR W.ADD.APP.IO = "B" OR W.ADD.APP.IO = "I" THEN
+               APPLY.ADJ = 1
+            END ELSE
+               IF I.ADJ = 1 THEN ADJ.VALUE = "0"
+            END
+         END
+
+         IF W.ADJ.VALUE GT ADJ.VALUE AND APPLY.ADJ THEN
+            ADJ.VALUE  = STATE.ADJ.ARRAY<2,I.ADJ>  ;* Adjustment Value
+         END
+
+      NEXT I.ADJ
+*
+      IF ADD.BA.CAP = "B" THEN
+         W.CALC.PERC += ADJ.VALUE
+      END ELSE
+         POST.CALC.ADJ += ADJ.VALUE
+         STATE.ADJ.ARRAY<5> = ADJ.VALUE     ;* Post cap Adjustment for State, to be applied
+      END
+*
+      IF PERC.CAP > "0" THEN
+         IF W.CALC.PERC > PERC.CAP THEN
+            W.CALC.PERC = PERC.CAP
+            STATE.ADJ.ARRAY<4> = PERC.CAP   ;* Cap Value applied
+         END
+      END
+
+      W.CALC.PERC += POST.CALC.ADJ
+*
+      RETURN

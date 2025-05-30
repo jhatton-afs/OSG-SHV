@@ -1,0 +1,1003 @@
+********************************************************************************
+*  Program : FB.4.12.4
+*  Author  : James M. Barberousse
+*  Date    : April 2002
+********************************************************************************
+*
+*      COPYRIGHT (C) 2002 by AFS LOGISTICS, LLC. - ALL RIGHTS RESERVED
+*
+*  This program is the sole property of AFS Logistics, LLC (AUTOMATED FREIGHT
+*  SYSTEMS) and may not be used, copied, or modified without the express
+*  written consent of Brian Barker of AFS Logistics, LLC.
+********************************************************************************
+* 100504 - JMK01 - ADD NOTES OPTION FOR EACH SETUP LINE
+* Includes
+$INCLUDE FILE.DEFS INC_ADDS60.CODES; * These require specific PROCOMM settings
+
+* Equates
+      EQU REVERSE.BLINK.ON TO TERM.ESC.SEQ:CHAR(TERM.REV+TERM.BLINK)   ; * Reverse Blinking text ON
+      EQU REVERSE.ON TO TERM.ESC.SEQ:CHAR(TERM.REV)          ; * Reverse text ON
+      EQU REVERSE.OFF TO TERM.ESC.SEQ:CHAR(TERM.NORMAL)      ; * Reverse text OFF
+      EQU TRUE TO 1
+      EQU FALSE TO 0
+
+* Initialize general program variables
+      PROMPT''
+      PORT.NUM=SYSTEM(19)
+      CALL GET.USER(USER.NAME)
+      PROG.NAME='FB.4.12.4'
+      PROG.DESC='Carrier Reject Setup'
+      PACK.NAME='USER : ':USER.NAME
+      CO.NAME='AFS Logistics, LLC'
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.4.12.4' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      EDIT.MASK.CHAR='-'
+      PLACE.HOLDER='~~ PLACE*HOLDER ~~'
+
+* Initialize operating variables
+      PAGE.SIZE=13                       ; * Number of lines per page
+      START.Y=7                          ; * Starting y-position on the screen minus one
+      LAST.EDIT.MASK=1                   ; * Last item edited or deleted
+      WIDTH=80                           ; * Print width for printing table of includes/excludes
+      CTR=INT(WIDTH/2)                   ; * Center of the table width
+
+      CLIENT.ID=''
+      CLIENT.NAME=''
+      CLIENT.CITY=''
+      CLIENT.STATE=''
+
+      INCLUDE.EXCLUDE=''
+      INCLUDE.EXCLUDE.STMT=''
+
+      CARRIER.ID=''
+      CARRIER.NAME=''
+      CARRIER.NAMES=''
+
+      BEGIN.DATE=''
+
+      END.DATE=''
+
+      CONTROL.REC=''
+      OLD.CONTROL.REC=''
+
+* Display initial screen
+      GOSUB DISPLAY.SCREEN
+
+* Restrict access
+      BEGIN CASE
+         CASE USER.NAME='OWEN'
+         CASE USER.NAME='CHRIS'
+         CASE USER.NAME='DAVID'
+         CASE USER.NAME='MYRA'
+         CASE USER.NAME='MARY'
+         CASE USER.NAME='JAMES'
+         CASE USER.NAME='MKERBOW'        ; * JMK01
+         CASE 1
+            CALL FB.PRINT.CENT(1,80,12,'! Restricted Access Application !')
+            CALL FB.PRINT.CENT(1,80,14,'Access Denied')
+            CALL ELINE('')
+            GOTO THE.END
+      END CASE
+
+* Open files
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT('CLIENTS',PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','FB.REJ.CTRL' TO F.CONTROL ELSE
+         CALL OPEN.ABORT('FB.REJ.CTRL',PROG.NAME)
+      END
+
+GET.CLIENT:***
+      IF CLIENT.ID THEN
+         EDIT.MASK=CLIENT.ID'R%5':@(-4)
+      END ELSE
+         EDIT.MASK=STR(EDIT.MASK.CHAR,5):@(-4)
+      END
+      HELP='Enter client ID or letters for search. [L]ist existing carrier controls [EX]it'
+      CALL GEN.IN(26,3,EDIT.MASK,'',Q,0,20,'','',2,26,3,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' AND CLIENT.ID THEN QI=CLIENT.ID
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='L'
+            GOSUB DISPLAY.CONTROL.RECORDS
+            GOSUB DISPLAY.SCREEN
+            GOTO GET.CLIENT
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'CLIENTS','SDX.CLIENTS,NAME','2,3,4',ITEM.LIST)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  NULL
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  NULL
+               CASE ITEM.LIST#''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+            END CASE
+            GOSUB DISPLAY.SCREEN
+            GOTO GET.CLIENT
+         CASE NUM(QI) AND QI#''
+            QI=QI'R%5'
+            READ CLIENT.REC FROM F.CLIENTS,QI THEN
+               CLIENT.ID=QI
+               CLIENT.NAME=CLIENT.REC<2>
+               CLIENT.CITY=CLIENT.REC<4>
+               CLIENT.STATE=CLIENT.REC<5>
+            END ELSE
+               CALL ELINE('Error: Client ':QI:' is not a valid client.')
+               GOTO GET.CLIENT
+            END
+         CASE 1
+            GOTO GET.CLIENT
+      END CASE
+      CRT @(26,3):(CLIENT.ID'R%5':' ':CLIENT.NAME:' (':CLIENT.CITY:', ':CLIENT.STATE:')')'L#53':@(-4)
+
+* Read carrier control record if there is one
+      READ CONTROL.REC FROM F.CONTROL,CLIENT.ID THEN
+         OLD.CONTROL.REC=CONTROL.REC
+         GOSUB LOAD.CARRIER.NAMES
+      END ELSE
+         CONTROL.REC=''
+         OLD.CONTROL.REC=''
+         CARRIER.NAMES=''
+
+GET.INCLUDE.EXCLUDE:***
+         CONTROL.REC<1>='N'
+      END                                ; * READ CONTROL.REC FROM F.CONTROL,CLIENT.ID
+
+      GOSUB SET.INCLUDE.EXCLUDE
+      CRT @(26,4):INCLUDE.EXCLUDE
+      CRT @(0,21):INCLUDE.EXCLUDE.STMT
+
+*   Calculate number of items and number of pages and set page number
+      NUM.RULES=DCOUNT(CONTROL.REC<2>,@VM)
+      IF NUM.RULES=0 OR INCLUDE.EXCLUDE[1,1]='D' THEN
+         NUM.PAGES=0
+         PAGE.NUMBER=0
+      END ELSE
+         NUM.PAGES=INT(NUM.RULES/PAGE.SIZE)
+         IF REM(NUM.RULES,PAGE.SIZE) THEN NUM.PAGES+=1
+         PAGE.NUMBER=1
+      END
+      GOSUB DISPLAY.PAGE
+
+MAIN.START:***
+      CRT @(0,22):'Enter Option : --             [B]ack Page [F]orward Page [T]op Page [L]ast Page'
+      EDIT.MASK=STR(EDIT.MASK.CHAR,2)
+      HELP='[A]dd [D]elete [E]dit [S]ort [P]rint                   [U]pdate [X]=Back [EX]it'
+      CALL GEN.IN(15,22,EDIT.MASK,'',Q,0,2,'','',2,15,22,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'                    ; * Exit
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'                     ; * Back to client
+            IF CONTROL.REC#OLD.CONTROL.REC THEN
+               YN.MSG='You have unsaved changes. Save before entering new client?'
+               YN.MASK=''
+               GOSUB ASK.Y.OR.N
+               IF YN.ANSWER='Y' THEN
+                  CRT @(0,22):'Saving...':@(-3)
+                  SLEEP 1
+                  GOSUB SORT.CONTROL.REC
+                  GOSUB FAILSAFE.CHECK
+                  IF FAILSAFE.OK THEN
+                     GOSUB SAVE.CONTROL.REC
+                     GOSUB DISPLAY.PAGE
+                  END ELSE
+                     GOSUB DISPLAY.PAGE
+                     GOTO MAIN.START     ; * X-Back aborted due to failsafe errors
+                  END
+               END
+            END
+            CLIENT.ID=''
+            INCLUDE.EXCLUDE=''
+            GOSUB DISPLAY.SCREEN
+            GOTO GET.CLIENT
+         CASE QI='U'                     ; * Update (and exit)
+            IF CONTROL.REC#OLD.CONTROL.REC THEN
+               CRT @(0,22):'Saving...':@(-3)
+               SLEEP 1
+               GOSUB SORT.CONTROL.REC
+               GOSUB FAILSAFE.CHECK
+               IF FAILSAFE.OK THEN
+                  GOSUB SAVE.CONTROL.REC
+                  GOSUB DISPLAY.PAGE
+               END ELSE
+                  GOSUB DISPLAY.PAGE
+                  GOTO MAIN.START        ; * Update aborted due to failsafe errors
+               END
+            END ELSE
+               CRT @(0,22):'No changes to save.':@(-3)
+               SLEEP 1
+            END
+            GOTO THE.END
+         CASE QI='L' OR QI='LP'          ; * Last Page
+            IF INCLUDE.EXCLUDE[1,1]#'D' THEN
+               IF NUM.PAGES#0 AND PAGE.NUMBER#NUM.PAGES THEN
+                  PAGE.NUMBER=NUM.PAGES
+                  GOSUB DISPLAY.PAGE
+               END ELSE
+                  CALL ELINE('** LAST PAGE **')
+               END
+            END
+            GOTO MAIN.START
+         CASE QI='T' OR QI='TP'          ; * Top Page
+            IF INCLUDE.EXCLUDE[1,1]#'D' THEN
+               IF NUM.PAGES#0 AND PAGE.NUMBER#1 THEN
+                  PAGE.NUMBER=1
+                  GOSUB DISPLAY.PAGE
+               END ELSE
+                  CALL ELINE('** FIRST PAGE **')
+               END
+            END
+            GOTO MAIN.START
+         CASE QI='F' OR QI='FP'          ; * Forward a page
+            IF INCLUDE.EXCLUDE[1,1]#'D' THEN
+               IF NUM.PAGES#0 AND PAGE.NUMBER<NUM.PAGES THEN
+                  PAGE.NUMBER+=1
+                  GOSUB DISPLAY.PAGE
+               END ELSE
+                  CALL ELINE('** LAST PAGE **')
+               END
+            END
+            GOTO MAIN.START
+         CASE QI='B' OR QI='BP'          ; * Backward a page
+            IF INCLUDE.EXCLUDE[1,1]#'D' THEN
+               IF NUM.PAGES#0 AND PAGE.NUMBER>1 THEN
+                  PAGE.NUMBER-=1
+                  GOSUB DISPLAY.PAGE
+               END ELSE
+                  CALL ELINE('** FIRST PAGE **')
+               END
+            END
+            GOTO MAIN.START
+         CASE QI='P'                     ; * Print carrier includes/excludes to printer
+            IF INCLUDE.EXCLUDE[1,1]#'D' THEN
+               IF NUM.RULES>0 THEN
+                  YN.MSG='Print carrier includes/excludes to currently selected printer?'
+                  YN.MASK='Y'
+                  GOSUB ASK.Y.OR.N
+                  IF YN.ANSWER='Y' THEN
+                     GOSUB SORT.CONTROL.REC
+                     GOSUB PRINT.CARRIER.CONTROLS
+                  END
+                  GOSUB DISPLAY.PAGE
+               END ELSE
+                  CALL ELINE('No rules to PRINT.')
+               END
+            END
+            GOTO MAIN.START
+         CASE QI='S'                     ; * Sort
+            IF INCLUDE.EXCLUDE[1,1]#'D' THEN
+               IF NUM.RULES>1 THEN
+                  CRT @(0,22):'Sorting...':@(-3)
+                  SLEEP 1
+                  GOSUB SORT.CONTROL.REC
+                  GOSUB DISPLAY.PAGE
+               END ELSE
+                  CALL ELINE('No rules to sort.')
+               END
+            END
+            GOTO MAIN.START
+         CASE QI='E'                     ; * Edit a IED rule
+            IF INCLUDE.EXCLUDE[1,1]#'D' THEN
+               IF NUM.RULES<1 THEN
+                  CALL ELINE('No rules to EDIT.')
+               END ELSE
+                  EDIT.ENTRY=''
+                  GOSUB EDIT.CARRIER.RULE
+                  GOSUB DISPLAY.PAGE
+               END
+            END
+            GOTO MAIN.START
+         CASE NUM(QI) AND QI#''          ; * Edit an IED rule number
+            IF INCLUDE.EXCLUDE[1,1]#'D' THEN
+               IF QI>=1 AND QI<=NUM.RULES THEN
+                  EDIT.ENTRY=QI
+                  GOSUB EDIT.CARRIER.RULE
+                  GOSUB DISPLAY.PAGE
+               END ELSE
+                  CALL ELINE('No rules to EDIT.')
+               END
+            END
+            GOTO MAIN.START
+         CASE QI='D'                     ; * delete an IED rule
+            IF INCLUDE.EXCLUDE[1,1]#'D' THEN
+               IF NUM.RULES<1 THEN
+                  CALL ELINE('No rules to DELETE.')
+               END ELSE
+                  GOSUB DELETE.CARRIER.RULE
+                  GOSUB DISPLAY.PAGE
+               END
+            END
+            GOTO MAIN.START
+         CASE QI='A'                     ; * Add an IED rule
+            IF INCLUDE.EXCLUDE[1,1]#'D' THEN
+               GOSUB ADD.CARRIER.RULE
+               GOSUB DISPLAY.PAGE
+            END
+            GOTO MAIN.START
+         CASE QI='*'                     ; * Show contents of CONTROL.REC for debugging purposes
+            CRT @(-1)
+            CRT @(0,0):CONTROL.REC
+            CALL ELINE('Viewing DEBUG Screen.')
+            GOSUB DISPLAY.SCREEN
+            GOSUB DISPLAY.PAGE
+            GOTO MAIN.START
+         CASE 1
+            GOTO MAIN.START
+      END CASE
+
+********************************************************************************
+* Start of internal subroutines
+********************************************************************************
+
+DISPLAY.SCREEN:***
+      CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      CRT @(0,2):STR('=',79):
+      CRT @(0,3):'Client Number           :'
+      CRT @(0,4):'No Rejections           :'
+      CRT @(0,5):REVERSE.ON:SPACE(79):REVERSE.OFF
+      CRT @(0,21):REVERSE.ON:SPACE(79):REVERSE.OFF
+      IF CLIENT.ID THEN
+         CRT @(26,3):CLIENT.ID'R%5':', ':CLIENT.NAME:' (':CLIENT.CITY:', ':CLIENT.STATE:')'
+      END
+      IF INCLUDE.EXCLUDE THEN
+         CRT @(26,4):INCLUDE.EXCLUDE
+         CRT @(0,21):INCLUDE.EXCLUDE.STMT
+      END
+*     CRT @(0,6):'##    Carrier Number    Carrier Name                       Beg Date    End Date' ; * JMK01
+*     CRT @(0,7):'--    --------------    -------------------------------    --------    --------' ; * JMK01
+      CRT @(0,6):'##  Carrier Number  Carrier Name                     Beg Date   End Date  Notes' ; * JMK01
+      CRT @(0,7):'--  --------------  -------------------------------  --------   --------  -----' ; * JMK01
+      RETURN
+
+********************************************************************************
+
+DISPLAY.PAGE:***
+*   This routine displays a given page.
+*   Input:  PAGE.NUMBER
+
+      STR.OUT='Page ':PAGE.NUMBER:' of ':NUM.PAGES:' '
+      STR.OUT=SPACE(79-LEN(STR.OUT)):STR.OUT
+      CRT @(0,5):REVERSE.ON:STR.OUT:REVERSE.OFF
+      Y=1                                ; * Screen position
+      IF PAGE.NUMBER=0 THEN
+         LINE.NUM=1
+      END ELSE
+         LINE.NUM=(PAGE.NUMBER-1)*PAGE.SIZE+1
+      END
+      LOOP WHILE Y<=PAGE.SIZE
+         BEGIN CASE
+            CASE LINE.NUM>NUM.RULES OR INCLUDE.EXCLUDE[1,1]='D'
+               * Print nothing - actually clears line
+               SCREEN.LINE=LINE.NUM'R%2'
+            CASE CONTROL.REC<2,LINE.NUM>=''
+               SCREEN.LINE=LINE.NUM'R%2'
+            CASE 1
+               GOSUB FORMAT.LINE
+               SCREEN.LINE=FORMATTED.LINE
+         END CASE
+         CRT @(0,START.Y+Y):SCREEN.LINE:@(-4)      ; * Draw screen line
+         Y+=1                            ; * Inc screen position
+         LINE.NUM+=1
+      REPEAT
+      RETURN
+
+********************************************************************************
+
+FORMAT.LINE:***
+*     FORMATTED.LINE =LINE.NUM'R%2':SPACE(4) ; * JMK01
+*     FORMATTED.LINE:=CONTROL.REC<2,LINE.NUM>'R%5':SPACE(13) ; * JMK01
+*     FORMATTED.LINE:=CARRIER.NAMES<LINE.NUM>'L#31':SPACE(4) ; * JMK01
+*     FORMATTED.LINE:=CONTROL.REC<3,LINE.NUM>'D2-':SPACE(4) ; * JMK01
+*     IF CONTROL.REC<4,LINE.NUM> THEN ; * JMK01
+*        FORMATTED.LINE:=CONTROL.REC<4,LINE.NUM>'D2-' ; * JMK01
+*     END ELSE ; * JMK01
+*        FORMATTED.LINE:=' {OPEN} '      ; * No end date ; * JMK01
+*     END ; * JMK01
+      FORMATTED.LINE =LINE.NUM'R%2':SPACE(2) ; * JMK01
+      FORMATTED.LINE:=CONTROL.REC<2,LINE.NUM>'R%5':SPACE(11) ; * JMK01
+      FORMATTED.LINE:=CARRIER.NAMES<LINE.NUM>'L#31':SPACE(2) ; * JMK01
+      FORMATTED.LINE:=CONTROL.REC<3,LINE.NUM>'D2-':SPACE(3) ; * JMK01
+      IF CONTROL.REC<4,LINE.NUM> THEN ; * JMK01
+         FORMATTED.LINE:=CONTROL.REC<4,LINE.NUM>'D2-':SPACE(2) ; * JMK01
+      END ELSE ; * JMK01
+         FORMATTED.LINE:=' {OPEN} ':SPACE(2)      ; * No end date ; * JMK01
+      END ; * JMK01
+      IF CONTROL.REC<11,LINE.NUM>#'' THEN ; * JMK01
+         FORMATTED.LINE:='  *  ' ; * JMK01
+      END ELSE ; * JMK01
+         FORMATTED.LINE:=SPACE(5) ; * JMK01
+      END ; * JMK01
+      RETURN
+
+********************************************************************************
+
+ASSIGN.FIELDS.IN:***
+      CONTROL.REC<2,EDIT.NUMBER>=CARRIER.ID
+      CARRIER.NAMES<EDIT.NUMBER>=CARRIER.NAME
+      CONTROL.REC<3,EDIT.NUMBER>=BEGIN.DATE
+      IF END.DATE THEN
+         CONTROL.REC<4,EDIT.NUMBER>=END.DATE
+      END ELSE
+         CONTROL.REC<4,EDIT.NUMBER>=PLACE.HOLDER
+         CONTROL.REC<4,EDIT.NUMBER>=END.DATE
+      END
+      CONTROL.REC<11,EDIT.NUMBER>=NOTES ; * JMK01
+      RETURN
+
+********************************************************************************
+
+ASSIGN.FIELDS.OUT:***
+      CARRIER.ID=CONTROL.REC<2,EDIT.NUMBER>
+      CARRIER.NAME=CARRIER.NAMES<EDIT.NUMBER>
+      BEGIN.DATE=CONTROL.REC<3,EDIT.NUMBER>
+      END.DATE=CONTROL.REC<4,EDIT.NUMBER>
+      NOTES=CONTROL.REC<11,EDIT.NUMBER> ; * JMK01
+      RETURN
+
+********************************************************************************
+
+ADD.CARRIER.RULE:***
+      * Make sure last page is being displayed
+      NP1=FALSE
+      NP2=FALSE
+      IF PAGE.NUMBER<NUM.PAGES THEN
+         PAGE.NUMBER=NUM.PAGES
+         NP1=TRUE
+      END
+      IF REM(NUM.RULES,PAGE.SIZE)=0 THEN
+         * Go to the next clean page for entry
+         PAGE.NUMBER+=1
+         NUM.PAGES+=1
+         NP2=TRUE
+      END
+      IF NP1 OR NP2 THEN GOSUB DISPLAY.PAGE
+
+      EDIT.NUMBER=NUM.RULES+1
+      IF REM(EDIT.NUMBER,PAGE.SIZE)=0 THEN
+         Y.POS=START.Y+PAGE.SIZE
+      END ELSE
+         Y.POS=START.Y+REM(EDIT.NUMBER,PAGE.SIZE)
+      END
+
+      * Make initial data assignments for a new rule instead of ASSIGN.FIELDS.OUT
+      CARRIER.ID=''
+      BEGIN.DATE=''
+      END.DATE=''
+
+      GOSUB PROCESS.DATA
+
+      IF BACK.FLAG THEN
+         IF NP2 THEN
+            PAGE.NUMBER-=1
+            NUM.PAGES-=1
+         END
+      END ELSE
+         NUM.RULES+=1
+         GOSUB ASSIGN.FIELDS.IN
+      END
+      RETURN
+
+********************************************************************************
+
+EDIT.CARRIER.RULE:***
+      IF EDIT.ENTRY='' THEN
+         AFN.MSG='Select rule to EDIT :'
+         AFN.MIN=1
+         AFN.MAX=NUM.RULES
+         AFN.MASK=LAST.EDIT.MASK
+         GOSUB ASK.FOR.NUM
+         IF AFN.ANSWER='X' THEN RETURN
+         EDIT.ENTRY=AFN.ANSWER
+      END
+      EDIT.NUMBER=EDIT.ENTRY
+      LAST.EDIT.MASK=EDIT.ENTRY
+
+      PAGE.NUMBER=INT(EDIT.NUMBER/PAGE.SIZE)
+      IF PAGE.NUMBER*PAGE.SIZE<EDIT.NUMBER THEN PAGE.NUMBER+=1
+      EDIT.Y=EDIT.NUMBER-(PAGE.NUMBER*PAGE.SIZE)+PAGE.SIZE
+      GOSUB DISPLAY.PAGE
+      Y.POS=START.Y+EDIT.Y
+
+      GOSUB ASSIGN.FIELDS.OUT
+      GOSUB PROCESS.DATA
+      IF NOT(BACK.FLAG) THEN
+         GOSUB ASSIGN.FIELDS.IN
+      END
+      RETURN
+
+********************************************************************************
+
+DELETE.CARRIER.RULE:***
+      AFN.MSG='Select rule to DELETE :'
+      AFN.MIN=1
+      AFN.MAX=NUM.RULES
+      AFN.MASK=LAST.EDIT.MASK
+      GOSUB ASK.FOR.NUM
+      IF AFN.ANSWER='X' THEN RETURN
+
+      EDIT.NUMBER=AFN.ANSWER
+      LAST.EDIT.MASK=AFN.ANSWER
+      PAGE.NUMBER=INT(EDIT.NUMBER/PAGE.SIZE)
+      IF PAGE.NUMBER*PAGE.SIZE<EDIT.NUMBER THEN PAGE.NUMBER+=1
+      EDIT.Y=EDIT.NUMBER-(PAGE.NUMBER*PAGE.SIZE)+PAGE.SIZE
+      GOSUB DISPLAY.PAGE
+
+      LINE.NUM=EDIT.NUMBER
+      GOSUB FORMAT.LINE
+      DELETE.LINE=REVERSE.ON:FORMATTED.LINE:REVERSE.OFF
+      CRT @(0,START.Y+EDIT.Y):DELETE.LINE:@(-4)    ; * Draw screen line
+
+      YN.MSG='DELETE this rule? :'
+      YN.MASK='N'
+      GOSUB ASK.Y.OR.N
+      IF YN.ANSWER='Y' THEN
+         DEL CONTROL.REC<2,EDIT.NUMBER>
+         DEL CONTROL.REC<3,EDIT.NUMBER>
+         DEL CONTROL.REC<4,EDIT.NUMBER>
+         DEL CONTROL.REC<11,EDIT.NUMBER> ; * JMK01
+         DEL CARRIER.NAMES<EDIT.NUMBER>
+         NUM.RULES-=1
+         IF NUM.RULES=0 THEN
+            NUM.PAGES=0
+            PAGE.NUMBER=0
+         END ELSE
+            NUM.PAGES=INT(NUM.RULES/PAGE.SIZE)
+            IF REM(NUM.RULES,PAGE.SIZE) THEN NUM.PAGES+=1
+            IF REM(NUM.RULES,PAGE.SIZE)=0 AND EDIT.NUMBER=NUM.RULES+1 THEN
+               PAGE.NUMBER-=1
+            END
+         END
+         IF LAST.EDIT.MASK>NUM.RULES THEN LAST.EDIT.MASK=NUM.RULES
+         IF LAST.EDIT.MASK=0 THEN LAST.EDIT.MASK=1
+      END
+      RETURN
+
+********************************************************************************
+
+SORT.CONTROL.REC:***
+      SORT.ARRAY=''                      ; * holds sort keys and pointers into CONTROL.REC
+      SORTED.CONTROL.REC=''              ; * sorted version of CONTROL.REC
+      NUM.RULES=DCOUNT(CONTROL.REC<2>,@VM)
+      FOR RULE=1 TO NUM.RULES
+         SORT.KEY =CONTROL.REC<2,RULE>'R%5'        ; * Carrier
+         SORT.KEY:=CONTROL.REC<3,RULE>   ; * Begin date
+         SORT.KEY:=CONTROL.REC<4,RULE>   ; * End date
+         LOCATE SORT.KEY IN SORT.ARRAY<1> BY 'AL' SETTING SORT.POS THEN
+            CALL ELINE('You have a duplicate rule. Please delete one of the duplicates.')
+         END ELSE
+            INS SORT.KEY BEFORE SORT.ARRAY<1,SORT.POS>
+            INS RULE BEFORE SORT.ARRAY<2,SORT.POS>
+         END
+      NEXT RULE
+
+*   CRT @(0,15):REVERSE.ON:SORT.ARRAY:REVERSE.OFF; CALL ELINE('')
+
+      FOR RULE=1 TO NUM.RULES
+         PTR=SORT.ARRAY<2,RULE>
+         SORTED.CONTROL.REC<1>=CONTROL.REC<1>
+         SORTED.CONTROL.REC<2,RULE>=CONTROL.REC<2,PTR>
+         SORTED.CONTROL.REC<3,RULE>=CONTROL.REC<3,PTR>
+         SORTED.CONTROL.REC<4,RULE>=CONTROL.REC<4,PTR>
+         SORTED.CONTROL.REC<11,RULE>=CONTROL.REC<11,PTR> ; * JMK01
+      NEXT RULE
+
+*   CRT @(0,19):REVERSE.ON:SORTED.CONTROL.REC:REVERSE.OFF; CALL ELINE('')
+
+* Copy the items not affected by the sorting
+      FOR RULE=5 TO 10
+         SORTED.CONTROL.REC<RULE>=CONTROL.REC<RULE>
+      NEXT RULE
+
+      CONTROL.REC=SORTED.CONTROL.REC
+      GOSUB LOAD.CARRIER.NAMES
+      RETURN
+
+********************************************************************************
+
+PRINT.CARRIER.CONTROLS:***
+      PRINTER ON
+
+      L.TAB=CTR-(LEN(PROG.DESC)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):PROG.DESC
+      R.TAB=WIDTH-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE())
+      HEAD1=PROG.NAME:SPACE(L.TAB):PROG.DESC:SPACE(R.TAB):TIMEDATE():"'L'"
+      TITLE='Carriers with No Rejections'
+      L.TAB=CTR-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+      R.TAB=(WIDTH-LEN(TEMP))-20
+      HEAD2=TEMP:SPACE(R.TAB):USER.NAME'L(#10 )':"PAGE 'PL'"
+      HEAD3=STR('=',WIDTH):"'L'"
+      HEAD4='CLIENT  : ':CLIENT.ID'R#5':' ':CLIENT.NAME:' (':CLIENT.CITY:', ':CLIENT.STATE:')':"'L'"
+      HEAD5=INCLUDE.EXCLUDE.STMT:"'LL'"
+*     HEAD6='##    Carrier Number    Carrier Name                       Beg Date    End Date':"'L'" ; * JMK01
+*     HEAD7='--    --------------    -------------------------------    --------    --------':"'L'" ; * JMK01
+      HEAD6='##  Carrier Number  Carrier Name                      Beg Date   End Date Notes':"'L'" ; * JMK01
+      HEAD7='--  --------------  -------------------------------   --------   -------- -----':"'L'" ; * JMK01
+      HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6:HEAD7
+
+      PAGE 1
+      HEADING HED
+
+      FOR LINE.NUM=1 TO NUM.RULES
+         GOSUB FORMAT.LINE
+         PRINT FORMATTED.LINE
+      NEXT
+
+      PRINTER OFF
+      PRINTER CLOSE
+      CALL ELINE('Carrier No Rejections spooled to printer. Quit program to complete job.')
+      RETURN
+
+********************************************************************************
+
+PROCESS.DATA:***
+      DONE=FALSE
+      FIELD.POS=1
+      LOOP WHILE NOT(DONE)
+         BEGIN CASE
+            CASE FIELD.POS=0             ; * Done
+               DONE=TRUE
+            CASE FIELD.POS=1             ; * Carrier
+               GOSUB GET.CARRIER
+            CASE FIELD.POS=2             ; * Begin Date
+               GOSUB GET.BEGIN.DATE
+            CASE FIELD.POS=3             ; * End Date
+               GOSUB GET.END.DATE
+            CASE FIELD.POS=4             ; * Notes ; * JMK01
+               GOSUB GET.NOTES                     ; * JMK01
+*           CASE FIELD.POS=4             ; * Done  ; * JMK01
+*              DONE=TRUE                           ; * JMK01
+            CASE FIELD.POS=5             ; * Done  ; * JMK01
+               DONE=TRUE                           ; * JMK01
+         END CASE
+         IF BACK.FLAG THEN
+            FIELD.POS-=1
+         END ELSE
+            FIELD.POS+=1
+         END
+      REPEAT
+      RETURN
+
+********************************************************************************
+
+GET.CARRIER:***
+      BACK.FLAG=FALSE
+*     X.POS=6 ; * JMK01
+      X.POS=4 ; * JMK01
+      CRT @(0,22):'Enter a carrier ID.':@(-4)
+      IF CARRIER.ID THEN
+         SAVE.CARRIER.ID=CARRIER.ID
+         EDIT.MASK=CARRIER.ID
+      END ELSE
+         SAVE.CARRIER.ID=SPACE(5)
+         EDIT.MASK=STR(EDIT.MASK.CHAR,5)
+      END
+      HELP='Enter carrier ID or letters for search. [X]=Back [EX]it'
+      CALL GEN.IN(X.POS,Y.POS,EDIT.MASK,'',Q,0,5,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' AND CARRIER.ID THEN QI=CARRIER.ID
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO THE.END
+         CASE QI='X'
+            BACK.FLAG=TRUE
+            CRT @(X.POS,Y.POS):SAVE.CARRIER.ID
+            RETURN
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'CARRIERS','SDX.CARRIER,NAME','1,3,4',ITEM.LIST)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  NULL
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  NULL
+               CASE ITEM.LIST#''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+            END CASE
+            GOSUB DISPLAY.SCREEN
+            GOSUB DISPLAY.PAGE
+            GOTO GET.CARRIER
+         CASE NUM(QI) AND QI#''
+            QI=QI'R%5'
+            READ CARRIER.REC FROM F.CARRIERS,QI THEN
+               LOCATE QI IN CONTROL.REC<2> BY 'AL' SETTING POS THEN
+                  IF POS#EDIT.NUMBER THEN
+                     CALL ELINE('This carrier already exists at number ':POS:'.')
+                     GOTO GET.CARRIER
+                  END
+               END
+               CARRIER.ID=QI
+               CARRIER.NAME=CARRIER.REC<1>
+               CRT @(X.POS,Y.POS):CARRIER.ID
+*              CRT @(24,Y.POS):CARRIER.NAME ; * JMK01
+               CRT @(20,Y.POS):CARRIER.NAME ; * JMK01
+               RETURN
+            END ELSE
+               CALL ELINE('Error: Carrier ':QI:' is not a valid carrier.')
+               GOTO GET.CARRIER
+            END
+         CASE 1
+            GOTO GET.CARRIER
+      END CASE
+
+********************************************************************************
+
+GET.BEGIN.DATE:***
+      BACK.FLAG=FALSE
+*     X.POS=59 ; * JMK01
+      X.POS=53 ; * JMK01
+      CRT @(0,22):'Enter a beginning date.':@(-4)
+      IF BEGIN.DATE THEN
+         SAVE.BEGIN.DATE=BEGIN.DATE'D2-'
+         EDIT.MASK=BEGIN.DATE'D2-'
+      END ELSE
+         SAVE.BEGIN.DATE=SPACE(8)
+         EDIT.MASK='MM/DD/YY'
+      END
+      HELP='OPTIONS: [T]oday [X]=Back [EX]it'
+      CALL GEN.IN(X.POS,Y.POS,EDIT.MASK,'DATE',Q,0,8,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF BEGIN.DATE AND QI='' THEN QI=BEGIN.DATE
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'
+            BACK.FLAG=TRUE
+            CRT @(X.POS,Y.POS):SAVE.BEGIN.DATE
+            RETURN
+         CASE QI='T'
+            BEGIN.DATE=DATE()
+            CRT @(X.POS,Y.POS):BEGIN.DATE'D2-'
+            RETURN
+         CASE NUM(Q) AND QI#''
+            IF Q<DATE() THEN
+               CALL ELINE('Warning: This date is in the past.')
+            END
+            BEGIN.DATE=Q
+            CRT @(X.POS,Y.POS):BEGIN.DATE'D2-'
+            RETURN
+         CASE 1
+            CALL ELINE('Invalid date. Try again.')
+            GOTO GET.BEGIN.DATE
+      END CASE
+
+********************************************************************************
+
+GET.END.DATE:***
+      BACK.FLAG=FALSE
+*     X.POS=71 ; * JMK01
+      X.POS=64 ; * JMK01
+      CRT @(0,22):'Enter an ending date.':@(-4)
+      IF END.DATE THEN
+         SAVE.END.DATE=END.DATE'D2-'
+         EDIT.MASK=END.DATE'D2-'
+      END ELSE
+         SAVE.END.DATE=SPACE(8)
+         EDIT.MASK='MM/DD/YY'
+      END
+      HELP='OPTIONS: [T]oday [O]pen Ended [X]=Back [EX]it'
+      CALL GEN.IN(X.POS,Y.POS,EDIT.MASK,'DATE',Q,0,8,'','',2,X.POS,Y.POS,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF END.DATE AND QI='' THEN QI=END.DATE
+      IF NOT(END.DATE) AND QI='' THEN QI='O'
+      BEGIN CASE
+         CASE QI='EX'
+            GOTO LAST.CHANCE.TO.SAVE
+         CASE QI='X'
+            BACK.FLAG=TRUE
+            CRT @(X.POS,Y.POS):SAVE.END.DATE
+            RETURN
+         CASE QI='O'
+            END.DATE=''
+            CRT @(X.POS,Y.POS):' {OPEN} '
+            RETURN
+         CASE QI='T'
+            END.DATE=DATE()
+            CRT @(X.POS,Y.POS):END.DATE'D2-'
+            RETURN
+         CASE NUM(Q) AND QI#''
+            IF Q<BEGIN.DATE THEN
+               CALL ELINE('The closing date ':Q'D2-':' is before ':BEGIN.DATE'D2-':'. Try again.')
+               GOTO GET.END.DATE
+            END
+            IF Q<DATE() THEN
+               CALL ELINE('Warning: This date is in the past.')
+            END
+            END.DATE=Q
+            CRT @(X.POS,Y.POS):END.DATE'D2-'
+            RETURN
+         CASE 1
+            CALL ELINE('Invalid date. Try again.')
+            GOTO GET.END.DATE
+      END CASE
+
+********************************************************************************
+
+GET.NOTES:***
+      BACK.FLAG=FALSE
+      TXT.COL=0
+      TXT.ROW=6
+      TXT.LENGTH=80
+      TXT.LINES=PAGE.SIZE+2
+      TXT.TEXT=CHANGE(NOTES,@SVM,@AM)
+      CRT @(0,5):REVERSE.ON:SPACE(79)
+      CRT @(28,5):'Carrier Notes':REVERSE.OFF
+      CRT @(0,22):'Enter any notes for this carrier.':@(-4)
+      CALL LINE.EDIT(TXT.COL,TXT.ROW,TXT.LENGTH,TXT.LINES,TXT.TEXT)
+      NOTES=CHANGE(TXT.TEXT,@AM,@SVM)
+      GOSUB DISPLAY.SCREEN
+      GOSUB DISPLAY.PAGE
+
+********************************************************************************
+
+FAILSAFE.CHECK:***
+* There are no failsafe conditions to check currently.
+      FAILSAFE.OK=TRUE                   ; * Assume no problems and try to find problems
+      RETURN
+
+********************************************************************************
+
+SAVE.CONTROL.REC:***
+* Insert the user information
+      IF CONTROL.REC<5>='' THEN          ; * This is a new record. Put in original creation info.
+         CONTROL.REC<5>=USER.NAME
+         CONTROL.REC<6>=DATE()
+         CONTROL.REC<7>=TIME()
+      END ELSE                           ; * Not a new record. Put in update info.
+         IF CONTROL.REC<8>='' THEN
+            CONTROL.REC<8>=USER.NAME
+            CONTROL.REC<9>=DATE()
+            CONTROL.REC<10>=TIME()
+         END ELSE
+            CONTROL.REC<8>=CONTROL.REC<8>:@VM:USER.NAME
+            CONTROL.REC<9>=CONTROL.REC<9>:@VM:DATE()
+            CONTROL.REC<10>=CONTROL.REC<10>:@VM:TIME()
+         END
+      END
+
+* Write data to file
+      IF CONTROL.REC<2>#'' THEN
+         WRITE CONTROL.REC ON F.CONTROL,CLIENT.ID
+         OLD.CONTROL.REC=CONTROL.REC
+      END ELSE
+         DELETE F.CONTROL,CLIENT.ID
+         CONTROL.REC=''
+         OLD.CONTROL.REC=''
+      END
+
+      RETURN
+
+********************************************************************************
+
+DISPLAY.CONTROL.RECORDS:***
+      CRT @(0,0):@(-1)
+      EXECUTE 'SORT FB.CAR.CTRL 1 2 3 4'
+      CALL ELINE('')
+      RETURN
+
+********************************************************************************
+
+ASK.FOR.NUM:***
+* A general number prompt routine
+* Inputs:
+*    AFN.MSG  - message to display
+*    AFN.MASK - default value
+*    AFN.MIN  - min value allowed
+*    AFN.MAX  - max value allowed
+* Outputs:
+*    AFN.ANSWER
+
+      AFN.ANSWER=''
+
+AFN.1:
+      CRT @(0,22):AFN.MSG:@(-4)
+      HELP='Entry Options: [':AFN.MIN:'-':AFN.MAX:'] [X]=Back'
+      EDIT.MASK=AFN.MASK:' '
+      CALL GEN.IN(LEN(AFN.MSG)+1,22,EDIT.MASK,'',Q,0,LEN(AFN.MAX),'','',2,LEN(AFN.MSG)+1,22,0,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      IF QI='' THEN QI=TRIM(EDIT.MASK)
+      BEGIN CASE
+         CASE QI='X'
+         CASE QI>=AFN.MIN AND QI<=AFN.MAX
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO AFN.1
+      END CASE
+      AFN.ANSWER=QI
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+      RETURN
+
+********************************************************************************
+
+ASK.Y.OR.N:***
+* This is a general Yes/No prompt routine.
+* Inputs:
+*    YN.MSG, YN.MASK
+* Outputs:
+*    YN.ANSWER
+
+      YN.ANSWER=''
+
+Y.OR.N:
+      CRT @(0,22):YN.MSG:@(-4)
+      HELP='Entry Options: [Y]es [N]o'
+      EDIT.MASK=YN.MASK'L#1'
+      CALL GEN.IN(LEN(YN.MSG)+1,22,EDIT.MASK,'',Q,0,1,'','',2,LEN(YN.MSG)+1,22,0,QI,HELP,0,23)
+      QI=TRIM(OCONV(QI,'MCU'))
+      IF QI='' THEN QI=TRIM(EDIT.MASK)
+      BEGIN CASE
+         CASE QI='Y'
+         CASE QI='N'
+         CASE 1
+            CALL ELINE('Invalid entry. Try again.')
+            GOTO Y.OR.N
+      END CASE
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+      YN.ANSWER=QI
+      RETURN
+
+********************************************************************************
+
+SET.INCLUDE.EXCLUDE:***
+      BEGIN CASE
+         CASE CONTROL.REC<1>='N'
+            INCLUDE.EXCLUDE='No Rejections'
+            INCLUDE.EXCLUDE.STMT='Do NOT Reject bills for this Carrier Between Dates Listed'
+         CASE 1
+            INCLUDE.EXCLUDE='Unrecognized'
+            INCLUDE.EXCLUDE.STMT='Unrecognized code : ':CONTROL.REC<1>
+      END CASE
+      CALL CENTER(INCLUDE.EXCLUDE.STMT,80)
+      INCLUDE.EXCLUDE.STMT:=SPACE(79-LEN(INCLUDE.EXCLUDE.STMT))
+      INCLUDE.EXCLUDE.STMT=REVERSE.ON:INCLUDE.EXCLUDE.STMT:REVERSE.OFF
+      RETURN
+
+********************************************************************************
+
+LOAD.CARRIER.NAMES:***
+      NUM.CARRIERS=DCOUNT(CONTROL.REC<2>,@VM)
+      CARRIER.NAMES=''
+      FOR X=1 TO NUM.CARRIERS
+         CARRIER.ID=CONTROL.REC<2,X>
+         READV CARRIER.NAME FROM F.CARRIERS,CARRIER.ID,1 ELSE CARRIER.NAME='Not on File'
+         CARRIER.NAMES<X>=CARRIER.NAME
+      NEXT X
+      RETURN
+
+********************************************************************************
+
+LAST.CHANCE.TO.SAVE:***
+      IF CONTROL.REC#OLD.CONTROL.REC THEN
+         YN.MSG='You have unsaved changes. Save before exiting?'
+         YN.MASK=''
+         GOSUB ASK.Y.OR.N
+         IF YN.ANSWER='Y' THEN
+            CRT @(0,22):'Saving...':@(-3)
+            SLEEP 1
+            GOSUB SORT.CONTROL.REC
+            GOSUB FAILSAFE.CHECK
+            IF FAILSAFE.OK THEN
+               GOSUB SAVE.CONTROL.REC
+               GOSUB DISPLAY.PAGE
+            END ELSE
+               GOSUB DISPLAY.PAGE
+               GOTO MAIN.START
+            END
+         END
+      END
+
+********************************************************************************
+
+THE.END:***
+      CRT @(0,22):@(-3):
+      STOP

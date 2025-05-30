@@ -1,0 +1,1556 @@
+* PROGRAM FB.7.3.1
+* PRINT FREIGHT BILL AND AFS95 INFORMATION
+*
+* FREIGHT BILLING PACKAGE
+*
+* AUTHOR: Owen Holman
+* DATE: June 9, 1995
+*
+* FORMATTING MODS:
+*  Jim Row - July 6, 1995
+*  Cody Henderson - Oct. 15, 1996
+*  Owen Holman - April 8, 2004 * Added Net Cost Column.. The reason that it
+*                isn't lined up is that there isn't enough room if the totals were lined up
+**********************************************************************
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_DIVISION.CODES
+*
+* Initialize variables
+*
+
+      GOSUB CLEAR.TOT.TOTAL
+      GOSUB CLEAR.SUB.TOTAL
+      PROCESS.TYPE='STD'
+      PROMPT''
+      STATUS=''
+      ERRMSG=''
+      DATE.TYPE=''
+      OLD.CARRIER=''
+      VALID.CLASSES=50:@VM:55:@VM:60:@VM:65:@VM:70:@VM:77:@VM:85:@VM:92:@VM:100:@VM:110:@VM:125:@VM:150:@VM:175:@VM:200:@VM:250:@VM:300:@VM:400:@VM:500
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='FB.7.3.1.FSC'
+      PROG.DESC='Traffic Survey Freight Bill Details with AFS FSC in Calculations'
+      PACK.NAME='Freight Billing'
+      NO.DIV.FLAG=0
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.7.3.1.FSC' ; UPL.VOUT = ''   ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      MAT DIV.REC = ''
+      DATE.ARRAY=''                      ; * <1>-Ship Date <2>-Qty of Bills <3>-Carrier Charges
+      LAS.PRT=''
+      F.NUM=''
+      CALL FB.FORM(F.NUM)
+*CH   ORIG.PRT=F.NUM
+      DARRAY=''                          ; * DFP01
+      ARRAYCT=8                          ; * DFP01
+      MAKE.FILE = 0                      ; * DFP01
+      DETAILS='0'
+      DIVISION = 'ALL'
+*     USER=OCONV(SYSTEM(19),'MCU')
+      CALL GET.USER(USER)
+*
+      DIM MONTHS(12)
+*
+* Open files
+*
+      OPEN '','BCUST' TO F.CLIENT ELSE
+         CALL OPEN.ABORT('BCUST',PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT("FB.TABLES",PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIER ELSE
+         CALL OPEN.ABORT('CARRIERS',PROG.NAME)
+      END
+      OPEN '','FB.CONTROL' TO F.CONTROL ELSE
+         CALL OPEN.ABORT('FB.CONTROL',PROG.NAME)
+      END
+************************************
+* BEGIN DFP01                      *
+************************************
+      OPEN '','BCTRL' TO F.BCTRL ELSE
+         CALL OPEN.ABORT('BCTRL',PROG.NAME)
+      END
+      READ BCTRL.REC FROM F.BCTRL,USER ELSE BCTRL.REC=''
+      USER.PW=BCTRL.REC<1>
+      USER.EMAIL=BCTRL.REC<20>
+      OPEN '','FLEX.DEVICES' TO F.DEVICES ELSE
+         CALL OPEN.ABORT('FLEX.DEVICES',PROG.NAME)
+      END
+      OPEN '','VOC' TO F.VOC ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE('UNABLE TO OPEN VOC FILE')
+         STOP
+      END
+
+      READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')
+         STOP
+      END
+
+      BILLDATA.REC<2>:='\':USER
+      WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE("YOUR USER NAME '":USER:"' IS NOT IN THE BILLDATA FOLDER - PLEASE SEE OWEN/KEITH/DAVID")
+         STOP
+      END
+      OPEN '','BILLDATA.':USER TO BILLDATA ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE('UNABLE TO OPEN "BILLDATA.":USER')
+         STOP
+      END
+************************************
+* END DFP01                        *
+************************************
+      OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+         EXECUTE 'CREATE-FILE FBWORK':CH.NUM:' 1 1001' PASSLIST CAPTURING OUTPUT
+         OPEN '','FBWORK':CH.NUM TO F.WORK ELSE
+            CALL OPEN.ABORT('FBWORK':CH.NUM,PROG.NAME)
+         END
+      END
+      CLEARFILE F.WORK                   ; * Owen added 12/05/97
+      OPEN '','DICT FBWORK':CH.NUM TO F.DICT.WORK ELSE
+         CALL OPEN.ABORT('DICT FBWORK':CH.NUM,PROG.NAME)
+      END
+*
+* Create work file dictionary items
+*
+      TEMP=''
+      TEMP<1>='A'
+      TEMP<2>='1'
+      TEMP<9>='R'
+      TEMP<10>=1
+      WRITE TEMP ON F.DICT.WORK,'MIN.SORTER'
+      TEMP<2>='2'
+      TEMP<9>='L'
+      TEMP<10>='1'
+      WRITE TEMP ON F.DICT.WORK,'IOT.SORTER'
+      TEMP<2>='3'
+      TEMP<7>='D2/'
+      TEMP<9>='R'
+      TEMP<10>='8'
+      WRITE TEMP ON F.DICT.WORK,'DATE.SORTER'
+      TEMP<2>='0'
+      TEMP<7>=''
+      TEMP<8>='G1*1'
+      TEMP<9>='R'
+      TEMP<10>='15'
+      WRITE TEMP ON F.DICT.WORK,'PRO'
+      TEMP<8>='G0*1'
+      TEMP<10>=5
+      WRITE TEMP ON F.DICT.WORK,'CARRIER#'
+      TEMP<8,-1>='TCARRIERS;X;;1'
+      TEMP<9>='L'
+      TEMP<10>=30
+      WRITE TEMP ON F.DICT.WORK,'CARRIER.NAME'
+*
+*  WORK FILE CONSISTS OF ITEMS WITH THE FOLLOWING DETAIL
+*    ATTRIBUTE   DESCRIPTION
+*  Variable Attribute Description.....................................
+*               ID    Carrier.Number*Pro*Version
+*
+*               1     1-Minimum shipment, 2-Normal Shipment
+*               2     I-Inbound, O-Outbound, T-Third Party
+*
+      MATREAD MONTHS FROM F.CONTROL,'MONTHS' ELSE
+         CALL READ.ABORT('FB.CONTROL','MONTHS',PROG.NAME)
+      END
+      READ LI.CODES FROM F.TABLES,'LI.CODES' ELSE
+         CALL ELINE("Unable to Read Line Item Code Table.")
+         LI.CODES=''
+      END
+*
+* Display heading
+*
+30:   CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+* Get client number to process
+*
+50:   HELP.PROMPT="Enter the client number you want to process. S=Search. ''=Exit."
+      CRT @(0,3):@(-3)
+      CALL GEN.IN(0,3,'Enter Client Number #####','',Q,0,20,'','',1,-5,3,0,QI,HELP.PROMPT,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='' ! QI='EX' ! QI='X'
+            GOTO EXIT.PROGRAM
+         CASE ALPHA(QI)
+            CALL SOUNDEX.DISPLAY(QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            IF ITEM.LIST='' ! DCOUNT(ITEM.LIST<1>,@VM) > 1 THEN GOTO 50
+            IF NOT(NUM(ITEM.LIST<1,1>)) THEN GOTO 50
+            Q=ITEM.LIST<1,1>'R%5'
+      END CASE
+      CLIENT.ID=Q'R%5'
+      IF CLIENT.ID[1,2]#99 THEN
+         CALL ELINE('Invalid entry. Client Number must begin with 99.')
+         GOTO 50
+      END
+      READ CLIENT.REC FROM F.CLIENT,CLIENT.ID ELSE
+         IF PROCESS.TYPE='STD' THEN
+            CALL ELINE('ERROR - Client ':CLIENT.ID:' not on file.')
+         END
+         GOTO 50
+      END
+      CLIENT.NAME=CLIENT.REC<2>
+      CRT @(20,3):CLIENT.ID:" - ":CLIENT.NAME:
+      FYBD=CLIENT.REC<29>
+      OPEN '','DIVISION.CODES,':CLIENT.ID TO F.DIVS ELSE
+         CALL OPEN.ABORT("DIVISION.CODES,":CLIENT.ID,PROG.NAME)
+      END
+*
+* Get current period beginning date
+*
+100:  HELP='Enter the beginning date.'
+      CALL GEN.IN(0,5,'Beginning date.  ':DATE()'D2/','DATE',BEG.DATE,0,8,'','',1,-8,5,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='X' THEN GOTO 50
+      IF QI='EX' THEN GO EXIT.PROGRAM
+      IF QI='' THEN BEG.DATE=DATE()
+      CRT @(17,5):BEG.DATE'D2/'
+*
+* Get current period ending date
+*
+125:  HELP='Enter the ending date.'
+      CALL GEN.IN(0,7,'Ending date.     ':DATE()'D2/','DATE',END.DATE,0,8,'','',1,-8,7,0,QI,HELP,0,23)
+      IF QI='X' THEN GOTO 100
+      IF QI='EX' THEN GO EXIT.PROGRAM
+      IF QI='' THEN END.DATE=DATE()
+      IF END.DATE LT BEG.DATE THEN
+         CALL ELINE('Invalid ending date.')
+         GOTO 125
+      END
+      CRT @(17,7):END.DATE'D2/'
+*
+* Get date type
+*
+150:  HELP='Enter the date type for the selection. "E"=Data Entry Date "S"=Ship Date'
+      IF DATE.TYPE # '' THEN
+         MASK = DATE.TYPE
+      END ELSE
+         MASK = 'E'
+      END
+      CALL GEN.IN(0,9,'Data entry date or ship date. ':MASK,'',Q,0,8,'','',1,-1,9,0,QI,HELP,0,23)
+      BEGIN CASE
+         CASE QI='X'
+            GOTO 125
+         CASE QI='EX'
+            GO EXIT.PROGRAM
+         CASE QI='' OR QI='E'
+            DATE.TYPE='ENTRY'
+         CASE QI='S'
+            DATE.TYPE='SHIP'
+         CASE 1
+            CALL ELINE('Invalid entry. Please try again.')
+            GO 150
+      END CASE
+      CRT @(30,9):DATE.TYPE
+*
+* Select Printer
+*
+200:  READ PRT.TAB FROM F.DEVICES, "PRINTERS.SL" ELSE PRT.TAB = ""
+
+      LOCATE F.NUM IN PRT.TAB<1> SETTING POS THEN  ; *DFP01
+         PRT.DESC = PRT.TAB<3,POS>       ; *DFP01
+         LAS.PRT= "F":F.NUM              ; *DFP01
+      END ELSE
+         CALL ELINE("Could not find print que ":F.NUM:" - Aborting!")
+         STOP
+      END                                ; *DFP01
+      CRT @( 0,13):'Printer         : ' : PRT.DESC:@(-3)
+
+      HELP="Print to - {":PRT.DESC :"}. [Y]es, [S]elect, [F]ile, [X] or EX."
+      CALL GEN.IN(0,22,'Enter selection please. ---','',Q,0,3,'','',0,-3,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            GOTO 150
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='Y' OR QI = ""
+            NULL
+         CASE QI='N' OR QI = 'S'
+            EXECUTE \SET-LASER\
+            GOSUB GET.QUEUE
+            IF NOT(NUM(F.NUM)) THEN
+               CALL ELINE("Problem encountered with printer selection. Call IT!")
+               GOTO EXIT.PROGRAM
+            END ELSE
+               CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+               CRT @(0,2):STR('=',79)
+*              GOSUB DISPLAY.SCREEN
+               DATA "Y"
+               GOTO 200
+            END
+         CASE QI="F"
+            MAKE.FILE=1
+         CASE 1
+            CALL ELINE('Invalid entry. Must be [Y]es, [S]elect Printer [X] or EX=Exit."')
+            GOTO 200
+      END CASE
+
+      CRT @( 0,13):'Printer         : ' : PRT.DESC:@(-3)
+250:  IF PRT.DESC[1,3]='PDF' THEN
+         VIN='' ; VOUT=''                ; *DFP01
+         COPIES=1
+         HELP="To Password Protect the PDF File: Enter a Password"
+         CALL GEN.IN(0,22,'PDF Password or [ENTER]:','',Q,0,15,'','',2,25,22,0,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='EX'
+               STOP
+            CASE INDEX(QI,' ',1)
+               CALL ELINE("Spaces aren't allowed in the password")
+               GOTO 250
+            CASE 1
+               Q=QI
+         END CASE
+         PDF.PW=Q
+         CRT @(00,22):@(-4):@(28):PDF.PW:
+         IF PDF.PW='' THEN CRT "(No PW Specified - PDF File will NOT be protected)"
+      END                                ; *DFP01
+
+      GO 350                             ; * DFP01
+
+300:  HELP="Print: 4=Frt Paymt. 5=Accng. 6=Logistics. 7=Dallas 9=Brian's 'X'=Back 'EX'=Exit"
+      CALL GEN.IN(0,11,'Enter printer number: ':MASK:' ':PRT.DESC,'',Q,0,2,'','',2,22,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI=''
+            IF MASK='' THEN
+               CALL ELINE('You must select a printer.')
+               GOTO 300
+            END ELSE
+               Q='F':F.NUM
+            END
+            IF F.NUM='15' THEN QI=4
+            IF F.NUM='20' THEN QI=5
+            IF F.NUM='25' THEN QI=6
+            IF F.NUM='40' AND USER='OWEN' THEN QI=8
+            IF F.NUM='35' THEN QI=7
+            IF F.NUM='50' THEN QI=9
+         CASE QI='X'
+            GOTO 150
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI=4
+            Q='F15'
+            PRT.DESC='Lexmark Optra-N -  Freight Payment'
+         CASE QI=5
+            Q='F20'
+            PRT.DESC='Lexmark Optra Se 3455 - Accounting'
+         CASE QI=7
+            Q='F35'
+            PRT.DESC='Dallas Lexmark'
+         CASE QI=8 & USER ='OWEN'
+            PRT.DESC='Owens printer'
+
+         CASE QI=9
+            Q='F50'
+            PRT.DESC='Lexmark 4039-16L Plus - Accounting'
+         CASE QI=6
+            Q='F25'
+            PRT.DESC='IBM 4049-12L - Logistics'
+         CASE 1
+            CALL ELINE('Error. You must enter a valid printer.')
+            GOTO 300
+      END CASE
+      MASK=QI
+      LAS.PRT=Q
+      CRT@(22,11):QI
+      CRT@(24,11):PRT.DESC:@(-3)
+*
+* Enter Number of Copies to Print
+*
+350:  HELP="Enter the number of copies. 'X'=Back 'EX'=Exit"
+      CALL GEN.IN(0,14,'Enter number of copies: 1','',Q,0,2,'','',2,24,14,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI=''
+            Q=1
+         CASE QI='X'
+            GOTO 300
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE NUM(QI)
+            IF INT(QI)#QI THEN
+               CALL ELINE('Number of copies can only be a whole number. Try again.')
+               GOTO 350
+            END ELSE
+               Q=QI
+            END
+         CASE 1
+            CALL ELINE('Invalid entry. Entry must be a whole number.')
+            GOTO 350
+      END CASE
+      COPIES=Q
+      CRT@(24,14):COPIES
+*
+* Enter Division
+*
+360:  HELP="Enter 'L'=List ''=ALL. 'X'=Back. 'EX'=Exit."
+      CALL GEN.IN(0,15,'Enter Division or return for "ALL": ALL','',Q,0,3,'','',2,36,15,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            GOTO 350
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='L'
+            EXECUTE 'SORT DIVISION.CODES,':CLIENT.ID:' CITY.STATE HEADING "List of all division codes for ':CLIENT.ID:' - ':CLIENT.NAME:"'CL'":'"'
+            CALL ELINE('Press <ENTER> to continue.')
+            CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            CRT @(0,3):'Enter Client Number: ':CLIENT.ID:" - ":CLIENT.NAME
+            CRT @(0,5):'Beginning date.  ':BEG.DATE'D2/'
+            CRT @(0,7):'Ending Date.     ':END.DATE'D2/'
+            CRT @(0,9):'Data entry date or ship date. ':DATE.TYPE
+            CRT @(0,11):'Enter printer number: ':QI
+            CRT @(24,11):PRT.DESC:@(-3)
+            CRT @(0,13):'Enter number of copies: ':COPIES
+            CRT @(0,15):'Enter Division or return for "ALL": ALL'
+            GOTO 360
+         CASE QI=''!QI='ALL'!QI='A'
+            DIVISION = 'ALL'
+         CASE NUM(QI)
+            DIVISION = QI'R%5'
+            MATREAD DIV.REC FROM F.DIVS,DIVISION ELSE
+               CALL ELINE('Division: ':DIVISION:' does not exist. Please try again.')
+               GO 360
+            END
+         CASE 1
+            CALL ELINE('Invalid entry')
+            GO 360
+      END CASE
+      IF DIVISION # 'ALL' THEN
+         DIV.NAME = DIV.REC(11)
+         CRT@(36,15):DIVISION:' ':DIV.NAME'L#30'
+      END ELSE
+         CRT@(36,15):'ALL''L#30'
+      END
+*
+* Enter Detail or Summary
+*
+375:  HELP="Enter 'D'=Detail. 'S'=Summary. 'X'=Back. 'EX'=Exit."
+      CALL GEN.IN(0,17,'Enter Detail or Summary: S','',Q,0,2,'','',2,25,17,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            GOTO 360
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI=''!QI='S'
+            DETAILS='0'
+            QI='S'
+         CASE QI='D'
+            DETAILS='1'
+         CASE 1
+            CALL ELINE('Invalid entry. Must choose S or D.')
+            GO 375
+      END CASE
+      CRT@(25,17):QI
+*
+* Enter Lower Class Range or ALL
+*
+380:  HELP="Enter Lower Class to Include in Report or [ENTER] for All"
+      CALL GEN.IN(0,18,'Enter Lower Class Range: ALL','',Q,0,3,'','',2,25,18,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            GOTO 375
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI='ALL'
+            NULL
+         CASE QI=''
+            QI='ALL'
+         CASE QI MATCHES '0N'
+            LOCATE QI IN VALID.CLASSES<1> SETTING NUL ELSE
+               CALL ELINE(QI:' Is not a valid class!')
+               GO 380
+            END
+         CASE 1
+            CALL ELINE('Invalid entry. Must choose a valid Class or ALL.')
+            GO 380
+      END CASE
+      LOWER.CLASS=QI
+      CRT@(25,18):QI:@(-4):
+*
+390:  HELP="Enter Upper Class to Include in Report"
+      IF LOWER.CLASS='ALL' THEN GO 395
+      CALL GEN.IN(0,19,'Enter Upper Class Range: ','',Q,0,3,'','',2,25,19,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            GOTO 380
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI=''
+            CALL ELINE('Error! Entry is required!')
+            GO 390
+         CASE QI MATCHES '0N'
+            LOCATE QI IN VALID.CLASSES<1> SETTING NUL ELSE
+               CALL ELINE(QI:' Is not a valid class!')
+               GO 390
+            END
+            IF QI < LOWER.CLASS THEN
+               CALL ELINE('Upper Class must be higher or equal to ':LOWER.CLASS:'.')
+               GO 390
+            END
+         CASE 1
+            CALL ELINE('Invalid entry. Must choose a valid Class.')
+            GO 390
+      END CASE
+      UPPER.CLASS=QI
+      CRT@(25,19):QI:@(-4):
+*
+395:  HELP="US Bills ONLY or Canadian Bills ONLY or Both? [U]=US [C]=Canadian [B]=Both"
+      CALL GEN.IN(0,20,'US or Canadian Bills: U','',Q,0,3,'','',2,22,20,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI='U'
+      BEGIN CASE
+         CASE QI='X'
+            IF LOWER.CLASS='ALL' THEN
+               GO 380
+            END ELSE
+               GO 390
+            END
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE NOT(QI='U' OR QI='C' OR QI='B')
+            CALL ELINE('Invalid entry. Must choose U, C, or B.')
+            GO 395
+      END CASE
+      BILL.SELECTION=QI
+      CRT@(22,20):QI:@(-4):
+*
+* Ready to Continue?
+*
+400:  HELP="[X]=Change [EX]=Exit [RETURN]=Continue"
+      CALL GEN.IN(0,22,'Enter selection please. --','',Q,0,2,'','',0,-2,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,22):@(-3):
+            GO 395
+         CASE QI='EX'
+            GOTO EXIT.PROGRAM
+         CASE QI=''
+            NULL
+         CASE 1
+            CALL ELINE('Invalid entry. Must be X, EX, or RETURN.')
+            GOTO 400
+      END CASE
+*
+* Start processing
+*
+500:  TEXT="Selecting Bills to Process - Please Wait."
+      SKIP.ARRAY=''                      ; * Array to Keep Track of Skipped LTL Bills
+      CALL CENTER(TEXT,80)
+      CRT @(0,13):@(-3):TEXT
+*
+* Get Client Record
+*
+      READ CLIENT.REC FROM F.CLIENT,CLIENT.ID ELSE CLIENT.REC=''
+      CLIENT.NAME=CLIENT.REC<2>
+      FYBD=CLIENT.REC<29>
+      CRT @(0,2):@(-3)
+      LINE='Processing Client ':CLIENT.ID:' ':CLIENT.NAME
+      CALL CENTER(LINE,80)
+      CRT @(0,10):LINE
+      CRT
+*
+* Select data file
+*
+      OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS ELSE
+         CALL OPEN.ABORT("FB.BILLS.HIST,":CLIENT.ID,PROG.NAME)
+      END
+      PREC='SSELECT FB.BILLS.HIST,':CLIENT.ID
+      IF DATE.TYPE ='ENTRY' THEN
+         PREC:=' WITH 86 GE "':OCONV(BEG.DATE,'D2/'):'"'
+         PREC:=' AND WITH 86 LE "':OCONV(END.DATE,'D2/'):'"'
+      END ELSE
+         PREC:=' WITH 1 GE "':OCONV(BEG.DATE,'D2/'):'"'
+         PREC:=' AND WITH 1 LE "':OCONV(END.DATE,'D2/'):'"'
+      END
+      IF USER='OWEN' AND CLIENT.ID='99205' THEN
+         PREC:=' AND WITH CARRIER# "00014"'
+         CRT @(0,23):PREC
+      END
+      IF DIVISION # 'ALL' THEN
+         PREC := ' WITH 9 = ':DIVISION
+      END
+*     PREC='GET-LIST OWEN3'
+*     CRT @(0,15):PREC:
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+*     CRT @(0,23):PREC:" ":OUTPUT:
+      IF SYSTEM(11) ELSE
+         IF PROCESS.TYPE='STD' THEN
+            CALL ELINE('No data present with the selected criteria.')
+         END
+         GOTO EXIT.PROGRAM
+      END
+      NUM.ITEMS = @SELECTED
+
+600:  *** Build Items to Work File
+      READNEXT HIST.ID ELSE GO 700
+      READ HIST.REC FROM F.BILLS,HIST.ID THEN
+         CODES=HIST.REC<70>
+         CLASSES=HIST.REC<74>
+         TIMES=DCOUNT(CODES<1>,@VM)
+         MIN=0
+         FOR X = 1 TO TIMES
+            IF CODES<1,X>[1,2]='TL' THEN GO 600    ; * TRUCK LOAD
+            CLASS=CLASSES<1,X>
+            IF LOWER.CLASS#'ALL' AND CLASS#'' THEN
+               IF CLASS<LOWER.CLASS OR CLASS>UPPER.CLASS THEN
+                  SKIP.ARRAY<1>+=1
+                  SKIP.ARRAY<2>+=SUM(HIST.REC<77>)-HIST.REC<83>        ; * Net Chg
+                  GO 600
+               END
+            END
+            IF CODES<1,X>[1,3]='MIN' THEN MIN=1
+         NEXT X
+         DA=MIN
+         DA<2>=HIST.REC<2>
+         DA<3>=HIST.REC<1>
+         WRITE DA ON F.WORK,HIST.ID
+      END
+      GO 600
+
+700:  *** Ready to Print Report
+      PREC='SSELECT FBWORK':CH.NUM
+      PREC:=' BY CARRIER.NAME BY CARRIER#'
+      PREC:=' BY MIN.SORTER BY IOT.SORTER BY DATE.SORTER BY PRO'
+      EXECUTE PREC PASSLIST CAPTURING OUTPUT
+      IF SYSTEM(11) ELSE
+         IF PROCESS.TYPE='STD' THEN
+            CALL ELINE('No data present with the selected criteria.')
+         END
+         GOTO EXIT.PROGRAM
+      END
+      NUM.ITEMS = @SELECTED
+      COUNTER=0
+
+*
+* Build Heading
+*
+      STMT2='SP-ASSIGN ':LAS.PRT:',':COPIES
+      EXECUTE STMT2
+      EXECUTE 'TERM ,,,,,,198,60'        ; * Set page Length to 67
+      PRINTER ON
+      IF PRT.DESC[1,3]='PDF' THEN
+         WIDTH=198
+         CTR=INT(WIDTH/2)
+         EXECUTE "TERM ,,,,,,198,60"     ; *DFP01
+         PDF.STMT="!PDF"
+         PDF.STMT:=" /f":CLIENT.ID:".PDF"
+         IF PDF.PW#'' THEN PDF.STMT:="?OWNER=ownerpassword":USER.PW:"?USER=":PDF.PW:"?PERMISSIONS="
+         PDF.STMT:=" /e":USER.EMAIL
+         PDF.STMT:=" /jTS7.3.1.FSC-":CLIENT.ID
+         PRINT PDF.STMT
+      END ELSE
+         GOSUB SETUP.PTR
+      END
+      L.TAB=CTR-(LEN(PROG.DESC)/2)
+      L.TAB=L.TAB-LEN(PROG.NAME)
+      TEMP=PROG.NAME:SPACE(L.TAB):PROG.DESC
+      R.TAB=WIDTH-LEN(TEMP)
+      R.TAB=R.TAB-LEN(TIMEDATE())
+      HEAD1=PROG.NAME:SPACE(L.TAB):PROG.DESC:SPACE(R.TAB):TIMEDATE():"'L'"
+*
+      TITLE=CLIENT.ID:' ':CLIENT.NAME
+      TITLE=CHANGE(TITLE,"'","''")       ; * To Correct Single Quote Problem
+      IF DIVISION # 'ALL' THEN TITLE := ' for Division ':DIVISION:' ':DIV.NAME
+      IF CLIENT.ID='99938' THEN TITLE:=' NOA for 00212 & 00017 changed to $5.00'
+      L.TAB=CTR-(LEN(TITLE)/2)
+      L.TAB=L.TAB-LEN(CO.NAME)
+      TEMP=CO.NAME:SPACE(L.TAB):TITLE
+*     R.TAB=(WIDTH-LEN(TEMP))-9
+*     HEAD2=TEMP:SPACE(R.TAB):"PAGE 'PL'"
+      R.TAB=(WIDTH-LEN(TEMP))-20
+      HEAD2=TEMP:SPACE(R.TAB):USER'L(#10 )':"PAGE 'PL'"
+      HEAD3=''
+      BEGIN CASE
+         CASE LOWER.CLASS='ALL'
+            CLASS.TEXT='All Classes'
+         CASE LOWER.CLASS = UPPER.CLASS
+            CLASS.TEXT='Class ':LOWER.CLASS:' Bills'
+         CASE 1
+            CLASS.TEXT='Class ':LOWER.CLASS:' Through Class ':UPPER.CLASS:' Bills'
+      END CASE
+      BEGIN CASE
+         CASE BILL.SELECTION='U'
+            BILL.SELECTION.TEXT='US Bills Only'
+         CASE BILL.SELECTION='C'
+            BILL.SELECTION.TEXT='Canadian Bills Only'
+         CASE BILL.SELECTION='B'
+            BILL.SELECTION.TEXT='US and Canadian Bills Combined'
+      END CASE
+      HEAD3=CLASS.TEXT:"   ":BILL.SELECTION.TEXT:"'CL'"
+*     HEAD3="Grand Prairie Bills 300 pounds or less'CL'"
+*     HEAD3="Grand Prairie Bills Over 300 pounds to 1000 pounds'CL'"
+*     HEAD3="Grand Prairie Bills Over 1,000 pounds to 11,500 pounds'CL'"
+      H3=CLASS.TEXT:"   ":BILL.SELECTION.TEXT
+
+      IF DATE.TYPE='ENTRY' THEN
+         HEAD4='Entered from ':BEG.DATE'D2/':' to ':END.DATE'D2/':"'CL'"
+         H4='Entered from ':BEG.DATE'D2/':' to ':END.DATE'D2/'
+      END ELSE
+         HEAD4='Shipped from ':BEG.DATE'D2/':' to ':END.DATE'D2/':"'CL'"
+         H4='Shipped from ':BEG.DATE'D2/':' to ':END.DATE'D2/'
+      END
+
+************************************************************************
+      PCTR=99
+      BAR=STR(" ",PCTR)
+      PGDSC=PROG.DESC
+      PGDSC=PGDSC[1,LEN(PROG.DESC)]
+      PGNAM=PROG.NAME:STR(' ',16)
+      PGNAM=PGNAM[1,16]
+      PGCON=CO.NAME:STR(' ',20)
+      PGCON=PGCON[1,20]
+      H1=PGNAM:BAR[20,PCTR]:PGDSC:BAR[20,PCTR]:TIMEDATE()
+      DARRAY<1,1>=H1
+      H2=PGCON:BAR[1,PCTR]:TITLE:BAR[1,PCTR]:BAR[PCTR-LEN(USER),PCTR]:USER'L(#10 )'
+      DARRAY<2,1>=H2
+      P1=PCTR-LEN(H3)
+      P1=P1-LEN(H3)
+      PIP=BAR:BAR[1,P1]:H3
+      DARRAY<3,1>=PIP
+      PIP=BAR:BAR[1,36]:H4
+      DARRAY<4,1>=PIP
+************************************************************************
+      HEAD5=STR('-',WIDTH):"'L'"
+*
+      IF MAKE.FILE THEN
+         VM=1
+         DARRAY<6,VM>='SCAC '
+         VM+=1
+         DARRAY<6,VM>='Pro Number''L#18'
+         VM+=1
+         DARRAY<6,VM>='Shipment''L#9'
+         DARRAY<7,VM>='  Date''L#9'
+         VM+=1
+         DARRAY<6,VM>='I'
+         DARRAY<7,VM>='/''L#1'
+         DARRAY<8,VM>='O''L#1'
+         VM+=1
+         DARRAY<6,VM>=' Code''L#6'
+         VM+=1
+         DARRAY<6,VM>='H''L#2'
+         DARRAY<7,VM>='A''L#2'
+         DARRAY<8,VM>='Z''L#2'
+         VM+=1
+         DARRAY<6,VM>='Weight'
+         VM+=1
+         DARRAY<6,VM>=' Cls'
+         VM+=1
+         DARRAY<6,VM>='    Carr''L#8'
+         DARRAY<7,VM>='    Rate''L#8'
+         VM+=1
+         DARRAY<6,VM>='     AFS''L#9'
+         DARRAY<7,VM>='     Rate''L#9'
+         VM+=1
+         DARRAY<6,VM>='     Carr''L#10'
+         DARRAY<7,VM>='    Charge''L#10'
+         VM+=1
+         DARRAY<6,VM>='     AFS''L#10'
+         DARRAY<7,VM>='    Charge''L#10'
+         VM+=1
+         DARRAY<6,VM>='      Total''L#13'
+         DARRAY<7,VM>='     Carrier''L#13'
+         DARRAY<8,VM>='     Charges''L#13'
+         VM+=1
+         DARRAY<6,VM>='      Total''L#13'
+         DARRAY<7,VM>='       AFS''L#13'
+         DARRAY<8,VM>='     Charges''L#13'
+         VM+=1
+         DARRAY<6,VM>='     Total''L#10'
+         DARRAY<7,VM>='      ABS''L#10'
+         DARRAY<8,VM>='      Min''L#10'
+         VM+=1
+         DARRAY<6,VM>='    Total''L#10'
+         DARRAY<7,VM>='     Non''L#10'
+         DARRAY<8,VM>='   Freight''L#10'
+         VM+=1
+         DARRAY<6,VM>='      Disc.''L#12'
+         DARRAY<7,VM>='      Amt.''L#12'
+         VM+=1
+         DARRAY<6,VM>='   Total''L#9'
+         DARRAY<7,VM>='    Nog.''L#9'
+         DARRAY<8,VM>='  Charges''L#9'
+         VM+=1
+         DARRAY<6,VM>=' Carrier''L#8'
+         DARRAY<7,VM>='   Net  ''L#8'
+         DARRAY<8,VM>='  Cost  ''L#8'
+         VM+=1
+         DARRAY<6,VM>='   Origin''L#10'
+         DARRAY<7,VM>='   Zip''L#10'
+         VM+=1
+         DARRAY<6,VM>='   Origin''L#10'
+         DARRAY<7,VM>='   St''L#10'
+         VM+=1
+         DARRAY<6,VM>='   Dest''L#10'
+         DARRAY<7,VM>='   Zip''L#10'
+         VM+=1
+         DARRAY<6,VM>='   Dest''L#10'
+         DARRAY<7,VM>='   St''L#10'
+         VM+=1
+         DARRAY<6,VM>='   Carr''L#6'
+         DARRAY<7,VM>='   Disc''L#6'
+         DARRAY<8,VM>='    %''L#6'
+         VM+=1
+         DARRAY<6,VM>='   Act.''L#7'
+         DARRAY<7,VM>='   Disc''L#7'
+         DARRAY<8,VM>='    %''L#7'
+      END ELSE
+         HEAD6='SCAC '
+         HEAD7='     '
+         HEAD8='     '
+*
+         HEAD6:='Pro Number''L#18'
+         HEAD7:=' ''L#18'
+         HEAD8:=' ''L#18'
+*
+         HEAD6:='Shipment''L#9'
+         HEAD7:='  Date''L#9'
+         HEAD8:='''L#9'
+*
+         HEAD6:='I'
+         HEAD7:='/''L#1'
+         HEAD8:='O''L#1'
+*
+         HEAD6:=' Code''L#6'
+         HEAD7:='''L#6'
+         HEAD8:='''L#6'
+*
+         HEAD6:='H''L#2'
+         HEAD7:='A''L#2'
+         HEAD8:='Z''L#2'
+*
+*     HEAD6:='C''L#1'
+*     HEAD7:='M''L#1'
+*     HEAD8:='P''L#1'
+*
+         HEAD6:='Weight'
+         HEAD7:='''L#6'
+         HEAD8:='''L#6'
+*
+         HEAD6:=' Cls'
+         HEAD7:='''L#4'
+         HEAD8:='''L#4'
+*
+         HEAD6:='    Carr''L#8'
+         HEAD7:='    Rate''L#8'
+         HEAD8:='''L#8'
+*
+         HEAD6:='     AFS''L#9'
+         HEAD7:='     Rate''L#9'
+         HEAD8:='''L#9'
+*
+         HEAD6:='     Carr''L#10'
+         HEAD7:='    Charge''L#10'
+         HEAD8:='''L#10'
+*
+         HEAD6:='     AFS''L#10'
+         HEAD7:='    Charge''L#10'
+         HEAD8:='''L#10'
+*
+         HEAD6:='      Total''L#13'
+         HEAD7:='     Carrier''L#13'
+         HEAD8:='     Charges''L#13'
+*
+         HEAD6:='      Total''L#13'
+         HEAD7:='       AFS''L#13'
+         HEAD8:='     Charges''L#13'
+*
+         HEAD6:='     Total''L#10'
+         HEAD7:='      ABS''L#10'
+         HEAD8:='      Min''L#10'
+*
+         HEAD6:='    Total''L#10'
+         HEAD7:='     Non''L#10'
+         HEAD8:='   Freight''L#10'
+*
+         HEAD6:='      Disc.''L#12'
+         HEAD7:='      Amt.''L#12'
+         HEAD8:='''L#12'
+*
+         HEAD6:='   Total''L#9'
+         HEAD7:='    Nog.''L#9'
+         HEAD8:='  Charges''L#9'
+*
+         HEAD6:=' Carrier''L#8'
+         HEAD7:='   Net  ''L#8'
+         HEAD8:='  Cost  ''L#8'
+*
+         HEAD6:='   Origin''L#10'
+         HEAD7:='   Zip  St''L#10'
+         HEAD8:='''L#10'
+*
+         HEAD6:='   Dest''L#10'
+         HEAD7:='   Zip St''L#10'
+         HEAD8:='''L#10'
+*
+*     HEAD6:='  Cost''L#6'
+*     HEAD7:='  Per''L#6'
+*     HEAD8:='  Mile''L#6'
+*
+         HEAD6:='   Carr''L#6'
+         HEAD7:='   Disc''L#6'
+         HEAD8:='    %''L#6'
+*
+         HEAD6:='   Act.''L#7'
+         HEAD7:='   Disc''L#7'
+         HEAD8:='    %''L#7'
+*
+         HEAD6:="'L'"
+         HEAD7:="'L'"
+         HEAD8:="'L'"
+*
+         HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6:HEAD7:HEAD8:HEAD5
+         HEADING HED
+      END                                ; * DFP01
+      OLD.IOT='FIRST'
+      BEG.SHIP=''
+      END.SHIP=''
+      BEG.ENT=''
+      END.ENT=''
+      CODE.SUMMARY=''
+
+*
+* Get next record
+*
+      DONE = 0
+      BILL.COUNT=0
+      LOOP
+         READNEXT HIST.ID ELSE DONE = 1
+      UNTIL DONE = 1 DO
+         COUNTER=COUNTER+1
+         IF FIELD(HIST.ID,'*',3) GT 0 ELSE
+            READ HIST.REC FROM F.BILLS,HIST.ID THEN
+               IF BILL.SELECTION#'B' THEN          ; * BILL.SELECTION is U or C, so skip the other
+                  * Find out if the bill is Canadian (1) or not (0)
+                  CANADIAN=0
+                  IF (LEN(HIST.REC<3>)=6) THEN CANADIAN=1    ; * Origin zip
+                  IF (LEN(HIST.REC<4>)=6) THEN CANADIAN=1    ; * Destination zip
+                  IF (BILL.SELECTION='U') AND CANADIAN THEN
+                     * CRT 'SKIPPING CANADIAN BILL ':HIST.REC<3>:'  ':HIST.REC<4>
+                     GO SKIP.BILL
+                  END
+                  IF (BILL.SELECTION='C') AND NOT(CANADIAN) THEN
+                     * CRT 'SKIPPING US BILL ':HIST.REC<3>:'  ':HIST.REC<4>
+                     GO SKIP.BILL
+                  END
+               END
+               CARRIER=FIELD(HIST.ID,'*',1)
+               IOT=HIST.REC<2>
+               IF CLIENT.ID='99938' AND (CARRIER='00017'! CARRIER='00212') THEN
+                  LOCATE 'NOA' IN HIST.REC<70> SETTING POS THEN
+                     HIST.REC<77,POS>='500'        ; ** Change to 5.00
+                  END
+               END
+               CODES=HIST.REC<70>
+               CODE.AMOUNTS=HIST.REC<77>
+               TIMES=DCOUNT(CODES<1>,@VM)
+               FOR X=1 TO TIMES
+                  CODE=CODES<1,X>
+                  CODE.AMOUNT=CODE.AMOUNTS<1,X>
+                  LOCATE CODE IN CODE.SUMMARY<1> BY 'AL' SETTING CODE.POS ELSE
+                     INS CODE BEFORE CODE.SUMMARY<1,CODE.POS>
+                     INS 0 BEFORE CODE.SUMMARY<2,CODE.POS>   ; * Qty
+                     INS 0 BEFORE CODE.SUMMARY<3,CODE.POS>   ; * Amount
+                  END
+                  CODE.SUMMARY<2,CODE.POS>+=1
+                  CODE.SUMMARY<3,CODE.POS>+=CODE.AMOUNT
+               NEXT X
+               IF CARRIER#OLD.CARRIER THEN
+                  READ CARRIER.REC FROM F.CARRIER,CARRIER ELSE
+                     CARRIER.REC="'":CARRIER:"' ** Not On File **"
+                  END
+                  OLD.IOT=IOT
+                  IF DETAILS='0' ELSE IF COUNTER > 1 AND OLD.CARRIER#'' THEN GOSUB PRINT.SUB.LINE
+                  IF MAKE.FILE ELSE
+                     IF OLD.CARRIER#'' AND DETAILS='1' THEN PRINT ''
+                     IF DETAILS='0' ELSE PRINT '~~~~ ':CARRIER:' ':CARRIER.REC<1>:' (':CARRIER.REC<12>:')  ':CARRIER.REC<2,1>:'  ':CARRIER.REC<3>:', ':CARRIER.REC<4>:' ':CARRIER.REC<5>:' ~~~~'
+                  END
+                  OLD.CARRIER=CARRIER
+                  GOSUB ADD.SUB.TOTAL
+               END
+               PRO=FIELD(HIST.ID,'*',2)
+               VIN=''
+               VIN<2>=CLIENT.REC<79>
+               CALL FB.TRAF.SURV(VIN,VOUT,LI,LI.CODES,HIST.REC)
+               NUM.SHP=VOUT<2>           ; * Number of Shipments
+               CAR.FRT=VOUT<3>           ; * Carrier Charges (Freight)
+               CAR.NOT=VOUT<4>           ; * Carrier Charges (Negot.)
+               MIN.FLG=VOUT<5>           ; * Number of (Abs Min) Shptms
+               MIN.FRT=VOUT<6>           ; * (Abs MIN) Amount
+               NON.FRT=VOUT<7>           ; * (Miscellaneous) Amount
+               AFS.FRT=VOUT<8>           ; * AFS Charges on (Freight)
+               CAR.DIS=VOUT<9>           ; * Carrier Discount Amount
+               TOT.PIC=VOUT<10>          ; * Total Pieces
+               TOT.WGT=VOUT<11>          ; * Total Weight
+               HAZ.FLG=VOUT<14>          ; * Numb of Shmpts W/Haz Mat
+               HAZ.PIC=VOUT<15>          ; * Number of Haz Mat Pieces
+               CLS.WGT=VOUT<16>          ; * Class*Wgt (For Wght Avg.)
+               CAR.FSC=VOUT<28>          ; * Carrier Fuel Sur Charge
+               AFS.FSC=VOUT<29>          ; * AFS Fuel Sur Charge
+*
+               IF (AFS.FRT)+0=0 THEN AFS.DIS=0 ELSE
+                  AFS.DIS=1-(CAR.FRT+CAR.NOT-CAR.DIS)/(AFS.FRT)
+               END
+               SUB.CAR.FRT+=CAR.FRT      ; * Sub total for 'Total Carrier Chgs'
+               SUB.AFS.FRT+=AFS.FRT      ; * Sub total for 'Total AFS Chgs'
+               SUB.MIN.FRT+=MIN.FRT      ; * Sub total for 'Total ABS Min'
+               SUB.NON.FRT+=NON.FRT      ; * Sub total for 'Total Non Frt'
+               SUB.CAR.DIS+=CAR.DIS      ; * Sub total for 'Disc. Amt'
+               SUB.MILES+=HIST.REC<19>   ; * Sub total for Miles
+               SUB.CAR.NOT+=CAR.NOT      ; * Car Not - For percentages
+               SUB.CAR.FSC+=CAR.FSC      ; * Carrier Fuel Sur Charge
+               SUB.AFS.FSC+=AFS.FSC      ; * AFS Fuel Sur Charge
+*
+               BILL.COUNT+=1
+               SHIP.DATE=HIST.REC<1>
+               ENTER.DATE=HIST.REC<86>
+               IF BILL.COUNT=1 THEN
+                  BEG.SHIP=SHIP.DATE
+                  END.SHIP=SHIP.DATE
+                  BEG.ENT=ENTER.DATE
+                  END.ENT=ENTER.DATE
+               END
+               LOCATE SHIP.DATE IN DATE.ARRAY<1> BY 'AR' SETTING POS THEN
+                  DATE.ARRAY<2,POS>+=1
+                  DATE.ARRAY<3,POS>+=CAR.FRT
+               END ELSE
+                  INS SHIP.DATE BEFORE DATE.ARRAY<1,POS>
+                  INS 1 BEFORE DATE.ARRAY<2,POS>
+                  INS CAR.FRT BEFORE DATE.ARRAY<3,POS>
+               END
+               IF SHIP.DATE<BEG.SHIP THEN BEG.SHIP=SHIP.DATE
+               IF SHIP.DATE>END.SHIP THEN END.SHIP=SHIP.DATE
+               IF ENTER.DATE<BEG.ENT THEN BEG.ENT=ENTER.DATE
+               IF ENTER.DATE>END.ENT THEN END.ENT=ENTER.DATE
+*
+               IF DETAILS='0' THEN
+                  GOTO SKIP.BILL
+               END ELSE
+                  IF OLD.IOT#IOT THEN
+*               Added 12/28/98 to Skip a line between bill types
+                     IF MAKE.FILE ELSE
+                        IF OLD.IOT='FIRST' ELSE PRINT
+                     END
+                     OLD.IOT=IOT
+                     IF MAKE.FILE ELSE
+                        PRINT ''
+                     END
+                  END
+                  GOSUB BUILD.DET.LINE
+                  IF MAKE.FILE ELSE
+                     PRINT LINE
+                  END
+                  GOSUB PRINT.REST.LINE
+               END
+            END                          ; * READ HIST.REC FROM F.BILLS,HIST.ID
+         END                             ; * IF FIELD(HIST.ID,'*',3) GT 0
+SKIP.BILL:***
+      REPEAT
+*
+      IF DETAILS='1' THEN
+         GOSUB PRINT.SUB.LINE
+      END
+      GOSUB ADD.SUB.TOTAL
+      GOSUB PRINT.TOTAL.LINE
+      GOSUB PRINT.DATE.SUMMARY
+      GOSUB PRINT.CODE.SUMMARY
+      IF SKIP.ARRAY#'' THEN
+         IF MAKE.FILE ELSE               ; * DFP01
+            PAGE
+            PRINT ''
+            PRINT SKIP.ARRAY<1>:' Bills in the amount of ':OCONV(SKIP.ARRAY<2>,'MR2,'):' were skipped!'
+            PRINT 'They each contained a class less than ':LOWER.CLASS:' or greater then ':UPPER.CLASS
+            PRINT ''
+            PRINT 'AMOUNT  =  FREIGHT AMOUNT  -  DISCOUNT AMOUNT  +  MINIMUM CHARGES  +  NEGOTIABLE CHARGES  +  NON FREIGHT CHARGES'
+         END                             ; * DFP01
+      END
+      PRINTER CLOSE
+      EXECUTE 'TERM ,,,,,,,60'           ; * Set page Length to 67
+      GOTO EXIT.PROGRAM
+*
+SETUP.PTR:***
+      WIDTH=198
+      CTR=INT(WIDTH/2)
+      IF MAKE.FILE ELSE
+         ESC=CHAR(27)
+         LASER.STR=''
+         LASER.STR:= ESC:'E'
+         LASER.STR:= ESC:'&l1O'
+         LASER.STR:= ESC:'&l8D'
+         LASER.STR:= ESC:'&l61F'
+         LASER.STR:= ESC:'(8U'
+         LASER.STR:= ESC:'(s0p'
+         LASER.STR:= '19h'
+         LASER.STR:= '0s'
+         LASER.STR:= '0b'
+         LASER.STR:= '4102T'
+         PRINT LASER.STR                 ; * Configure Laser Printer
+      END
+      RETURN
+*
+ADD.SUB.TOTAL:***
+      TOT.CAR.FRT+=SUB.CAR.FRT           ; * Total Carrier Charges
+      TOT.AFS.FRT+=SUB.AFS.FRT           ; * Total AFS Charges
+      TOT.MIN.FRT+=SUB.MIN.FRT           ; * Total ABS Min
+      TOT.NON.FRT+=SUB.NON.FRT           ; * Total Non Frt
+      TOT.CAR.DIS+=SUB.CAR.DIS           ; * Total Disc Amt
+      TOT.MILES+=SUB.MILES               ; * Total Miles
+      TOT.CAR.NOT+=SUB.CAR.NOT           ; * Total CAR.NOT for percentage calc.
+      TOT.CAR.FSC+=SUB.CAR.FSC           ; * Carrier Fuel Sur Charge
+      TOT.AFS.FSC+=SUB.AFS.FSC           ; * AFS Fuel Sur Charge
+*
+CLEAR.SUB.TOTAL:***
+      SUB.CAR.FRT=0                      ; * Total Carrier Charges
+      SUB.AFS.FRT=0                      ; * Total AFS Charges
+      SUB.MIN.FRT=0                      ; * Total ABS Min
+      SUB.NON.FRT=0                      ; * Total Non Frt
+      SUB.CAR.DIS=0                      ; * Total Disc Amt
+      SUB.MILES=0                        ; * Total Miles
+      SUB.CAR.NOT=0                      ; * Car Not
+      SUB.CAR.FSC=0                      ; * Carrier Fuel Sur Charge
+      SUB.AFS.FSC=0                      ; * AFS Fuel Sur Charge
+      RETURN
+*
+CLEAR.TOT.TOTAL:***
+      TOT.CAR.FRT=0                      ; * Total Carrier Charges
+      TOT.AFS.FRT=0                      ; * Total AFS Charges
+      TOT.MIN.FRT=0                      ; * Total ABS Min
+      TOT.NON.FRT=0                      ; * Total Non Frt
+      TOT.CAR.DIS=0                      ; * Total Disc Amt
+      TOT.MILES=0                        ; * Total Miles
+      TOT.CAR.NOT=0                      ; * Car No
+      TOT.CAR.FSC=0                      ; * Carrier Fuel Sur Charge
+      TOT.AFS.FSC=0                      ; * AFS Fuel Sur Charge
+      RETURN
+*
+BUILD.DET.LINE:***
+*IF PRO = "265-707595" THEN
+*CRT @(0,23):"Press break :":; INPUT NUL:
+*END
+      IF MAKE.FILE THEN
+         ARRAYCT+=1 ; VM=1
+         DARRAY<ARRAYCT,VM>=CARRIER.REC<12>'L#5' ; VM+=1
+         DARRAY<ARRAYCT,VM>=PRO'L(#17 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=(HIST.REC<1>'D2/')'L(#8 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=HIST.REC<2>'L(#1 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=HIST.REC<70,1>'R(#4 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=HIST.REC<72,1>'L(#1 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=HIST.REC<75,1>'R(#6 )' ; VM+=1
+         VAR=HIST.REC<74,1>              ; * Class
+         IF VAR='77.5' THEN VAR=77
+         IF VAR='92.5' THEN VAR=92
+         DARRAY<ARRAYCT,VM>=VAR'R(#3 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=HIST.REC<76,1>'R26,(#7 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=HIST.REC<78,1>'R26,(#8 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=HIST.REC<77,1>'R26,(#9 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=HIST.REC<79,1>'R26,(#9 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=CAR.FRT'R26,(#12 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=AFS.FRT'R26,(#12 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=MIN.FRT'R26,(#9)' ; VM+=1
+         DARRAY<ARRAYCT,VM>=NON.FRT'R26,(#9 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=CAR.DIS'R26,(#11 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=CAR.NOT'R26,(#9 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=(CAR.FRT+MIN.FRT-CAR.DIS+CAR.NOT)'R26,(#7 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=HIST.REC<3>'R(#6 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=HIST.REC<25>'R(#2 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=HIST.REC<4>'R(#6 )' ; VM+=1
+         DARRAY<ARRAYCT,VM>=HIST.REC<26>'R(#2 )' ; VM+=1
+         IF (CAR.FRT+CAR.NOT)+0=0 THEN VAR=0 ELSE
+            VAR=1-(CAR.FRT+CAR.NOT-CAR.DIS)/(CAR.FRT+CAR.NOT)
+         END
+         DARRAY<ARRAYCT,VM>=VAR'R22,(#7)' ; VM+=1
+         IF (AFS.FRT+AFS.FSC)+0=0 THEN VAR=0 ELSE
+            VAR=1-(CAR.FRT+CAR.NOT+CAR.FSC-CAR.DIS)/(AFS.FRT+AFS.FSC)
+         END
+         DARRAY<ARRAYCT,VM>=VAR'R22,(#7)'
+      END ELSE
+         LINE=''
+         LINE:=CARRIER.REC<12>'L#5'
+         LINE:=PRO'L(#17 )'
+         LINE:=(HIST.REC<1>'D2/')'L(#8 )'
+         LINE:=HIST.REC<2>'L(#1 )'       ; * I/O
+         LINE:=HIST.REC<70,1>'R(#4 )'    ; * Code
+         LINE:=HIST.REC<72,1>'L(#1 )'    ; * Hazmat Flag (Y/N)
+         LINE:=HIST.REC<75,1>'R(#6 )'    ; * Weight
+         VAR=HIST.REC<74,1>              ; * Class
+         IF VAR='77.5' THEN VAR=77
+         IF VAR='92.5' THEN VAR=92
+         LINE:=VAR'R(#3 )'
+         LINE:=HIST.REC<76,1>'R26,(#7 )'           ; * Carrier Rate
+         LINE:=HIST.REC<78,1>'R26,(#8 )'           ; * AFS Rate
+         LINE:=HIST.REC<77,1>'R26,(#9 )'           ; * Carrier Charge
+         LINE:=HIST.REC<79,1>'R26,(#9 )'           ; * AFS Charge
+         LINE:=CAR.FRT'R26,(#12 )'       ; * Carrier Freight
+         LINE:=AFS.FRT'R26,(#12 )'       ; * AFS Freight
+         LINE:=MIN.FRT'R26,(#9)'         ; * ABS Minimum
+         LINE:=NON.FRT'R26,(#9 )'        ; * Non Freight
+         LINE:=CAR.DIS'R26,(#11 )'       ; * Carrier Discount
+         LINE:=CAR.NOT'R26,(#9 )'        ; * Total Neg Charges
+
+         LINE:=(CAR.FRT+MIN.FRT-CAR.DIS+CAR.NOT)'R26,(#7 )'
+
+
+         LINE:=HIST.REC<3>'R(#6 )'       ; * Origin Zip Code
+         LINE:=HIST.REC<25>'R(#2 )'      ; * Origin State
+         LINE:=HIST.REC<4>'R(#6 )'       ; * Destination Zip Code
+         LINE:=HIST.REC<26>'R(#2 )'      ; * Dest State
+         IF (CAR.FRT+CAR.NOT)+0=0 THEN VAR=0 ELSE
+            VAR=1-(CAR.FRT+CAR.NOT-CAR.DIS)/(CAR.FRT+CAR.NOT)
+         END
+         LINE:=VAR'R22,(#7)'
+         IF (AFS.FRT+AFS.FSC)+0=0 THEN VAR=0 ELSE
+            VAR=1-(CAR.FRT+CAR.NOT+CAR.FSC-CAR.DIS)/(AFS.FRT+AFS.FSC)
+         END
+         LINE:=VAR'R22,(#7)'
+      END
+      RETURN
+*
+PRINT.REST.LINE:****
+      TIMES=DCOUNT(HIST.REC<70>,@VM)
+      FOR X = 2 TO TIMES
+         IF MAKE.FILE THEN
+            ARRAYCT+=1 ; VM=5
+            DARRAY<ARRAYCT,VM>=HIST.REC<70,X>'R(#4 )' ; VM+=1
+            DARRAY<ARRAYCT,VM>=HIST.REC<72,X>'L(#1 )' ; VM+=1
+            DARRAY<ARRAYCT,VM>=HIST.REC<75,X>'R(#6 )' ; VM+=1
+            VAR=HIST.REC<74,X>
+            IF VAR='77.5' THEN VAR=77
+            IF VAR='92.5' THEN VAR=92
+            DARRAY<ARRAYCT,VM>=VAR'R(#3 )' ; VM+=1
+            DARRAY<ARRAYCT,VM>=HIST.REC<76,X>'R26,(#7 )' ; VM+=1
+            DARRAY<ARRAYCT,VM>=HIST.REC<78,X>'R26,(#8 )' ; VM+=1
+            DARRAY<ARRAYCT,VM>=HIST.REC<77,X>'R26,(#9 )' ; VM+=1
+            DARRAY<ARRAYCT,VM>=HIST.REC<79,X>'R26,(#9 )'
+         END ELSE
+            LINE=SPACE(34)
+            LINE:=HIST.REC<70,X>'R(#4 )'           ; * Code
+            LINE:=HIST.REC<72,X>'L(#1 )'           ; * Hazmat Flag (Y/N)
+*       LINE:=SPACE(2)                  ; * Compare Flag
+            LINE:=HIST.REC<75,X>'R(#6 )'           ; * Weight
+            VAR=HIST.REC<74,X>
+            IF VAR='77.5' THEN VAR=77
+            IF VAR='92.5' THEN VAR=92
+            LINE:=VAR'R(#3 )'            ; * Class
+            LINE:=HIST.REC<76,X>'R26,(#7 )'        ; * Carrier Rate
+            LINE:=HIST.REC<78,X>'R26,(#8 )'        ; * AFS Rate
+            LINE:=HIST.REC<77,X>'R26,(#9 )'        ; * Carrier Charge
+            LINE:=HIST.REC<79,X>'R26,(#9 )'        ; * AFS Charge
+            PRINT LINE
+         END
+      NEXT X
+      RETURN
+*
+PRINT.SUB.LINE:***
+      IF MAKE.FILE THEN
+         ARRAYCT+=1
+         DARRAY<ARRAYCT,13>=SUB.CAR.FRT'R26,(#13)'           ; * Carrier Freight
+         DARRAY<ARRAYCT,14>=SUB.AFS.FRT'R26,(#13)'           ; * AFS Freight
+         DARRAY<ARRAYCT,15>=SUB.MIN.FRT'R26,(#10)'           ; * ABS Minimum
+         DARRAY<ARRAYCT,16>=SUB.NON.FRT'R26,(#9)'  ; * Non Freight
+         DARRAY<ARRAYCT,17>=SUB.CAR.DIS'R26,(#12)'           ; * Carrier Discount
+         DARRAY<ARRAYCT,18>=SUB.CAR.NOT'R26(#10)'  ; * Total Nogt. Charges
+
+         DARRAY<ARRAYCT,19>=(SUB.CAR.FRT+SUB.MIN.FRT-SUB.CAR.DIS+SUB.CAR.NOT)'R26,(#12)'
+         IF (SUB.CAR.FRT+SUB.CAR.NOT)+0=0 THEN VAR=0 ELSE
+            VAR=1-(SUB.CAR.FRT+SUB.CAR.NOT-SUB.CAR.DIS)/(SUB.CAR.FRT+SUB.CAR.NOT)
+         END
+         DARRAY<ARRAYCT,24>=VAR'R22,(#10)'
+         IF (SUB.AFS.FRT+SUB.AFS.FSC)+0=0 THEN VAR=0 ELSE
+            VAR=1-(SUB.CAR.FRT+SUB.CAR.NOT+SUB.CAR.FSC-SUB.CAR.DIS)/(SUB.AFS.FRT+SUB.AFS.FSC)
+         END
+         DARRAY<ARRAYCT,25>=VAR'R22,(#7)'
+      END ELSE
+         LINE=SPACE(88)
+         LINE:=' ------------'
+         LINE:=' ------------'
+         LINE:=' ---------'
+         LINE:=' --------'               ; * Non Freight
+         LINE:=' -----------'
+         LINE:=' ---------'
+         LINE:=' -----------'
+         LINE:='  ''R(#4 )'
+         LINE:='  ''R(#11 )'
+*     LINE:=' -------'
+         LINE:=' ------'
+         LINE:=' ------'
+         PRINT LINE
+         LINE=SPACE(88)
+         LINE:=SUB.CAR.FRT'R26,(#13)'    ; * Carrier Freight
+         LINE:=SUB.AFS.FRT'R26,(#13)'    ; * AFS Freight
+         LINE:=SUB.MIN.FRT'R26,(#10)'    ; * ABS Minimum
+         LINE:=SUB.NON.FRT'R26,(#9)'     ; * Non Freight
+         LINE:=SUB.CAR.DIS'R26,(#12)'    ; * Carrier Discount
+         LINE:=SUB.CAR.NOT'R26(#10)'     ; * Total Nogt. Charges
+
+*     LINE:=SUB.MILES'R04(#8)'      ; * Mileage
+*Per Scott 04-13-04      LINE:=(SUB.CAR.FRT+SUB.MIN.FRT-SUB.CAR.DIS+SUB.NON.FRT+SUB.CAR.NOT)'R26,(#12)'
+         LINE:=(SUB.CAR.FRT+SUB.MIN.FRT-SUB.CAR.DIS+SUB.CAR.NOT)'R26,(#12)'
+
+         LINE:=' ''R(#5)'
+         LINE:=' ''R(#9)'
+*     IF SUB.MILES+0=0 THEN VAR=0 ELSE
+*       VAR=(SUB.CAR.FRT+SUB.MIN.FRT+SUB.NON.FRT-SUB.CAR.DIS)/SUB.MILES
+*     END
+*     LINE:=VAR'R26,(#8)'
+         IF (SUB.CAR.FRT+SUB.CAR.NOT)+0=0 THEN VAR=0 ELSE
+            VAR=1-(SUB.CAR.FRT+SUB.CAR.NOT-SUB.CAR.DIS)/(SUB.CAR.FRT+SUB.CAR.NOT)
+         END
+         LINE:=VAR'R22,(#10)'
+         IF (SUB.AFS.FRT+SUB.AFS.FSC)+0=0 THEN VAR=0 ELSE
+            VAR=1-(SUB.CAR.FRT+SUB.CAR.NOT+SUB.CAR.FSC-SUB.CAR.DIS)/(SUB.AFS.FRT+SUB.AFS.FSC)
+         END
+         LINE:=VAR'R22,(#7)'
+         PRINT LINE
+      END
+      RETURN
+*
+PRINT.TOTAL.LINE:***
+      IF MAKE.FILE THEN
+         ARRAYCT+=1
+         DARRAY<ARRAYCT,13>=TOT.CAR.FRT'R26,(#13)'           ; * Carrier Freight
+         DARRAY<ARRAYCT,14>=TOT.AFS.FRT'R26,(#13)'           ; * AFS Freight
+         DARRAY<ARRAYCT,15>=TOT.MIN.FRT'R26,(#10)'           ; * ABS Minimum
+         DARRAY<ARRAYCT,16>=TOT.NON.FRT'R26,(#9)'  ; * Non Freight
+         DARRAY<ARRAYCT,17>=TOT.CAR.DIS'R26,(#12)'           ; * Carrier Discount
+         DARRAY<ARRAYCT,18>=TOT.CAR.NOT'R26(#10)'  ; * Total Nogt. Charges
+
+         DARRAY<ARRAYCT,19>=(TOT.CAR.FRT+TOT.MIN.FRT-TOT.CAR.DIS+TOT.CAR.NOT)'R26,(#12)'
+         IF (TOT.CAR.FRT+TOT.CAR.NOT)+0=0 THEN VAR=0 ELSE
+            VAR=1-(TOT.CAR.FRT+TOT.CAR.NOT-TOT.CAR.DIS)/(TOT.CAR.FRT+TOT.CAR.NOT)
+         END
+         DARRAY<ARRAYCT,24>=VAR'R22,(#10)'
+         IF (TOT.AFS.FRT+TOT.AFS.FSC)+0=0 THEN VAR=0 ELSE
+            VAR=1-(TOT.CAR.FRT+TOT.CAR.NOT+TOT.CAR.FSC-TOT.CAR.DIS)/(TOT.AFS.FRT+TOT.AFS.FSC)
+         END
+         DARRAY<ARRAYCT,25>=VAR'R22,(#7)'
+      END ELSE
+         LINE=SPACE(88)
+         LINE:=' ============'
+         LINE:=' ============'
+         LINE:=' ========='
+         LINE:=' ========'               ; * Non Freight
+         LINE:=' ==========='
+         LINE:=' ========='
+         LINE:=' ==========='
+         LINE:=' ''R(#4 )'
+         LINE:=' ''R(#11 )'
+*     LINE:=' ======='
+         LINE:=' ======'
+         LINE:=' ======'
+         PRINT LINE
+         LINE=SPACE(88)
+         LINE:=TOT.CAR.FRT'R26,(#13)'    ; * Carrier Freight
+         LINE:=TOT.AFS.FRT'R26,(#13)'    ; * AFS Freight
+         LINE:=TOT.MIN.FRT'R26,(#10)'    ; * ABS Minimum
+         LINE:=TOT.NON.FRT'R26,(#9)'     ; * Non Freight
+         LINE:=TOT.CAR.DIS'R26,(#12)'    ; * Carrier Discount
+         LINE:=TOT.CAR.NOT'R26(#10)'     ; * Total Notg Charges
+*     LINE:=TOT.MILES'R04(#8)'      ; * Mileage
+
+*Per Scott 04-13-04      LINE:=(TOT.CAR.FRT+TOT.MIN.FRT-TOT.CAR.DIS+TOT.NON.FRT+TOT.CAR.NOT)'R26,(#12)'
+         LINE:=(TOT.CAR.FRT+TOT.MIN.FRT-TOT.CAR.DIS+TOT.CAR.NOT)'R26,(#12)'
+
+         LINE:=' ''R(#5)'
+         LINE:=' ''R(#9)'
+*     IF TOT.MILES+0=0 THEN VAR=0 ELSE
+*       VAR=(TOT.CAR.FRT+TOT.MIN.FRT+TOT.NON.FRT-TOT.CAR.DIS)/TOT.MILES
+*     END
+*     LINE:=VAR'R26,(#8)'
+         IF (TOT.CAR.FRT+TOT.CAR.NOT)+0=0 THEN VAR=0 ELSE
+            VAR=1-(TOT.CAR.FRT+TOT.CAR.NOT-TOT.CAR.DIS)/(TOT.CAR.FRT+TOT.CAR.NOT)
+         END
+         LINE:=VAR'R22,(#10)'
+         IF (TOT.AFS.FRT+TOT.AFS.FSC)+0=0 THEN VAR=0 ELSE
+            VAR=1-(TOT.CAR.FRT+TOT.CAR.NOT+TOT.CAR.FSC-TOT.CAR.DIS)/(TOT.AFS.FRT+TOT.AFS.FSC)
+         END
+         LINE:=VAR'R22,(#7)'
+         PRINT LINE
+         PRINT
+         PRINT "Total Carrier Fuel Sur Charge: ":TOT.CAR.FSC'R26,#11'
+         PRINT "Total AFS     Fuel Sur Charge: ":TOT.AFS.FSC'R26,#11'
+      END
+      RETURN
+*
+PRINT.DATE.SUMMARY:***
+      TIMES=DCOUNT(DATE.ARRAY<2>,@VM)
+      IF MAKE.FILE THEN
+         ARRAYCT+=2
+         DARRAY<ARRAYCT,1>=BILL.SELECTION.TEXT
+         ARRAYCT+=1
+         DARRAY<ARRAYCT,1>='Date Summary'
+         ARRAYCT+=2 ; VM=1
+         FOR X=1 TO TIMES UNTIL X>8
+            DARRAY<ARRAYCT,VM>='Shipment''L#8'
+            DARRAY<ARRAYCT+1,VM>='  Date''L#8'
+            VM+=1
+            DARRAY<ARRAYCT,VM>=' Qty''L#4'
+            VM+=1
+            DARRAY<ARRAYCT,VM>='   Freight''L#10'
+            DARRAY<ARRAYCT+1,VM>='   Amount''L#10'
+            VM+=1
+         NEXT X
+         ARRAYCT+=2
+         LINES=INT(TIMES/8)
+         IF REM(TIMES,8) THEN LINES+=1
+         FOR X = 1 TO LINES
+            VM=1
+            FOR Y = 1 TO 8
+               VAL=(Y-1)*LINES + X
+               IF DATE.ARRAY<1,VAL>='' THEN PRINT ' ''L#22': ELSE
+                  DARRAY<ARRAYCT,VM>=(DATE.ARRAY<1,VAL>'D2/')'L#8' ; VM+=1
+                  DARRAY<ARRAYCT,VM>=DATE.ARRAY<2,VAL>'R#4' ; VM+=1
+                  DARRAY<ARRAYCT,VM>=DATE.ARRAY<3,VAL>'R26,#10' ; VM+=1
+               END
+*              IF Y<8 THEN PRINT '   ': ELSE PRINT
+            NEXT Y
+            ARRAYCT+=1
+         NEXT X
+         ARRAYCT+=1
+         DARRAY<ARRAYCT,1>=BILL.COUNT:' bills entered'
+         IF BILL.COUNT#0 THEN
+            DARRAY<ARRAYCT,1>:=' with shipment dates from ':BEG.SHIP'D2/':' to ':END.SHIP'D2/'
+            DARRAY<ARRAYCT,1>:=' entered on ':BEG.ENT'D2/':' to ':END.ENT'D2/'
+            ARRAYCT+=1
+         END
+      END ELSE
+         HEAD3=BILL.SELECTION.TEXT:"'CL'"
+         HEAD4='Date Summary':"'CL'"
+         HEAD6=''
+         HEAD7=''
+         HEAD8=''
+         FOR X=1 TO TIMES UNTIL X>8
+            HEAD6:='Shipment''L#8'
+            HEAD7:='  Date''L#8'
+*
+            HEAD6:=' Qty''L#4'
+            HEAD7:=' ''L#4'
+*
+            HEAD6:='   Freight''L#10'
+            HEAD7:='   Amount''L#10'
+            IF X<8 THEN
+               HEAD6:='   '
+               HEAD7:='   '
+            END
+         NEXT X
+         HEAD6:="'L'"
+         HEAD7:="'L'"
+         HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6:HEAD7:HEAD8:HEAD5
+         HEADING HED
+         PAGE
+         LINES=INT(TIMES/8)
+         IF REM(TIMES,8) THEN LINES+=1
+         FOR X = 1 TO LINES
+            FOR Y = 1 TO 8
+               VAL=(Y-1)*LINES + X
+               IF DATE.ARRAY<1,VAL>='' THEN PRINT ' ''L#22': ELSE
+                  PRINT (DATE.ARRAY<1,VAL>'D2/')'L#8':
+                  PRINT DATE.ARRAY<2,VAL>'R#4':
+                  PRINT DATE.ARRAY<3,VAL>'R26,#10':
+               END
+               IF Y<8 THEN PRINT '   ': ELSE PRINT
+            NEXT Y
+         NEXT X
+         LINE=BILL.COUNT:' bills entered'
+         IF BILL.COUNT#0 THEN
+            LINE:=' with shipment dates from ':BEG.SHIP'D2/':' to ':END.SHIP'D2/'
+            LINE:=' entered on ':BEG.ENT'D2/':' to ':END.ENT'D2/'
+         END
+         PRINT
+         PRINT LINE
+      END
+      RETURN
+*
+PRINT.CODE.SUMMARY:***
+      IF MAKE.FILE THEN
+         ARRAYCT+=1
+         DARRAY<ARRAYCT,1>='Code Summary'
+         ARRAYCT+=1
+         DARRAY<ARRAYCT,1>='Charge''L#11'
+         DARRAY<ARRAYCT+1,1>='Code  ''L#11'
+         DARRAY<ARRAYCT,2>='    Code''L#8'
+         DARRAY<ARRAYCT+1,2>='Quantity''L#8'
+         DARRAY<ARRAYCT,3>='  Total''R#15'
+         DARRAY<ARRAYCT+1,3>='Charges''R#15'
+         DARRAY<ARRAYCT,4>='   Average''L#10'
+         DARRAY<ARRAYCT+1,4>='    Charge''L#10'
+         ARRAYCT+=1
+         LINES=DCOUNT(CODE.SUMMARY<1>,@VM)
+         FOR X=1 TO LINES
+            ARRAYCT+=1
+            CODE=CODE.SUMMARY<1,X>
+            DARRAY<ARRAYCT,1>=CODE'L#11'
+            DARRAY<ARRAYCT,2>=CODE.SUMMARY<2,X>'R04,#8'
+            DARRAY<ARRAYCT,3>=CODE.SUMMARY<3,X>'R26,#15'
+            IF CODE.SUMMARY<2,X>+0=0 THEN VAR=0 ELSE
+               VAR=CODE.SUMMARY<3,X>/CODE.SUMMARY<2,X>
+            END
+            DARRAY<ARRAYCT,4>=VAR'R26,#10'
+            IF CODE[1,3]='TLF' OR CODE[1,3]='TLM' THEN
+               DARRAY<ARRAYCT,6>= " <-- Amounts may not match individual totals due to automatic catagorization of shipments less than or equal to 300 miles as Minimums"
+            END
+         NEXT X
+      END ELSE
+         HEAD4='Code Summary':"'CL'"
+         HEAD6='Charge''L#11'
+         HEAD7='Code  ''L#11'
+         HEAD6:=SPACE(2):'    Code''L#8'
+         HEAD7:=SPACE(2):'Quantity''L#8'
+         HEAD6:=SPACE(2):'  Total''R#15'
+         HEAD7:=SPACE(2):'Charges''R#15'
+         HEAD6:=SPACE(2):'   Average''L#10'
+         HEAD7:=SPACE(2):'    Charge''L#10'
+         HEAD6:="'L'"
+         HEAD7:="'L'"
+         HED=HEAD1:HEAD2:HEAD3:HEAD4:HEAD5:HEAD6:HEAD7:HEAD5
+         HEADING HED
+         PAGE
+         LINES=DCOUNT(CODE.SUMMARY<1>,@VM)
+         FOR X=1 TO LINES
+            CODE=CODE.SUMMARY<1,X>
+            PRINT CODE'L#11':
+            PRINT SPACE(2):CODE.SUMMARY<2,X>'R04,#8':
+            PRINT SPACE(2):CODE.SUMMARY<3,X>'R26,#15':
+            IF CODE.SUMMARY<2,X>+0=0 THEN VAR=0 ELSE
+               VAR=CODE.SUMMARY<3,X>/CODE.SUMMARY<2,X>
+            END
+            PRINT SPACE(2):VAR'R26,#10':
+            IF CODE[1,3]='TLF' OR CODE[1,3]='TLM' THEN
+               PRINT " <-- Amounts may not match individual totals due to automatic catagorization of shipments less than or equal to 300 miles as Minimums":
+            END
+            PRINT
+         NEXT X
+      END
+      RETURN
+GET.QUEUE:                               ; *DFP01
+
+      EXECUTE "SP-ASSIGN ? " CAPTURING SP.OUTPUT   ; *DFP01
+
+      FOR II = 1 TO 21                   ; *DFP01
+         W.LINE = SP.OUTPUT<II>          ; *DFP01
+         IF INDEX(W.LINE,"Output form name",1) THEN F.NUM = TRIM(FIELD(W.LINE,":",2))      ; *DFP01
+      NEXT II                            ; *DFP01
+
+      RETURN                             ; *DFP01
+*
+EXIT.PROGRAM:***
+      IF MAKE.FILE THEN
+         DARRAY=CHANGE(DARRAY,@VM,CHAR(9))
+         ID.XLS=PROG.NAME:'-':TIME():'.XLS'
+         WRITE DARRAY ON BILLDATA, ID.XLS
+         CALL ELINE("#1 - Excel file ":ID.XLS:" written to your U: drive - RETURN to continue")
+      END
+*CH   EXECUTE 'SP-ASSIGN F':ORIG.PRT
+      STOP
+CALL.NET.ADMIN:***
+      CALL ELINE("CALL NETWORK ADMINISTRATOR!")
+      CALL ELINE("CALL NETWORK ADMINISTRATOR!!!!!")
+      RETURN

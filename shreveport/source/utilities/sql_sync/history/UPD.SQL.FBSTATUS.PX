@@ -1,0 +1,169 @@
+***********************************************************************
+* Analyze bills acted upon by auditors
+* Copyright (c) AFS Logistics, LLC., 2002
+*
+* AUTHOR : Owen Holman
+* Date   : January 2002
+***********************************************************************
+* 022712 - JMK01 - SysAid#1841 - Set up AFS Brokerage in AFSi V2
+* 083112 - JMK02 - Project 205 - Add option for unprocessed bills
+* 011818 - GRB01 - Enhance email error message
+***********************************************************************
+!
+* Include the ODBC definitions
+!
+$INCLUDE UNIVERSE.INCLUDE ODBC.H
+
+      form = "T##########"
+      dash = "----------"
+      Expect = ""
+      NULL=""
+      TOT.NUM.BILLS=0
+      END.DATE=DATE()
+
+      CALL GET.USER(USER)
+* Begin GRB01
+      VIN1=""
+      VIN1<1> = "UPD.SQL.FBSTATUS.PX"
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "S"
+      CALL PROGTRACK(VIN1,VOUT1)
+* End GRB01
+      BEGIN CASE
+         CASE USER='DAVID'
+         CASE USER='PBASS'
+         CASE USER='SV.UVAUTO'
+         CASE USER='UVTASKS'
+         CASE USER = "GBINO"
+         CASE 1
+            CRT "YOU ARE NOT AUTHORIZED TO USE THIS PROGRAM"
+            STOP
+      END CASE
+
+      OPEN '','CLIENTS' TO F.CLIENT ELSE ABORT 201,'CLIENTS'
+      OPEN '','FB.TABLES' TO F.TABLES ELSE ABORT 201,'FB.TABLES'
+      OPEN '','BILLDATA.MKERBOW' TO F.BILLDATA ELSE ABORT 201,'BILLDATA.MKERBOW'
+      OPEN '','SQL.LOG,STATUS' TO F.SQL.STATUS ELSE ABORT 201,'SQL.LOG,STATUS'
+      OPEN '','FB.STATUS.UPDATE' TO F.STATUS.UPDATE ELSE ABORT 201,'FB.STATUS.UPDATE'
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE ABORT 201,'FB.BILLS.CRX'
+*     CLEARFILE F.SQL.STATUS
+      READ LI.CODE.REC FROM F.TABLES,'LI.CODES' ELSE LI.CODE.REC=''
+      CRT @(0,0):@(-1):@(0,3):'UPD.SQL.FBSTATUS.PX - Processing Clients for ':END.DATE'D2/':'...'
+
+      PRV.CLIENT.ID=''
+      CRT @(0,5):'Now selecting FB Status Update records by client...'
+      STATUS.STMT='SSELECT FB.STATUS.UPDATE BY CLIENT#'
+*     STATUS.STMT:=' WITH CLIENT# NE "00857"'
+*     STATUS.STMT:=' AND WITH CLIENT# NE "01706"'
+      EXECUTE STATUS.STMT RTNLIST STATUS.LIST CAPTURING STATUS.RESULTS
+      NUM.STATUS=@SELECTED
+
+      STATUS.EOF=0
+      STATUS.CNT=0
+      STATUS.PER=0
+      LOOP
+         READNEXT STATUS.ID FROM STATUS.LIST ELSE STATUS.EOF=1
+      UNTIL STATUS.EOF DO
+         STATUS.CNT+=1
+         BILL.ID=FIELD(STATUS.ID,'_',2)
+         READ CRX.REC FROM F.CRX,BILL.ID THEN
+            CLIENT.ID=CRX.REC<1>
+            IF CLIENT.ID='' THEN
+               CLIENT.ID=FIELD(STATUS.ID,'_',1)
+               IF CRX.REC='' THEN
+                  DELETE F.STATUS.UPDATE,STATUS.ID
+                  CONTINUE
+               END ELSE
+                  WRITEV CLIENT.ID ON F.CRX,BILL.ID,1
+                  CONTINUE
+               END
+            END
+         END ELSE
+            DELETE F.STATUS.UPDATE,STATUS.ID
+            CONTINUE
+         END
+         IF CLIENT.ID#PRV.CLIENT.ID THEN
+            READ CLIENT.REC FROM F.CLIENT,CLIENT.ID THEN
+               CRT @(0,8):'Now updating FB status for client ':CLIENT.ID:' ':CLIENT.REC<2>:'...':@(-4):
+               OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILL THEN       ; * JMK02
+                  EDI.FOUND=0
+                  VC.FOUND=0
+                  DIV.FOUND=0
+
+                  OPEN '','EDI.BILLS.HIST,':CLIENT.ID TO F.EDI THEN EDI.FOUND=1
+                  OPEN '','VEND.CUST,':CLIENT.ID TO F.VC THEN VC.FOUND=1
+                  OPEN '','DIVISION.CODE,':CLIENT.ID TO F.DIV THEN DIV.FOUND=1
+                  PRV.CLIENT.ID=CLIENT.ID
+               END ELSE
+                  CONTINUE
+               END
+            END ELSE
+               CONTINUE
+            END
+         END
+         CALL PROG.BAR(12,STATUS.CNT,NUM.STATUS,STATUS.PER)
+         BILL.TRY=0
+READBILL:*
+         READ BILL.REC FROM F.BILL,BILL.ID THEN
+            EDI.REC=''
+            IF EDI.FOUND THEN
+               READ EDI.REC FROM F.EDI,BILL.ID ELSE EDI.REC=''
+            END
+* DEFINE FIELDS TO UPDATE FROM CLIENT.REC HERE
+            CARRIER.ID=FIELD(BILL.ID,'*',1)
+            PRO=FIELD(BILL.ID,'*',2)
+            DIV.REC=''
+            IF DIV.FOUND THEN
+               DIV.ID=BILL.REC<9>
+               READ DIV.REC FROM F.DIV,DIV.ID ELSE DIV.REC=''
+            END
+            VC.REC=''
+            IF VC.FOUND THEN
+               VC.ID=BILL.REC<17>
+               READ VC.REC FROM F.VC,VC.ID ELSE VC.REC=''
+            END
+            SQLVIN=''
+            SQLVIN<1>=USER
+            SQLVIN<2>=CLIENT.ID
+            SQLVIN<3>=BILL.ID
+            SQLVIN<4>=END.DATE
+            SQLVIN<5>=STATUS.CNT
+            SQLVOUT=''
+            CALL UPD.SQL.FBSTATUS.SUB(SQLVIN,SQLVOUT,BILL.REC,F.SQL.STATUS)
+            DELETE F.STATUS.UPDATE,STATUS.ID
+            IF MOD(STATUS.CNT,500)=0 THEN
+               CRT @(0,22):'Sleeping...zzz...zzz...'
+               EXECUTE 'SLEEP 1'
+               CRT @(0,22):@(-3):
+            END
+         END ELSE
+            IF CLIENT.ID#'00000' THEN
+               BILL.TRY+=1
+               TXT='Freight Bill ':BILL.ID:' failed reading for client ':CLIENT.ID:' at ':TIME():' on ':DATE():'. Please resubmit'
+               EXECUTE 'BBSEND MIKE "':TXT:'" CHECK SQL.FBSTATUS.PX'  ;* GRB01
+****               EXECUTE 'BBSEND MIKE CHECK AFS WORKSTATION'  ;* GRB01
+               WRITE TXT ON F.BILLDATA,CLIENT.ID:'_':STATUS.CNT:'-':BILL.TRY
+               IF BILL.TRY<5 THEN
+                  EXECUTE 'SLEEP 3' CAPTURING DELAY.RESULTS
+                  GO READBILL
+               END ELSE
+                  GO SKIP.BILL
+               END
+            END
+         END
+SKIP.BILL:*
+      REPEAT
+
+
+THE.END:***
+*     End of program
+* Begin GRB01
+      VIN1=''
+      VIN1<1> = "UPD.SQL.FBSTATUS.PX"
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "E"
+      CALL PROGTRACK(VIN1,VOUT1)
+* End GRB01
+      STOP

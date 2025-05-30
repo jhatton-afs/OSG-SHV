@@ -1,0 +1,561 @@
+*=================================================
+*
+*  PROGRAM   : CARRIERS.DF  - Build a carriers Delimited File.
+*
+*  PURPOSE   :
+*
+*  PROGRAMMER:  JIM T. ROW
+*
+*
+*   DATE   | USER | COMMENT
+* -------- | ---- | -------
+*  2/18/98 |  JTR | Unit Created.
+*  6/18/98 |  JTR | Added the ability to Quote fields that have commas.
+*          |      | This is necessary for Outlook to import files (may
+*          |      | also be needed in other programs)
+*  6/02/04 |  JMK | Add cutback email addresses to download
+* 05/09/06 |JCW01 | CHANGES TO @SELECTED, CLEARSELECT, AND STMT<X>
+* 062607 - JMK02 - C200612130003 /  ACH Processing Program - Add ACH Status
+* 061209 - JMK03 - ADD SCAC TO OUTPUT
+* 061209 - JMK04 - ADD ABILITY TO USE LIST NAME
+* 101222 - NKH01 - ACCU-1895 Added email addresses
+*======================================================================
+*    COPYRIGHT (C) 1998 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED
+*       ----------------------------------------------------
+*  This program is sole property of AFS Logistics, LLC (AUTOMATED
+*  FREIGHT SYSTEMS) and may not be used, copied, or modified without
+*  the express written consent of Brian Barker of AFS Logistics, LLC.
+*======================================================================
+
+
+*  USER=OCONV(SYSTEM(19),'MCL')
+      CALL GET.USER(USER)
+      USER=OCONV(USER,'MCL')
+*
+      TAB=CHAR(9)
+      PROMPT''
+      ERRMSG=''
+      PROG.NAME='Build Carrier Export'
+      PROG.DESC="Build File of Carrier Information for PC Import"
+      PACK.NAME="Freight Billing"
+      CALL CHANNEL(CH.NUM)
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'CARRIERS.DF' ; UPL.VOUT = ''                    ;* NPR_UPL 04/22/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/22/2010
+
+      YN.ANSWER = ''
+      YN.MSG=''
+      QUOTE.COMMAS = 1
+
+      OPEN 'CARRIERS' TO F.CARRIERS ELSE ABORT
+
+      BILLDATA.REC = ''
+      OPEN '','VOC' TO F.VOC ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE('UNABLE TO OPEN VOC FILE')
+         STOP
+      END
+
+      READ BILLDATA.REC FROM F.VOC,"BILLDATA" ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE('UNABLE TO OPEN "VOC BILLDATA"')
+         STOP
+      END
+
+      BILLDATA.REC<2>:='\':USER
+      WRITE BILLDATA.REC ON F.VOC,"BILLDATA.":USER ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE("YOUR USER NAME '":USER:"' IS NOT IN THE BILLDATA FOLDER - PLEASE SEE JIM/OWEN")
+         STOP
+      END
+
+      OPEN '','BILLDATA.':USER TO BILLDATA ELSE
+         GOSUB CALL.NET.ADMIN
+         CALL ELINE('UNABLE TO OPEN "BILLDATA.":USER')
+         STOP
+      END
+      RECORD.NAME=''                     ; * Dest record name for output file...
+
+
+
+      *---------------------------------------------
+      * Enter carrier number.
+      *---------------------------------------------
+      CARRIER.ID='ALL'                   ; * Init default entry...
+      CARRIER.LIST=''                    ; * JMK04
+
+ENTER.CARRIER:***
+      CALL AFS.SCR.HEAD(CO.ID, FILE.ID, '', PROG.NAME, PROG.DESC, PACK.NAME, CO.NAME, TIME.DATE, 1)
+
+ENTER.CARRIER.1:
+*     HELP="Enter carrier number. Word of name for search. ENTER for all. X=Exit. EX=Exit." ; * JMK02
+      HELP="Word of name for search. [A]ctive, [I]nactive, [RTN]=All, E[X]it, [EX]it."     ; * JMK02
+      IF CARRIER.ID='' THEN
+         MASK='#####'
+      END ELSE
+         MASK=CARRIER.ID
+      END
+
+      CALL GEN.IN(0,6,'Enter carrier number :':MASK,'',Q,0,20,'','',2,-LEN(MASK),6,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=CARRIER.ID ; Q=CARRIER.ID
+
+      BEGIN CASE
+         CASE QI='' OR QI='ALL'
+            Q='ALL'
+         CASE QI='EX' OR QI='X'
+            STOP
+         CASE QI='A'                     ; * JMK02
+            Q='ACTIVE'                   ; * JMK02
+         CASE QI='I'                     ; * JMK02
+            Q='INACTIVE'                 ; * JMK02
+         CASE QI[1,1]='('                ; * JMK04
+            CARRIER.LIST=TRIM(Q[2,9999]) ; * JMK04
+            Q='LIST'                     ; * JMK04
+         CASE NOT(QI MATCHES "0N")
+            CALL SOUNDEX.DISPLAY(QI,'CARRIERS','SDX.CARRIER,NAME',1,ITEM.LIST)
+            CALL AFS.SCR.REFRESH(PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+            BEGIN CASE
+               CASE ITEM.LIST=''
+                  GOTO ENTER.CARRIER
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  GOTO ENTER.CARRIER
+               CASE ITEM.LIST NE ''
+                  IF NUM(ITEM.LIST<1,1>) THEN DATA ITEM.LIST<1,1>
+                  GOTO ENTER.CARRIER
+            END CASE
+         CASE NUM(QI)
+            Q=QI'R%5'
+         CASE 1
+            GOTO ENTER.CARRIER
+      END CASE
+
+      CARRIER.ID=Q
+      DF.ARRAY=''
+      CRT @(0,6):'Enter Carrier Number :':CARRIER.ID:@(-4):
+
+
+      *---------------------------------------------
+      * Enter Default Extension
+      *---------------------------------------------
+      EXTENSION='.XLS'
+
+ENTER.EXTENSION:***
+      HELP="Enter the exported file extension (.XLS = Excel, .TXT=Outlook, etc) [X]=Back"
+      MASK=EXTENSION
+
+      CALL GEN.IN(0,7,'Enter File Extension:':MASK,'',Q,0,4,'','',2,-LEN(MASK),7,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=EXTENSION ; Q=EXTENSION
+
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GOTO ENTER.CARRIER.1
+         CASE QI = 'EX'
+            STOP
+         CASE QI # ''
+            IF INDEX(QI,"*",1) OR INDEX(QI,",",1) OR INDEX(QI,"?",1) OR INDEX(QI,"'",1) OR INDEX(QI,'"',1) THEN
+               CALL ELINE("Extensions can not contain '*,?":'"')
+               GOTO ENTER.EXTENSION
+            END
+            EXTENSION = CHANGE(QI,'.','')
+            EXTENSION = '.':EXTENSION
+         CASE 1
+            GOTO ENTER.EXTENSION
+      END CASE
+
+      DF.ARRAY=''
+      CRT @(0,7):'Enter File Extension:':EXTENSION:@(-4):
+
+
+      *---------------------------------------------
+      * Ask about a column header on the exported file....
+      *---------------------------------------------
+ASK.HEADER:
+      YN.MASK = 'Y '
+
+ASK.HEADER.1:
+      YN.MSG = 'Include a column header :'
+      HELP = CHAR(7):"Entry Options: [Y]-Yes [N]-No [X]-Back"
+      CRT @(0,8):YN.MSG:@(-4)
+      MASK = YN.MASK
+      Q=''
+      CALL GEN.IN(LEN(YN.MSG)+1,8,MASK,'',Q,0,3,'','',2,LEN(YN.MSG)+1,8,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN QI=TRIM(MASK)
+      BEGIN CASE
+         CASE QI = 'Y'
+            RESP='Yes'
+            GOSUB WRITE.HEADER
+         CASE QI = 'N'
+            RESP='No '
+         CASE QI = 'X'
+            GOTO ENTER.EXTENSION
+         CASE QI = 'EX'
+            STOP
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO ASK.HEADER.1
+      END CASE
+      CRT @(LEN(YN.MSG)+1,8):RESP
+
+
+      *---------------------------------------------
+      * Ask about Quoting Commas
+      *---------------------------------------------
+ASK.QUOTES:
+      YN.MASK = 'Y '
+
+ASK.QUOTES.1:
+      YN.MSG = 'Quote inclosed commas in text fields :'
+      HELP = CHAR(7):"Entry Options: [Y]-Yes,Recommended [N]-No [X]-Back"
+      CRT @(0,9):YN.MSG:@(-4)
+      MASK = YN.MASK
+      Q=''
+      CALL GEN.IN(LEN(YN.MSG)+1,9,MASK,'',Q,0,3,'','',2,LEN(YN.MSG)+1,9,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN QI=TRIM(MASK)
+      BEGIN CASE
+         CASE QI = 'Y'
+            RESP='Yes'
+            QUOTE.COMMAS = 1
+         CASE QI = 'N'
+            RESP='No '
+            QUOTE.COMMAS = 0
+         CASE QI = 'X'
+            GOTO ASK.HEADER
+         CASE QI = 'EX'
+            STOP
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO ASK.QUOTES.1
+      END CASE
+      CRT @(LEN(YN.MSG)+1,9):RESP
+
+
+      *---------------------------------------------
+      * Ask IS THIS CORRECT
+      *---------------------------------------------
+ASK.CORRECT:
+      YN.MASK = 'Y '
+
+ASK.CORRECT.1:
+      YN.MSG = 'Is the above correct? :'
+      HELP = CHAR(7):"Entry Options: [Y]-Yes [N]-No [X]-Back"
+      CRT @(0,10):YN.MSG:@(-4)
+      MASK = YN.MASK
+      Q=''
+      CALL GEN.IN(LEN(YN.MSG)+1,10,MASK,'',Q,0,3,'','',2,LEN(YN.MSG)+1,10,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      IF QI='' THEN QI=TRIM(MASK)
+      BEGIN CASE
+         CASE QI = 'Y'
+            CRT @(LEN(YN.MSG)+1,10):'Yes'
+         CASE QI = 'X' OR QI='N'
+            GOTO ASK.QUOTES
+         CASE QI = 'EX'
+            STOP
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO ASK.CORRECT.1
+      END CASE
+
+
+      *---------------------------------------------
+      * Export File
+      *---------------------------------------------
+*     IF CARRIER.ID='ALL' THEN           ; * JMK02
+*        RECORD.NAME = 'ALL-CARRIERS':EXTENSION    ; * JMK02
+*        GOSUB EXPORT.ALL.CARRIERS       ; * JMK02
+*     END ELSE                           ; * JMK02
+*        CARRIER.ID=CARRIER.ID'R#5'      ; * JMK02
+*        RECORD.NAME = CARRIER.ID:EXTENSION        ; * JMK02
+*        GOSUB EXPORT.CARRIER            ; * JMK02
+*     END                                ; * JMK02
+      BEGIN CASE                         ; * JMK02
+         CASE CARRIER.ID='ALL'           ; * JMK02
+            RECORD.NAME = 'ALL-CARRIERS':EXTENSION           ; * JMK02
+            GOSUB EXPORT.ALL.CARRIERS    ; * JMK02
+         CASE CARRIER.ID='ACTIVE'        ; * JMK02
+            RECORD.NAME = 'ACTIVE-CARRIERS':EXTENSION        ; * JMK02
+            GOSUB EXPORT.ALL.CARRIERS    ; * JMK02
+         CASE CARRIER.ID='INACTIVE'      ; * JMK02
+            RECORD.NAME = 'INACTIVE-CARRIERS':EXTENSION      ; * JMK02
+            GOSUB EXPORT.ALL.CARRIERS    ; * JMK02
+         CASE CARRIER.ID='LIST'          ; * JMK04
+            RECORD.NAME = 'LIST-CARRIERS':EXTENSION          ; * JMK04
+            GOSUB EXPORT.ALL.CARRIERS    ; * JMK04
+         CASE 1
+            CARRIER.ID=CARRIER.ID'R#5'   ; * JMK02
+            RECORD.NAME = CARRIER.ID:EXTENSION     ; * JMK02
+            GOSUB EXPORT.CARRIER         ; * JMK02
+      END CASE                           ; * JMK02
+
+      CRT @(0,16):"Carrier File Export completed.":@(-4):
+      CRT @(0,17):@(-4):
+      CRT @(0,18):"The Exported file name is '":RECORD.NAME:"'":@(-4):
+      CRT @(0,19):@(-4):
+      CRT @(0,20):@(-4):
+
+      CALL ELINE('Done.')
+
+      CARRIER.ID='EX'
+      GOTO ENTER.CARRIER
+
+      STOP
+
+
+
+*--------------------------------------------------------------
+* EXPORT.ALL.CARRIERS - Export all Carriers
+*--------------------------------------------------------------
+EXPORT.ALL.CARRIERS:
+
+      STMT="SSELECT CARRIERS "
+      IF CARRIER.ID='ACTIVE' THEN        ; * JMK02
+         STMT:='WITH 89 # "I"'           ; * JMK02
+      END                                ; * JMK02
+      IF CARRIER.ID='INACTIVE' THEN      ; * JMK02
+         STMT:='WITH 89 = "I"'           ; * JMK02
+      END                                ; * JMK02
+      IF CARRIER.ID='LIST' THEN          ; * JMK04
+         STMT='GET-LIST ':CARRIER.LIST   ; * JMK04
+      END                                ; * JMK04
+      EXECUTE STMT RTNLIST CARRIERS CAPTURING OUTPUT
+      CARRIER.ITEMS = @SELECTED
+*     IF NOT(@SELECTED) THEN ; * JCW01
+      IF @SELECTED < 1 THEN              ; * JCW01
+         CALL ELINE('ERROR - No CARRIERS on file.')
+         STOP
+      END
+
+      CARRIER.CNT=0
+      LOOP
+         READNEXT CARRIER.ID FROM CARRIERS ELSE CARRIER.ID='DONE'
+      UNTIL CARRIER.ID='DONE' DO
+         CARRIER.CNT+=1
+         READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE
+            CARRIER.REC='*** Not On File ***'
+         END
+
+         CRT @(0,17):CARRIER.ID:" ":CARRIER.REC<1>:" - Now Exporting Information":@(-4):
+         CALL PROG.BAR(20,CARRIER.CNT,CARRIER.ITEMS,PER.1)
+
+         GOSUB PROCESS.CUR.LINE
+
+      REPEAT
+
+      GOSUB WRITE.FILE
+
+      RETURN
+
+
+
+*--------------------------------------------------------------
+* EXPORT.CARRIER  - Export single carrier
+*--------------------------------------------------------------
+EXPORT.CARRIER:
+
+      CARRIER.CNT=0
+      READ CARRIER.REC FROM F.CARRIERS,CARRIER.ID ELSE
+         CARRIER.REC='*** Not On File ***'
+      END
+
+      CRT @(0,17):CARRIER.ID:" ":CARRIER.REC<1>:" - Now Exporting Information":@(-4):
+
+      GOSUB PROCESS.CUR.LINE
+      GOSUB WRITE.FILE
+
+      RETURN
+
+
+
+*--------------------------------------------------------------
+* PROCESS.CUR.LINE:
+*
+* hey! If you make a change in this arrangement, make
+* sure you update the WRITE.HEADER routine also!
+*
+*--------------------------------------------------------------
+PROCESS.CUR.LINE:
+
+      CUR.LINE=''
+      T=CARRIER.ID ; GOSUB APPEND.LINE   ; * Carrier ID
+      T=CARRIER.REC<1> ; GOSUB APPEND.LINE         ; * Name
+      T=CARRIER.REC<2,1> ; GOSUB APPEND.LINE       ; * Address
+      T=CARRIER.REC<2,2> ; GOSUB APPEND.LINE       ; * Address 2
+      T=CARRIER.REC<3> ; GOSUB APPEND.LINE         ; * City
+      T=CARRIER.REC<4> ; GOSUB APPEND.LINE         ; * State
+      T=CARRIER.REC<5> ; GOSUB APPEND.LINE         ; * Zip Code
+      T=CARRIER.REC<6> ; GOSUB APPEND.LINE         ; * telephone
+      T=CARRIER.REC<7> ; GOSUB APPEND.LINE         ; * Country
+      T=CARRIER.REC<8> ; GOSUB APPEND.LINE         ; * Telex
+      T=CARRIER.REC<9> ; GOSUB APPEND.LINE         ; * Representative
+
+      T=CARRIER.REC<31> ; GOSUB APPEND.LINE        ; * name or firm
+      T=CARRIER.REC<32,1> ; GOSUB APPEND.LINE      ; * Address
+      T=CARRIER.REC<32,2> ; GOSUB APPEND.LINE      ; * Address
+      T=CARRIER.REC<33> ; GOSUB APPEND.LINE        ; * City
+      T=CARRIER.REC<34> ; GOSUB APPEND.LINE        ; * State
+      T=CARRIER.REC<35> ; GOSUB APPEND.LINE        ; * Zip Code
+      T=CARRIER.REC<36> ; GOSUB APPEND.LINE        ; * Telephone
+      T=CARRIER.REC<37,1> ; GOSUB APPEND.LINE      ; * Country 1
+      T=CARRIER.REC<37,2> ; GOSUB APPEND.LINE      ; * Country 2
+      T=CARRIER.REC<38> ; GOSUB APPEND.LINE        ; * Telex
+      T=CARRIER.REC<44> ; GOSUB APPEND.LINE        ; * Carrier Mode
+
+      FOR VAL=1 TO 5                     ; * JMK01
+         T=CARRIER.REC<80,VAL> ; GOSUB APPEND.LINE           ; * Cutback TO email name    ; * JMK01
+         T=CARRIER.REC<81,VAL> ; GOSUB APPEND.LINE           ; * Cutback TO email address ; * JMK01
+      NEXT VAL                           ; * JMK01
+
+      FOR VAL=1 TO 5                     ; * JMK01
+         T=CARRIER.REC<82,VAL> ; GOSUB APPEND.LINE           ; * Cutback CC email name    ; * JMK01
+         T=CARRIER.REC<83,VAL> ; GOSUB APPEND.LINE           ; * Cutback CC email address ; * JMK01
+      NEXT VAL                           ; * JMK01
+      * Begin NKH01
+      T=CARRIER.REC<86> ; GOSUB APPEND.LINE        ; * Acct Mgr TO email
+      T=CARRIER.REC<91> ; GOSUB APPEND.LINE        ; * Remit TO email
+      FOR VAL=1 TO 5                   
+         T=CARRIER.REC<121,VAL> ; GOSUB APPEND.LINE          ; * ACH Remit email
+      NEXT VAL                         
+      T=CARRIER.REC<126>; GOSUB APPEND.LINE        ; * AMEX Remikt email
+      T=CARRIER.REC<129>; GOSUB APPEND.LINE        ; * MasterCard Remit email
+      T=CARRIER.REC<130>; GOSUB APPEND.LINE        ; * EDI Reject email
+      * End NKH01
+      T=CARRIER.REC<89> ; GOSUB APPEND.LINE        ; * JMK02
+      T=CARRIER.REC<102> ; GOSUB APPEND.LINE       ; * JMK02
+      T=CARRIER.REC<12> ; GOSUB APPEND.LINE        ; * JMK03
+
+      CUR.LINE=CHANGE(CUR.LINE,@VM,TAB)
+
+      DF.ARRAY<-1>=CUR.LINE
+
+      RETURN
+
+APPEND.LINE:
+
+      IF QUOTE.COMMAS AND INDEX(T,',',1) THEN T='"':T:'"'
+      CUR.LINE:=T:TAB
+
+      RETURN
+
+
+
+*--------------------------------------------------------------
+* WRITE.FILE
+*--------------------------------------------------------------
+WRITE.FILE:
+
+      DF.ARRAY=CHANGE(DF.ARRAY,@AM,CHAR(13):CHAR(10))
+      WRITE DF.ARRAY ON BILLDATA,RECORD.NAME
+
+      RETURN
+
+
+*--------------------------------------------------------------
+* WRITE.HEADER:
+*--------------------------------------------------------------
+WRITE.HEADER:
+
+      CUR.LINE='CARRIER ID':TAB
+      CUR.LINE:='Name' :TAB
+      CUR.LINE:='Address 1' :TAB
+      CUR.LINE:='Address 2' :TAB
+      CUR.LINE:='City' :TAB
+      CUR.LINE:='State' :TAB
+      CUR.LINE:='Zip Code' :TAB
+      CUR.LINE:='Telephone' :TAB
+      CUR.LINE:='Country' :TAB
+      CUR.LINE:='Telex' :TAB
+      CUR.LINE:='Representative':TAB
+      CUR.LINE:='Name or Firm' :TAB
+      CUR.LINE:='Address 1' :TAB
+      CUR.LINE:='Address 2' :TAB
+      CUR.LINE:='City' :TAB
+      CUR.LINE:='State' :TAB
+      CUR.LINE:='Zip Code' :TAB
+      CUR.LINE:='Telephone' :TAB
+      CUR.LINE:='Country 1' :TAB
+      CUR.LINE:='Country 2' :TAB
+      CUR.LINE:='Telex' :TAB
+      CUR.LINE:='Mode#' :TAB
+
+      FOR VAL=1 TO 5                     ; * JMK01
+         CUR.LINE:='CB TO Name ':VAL:TAB           ; * JMK01
+         CUR.LINE:='CB TO eMail ':VAL:TAB          ; * JMK01
+      NEXT VAL                           ; * JMK01
+
+      FOR VAL=1 TO 5                     ; * JMK01
+         CUR.LINE:='CB CC Name ':VAL:TAB           ; * JMK01
+         CUR.LINE:='CB CC eMail ':VAL:TAB          ; * JMK01
+      NEXT VAL                           ; * JMK01
+      * Begin NKH01
+      CUR.LINE:='Acct Mgr TO eMail ':TAB         
+      CUR.LINE:='Remit TO eMail ':TAB         
+      FOR VAL=1 TO 5                    
+         CUR.LINE:='ACH Remit eMaiL':VAL:TAB          
+      NEXT VAL                                
+      CUR.LINE:='AMEX Remit eMail ':TAB         
+      CUR.LINE:='MasterCard Remit eMail ':TAB         
+      CUR.LINE:='EDI Rejct eMail ':TAB                                 
+      * End NKH01      
+      CUR.LINE:='Status':TAB             ; * JMK02
+      CUR.LINE:='ACH Status':TAB         ; * JMK02
+      CUR.LINE:='SCAC':TAB               ; * JMK03
+
+      DF.ARRAY<-1>=CUR.LINE
+
+      RETURN
+
+
+*--------------------------------------------------------------
+* CRITICAL ERROR HANDLER - GENERIC ROUTINE (TERMINATES PROGRAM)
+*--------------------------------------------------------------
+CALL.NET.ADMIN:***
+      CALL ELINE("CALL NETWORK ADMINISTRATOR!")
+      CALL ELINE("CALL NETWORK ADMINISTRATOR!!!!!")
+
+      RETURN
+
+
+
+*----------------------------------------------------------------------
+* ASK.Y.OR.N
+*
+* A General Yes No prompt routine.
+*
+*----------------------------------------------------------------------
+ASK.Y.OR.N:***
+
+      YN.ANSWER = ''
+
+Y.OR.N:
+
+      HELP = CHAR(7):"Entry Options: [Y]-Yes [N]-No [X]-Back"
+      CRT @(0,22):YN.MSG:@(-4)
+      MASK = YN.MASK'L#1'
+      Q=''
+      CALL GEN.IN(LEN(YN.MSG)+1,22,MASK,'',Q,0,1,'','',2,LEN(YN.MSG)+1,22,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+
+      IF QI='' THEN QI=MASK
+      BEGIN CASE
+         CASE QI = '1'
+            QI='Y'
+         CASE QI = '0'
+            QI='N'
+         CASE QI = 'Y'
+         CASE QI = 'N'
+         CASE QI = 'X'
+         CASE 1
+            CALL ELINE('Invalid entry.')
+            GOTO Y.OR.N
+      END CASE
+
+      CRT @(0,22):@(-4):
+      CRT @(0,23):@(-4):
+      YN.ANSWER = QI
+
+      RETURN

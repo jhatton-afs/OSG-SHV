@@ -1,0 +1,405 @@
+      SUBROUTINE DEL.SQL.FBHIST.SUB(VIN,VOUT,BILL.REC)
+***********************************************************************
+ UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'DEL.SQL.FBHIST.SUB' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+ CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+* Analyze bills acted upon by auditors
+* Copyright (c) AFS Logistics, LLC., 2002
+*
+* AUTHOR : Owen Holman
+* Date   : January 2002
+***********************************************************************
+*************************************************************************
+!
+* Include the ODBC definitions
+!
+      $INCLUDE UNIVERSE.INCLUDE ODBC.H
+
+      USER=VIN<1>
+      CLIENT.ID=VIN<2>
+      BILL.ID=VIN<3>
+      SEQ=FIELD(BILL.ID,'*',3)
+      IF SEQ#0 THEN RETURN
+      RETURN
+
+      form = "T##########"
+      dash = "----------"
+      Expect = ""
+      NULL=""
+      TOT.NUM.BILLS=0
+
+      ERROR.CNT=0
+10:   ERRORS=''
+
+      GOSUB SETUP.SQL
+
+* DEFINE FIELDS TO UPDATE FROM CLIENT.REC HERE
+
+      CARRIER.ID=FIELD(BILL.ID,'*',1)
+      PRO=FIELD(BILL.ID,'*',2)
+      PROC.DT=OCONV(BILL.REC<37>,'D4/')
+      SQL.UniqueKey=CLIENT.ID:CARRIER.ID:PRO:PROC.DT[7,4]:PROC.DT[1,2]:PROC.DT[4,2]
+      SQL.ClientNumber=CLIENT.ID+0
+      SQL.CarrierNumber=CARRIER.ID+0
+      SQL.InvoiceNumber=TRIM(BILL.REC<94>)[1,50]
+
+      Fn = "SQLExecute"
+      STATUS = SQLExecute(SHIPENV)
+      STMTENV=SHIPENV
+      GOSUB CKSTMTENV
+
+      Fn = "SQLExecute"
+      STATUS = SQLExecute(EXPENV)
+      STMTENV=EXPENV
+      GOSUB CKSTMTENV
+
+      Fn = "SQLExecute"
+      STATUS = SQLExecute(STOPENV)
+      STMTENV=STOPENV
+      GOSUB CKSTMTENV
+
+      Fn = "SQLExecute"
+      STATUS = SQLExecute(PYMTENV)
+      STMTENV=PYMTENV
+      GOSUB CKSTMTENV
+
+      Fn = "SQLExecute"
+      STATUS = SQLExecute(CIDTLENV)
+      STMTENV=CIDTLENV
+      GOSUB CKSTMTENV
+
+      Fn = "SQLExecute"
+      STATUS = SQLExecute(CINVENV)
+      STMTENV=CINVENV
+      GOSUB CKSTMTENV
+
+THE.END: ***
+
+*     End of program
+*
+* Now just clean up the environment and leave
+*
+      Fn = "SQLFreeStmt"
+      STATUS = SQLFreeStmt(STMTENV, SQL.DROP)
+      GOSUB CKSTMTENV
+
+      Fn = "SQLDisconnect"
+      STATUS = SQLDisconnect(CONENV)
+      GOSUB CKCONENV
+
+      Fn = "SQLFreeConnect"
+      STATUS = SQLFreeConnect(CONENV)
+      GOSUB CKCONENV
+
+      Fn = "SQLFreeEnv"
+      STATUS = SQLFreeEnv(DBCENV)
+      IF STATUS <> SQL.SUCCESS THEN
+         ERRORS<1,-1>="Failed to release ODBC environment"
+      END
+
+      IF ERRORS#'' THEN
+         ERROR.CNT+=1
+         IF ERROR.CNT>3 THEN
+            MVIN=''
+            MVIN<1>='UPD.SQL.Group@afs.net'
+            MVIN<4>='AFS_DEL.SQL.FBHIST.SUB'
+            MVIN<5>='SQL Shipment Delete Errors'
+            TEXT='On ':DATE()'D2/':' ':OCONV(TIME(),'MTHS'):', ':USER:' deleted '
+            TEXT<1,-1>='Client ':CLIENT.ID:', Bill ':BILL.ID:', but did not succeed in updating SQL due to:'
+            TEXT<1,-1>=' '
+            TEXT<1,-1>=ERRORS
+            MVIN<6>=TEXT
+            MVIN<7>=1
+            CALL SENDMAIL(MVIN,MVOUT)
+         END ELSE
+            GO 10
+         END
+      END
+
+      RETURN
+
+      STOP
+
+SETUP.SQL: *
+!
+* Create an ODBC environment & a connection environment. Use the
+* SSQLSetConnectOption to specify the Operating system user ID and
+* password.
+
+      STATUS = SQLAllocEnv(DBCENV)
+      IF STATUS <> SQL.SUCCESS THEN STOP "Failed to allocate an ODBC environment"
+
+      STATUS = SQLAllocConnect(DBCENV,CONENV)
+      IF STATUS <> SQL.SUCCESS THEN STOP "Failed to allocate a CONNECT environment"
+
+*
+* Gather the data source name, userid and password for the server O/S and
+* information for the DBMS at the server. The DBMS info is often also
+* a user name and password, but not in all cases.
+*
+      SQLSVR.INFO=OCONV('SQLSVR','TFB.TABLES;X;;1')
+      SOURCE=FIELD(SQLSVR.INFO<1>,' ',1)
+      UID=FIELD(SQLSVR.INFO<1>,' ',2)
+      PWD=FIELD(SQLSVR.INFO<1>,' ',3)
+*     SOURCE='DEVSQL'
+*     UID="pick"
+*     PWD="pick"
+*     SOURCE='PRODODS'
+*     UID="uv_sql"
+*     PWD="4@gAbreg"
+*
+* Establish a session to the specified data source
+*
+*     PRINT "Connecting to data source: ": SOURCE
+      Fn = "SQLConnect"
+      STATUS = SQLConnect(CONENV,SOURCE,UID,PWD)
+      GOSUB CKCONENV
+*
+* Now allocate an SQL statement environment
+* to be used for executing SQL statements
+*
+      Fn = "SQLAllocStmt"
+      STATUS = SQLAllocStmt(CONENV,SHIPENV)
+      GOSUB CKCONENV
+
+*
+* Note that we are using parameter markers in the SQL statement to facilitate
+* loading multiple rows of data efficiently
+*
+      OPT.STR = STR(' ?,',1)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_DelShipment (":OPT.STR:")}"          ; * 1 PLACEHOLDERS
+
+      ROWNUM = 0
+      Fn = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*     STATUS = SQLSETPARAM(STMTENV, COL, SQL.B.BASIC, SQL.DATA.TYPE, PREC, SCALE, VAR.NAME) ; GOSUB CKSTMTENV
+*
+      STATUS = SQLSETPARAM(SHIPENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UniqueKey) ; STMTENV=SHIPENV ; GOSUB CKSTMTENV
+
+      Fn = "SQLPrepare"
+      STATUS = SQLPrepare(SHIPENV, INST1)
+      STMTENV=SHIPENV
+      ENVSRC='SHIP'
+      GOSUB CKSTMTENV
+
+*
+* Now allocate an SQL statement environment
+* to be used for executing SQL statements
+*
+      Fn = "SQLAllocStmt"
+      STATUS = SQLAllocStmt(CONENV,EXPENV)
+      GOSUB CKCONENV
+
+*
+* Note that we are using parameter markers in the SQL statement to facilitate
+* loading multiple rows of data efficiently
+*
+      OPT.STR = STR(' ?,',1)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_DelShipmentExpenseCode (":OPT.STR:")}"         ; * 3 PLACEHOLDERS
+
+      ROWNUM = 0
+      Fn = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*     STATUS = SQLSETPARAM(STMTENV, COL, SQL.B.BASIC, SQL.DATA.TYPE, PREC, SCALE, VAR.NAME) ; GOSUB CKSTMTENV
+*
+      STATUS = SQLSETPARAM(EXPENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UniqueKey) ; STMTENV=EXPENV ; GOSUB CKSTMTENV
+
+      Fn = "SQLPrepare"
+      STATUS = SQLPrepare(EXPENV, INST1)
+      STMTENV=EXPENV
+      ENVSRC='EXP'
+      GOSUB CKSTMTENV
+
+*
+* Now allocate an SQL statement environment
+* to be used for executing SQL statements
+*
+      Fn = "SQLAllocStmt"
+      STATUS = SQLAllocStmt(CONENV,STOPENV)
+      GOSUB CKCONENV
+
+*
+* Note that we are using parameter markers in the SQL statement to facilitate
+* loading multiple rows of data efficiently
+*
+      OPT.STR = STR(' ?,',1)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_DelShipmentStop (":OPT.STR:")}"      ; * 2 PLACEHOLDERS
+
+      ROWNUM = 0
+      Fn = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*     STATUS = SQLSETPARAM(STMTENV, COL, SQL.B.BASIC, SQL.DATA.TYPE, PREC, SCALE, VAR.NAME) ; GOSUB CKSTMTENV
+*
+      STATUS = SQLSETPARAM(STOPENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UniqueKey) ; STMTENV=STOPENV ; GOSUB CKSTMTENV
+
+      Fn = "SQLPrepare"
+      STATUS = SQLPrepare(STOPENV, INST1)
+      STMTENV=STOPENV
+      ENVSRC='STOP'
+      GOSUB CKSTMTENV
+
+*
+* Now allocate an SQL statement environment
+* to be used for executing SQL statements
+*
+      Fn = "SQLAllocStmt"
+      STATUS = SQLAllocStmt(CONENV,CINVENV)
+      GOSUB CKCONENV
+
+*
+* Note that we are using parameter markers in the SQL statement to facilitate
+* loading multiple rows of data efficiently
+*
+      OPT.STR = STR(' ?,',3)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_DelCarrierInvoice (":OPT.STR:")}"    ; * 5 PLACEHOLDERS
+
+      ROWNUM = 0
+      Fn = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*     STATUS = SQLSETPARAM(STMTENV, COL, SQL.B.BASIC, SQL.DATA.TYPE, PREC, SCALE, VAR.NAME) ; GOSUB CKSTMTENV
+*
+      STATUS = SQLSETPARAM(CINVENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UniqueKey) ; STMTENV=CINVENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(CINVENV, 2, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.CarrierNumber) ; STMTENV=CINVENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(CINVENV, 3, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.InvoiceNumber) ; STMTENV=CINVENV ; GOSUB CKSTMTENV
+
+      Fn = "SQLPrepare"
+      STATUS = SQLPrepare(CINVENV, INST1)
+      STMTENV=CINVENV
+      ENVSRC='CINV'
+      GOSUB CKSTMTENV
+
+*
+* Now allocate an SQL statement environment
+* to be used for executing SQL statements
+*
+      Fn = "SQLAllocStmt"
+      STATUS = SQLAllocStmt(CONENV,CIDTLENV)
+      GOSUB CKCONENV
+
+*
+* Note that we are using parameter markers in the SQL statement to facilitate
+* loading multiple rows of data efficiently
+*
+      OPT.STR = STR(' ?,',3)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_DelCarrierInvoiceDetail (":OPT.STR:")}"        ; * 8 PLACEHOLDERS
+
+      ROWNUM = 0
+      Fn = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*     STATUS = SQLSETPARAM(STMTENV, COL, SQL.B.BASIC, SQL.DATA.TYPE, PREC, SCALE, VAR.NAME) ; GOSUB CKSTMTENV
+*
+      STATUS = SQLSETPARAM(CIDTLENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UniqueKey) ; STMTENV=CIDTLENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(CIDTLENV, 2, SQL.B.BASIC, SQL.VARCHAR, 10, 0, SQL.CarrierNumber) ; STMTENV=CIDTLENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(CIDTLENV, 3, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.InvoiceNumber) ; STMTENV=CIDTLENV ; GOSUB CKSTMTENV
+
+      Fn = "SQLPrepare"
+      STATUS = SQLPrepare(CIDTLENV, INST1)
+      STMTENV=CIDTLENV
+      ENVSRC='CIDTL'
+      GOSUB CKSTMTENV
+
+*
+* Now allocate an SQL statement environment
+* to be used for executing SQL statements
+*
+      Fn = "SQLAllocStmt"
+      STATUS = SQLAllocStmt(CONENV,PYMTENV)
+      GOSUB CKCONENV
+
+*
+* Note that we are using parameter markers in the SQL statement to facilitate
+* loading multiple rows of data efficiently
+*
+      OPT.STR = STR(' ?,',2)
+      OPT.STR = OPT.STR[2,LEN(OPT.STR)-2]
+      INST1 = "{CALL PX_DelPayment (":OPT.STR:")}"
+
+      ROWNUM = 0
+      Fn = "SQLSetParam"
+*
+* DEFINE THE FIELD UPDATE PARAMETERS USING THE FOLLOWING FORMAT
+*     STATUS = SQLSETPARAM(STMTENV, COL, SQL.B.BASIC, SQL.DATA.TYPE, PREC, SCALE, VAR.NAME) ; GOSUB CKSTMTENV
+*
+      STATUS = SQLSETPARAM(PYMTENV, 1, SQL.B.BASIC, SQL.VARCHAR, 50, 0, SQL.UniqueKey) ; STMTENV=PYMTENV ; GOSUB CKSTMTENV
+      STATUS = SQLSETPARAM(PYMTENV, 2, SQL.B.BASIC, SQL.VARCHAR, 20, 0, SQL.CarrierNumber) ; STMTENV=PYMTENV ; GOSUB CKSTMTENV
+
+      Fn = "SQLPrepare"
+      STATUS = SQLPrepare(PYMTENV, INST1)
+      STMTENV=PYMTENV
+      ENVSRC='PYMT'
+      GOSUB CKSTMTENV
+
+      RETURN
+
+CKCONENV:
+
+      COUNT = -1
+      IF STATUS EQ -2 THEN
+         ERRORS<1,-1>="INVALID CONNECTION HANDLE"
+         RETURN TO THE.END
+      END
+      IF STATUS NE 0 THEN
+201: *
+         ST = SQLERROR(-1,CONENV,-1,STATE,NATCODE,ERRTXT)
+         IF ST <> SQL.NO.DATA.FOUND
+         THEN
+            COUNT = 1
+            IF Expect NE 0 AND STATE = Expect AND ST <> SQL.NO.DATA.FOUND THEN
+               ERRORS<1,-1>="Allowed error of ":STATE:" returned for func ":Fn
+               GOTO 299
+            END ELSE
+               ERRORS<1,-1>="Status for ":Fn:" call is: ":STATUS
+               ERRORS<1,-1>="SQLSTATE,NATCOD are:" : STATE:"  ":NATCODE
+               ERRORS<1,-1>="Error text is"
+               ERRORS<1,-1>="    " : ERRTXT
+            END
+            IF ST = SQL.SUCCESS THEN GOTO 201
+         END
+         IF STATUS = -1 AND COUNT = 1 THEN
+            ERRORS<1,-1>="EXITING CKCONENV"
+            RETURN TO THE.END
+         END
+      END
+299: *
+      RETURN
+
+CKSTMTENV:
+      IF STATUS EQ -2 THEN
+         ERRORS<1,-1>="INVALID STATEMENT HANDLE"
+         RETURN TO THE.END
+      END
+
+      IF STATUS EQ 100 THEN RETURN
+      IF STATUS NE 0 THEN
+301: *
+         ST = SQLERROR(-1,-1,STMTENV,STATE,NATCODE,ERRTXT)
+         IF ST <> SQL.NO.DATA.FOUND
+         THEN
+            COUNT = 1
+            IF Expect NE 0 AND STATE = Expect AND ST <> SQL.NO.DATA.FOUND THEN
+               ERRORS<1,-1>="Allowed error of ":STATE:" returned for func ":Fn
+               GOTO 399
+            END ELSE
+               ERRORS<1,-1>="Status for ":Fn:" call is: ":STATUS
+               ERRORS<1,-1>="SQLSTATE,NATCOD are:" : STATE:"  ":NATCODE
+               ERRORS<1,-1>="Error text is"
+               ERRORS<1,-1>="    " : ERRTXT
+            END
+            IF ST = 0 THEN GOTO 301
+         END
+         IF STATUS = -1 AND COUNT = 1 THEN
+            ERRORS<1,-1>="EXITING CKSTMTENV"
+            RETURN TO THE.END
+         END
+      END
+399: *
+      RETURN

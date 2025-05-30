@@ -1,0 +1,416 @@
+***********************************************************************
+* Program name : COUNT.OCR.QUEUE.RPT.INACTIVE
+* Author       : Nicole Hennick
+* Date written : January 30, 2023
+* Library      : FBBP
+* COPYRIGHT (C) 2019 - AFS LOGISTICS LLC - ALL RIGHTS RESERVED.
+*
+* generate OCR queue count report of inactive clients
+*
+* Last updated by afs (AFSLOGISTICS\nmeddaugh) at 07:52:42 on 01/30/2023.
+*
+* Start modification history
+* 01/30/23 : NKH00 : ACCU-2055 New program 
+* End modification history
+*
+************************************************************************
+*
+* Initialize variables
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE UNIVERSE.INCLUDE UDO.H
+
+      * Initialize
+      PROG.NAME='COUNT.OCR.QUEUE.RPT.INACTIVE'
+      CALL GET.USER.NEW(USER,CH.NUM)      
+      STATUS = 0
+      TOT.CNT = 0
+      TAB = ","
+      FILE.DATE = DATE()
+      CNT=0
+      FILE.DATE = OCONV(FILE.DATE,"D4-")
+      RESP.CNT=1
+      RESP = ''
+      VOUT=''
+      SEQ = 1        
+      CALL GET.SERVER.INFO(SVR.VIN,SVR.VOUT)       
+      SERVER.NAME=SVR.VOUT<1>                                        
+      PROMPT ''
+      USER.SV = 0       
+      BEG.DATE = ''
+      END.DATE = ''                           
+      
+      *Open Files
+      OPEN '','OCR.WF.TEMP' TO OCR.WF.TEMP ELSE    
+         CALL OPEN.ABORT2("OCR.WF.TEMP",PROG.NAME) 
+      END                                                
+      HUSH ON                                      
+      EXECUTE 'CLEAR-FILE OCR.WF.TEMP'             
+      HUSH OFF 
+                                          
+      OPEN 'CONTROL' TO FILE.CNTL ELSE
+         CALL ELINE('UNABLE TO OPEN CONTROL FILE')
+         RETURN
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT2("CLIENTS",PROG.NAME)
+         RETURN
+      END
+      OPEN '','BCTRL' TO F.BCTRL ELSE
+         CALL OPEN.ABORT2("BCTRL",PROG.NAME)
+         RETURN
+      END
+      OPEN '','COUNT.OCR.QUEUE.RPT.OUT' TO DOS.FILE.OUT ELSE
+         CALL ELINE('Unable to open the ':DOS.FILE.OUT:' out file')
+      END                     
+      FILE.ID2 = 'OCR.QUEUE.CNT.INACTIVE.XLS'
+      OPENSEQ "GRB",FILE.ID2 TO FILE.OUT ELSE CREATE FILE.OUT
+         ELSE ABORT
+      WEOFSEQ FILE.OUT      
+      
+      * Check Access
+      IF NOT(USER.SV) THEN       
+         OPEN '','OPERATOR' TO F.OP ELSE CALL OPEN.ABORT("OPERATOR",PROG.NAME)
+         READV OP.FLG FROM F.OP,USER,78 ELSE
+            OP.FLG = "N"
+         END
+         IF OP.FLG # "Y" THEN
+            CALL ELINE("You are not setup to run this report... ")
+            STOP
+         END
+      END                              
+      
+      * Check Input Parameters
+      READ XMLPARAMS FROM FILE.CNTL,"CLIENT.OCR" THEN
+         URL = XMLPARAMS<1>
+         SERVER = XMLPARAMS<2>
+         SOAPACTION = XMLPARAMS<3>
+         LOGGING = XMLPARAMS<4>          ; * Y/N
+         LOGFILE = XMLPARAMS<5>
+         EMAIL.RECIP = XMLPARAMS<6>
+         TEST.FLG = XMLPARAMS<7>
+      END ELSE
+         LOGFILE="COUNT.OCR.QUEUE.LOG.INACTIVE"
+         LOGGING = "N"
+         EMAIL.RECIP = ''
+         TEST.FLG = @FALSE
+      END
+
+      * Protocol Logging
+      IF LOGGING = "Y" OR LOGGING = 1 THEN
+         LOGGING = @TRUE
+      END ELSE
+         LOGGING = @FALSE
+      END
+      IF LOGGING THEN
+         STAT = PROTOCOLLOGGING(LOGFILE, "ON", 10)
+      END
+      
+      * Report Heading
+      GOSUB BUILD.HEADER      
+
+******************************************************      
+ENTER.BEGIN.DATE:***
+******************************************************
+      CALL AFS.SCR.HEAD(CO.ID, FILE.ID, '', PROG.NAME, PROG.DESC, PACK.NAME, CO.NAME, TIME.DATE, 1)
+      
+      HELP="Enter beginning date. mm/dd/yy EX=Exit."
+      IF BEG.DATE='' THEN BEG.DATE=DATE()
+      LN='Enter the Beginning date  : ':BEG.DATE'D2/'
+      CALL GEN.IN(0,7,LN,'DATE',Q,0,8,'','',0,-8,7,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,7):@(-3):
+            GOTO ENTER.BEGIN.DATE
+         CASE QI='EX'
+            STOP
+      END CASE
+      BEG.DATE=Q
+      CRT @(28,7):BEG.DATE'D2/'
+
+******************************************************
+ENTER.END.DATE:***
+******************************************************
+      HELP="Enter ending date. mm/dd/yy X=Back to Beg Date. EX=Exit."
+      IF END.DATE='' THEN END.DATE=DATE()
+      LN='Enter the Ending Date     : ':END.DATE'D2/'
+      CALL GEN.IN(0,9,LN,'DATE',Q,0,9,'','',0,-8,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,9):@(-3):
+            GOTO ENTER.BEGIN.DATE
+         CASE QI='EX'
+            STOP
+      END CASE
+      END.DATE=Q
+      IF BEG.DATE GT END.DATE THEN
+         CALL ELINE('Beginning date cannot exceed ending date.')
+         GOTO ENTER.END.DATE
+      END
+      DAYS=END.DATE-BEG.DATE+1
+      CRT @(28,9):END.DATE'D2/'
+
+******************************************************      
+MAIN.LOOP:***      
+******************************************************
+      CRT @(-1)
+      CRT @(5,2):"OCR IMAGE QUEUE COUNT INACTIVE REPORT"
+      CMD ='SSELECT CLIENTS WITH OCR = "Y" AND WITH STATUS = "I"'
+      EXECUTE CMD CAPTURING STUFF RETURNING JUNK
+      EOJ=0
+      LOOP
+         READNEXT CLIENT ELSE EOJ = 1
+      UNTIL EOJ DO
+         CNT+=1
+         IF NOT(REM(CNT,10)) THEN
+            CRT@(10,10):CNT
+         END
+         RESP.CNT=1
+         RESP = ''
+         VOUT=''
+         CLIENT.ID = CLIENT"R%5"
+         READ CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE CLIENT.REC = "NOF"
+         CLIENT.NAME = CLIENT.REC<2>
+         PROC.DAY = CLIENT.REC<151>
+         COMPLEX = CLIENT.REC<266>
+         IF SERVER.NAME = 'AFS' THEN                        
+            URL = 'http://imagingws.afs.net/images/list?clientFolder=':CLIENT.ID:'&underReview=null&excludeImported=true&limit=20000'
+         END ELSE                      
+            URL = 'http://imagingws.qa.afs.net/images/list?clientFolder=':CLIENT.ID:'&underReview=null&excludeImported=true&limit=15000'  
+         END                                                                           
+
+         GOSUB SEND.REST.REQUEST
+         GOSUB PARSE.RESULTS
+
+      REPEAT
+      GOSUB BUILD.REPORT.DETAIL                  
+
+******************************************************
+9999: * THE END
+******************************************************
+      IF LOGGING THEN
+         LOG.RET = PROTOCOLLOGGING(LOGFILE,"OFF",10)
+      END
+      DATALINE = "":CHAR(9):"":CHAR(9):TOT.CNT    
+      WRITESEQ DATALINE TO FILE.OUT THEN NULL               
+      CLOSESEQ FILE.OUT      
+      GOSUB SEND.EMAIL
+      
+      RETURN
+      
+***********************************************************************
+SEND.REST.REQUEST:
+***********************************************************************
+      METHOD="GET"
+      STAT = SETHTTPDEFAULT("VERSION", "1.1")
+      STAT = CREATEREQUEST(URL, METHOD, RESTGET)
+      STAT = SETREQUESTHEADER(RESTGET, "Content-Type", "application/json;charset=utf-8")
+      STAT = SUBMITREQUEST(RESTGET, 60000, "", HEADER, RESTDATA, HTTPSTATUS)
+*IF USER = 'NMEDDAUGH' THEN DEBUG      
+
+      RETURN
+
+************************************************************************
+PARSE.RESULTS:
+************************************************************************
+      ARRY = ''
+      UDOHANDLE = ""
+      RESP = ''
+      RESP.CNT = 1
+      STATUS =UDORead(RESTDATA, UDOFORMAT_JSON, UDOHANDLE )
+      NEW.LINE =""
+      ST = UDOArrayGetSize(UDOHANDLE, ITEM_SIZE)
+
+      FOR I = 1 TO ITEM_SIZE
+         ST = UDOArrayGetItem(UDOHANDLE, I, result_udo, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         ST = UDOGetProperty(result_udo, "imageKey", IMAGE.NO, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN IMAGE.NO = ""
+
+         ST = UDOGetProperty(result_udo, "batchNo", BATCH.NO, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN BATCH.NO = ""
+         ST = UDOGetProperty(result_udo, "clientKey", CLIENTKEY, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         ST = UDOGetProperty(result_udo, "scanDate", SCAN.DT, UDOTYPE) ; 
+         IF  UDOTYPE = UDO_NULL THEN        
+            SCAN.DT =""
+         END
+         ST = UDOGetProperty(result_udo, "scac", SCAC, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER        
+         IF UDOTYPE = UDO_NULL THEN SCAC = ""                                                                        
+         ST = UDOGetProperty(result_udo, "field2", PRONUM, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER    
+         IF UDOTYPE = UDO_NULL THEN PRONUM = ""                                                                               
+         ST = UDOGetProperty(result_udo, "imagePath", IMAGE.PATH, UDOTYPE) ; IF ST NE UDO_SUCCESS THEN GOSUB ERR.HANDLER
+         IF UDOTYPE = UDO_NULL THEN IMAGE.PATH = ""
+         CONVERT "_" TO "" IN BATCH.NO              
+         CONVERT "ASHV" TO 'SHV' IN BATCH.NO        
+
+         IF UDOTYPE = UDO_NULL THEN SCAN.DT =''
+         IF SCAN.DT # "" THEN
+            SCAN.DT = SCAN.DT[1,10]
+            SCAN.DT = SCAN.DT[6,2]:"-":SCAN.DT[9,2]:"-":SCAN.DT[1,4]
+            SCAN.DT = ICONV(SCAN.DT,"D")
+         END
+         BATCH.AGE = DATE() - SCAN.DT
+         IF UDOTYPE = UDO_NULL THEN CLIENTKEY = ""
+         LOCATE(BATCH.NO,ARRY<1>,1;QQ) THEN
+            ARRY<2,QQ> +=1
+            IF SCAN.DT => BEG.DATE AND SCAN.DT <= END.DATE THEN
+               ARRY<3,QQ> = BATCH.AGE
+               ARRY<4,QQ,-1> = SCAC             
+               ARRY<5,QQ,-1> = PRONUM           
+               ARRY<6,QQ,-1> = IMAGE.NO         
+            END          
+         END ELSE
+            ARRY<1,QQ> = BATCH.NO
+            ARRY<2,QQ> = 1
+            IF SCAN.DT => BEG.DATE AND SCAN.DT <= END.DATE THEN
+               ARRY<3,QQ> = BATCH.AGE        
+               ARRY<4,QQ> = SCAC                
+               ARRY<5,QQ> = PRONUM              
+               ARRY<6,QQ> = IMAGE.NO            
+            END
+         END
+
+      NEXT I
+
+      GOSUB BUILD.DETAIL
+      IF RESP # "" THEN
+         VOUT = RESP
+      END
+      
+      RETURN
+
+****************************************************
+ERR.HANDLER:
+*****************************************************
+      ERRCODE = "" ; ERRMSG = ""
+      S = UDOGetLastError(ERRCODE, ERRMSG)
+      ERROR = "UDO ERROR: (":ERRCODE:") ":ERRMSG
+      VOUT<1> =ERROR
+
+      RETURN
+
+******************************************************
+BUILD.DETAIL:
+******************************************************
+      NEW.LINE =''
+      NEW.LINE<1> = CLIENT.ID
+      NEW.LINE<2> = CLIENT.NAME
+      NEW.LINE<3> = ITEM_SIZE
+      NEW.LINE<4> = PROC.DAY
+      NEW.LINE<8> = COMPLEX
+      BATCH.CNT = DCOUNT(ARRY<1>,@VM)
+
+      FOR J = 1 TO BATCH.CNT
+         IF J = 1 THEN
+            NEW.LINE<3> = ITEM_SIZE
+         END
+
+         NEW.LINE<5> = ARRY<1,J>    ; * BATCH  
+         NEW.LINE<6> = ARRY<2,J>    ; * BATCH CNT  
+         NEW.LINE<7> = ARRY<3,J>    ; * DAYS OLD                                
+
+         SCACS = ARRY<4,J>
+         PRONUMS = ARRY<5,J>
+         IMAGE.NOS = ARRY<6,J>
+         SCAC.CNT = DCOUNT(SCACS,@SM)
+         FOR S = 1 TO SCAC.CNT
+            NEW.LINE<9> = SCACS<1,1,S>      
+            NEW.LINE<10> = PRONUMS<1,1,S> 
+            NEW.LINE<11> = IMAGE.NOS<1,1,S>  
+            WRITE NEW.LINE ON OCR.WF.TEMP, SEQ
+            SEQ += 1
+            NEW.LINE<3>=''
+            TOT.CNT += 1
+         NEXT S                          
+      NEXT J
+
+      RETURN
+
+**********************************************
+BUILD.REPORT.DETAIL:
+**********************************************
+      CMD = 'SSELECT OCR.WF.TEMP BY 1 BY 5 BY 9 BY 10'
+      EXECUTE CMD
+      EOF=0
+      FIRST.TIME = 1
+      LOOP
+         READNEXT ID ELSE EOF = 1
+      UNTIL EOF
+         READ DATALINE FROM OCR.WF.TEMP, ID THEN
+            IF FIRST.TIME THEN
+               FIRST.TIME = 0
+               SAVE.BATCH = DATALINE<5>
+            END                           
+            IF DATALINE<5> = SAVE.BATCH AND NOT(FIRST.TIME) THEN 
+               DATALINE<6> = ''
+            END ELSE
+               SAVE.BATCH = DATALINE<5>
+            END            
+            CONVERT @AM TO CHAR(9) IN DATALINE            
+            WRITESEQ DATALINE TO FILE.OUT THEN NULL                        
+            DATALINE = ''            
+         END       
+      REPEAT
+            
+      RETURN      
+
+**********************************************
+BUILD.HEADER:
+**********************************************
+      HDR2 ='CLIENT':TAB:"CLIENT NAME":TAB:"TOTAL COUNT":TAB:"PROCESS DAY":TAB:"BATCH NUMBER":TAB:"BATCH COUNT":TAB:"DAYS OLD":TAB:"COMPLEXITY":TAB:"SCAC":TAB:"PRO":TAB:"Image No"    
+      HDR1='Daily OCR Queue Count Inactive for ':BEG.DATE'D2/':' through ':END.DATE'D2/'
+      NULL = ""
+      CONVERT TAB TO CHAR(9) IN HDR1
+      WRITESEQ HDR1 TO FILE.OUT THEN NULL
+      CONVERT TAB TO CHAR(9) IN HDR2
+      WRITESEQ HDR2 ON FILE.OUT THEN NULL     
+
+      RETURN
+      
+**********************************************
+SEND.EMAIL:
+**********************************************
+      IF USER.SV THEN                                    
+         OUT.FILE.TIME = TIME()                          
+         OUT.FILE.DATE = OCONV(DATE(),'D2-')             
+         FILE.ID2 = 'OCR.QUEUE.CNT.INACTIVE.XLS'                  
+         TO.FILE.NAME = '(COUNT.OCR.QUEUE.RPT.OUT OCR.QUEUE.CNT.INACTIVE.':OUT.FILE.DATE:'.':OUT.FILE.TIME:'.XLS'       
+         CMD = 'COPY GRB ':FILE.ID2:' (O'                
+         DATA TO.FILE.NAME                               
+         EXECUTE CMD                                     
+      END ELSE                                                 
+         PDFVIN =''
+         IF USER = "NMEDDAUGH" THEN
+             PDFVIN<1> = 'nmeddaugh@afs.net'
+         END ELSE
+            PDFVIN<1> = 'mary@afs.net'
+            PDFVIN<1,-1> = 'LCOOK@afs.net'
+            PDFVIN<1,-1> = 'CDUNGAN@afs.net'
+            PDFVIN<1,-1> = 'lnjohnson@afs.net'     
+            PDFVIN<1,-1> = 'tmccart@afs.net'       
+            READV UMAIL FROM F.BCTRL,USER,20 ELSE UMAIL = ""
+            IF UMAIL # "" THEN
+               PDFVIN<1,-1> = UMAIL
+            END
+         END
+         PDFVIN<4> = 'reports@afs.net'
+         PDFVIN<5> = 'Daily OCR Queue Counts Inactive Report'
+         BODY = ''
+         BODY<1,-1> = ' '
+         BODY<1,-1> = 'Here is the OCR Count Inactive report for ':BEG.DATE'D2/':' through ':END.DATE'D2/'
+         BODY<1,-1> = ' '
+         BODY<1,-1> = ' '
+         BODY<1,-1> = ' '
+         PDFVIN<6> = BODY
+         PDFVIN<11> = ''
+         FILE.ID2 = 'OCR.QUEUE.CNT.INACTIVE.XLS'
+         PDFVIN<11,-1> = 'e:\Ardent\accounts\afs\GRB\':FILE.ID2
+         BODY<1,-1> = 'Note : ':FILE.ID2
+         PDFVOUT=''
+         CALL SENDMAIL(PDFVIN,PDFVOUT)
+      END                                               
+
+      RETURN
+      
+   END

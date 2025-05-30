@@ -1,0 +1,790 @@
+* PROGRAM: FB.5.7
+* PROGRAM TO VOID/DELETE A CHECK
+*
+* PACKAGE: FREIGHT BILLING
+*
+* AUTHOR: BRIAN M. QUEEN
+* DATE: APRIL 23, 1992
+*
+***********************************************************************
+*
+* Last updated by AFS (valerie) at 11:37:14 on 05/04/1994.
+*   UPDATE FOR UNIVERSE AND STOP CLEARED CHECKS FROM BEING VOIDED.
+* Last updated by AFS.SOURCE (valerie) at 09:18:30 on 06/02/1994.
+*   SOMETIMES WE VOID CHECKS, BUT DO NOT WANT TO REINSTATE THE BILLS
+*   FOR PAYMENT BECAUSE THE CUSTOMER SAID NOT TO PAY THEM.  ADDED A
+*   PROMPT - REINSTATE BILLS, YES OR NO - A REASON FOR THE VOID IS
+*   REQUIRED IF THE BILL IS NOT TO BE REINSTATED.
+* Last updated by AFS.SOURCE (valerie) at 16:51:55 on 07/06/1994.
+*   ALLOW ENTRY OF A VOID DATE INSTEAD OF DEFAULTING TO TODAY.
+*   ADD NEW INSERT FOR FB.CHECKS.
+* 122804 DRF   - Put the bank code in attr 24 of any manual checks
+* 082605 - JMK05 - UPDATE FB.CHECK.DATE.XREF FILE
+* 102105 - JMK06 - UPDATE FB.CHECK.DATE.XREF FOR VOID XREF
+* 061906 - JMK07 - UPDATE COGNOS WHEN CHECKS ARE VOID OR DELETED
+* 091506 - JCW01 - USE NEW FB.CHECKS FILES
+* 111407 - JMK08 - T071096   Balancing OFB from 10-16-07 through 11-09-07
+* 121907 - JMK09 - C070443 - Create process to update SQL data tables from Universe
+* 051508 - NPR01 - WRITE DELETED/VOIDED CHECK DATA TO BACKUP FILES FB.VOIDS.HDR & FB.VOIDS.DTL
+* 042809 - JMK10 - C090561 - ACH problem
+* 082311 - JMK11 - C111060 - Remove Block on Voiding ACH
+* 083011 - JMK12 - C111060 - Remove Block on Voiding ACH
+* 083112 - RLM01 - SysAid#3073 - Replace former employees' email addresses with current employees' email addresses
+*
+$INCLUDE PROG.ADMIN INC_OPTIONS
+$INCLUDE FILE.DEFS INC_FB.BILLS.HIST
+$INCLUDE FILE.DEFS INC_FB.CHECKS
+*
+* Initialize variables
+*
+      PROMPT''
+      ERRMSG=''
+      CLIENT.ARRAY=''
+      PROG.NAME='FB.5.7'
+      PROG.DESC='Void Check'
+      PACK.NAME='Freight Billing'
+      MAT HIST.REC = ''
+      UPL.VIN = 'FBBP' ; UPL.VIN<2> = 'FB.5.7' ; UPL.VOUT = ''         ; * NPR_UPL 04/23/2010
+      CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)       ; * NPR_UPL 04/23/2010
+      MAT CHECK.REC = ''
+      CALL GET.USER(USER)
+*
+* Open files
+*
+      OPEN '','CLIENTS' TO F.CLIENT ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         CALL OPEN.ABORT("CARRIERS",PROG.NAME)
+      END
+      OPEN '','FB.BANKS' TO F.BANK ELSE
+         CALL OPEN.ABORT("FB.BANKS",PROG.NAME)
+      END
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         CALL OPEN.ABORT("FB.BILLS.CRX",PROG.NAME)
+      END
+*     OPEN '','FB.CHECKS' TO F.CHECKS ELSE          ; * JCW01
+*        CALL OPEN.ABORT("FB.CHECKS",PROG.NAME)     ; * JCW01
+*     END                                           ; * JCW01
+      OPEN '','FB.CHECKS.HDR' TO F.CHECKS ELSE     ; * JCW01
+         CALL OPEN.ABORT("FB.CHECKS.HDR",PROG.NAME)          ; * JCW01
+      END                                ; * JCW01
+      OPEN '','FB.CHECKS.DTL' TO F.CHECKS.D ELSE   ; * JCW01
+         CALL OPEN.ABORT("FB.CHECKS.DTL",PROG.NAME)          ; * JCW01
+      END                                ; * JCW01
+*
+* NPR01 Start Changes
+*
+      OPEN '','FB.VOIDS.HDR' TO F.VOIDS ELSE       ; * NPR01
+         CALL OPEN.ABORT("FB.VOIDS.HDR",PROG.NAME)           ; * NPR01
+      END                                ; * NPR01
+      OPEN '','FB.VOIDS.DTL' TO F.VOIDS.D ELSE     ; * NPR01
+         CALL OPEN.ABORT("FB.VOIDS.DTL",PROG.NAME)           ; * NPR01
+      END                                ; * NPR01
+*
+* NPR01 End Changes
+*
+      OPEN '','FB.PAY' TO F.PAY ELSE
+         CALL OPEN.ABORT("FB.PAY",PROG.NAME)
+      END
+      OPEN '','FB.MAN.CHECKS' TO F.MAN.CHECKS ELSE
+         CALL OPEN.ABORT("FB.MAN.CHECKS",PROG.NAME)
+      END
+      OPEN '','EREMIT' TO F.EREMIT ELSE
+         CALL OPEN.ABORT("EREMIT",PROG.NAME)
+      END
+      OPEN '','DELETED.CHECKS' TO F.DEL.CHECKS ELSE
+         CALL OPEN.ABORT("DELETED.CHECKS",PROG.NAME)
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         CALL OPEN.ABORT("FB.TABLES",PROG.NAME)
+      END
+      OPEN '','FB.CHECK.DATE.XREF' TO F.CHECK.DATE.XREF ELSE           ; * JMK05
+         CALL OPEN.ABORT("FB.CHECK.DATE.XREF",PROG.NAME)     ; * JMK05
+      END                                ; * JMK05
+      OPEN '','FB.ACH.FILE' TO F.ACH ELSE          ; * JMK10
+         CALL OPEN.ABORT("FB.ACH.FILE",PROG.NAME)  ; * JMK10
+      END                                ; * JMK10
+*
+* Display screen heading
+*
+      CALL AFS.SCR.HEAD('','','',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,
+         TIME.DATE,1)
+*
+* Get beginning check number
+*
+100:  CRT @(0,3):@(-3)
+      HELP="Enter the beginning check number to void. ''=Exit."
+      CALL GEN.IN(0,3,'Enter Check Number ######','',Q,0,6,'','',0,-6,
+         3 ,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='' ! QI='EX' ! QI='X'
+            STOP
+         CASE NUM(QI)
+            CHECK.NUM=QI'R%6'
+         CASE 1
+            CHECK.NUM = QI
+      END CASE
+*
+* Get ending check number
+*
+150:  HELP="Enter the ending check number to void. "
+      END.CHECK.NUM=CHECK.NUM
+      CALL GEN.IN(0,4,'Enter Check Number ':END.CHECK.NUM'R%6','',Q,0,6,'','',0,-6,
+         4 ,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      IF QI='' THEN QI=END.CHECK.NUM
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GOTO 100
+         CASE NUM(QI)
+            END.CHECK.NUM=QI'R%6'
+         CASE 1
+            END.CHECK.NUM = QI
+      END CASE
+      CRT @(19,4):END.CHECK.NUM'R%6'
+*
+* Get bank account
+*
+*DF200   CRT @(0,5):@(-3):
+200:  HELP="Enter bank ID. X=Back or EX=Exit"
+      CALL GEN.IN(0,5,'Enter bank selection. - ','',Q,0,2,'','',1,-2,5,
+         0 ,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,11):@(-4)
+            GOTO 150
+         CASE QI='EX'
+            STOP
+         CASE ALPHA(QI)
+            READ DUMMY FROM F.BANK,'BANK*':QI ELSE
+               CALL ELINE("Invalid bank ID.")
+               GOTO 200
+            END
+            IF QI='E' THEN
+*DF               CALL ELINE("You cannot void/delete a check with a bank code of E")
+*DF               GOTO 200
+            END
+            BANK=QI
+         CASE 1
+            GOTO 200
+      END CASE
+      TEMP=CHECK.NUM:'*':BANK
+      IF USER='OWEN' AND DATE()='13121' THEN
+         TEMP=CHECK.NUM[2,5]:'A*':BANK
+         CRT TEMP
+      END
+      READ DUMMY FROM F.CHECKS,TEMP THEN
+*        IF DUMMY<5>#'' THEN             ; * JMK12
+         IF DUMMY<5>#'' AND DUMMY<26>='' THEN      ; * JMK12
+            CALL ELINE('Invalid beginning check ':TEMP:' has cleared the bank')
+            GOTO 100
+         END
+      END ELSE
+         CALL ELINE('Invalid beginning check number ':TEMP)
+         GOTO 100
+      END
+      TEMP=END.CHECK.NUM:'*':BANK
+      IF USER='OWEN' AND DATE()='13121' THEN
+         TEMP=END.CHECK.NUM[2,5]:'A*':BANK
+         CRT TEMP
+      END
+      READ DUMMY FROM F.CHECKS,TEMP THEN
+*        IF DUMMY<5>#'' THEN             ; * JMK12
+         IF DUMMY<5>#'' AND DUMMY<26>='' THEN      ; * JMK12
+            CALL ELINE('Invalid ending check ':TEMP:' has cleared the bank')
+            GOTO 150
+         END
+      END ELSE
+         CALL ELINE('Invalid ending check number ':TEMP)
+         GOTO 150
+      END
+*
+* Get check item and display information
+*
+      CLIENT=''
+      REINSTATE.BILLS = 'Y'
+      VOID.DATE = DATE()
+      CHECK.ID=CHECK.NUM:'*':BANK
+      IF USER='OWEN' AND DATE()='13121' THEN
+         CHECK.ID=CHECK.NUM[2,5]:'A*':BANK
+         CRT CHECK.ID
+      END
+      MATREADU CHECK.REC FROM F.CHECKS, CHECK.ID THEN
+         DESC = FCK.VOID.DESC
+         READV CARRIER.NAME FROM F.CARRIERS, FCK.CARRIER, 1 ELSE
+            CARRIER.NAME='~~~ Unknown ~~~'
+         END
+*DF         CRT @(0,3):@(-3)
+         IF CHECK.REC(26)#'' THEN        ; * JMK10
+            CRT @(35,3):'ACH number.........':CHECK.ID       ; * JMK10
+            CRT @(35,4):'ACH date...........':FCK.DATE'D2/'  ; * JMK10
+            CRT @(35,5):'ACH amount.........':FCK.AMT'L26,#15'         ; * JMK10
+         END ELSE                        ; * JMK10
+            CRT @(35,3):'Check number.......':CHECK.ID
+            CRT @(35,4):'Check date.........':FCK.DATE'D2/'
+            CRT @(35,5):'Check amount.......':FCK.AMT'L26,#15'
+         END                             ; * JMK10
+         CRT @(35,6):'Carrier............':CARRIER.NAME'L#25'
+*
+*        IF FCK.CLR.DATE # '' THEN       ; * JMK11
+         IF FCK.CLR.DATE # '' AND CHECK.REC(26)='' THEN      ; * JMK11
+            CALL ELINE('This check has cleared the bank - cannot void.')
+            GOTO 100
+         END
+*        IF CHECK.REC(26)#'' THEN        ; * JMK10 ; * JMK11
+*           READ ACH.REC FROM F.ACH,CHECK.ID ELSE  ; * JMK10 ; * JMK11
+*              CALL ELINE('This ACH has been transmitted to the bank - cannot void.')      ; * JMK10 ; * JMK11
+*              GOTO 100                  ; * JMK10 ; * JMK11
+*           END                          ; * JMK10 ; * JMK11
+*        END                             ; * JMK10 ; * JMK11
+      END ELSE
+         RELEASE F.CHECKS,CHECK.ID
+         CALL ELINE('Check ':CHECK.ID:' not on file.')
+         GOTO 100
+      END
+      IF END.CHECK.NUM#CHECK.NUM THEN
+         CHECK.ID=END.CHECK.NUM:'*':BANK
+         IF USER='OWEN' AND DATE()='13121' THEN
+            CHECK.ID=END.CHECK.NUM[2,5]:'A*':BANK
+            CRT CHECK.ID
+         END
+         MATREADU CHECK.REC FROM F.CHECKS, CHECK.ID THEN
+            DESC = FCK.VOID.DESC
+            READV CARRIER.NAME FROM F.CARRIERS, FCK.CARRIER, 1 ELSE
+               CARRIER.NAME='~~~ Unknown ~~~'
+            END
+*DF           CRT @(0,3):@(-3)
+            IF CHECK.REC(26)#'' THEN     ; * JMK10
+               CRT @(35,8):'ACH number.........':CHECK.ID    ; * JMK10
+               CRT @(35,9):'ACH date...........':FCK.DATE'D2/'         ; * JMK10
+               CRT @(35,10):'ACH amount.........':FCK.AMT'L26,#15'     ; * JMK10
+            END ELSE                     ; * JMK10
+               CRT @(35,8):'Check number.......':CHECK.ID
+               CRT @(35,9):'Check date.........':FCK.DATE'D2/'
+               CRT @(35,10):'Check amount.......':FCK.AMT'L26,#15'
+            END                          ; * JMK10
+            CRT @(35,11):'Carrier............':CARRIER.NAME'L#25'
+*
+*           IF FCK.CLR.DATE # '' THEN    ; * JMK11
+            IF FCK.CLR.DATE # '' AND CHECK.REC(26)='' THEN   ; * JMK11
+               CALL ELINE('This check has cleared the bank - cannot void.')
+               GOTO 200
+            END
+*           IF CHECK.REC(26)#'' THEN        ; * JMK10 ; * JMK11
+*              READ ACH.REC FROM F.ACH,CHECK.ID ELSE  ; * JMK10 ; * JMK11
+*                 CALL ELINE('This ACH has been transmitted to the bank - cannot void.')      ; * JMK10 ; * JMK11
+*                 GOTO 100                  ; * JMK10 ; * JMK11
+*              END                          ; * JMK10 ; * JMK11
+*           END                             ; * JMK10 ; * JMK11
+         END ELSE
+            RELEASE F.CHECKS,CHECK.ID
+            CALL ELINE('Check ':CHECK.ID:' not on file.')
+            GOTO 150
+         END
+      END
+*
+* Determine if Void or Delete
+*
+250:  CRT @(0,16):"+-----------------------------------------------------------------------------+"
+      CRT @(0,17):"| VOID will show the check as void on check register whereas DELETE will      |"
+      CRT @(0,18):"| allow the check number to be reused and will not show on the check register |"
+      CRT @(0,19):"| until the check number is used.                                             |"
+      CRT @(0,20):"+-----------------------------------------------------------------------------+"
+      HELP="Enter V to void or D to delete check and reinstate invoices. 'X'=Back."
+      CALL GEN.IN(0,22,"Void or Delete check?  ",'',Q,1,1,'','',0,-1,
+         22 ,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      CRT @(0,16):@(-3)
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            GOTO 200
+         CASE QI='V'
+            PROCESS.FLAG='V'
+         CASE QI='D'
+            PROCESS.FLAG='D'
+            TEXT='Deleting check - Please wait.'
+            GOTO 600
+         CASE 1
+            GOTO 250
+      END CASE
+*
+* Get void date
+*
+275:  HELP="Enter the void date.  Must be within 45 days.'X'=Back."
+      CALL GEN.IN(0,8,'Void date.':DATE()'D2/','DATE',VOID.DATE,0,8,
+         '','',1,-8,8,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,8):@(-4)
+            GOTO 250
+         CASE QI='EX'
+            RELEASE
+            STOP
+         CASE VOID.DATE > DATE()+5
+            CALL ELINE('Warning!! This date is too far in the future')
+            GOTO 275
+         CASE VOID.DATE > DATE()
+            CALL ELINE('Warning!! This date is in the future')
+         CASE VOID.DATE < (DATE() - 45)
+            CALL ELINE( "Date Can't be more than 45 days ago" )
+            GOTO 275
+         CASE 1
+            NULL
+      END CASE
+      CRT @(10,8):VOID.DATE'D2/'
+*OH*** See if they are going to Cross Months **
+*OH*      VOID.MONTH=OCONV(VOID.DATE,'DM')
+*OH*      CHECK.MONTH=OCONV(CHECK.REC(2),'DM')
+*OH*      IF VOID.MONTH#CHECK.MONTH OR VOID.DATE-CHECK.REC(2) > 90 THEN
+*OH*285     CRT @(0,20):@(-3):CHAR(7):"WARNING: You will be Crossing months for the void!!!!"
+*OH*        CRT @(0,21):"Enter: 'I UNDERSTAND AND AGREE TO CROSS MONTHS'"
+*OH*        CALL GEN.IN(0,22,"Acknowledgment: ",'',Q,1,38,'','',0,16,22,1,QI,HELP,0,23)
+*OH*        QI=OCONV(QI,'MCU')
+*OH*        BEGIN CASE
+*OH*          CASE QI='X'
+*OH*            GOTO 275
+*OH*          CASE QI = ''
+*OH*            GO 285
+*OH*          CASE QI#'I UNDERSTAND AND AGREE TO CROSS MONTHS'
+*OH*            CALL ELINE("Error: You did not enter the acknowledgement correctly")
+*OH*            CRT @(0,20):@(-3):
+*OH*            GO 275
+*OH*          CASE 1
+*OH*            SUBJ=USER:' Is Voiding Checks Crossing Months'
+*OH*            TEXT=USER:' Is Voiding Checks which crosses Accounting Months'
+*OH*            TEXT<1,2>=' This is usually a problem that has to be corrected by the IT Department'
+*OH*            TEXT<1,3>=' Starting Check#: ':CHECK.NUM
+*OH*            TEXT<1,4>=' Ending Check # : ':END.CHECK.NUM
+*OH*            TEXT<1,5>=' Check #':CHECK.NUM:' Check Date: ':CHECK.REC(2)'D4-'
+*OH*            TEXT<1,6>=' Void Date used ':VOID.DATE'D4-'
+*OH*            MVIN=''
+*OH*            MVIN<1>='KGilbert@afs.net'
+*OH*            MVIN<2,1>='DCurtis@afs.net'
+*OH*            MVIN<2,2>='AGrubbs@afs.net'
+*OH*            MVIN<2,3>='KRivet@afs.net'
+*OH*            MVIN<2,4>='OHolman@afs.net'
+*OH*            MVIN<2,5>='DFriend@afs.net'
+*OH*IF USER='OWEN' THEN
+*OH*  MVIN<1>='OHolman@afs.net'
+*OH*  MVIN<2>=''
+*OH*END
+*OH*            MVIN<4>='AccountingErrors@afs.net'
+*OH*            MVIN<5>=SUBJ
+*OH*            MVIN<6>=TEXT
+*OH*            CALL SENDMAIL(MVIN,MVOUT)
+*OH*        END CASE
+*OH*
+*OH*      END
+*
+* Get reason for voiding check
+*
+300:  FOR I=1 TO 3
+         CRT @(0,I+8):DESC<1,I>'L#30'
+      NEXT I
+      HELP="Enter reason for voiding check. ' '=Clear line. 'X'=Back."
+      PRMPT=DESC<1,1>:STR('-',30-LEN(DESC<1,1>))
+      CALL GEN.IN(0,9,PRMPT,'',Q,0,30,'','',1,-30,9,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,7):@(-3):
+            GOTO 275
+         CASE QI='EX'
+            RELEASE
+            STOP
+         CASE QI=' '
+            DESC=''
+         CASE Q NE ''
+            DESC<1,1>=Q
+      END CASE
+      CRT @(0,9):DESC<1,1>'L#30'
+*
+310:  PRMPT=DESC<1,2>:STR('-',30-LEN(DESC<1,2>))
+      CALL GEN.IN(0,10,PRMPT,'',Q,0,30,'','',1,-30,10,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,10):@(-4):
+            GOTO 300
+         CASE QI='EX'
+            RELEASE
+            STOP
+         CASE QI=' '
+            DESC<1,2>=''
+         CASE Q NE ''
+            DESC<1,2>=Q
+      END CASE
+      CRT @(0,10):DESC<1,2>'L#30'
+*
+      PRMPT=DESC<1,3>:STR('-',30-LEN(DESC<1,3>))
+      CALL GEN.IN(0,11,PRMPT,'',Q,0,30,'','',1,-30,11,0,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            CRT @(0,11):@(-4):
+            GOTO 310
+         CASE QI='EX'
+            RELEASE
+            STOP
+         CASE QI=' '
+            DESC<1,3>=''
+         CASE Q NE ''
+            DESC<1,3>=Q
+      END CASE
+      CRT @(0,11):DESC<1,3>'L#30'
+*
+* PROMPT REINSTATE CHECK
+*
+500:  HELP="Enter Y to reinstate & select or N to leave bills paid. 'X'=Back."
+      CALL GEN.IN(0,22,"Reinstate Bills? Y",'',Q,1,1,'','',0,-1,22,1,
+         QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='X'
+            GOTO 300
+         CASE QI='Y' OR QI = ''
+            NULL
+         CASE QI='N'
+            IF DESC<1,1> = '' THEN
+               CALL ELINE('A VOID REASON MUST BE ENTERED TO LEAVE BILLS PAID.')
+               GOTO 300
+            END
+            REINSTATE.BILLS = 'N'
+         CASE 1
+            GOTO 500
+      END CASE
+*
+* VERIFY CHECK RANGE
+*
+600:  ***
+      IF PROCESS.FLAG='V' THEN
+         HELP=' Enter <YES> to confirm you are voiding ':END.CHECK.NUM-CHECK.NUM+1:' check(s).'
+      END ELSE
+         HELP=' Enter <YES> to confirm you are deleting ':END.CHECK.NUM-CHECK.NUM+1:' check(s).'
+      END
+      CALL GEN.IN(0,22,"Is Information Correct:     ",'',Q,1,3,'','',0,-3,22,1,
+         QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI='EX'
+            STOP
+         CASE QI='X'
+            IF PROCESS.FLAG='V' THEN
+               GOTO 500
+            END ELSE
+               GOTO 250
+            END
+         CASE QI='YES'
+            NULL
+         CASE QI='NO' OR QI='N'
+            GOTO 100
+         CASE 1
+            CALL ELINE('Invalid Entry')
+            GOTO 600
+      END CASE
+*
+* Clear check date, number and amount from pro cross reference file
+*
+      IF PROCESS.FLAG='V' THEN
+         TEXT="Voiding check - Please Wait."
+      END ELSE
+         TEXT="Deleting check - Please Wait."
+      END
+      CRT @(0,13):@(-3)
+400:  CALL CENTER(TEXT,80)
+      CRT @(0,13):TEXT
+      FOR XX = CHECK.NUM TO END.CHECK.NUM
+         CLIENT.ARRAY=''
+         CHECK.ID=XX'R%6':'*':BANK
+         IF USER='OWEN' AND DATE()='13121' THEN
+            CHECK.ID=XX[2,5]:'A*':BANK
+            CRT CHECK.ID
+         END
+         MATREADU CHECK.REC FROM F.CHECKS, CHECK.ID THEN
+*DF            IF FCK.CARRIER#'24334' THEN
+*              IF FCK.CLR.DATE = '' THEN  ; * JMK12
+               IF FCK.CLR.DATE = '' OR CHECK.REC(26)#'' THEN    ; * JMK12
+*                 IF FCK.CARRIER='0' AND FCK.PRO='' THEN        ; * JCW01
+                  IF FCK.CARRIER='0' AND FCK.DTL.CNT = 0 THEN   ; * JCW01
+                     IF REINSTATE.BILLS='N' ELSE
+                        SEQ.NUM=1
+GET.NEXT.ITEM:          ***
+                        READU MAN.REC FROM F.MAN.CHECKS,SEQ.NUM'R%6' THEN
+                           RELEASE F.MAN.CHECKS,SEQ.NUM'R%6'
+                           SEQ.NUM=SEQ.NUM+1
+                           GOTO GET.NEXT.ITEM
+                        END ELSE
+                           CHECK.REC(24)=BANK
+                           MATWRITE CHECK.REC ON F.MAN.CHECKS,SEQ.NUM'R%6'
+                        END
+                     END
+                  END
+                  DEL.ID=CHECK.ID:'*':DATE():'*':TIME():'*':USER
+                  MATWRITE CHECK.REC ON F.DEL.CHECKS,DEL.ID
+*
+                  V.CHECK.REC = ""          ; * NPR01
+                  FOR LL = 1 TO CHECK.REC.SIZE        ; * NPR01
+                     V.CHECK.REC<LL> = CHECK.REC(LL)  ; * NPR01
+                  NEXT LL                   ; * NPR01
+                  WRITE V.CHECK.REC ON F.VOIDS , DEL.ID         ; * NPR01
+*
+                  READV CARRIER.NAME FROM F.CARRIERS, FCK.CARRIER, 1 ELSE
+                     CARRIER.NAME='~~~ Unknown ~~~'
+                  END
+*DF               CRT @(0,3):@(-3)
+                  IF CHECK.REC(26)#'' THEN  ; * JMK10
+                     CRT @(25,3):'ACH number.........':CHECK.ID           ; * JMK10
+                     CRT @(25,4):'ACH date...........':FCK.DATE'D2/'      ; * JMK10
+                     CRT @(25,5):'ACH amount.........':FCK.AMT'L26,#15'   ; * JMK10
+                  END ELSE                  ; * JMK10
+                     CRT @(25,15):'Check number.......':CHECK.ID
+                     CRT @(25,16):'Check date.........':FCK.DATE'D2/'
+                     CRT @(25,17):'Check amount.......':FCK.AMT'L26,#15'
+                  END                       ; * JMK10
+                  CRT @(25,18):'Carrier............':CARRIER.NAME'L#30'
+                  ITEM.AMT=0
+*                 X=DCOUNT(FCK.PRO,CHAR(253))
+                  X = FCK.DTL.CNT
+                  FOR I=1 TO X
+                     CALL PROG.BAR(22,I,X,PER)
+                     DTL.ID = CHECK.ID:'*':I          ; * JCW01
+                     READ DTL.REC FROM F.CHECKS.D, DTL.ID ELSE  ; * JCW01
+                        MSG = 'FB.CHECKS.DTL record ':DTL.ID:' not found; program will stop.'           ; * JCW01
+*                       MSG := CHAR(10):CHAR(13):'Notify Jay Webert in Information Systems.':CHAR(10):CHAR(13)    ; * JCW01 ; * JMK11
+                        MSG := CHAR(10):CHAR(13):'Notify Help Desk in Information Systems.':CHAR(10):CHAR(13)     ; * JCW01 ; * JMK11
+                        CALL ELINE(MSG)     ; * JCW01
+                        STOP                ; * JCW01
+                     END                    ; * JCW01
+*
+                     DEL.DTL.ID = CHECK.ID:'*':I:"*":DATE():'*':TIME():'*':USER     ; *NPR01
+                     WRITE DTL.REC ON F.VOIDS.D , DEL.DTL.ID    ; *NPR01
+*
+*                    PRO.ID=FCK.PRO<1,I> ; * JCW01
+                     PRO.ID = DTL.REC<1>    ; * JCW01
+                     CLIENT = DTL.REC<3>    ; * JCW01
+                     VERSION=FIELD(PRO.ID,'*',3)
+                     IF VERSION=0 THEN
+                        READU CRX.REC FROM F.CRX,PRO.ID THEN
+*                          CLIENT=CRX.REC<1> ; * JCW01
+                           IF REINSTATE.BILLS = 'N' THEN
+                              CRX.REC<13> = 0
+                           END ELSE
+                              CRX.REC<13>=''
+                              CRX.REC<14>=''
+                              CRX.REC<15>=''
+                           END
+                           WRITE CRX.REC ON F.CRX, PRO.ID
+*NPR00    012510                         CALL UPD.CRX.DF.FILE(PROG.NAME,"",PRO.ID,CRX.REC) ;*NPR00
+                           LOCATE CLIENT IN CLIENT.ARRAY SETTING POS ELSE CLIENT.ARRAY<-1>=CLIENT
+                        END
+*
+*    Clear check date, number and amount from client history file
+*
+                        OPEN '','FB.BILLS.HIST,':CLIENT TO F.HIST THEN
+                           MATREADU HIST.REC FROM F.HIST,PRO.ID THEN
+                              IF REINSTATE.BILLS = 'N' THEN
+                                 FBH.CK.AMT = 0
+                              END ELSE
+                                 FBH.CK.AMT = ''
+                                 FBH.CK.NO = ''
+                                 FBH.CK.DATE = ''
+                                 MATWRITE HIST.REC ON F.PAY, CLIENT:'*':PRO.ID
+                              END
+                              MATWRITE HIST.REC ON F.HIST, PRO.ID
+                              ITEM.AMT=ITEM.AMT+HIST.REC(8)
+                              READU COGNOS.REC FROM F.TABLES,'COGNOS.UPDATE' ELSE COGNOS.REC=''         ; * JMK07
+                              COGNOS.ORG=COGNOS.REC   ; * JMK07
+                              TEST=CLIENT:'*':HIST.REC(37)      ; * JMK07
+                              LOCATE TEST IN COGNOS.REC SETTING TPOS ELSE           ; * JMK07
+                                 COGNOS.REC<-1>=TEST  ; * JMK07
+                              END           ; * JMK07
+                              IF COGNOS.REC#COGNOS.ORG THEN     ; * JMK07
+                                 WRITE COGNOS.REC ON F.TABLES,'COGNOS.UPDATE'       ; * JMK07
+                              END           ; * JMK07
+                              RELEASE F.TABLES,'COGNOS.UPDATE'  ; * JMK07
+                              READ PRO.REC FROM F.HIST,PRO.ID THEN        ; * JMK09
+                                 READ CLIENT.ITM FROM F.CLIENT,CLIENT ELSE CLIENT.ITM=''      ; * JMK09
+                                 OPEN '','EDI.BILLS.HIST,':CLIENT TO F.EDI.BILLS.HIST THEN    ; * JMK09
+                                    READ EDI.HIST.REC FROM F.EDI.BILLS.HIST,PRO.ID ELSE       ; * JMK09
+                                       EDI.HIST.REC=''          ; * JMK09
+                                    END     ; * JMK09
+                                 END ELSE   ; * JMK09
+                                    EDI.HIST.REC=''   ; * JMK09
+                                 END        ; * JMK09
+                                 IF CLIENT.ITM<12>='Y' THEN     ; * JMK09
+                                    OPEN '','DIVISION.CODES,':CLIENT TO F.DIV THEN  ; * JMK09
+                                       READ DIV.ITM FROM F.DIV,PRO.REC<9> ELSE      ; * JMK09
+                                          DIV.ITM=''  ; * JMK09
+                                       END  ; * JMK09
+                                    END ELSE          ; * JMK09
+                                       DIV.ITM=''     ; * JMK09
+                                    END     ; * JMK09
+                                 END ELSE   ; * JMK09
+                                    DIV.ITM=''        ; * JMK09
+                                 END        ; * JMK09
+                                 OPEN '','VEND.CUST,':CLIENT TO F.VC THEN           ; * JMK09
+                                    READ VC.ITM FROM F.VC,PRO.REC<17> ELSE          ; * JMK09
+                                       VC.ITM=''      ; * JMK09
+                                    END     ; * JMK09
+                                 END ELSE   ; * JMK09
+                                    VC.ITM=''         ; * JMK09
+                                 END        ; * JMK09
+                                 SQLVIN=''  ; * JMK09
+                                 SQLVIN<1>=USER       ; * JMK09
+                                 SQLVIN<2>=CLIENT     ; * JMK09
+                                 SQLVIN<3>=PRO.ID     ; * JMK09
+                                 SQLVOUT=''           ; * JMK09
+*                                CALL UPD.SQL.FBHIST.SUB(SQLVIN,SQLVOUT,CLIENT.ITM,DIV.ITM,VC.ITM,PRO.REC,EDI.HIST.REC)     ; * JMK09
+                              END           ; * JMK09
+                           END
+                        END
+                     END
+                  NEXT I
+*                 IF FCK.PRO#'' THEN ; * JCW01
+                  IF FCK.DTL.CNT > 0 OR FCK.PRO = "Void" THEN   ; * JCW01
+                     IF ITEM.AMT#FCK.AMT THEN
+                        TEMP.LINE='Check # ':XX:' shows amount ':FCK.AMT'L26,#12':' but items adds up to ':ITEM.AMT'L26,#12'
+                        CALL ELINE(TEMP.LINE)
+                        READ DTEMP FROM F.TABLES,'CHECK.LOCK' ELSE DTEMP=''
+                        IF DTEMP='' THEN
+                           DTEMP=USER:'-DELETE-'
+                           DTEMP<2>=DATE()
+                           DTEMP<3>=TIME()
+                        END
+                        DTEMP<4,-1>=TEMP.LINE
+                        WRITE DTEMP ON F.TABLES,'CHECK.LOCK'
+                     END
+                  END
+*
+*    Void check item
+*
+                  IF PROCESS.FLAG='V' THEN
+                     FCK.ORIG.AMT = FCK.AMT
+*                    FCK.ORIG.PRO = FCK.PRO  ; * Save the Pros on Voided Checks  ; * JCW01
+                     FCK.AMT = 0
+                     FCK.CLR.DATE = VOID.DATE
+                     FCK.CLR.AMT = 0
+                     FCK.PRO = 'Void'
+                     FCK.VOID.DESC = DESC<1>
+                     FCK.VOID.DATE = VOID.DATE
+                     FCK.REINSTATE = REINSTATE.BILLS  ; * JMK08
+                     MATWRITE CHECK.REC ON F.CHECKS,CHECK.ID
+                     DELETE F.EREMIT,CHECK.ID:'.XLS'
+                     READU XREF.REC FROM F.CHECK.DATE.XREF,VOID.DATE:'*V' ELSE XREF.REC=''    ; * JMK06
+                     LOCATE(CHECK.ID,XREF.REC;SSPOS) ELSE       ; * JMK06
+                        XREF.REC<-1>=CHECK.ID         ; * JMK06
+                        WRITE XREF.REC ON F.CHECK.DATE.XREF,VOID.DATE:'*V'          ; * JMK06
+                     END                    ; * JMK06
+                     IF CHECK.REC(26)#'' THEN         ; * JMK10
+                        DELETE F.ACH,CHECK.ID         ; * JMK10
+                     END                    ; * JMK10
+                  END ELSE
+                     READU XREF.REC FROM F.CHECK.DATE.XREF,FCK.DATE ELSE XREF.REC=''          ; * JMK05
+                     LOCATE(CHECK.ID,XREF.REC;SSPOS) THEN       ; * JMK05
+                        DEL XREF.REC<SSPOS>           ; * JMK05
+                        IF XREF.REC='' THEN           ; * JMK05
+                           DELETE F.CHECK.DATE.XREF,FCK.DATE    ; * JMK05
+                        END ELSE            ; * JMK05
+                           WRITE XREF.REC ON F.CHECK.DATE.XREF,FCK.DATE   ; * JMK05
+                        END                 ; * JMK05
+                     END                    ; * JMK05
+                     DELETE F.CHECKS,CHECK.ID
+                     IF CHECK.REC(26)#'' THEN         ; * JMK10
+                        DELETE F.ACH,CHECK.ID         ; * JMK10
+                     END                    ; * JMK10
+*
+*
+                     V.CHECK.REC = ""       ; * NPR01
+                     FOR LL = 1 TO CHECK.REC.SIZE     ; * NPR01
+                        V.CHECK.REC<LL> = CHECK.REC(LL)         ; * NPR01
+                     NEXT LL                ; * NPR01
+                     DEL.ID=CHECK.ID:'*':DATE():'*':TIME():'*':USER       ; * NPR01
+                     WRITE V.CHECK.REC ON F.VOIDS , DEL.ID      ; * NPR01
+*
+                     IF FCK.DTL.CNT > 0 THEN          ; * JCW01
+                        FOR I = 1 TO FCK.DTL.CNT      ; * JCW01
+                           DTL.ID = CHECK.ID:'*':I    ; * JCW01
+                           DELETE F.CHECKS.D, DTL.ID  ; * JCW01
+*
+                           DEL.DTL.ID = CHECK.ID:'*':I:"*":DATE():'*':TIME():'*':USER         ; *NPR01
+                           READ W.DTL.REC FROM F.CHECKS.D , DTL.ID ELSE W.DTL.REC = ""        ; *NPR01
+                           WRITE W.DTL.REC ON F.VOIDS.D , DEL.DTL.ID      ; *NPR01
+*
+                        NEXT I              ; * JCW01
+                     END                    ; * JCW01
+                     DELETE F.EREMIT,CHECK.ID:'.XLS'
+                  END
+*
+*    Delete client check item
+*
+*                 X=DCOUNT(CLIENT.ARRAY,CHAR(254))                           ; * JCW01
+*                 FOR I=1 TO X                                               ; * JCW01
+*                    CLIENT=CLIENT.ARRAY<I>                                  ; * JCW01
+*                    OPEN '','FB.CHECKS,':CLIENT TO F.CLNT.CHECKS THEN       ; * JCW01
+*                       MATREADU CHECK.REC FROM F.CLNT.CHECKS, CHECK.ID THEN ; * JCW01
+*    This section added 1/17/97 due to voids erasing all
+*    information from the Client file. Now it acts exactally
+*    like the real check file keeping pros on the record if
+*    the bills are not reinstated.
+*                          IF PROCESS.FLAG='V' THEN          ; * JCW01
+*                             FCK.ORIG.AMT = FCK.AMT         ; * JCW01
+*                             FCK.ORIG.PRO = FCK.PRO ; * Save the Pros on Voided Checks  ; * JCW01
+*                             FCK.AMT = 0                    ; * JCW01
+*                             FCK.CLR.DATE = VOID.DATE       ; * JCW01
+*                             FCK.CLR.AMT = 0                ; * JCW01
+*                             FCK.PRO = 'Void'               ; * JCW01
+*                             FCK.VOID.DESC = DESC<1>        ; * JCW01
+*                             FCK.VOID.DATE = VOID.DATE      ; * JCW01
+*                             MATWRITE CHECK.REC ON F.CLNT.CHECKS,CHECK.ID ; * JCW01
+*                          END ELSE                          ; * JCW01
+*                             DELETE F.CLNT.CHECKS,CHECK.ID  ; * JCW01
+*                          END                               ; * JCW01
+*                    IF PROCESS.FLAG='V' THEN
+*                      MATWRITE CHECK.REC ON F.CLNT.CHECKS,CHECK.ID
+*                    END ELSE
+*                      DELETE F.CLNT.CHECKS,CHECK.ID
+*                    END
+*      Always delete Voids and "Deletes" out of Client Check File
+*                    DELETE F.CLNT.CHECKS,CHECK.ID
+*                       END  ; * JCW01
+*                    END     ; * JCW01
+*                 NEXT I     ; * JCW01
+               END ELSE
+                  RELEASE F.CHECKS,CHECK.ID
+                  CALL ELINE('Check ':CHECK.ID:' has cleared the bank. - SKIPPING')
+               END
+*DF            END ELSE
+*DF               RELEASE F.CHECKS,CHECK.ID
+*DF               CALL ELINE('Check ' :CHECK.ID:' is for carrier 24334 American Express and cannot be modified')
+*DF            END
+         END ELSE
+            RELEASE F.CHECKS,CHECK.ID
+            CALL ELINE('Check ':CHECK.ID:' not on file. - SKIPPING')
+         END
+      NEXT XX
+      IF DTEMP#'' THEN
+         EMAIL.OUT=''
+         EMAIL.OUT<1>='dfriend@afs.net'
+*        EMAIL.OUT<2>='oweninfo@afs.net'  ; * RLM01
+*        EMAIL.OUT<2>='bfranklin@afs.net'  ; * RLM01
+         EMAIL.OUT<5>='Problem match amount in the void/delete check program (FB.5.7)'
+         EMAIL.OUT<6>=DTEMP<4>
+         EMAIL.OUT<6,-1>='The CHECK.LOCK item in FB.TABLES will need to be removed after this is fixed'
+         VIN=EMAIL.OUT
+         CALL SENDMAIL(VIN,VOUT)
+      END
+*
+      RELEASE
+      GOTO 100
+*
+********************************************************************
+*
+   END

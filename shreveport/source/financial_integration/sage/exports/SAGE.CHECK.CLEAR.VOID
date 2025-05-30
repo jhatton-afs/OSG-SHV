@@ -1,0 +1,846 @@
+****************************************
+* Program name : SAGE.CHECK.CLEAR.VOID
+* Author       : Steve Barbee
+* Date written : May 29, 2015
+* Library      : FBBP
+* COPYRIGHT (c) : AFS, LLC 2021, All Rights Reserved.
+*
+* Last updated by afs (AFSLOGISTICS\gbino) at 12:20:18 on 09/09/2020.
+*
+* Start modification history
+* Mod nn  mm/dd/yy, init, req #, description
+* 071817 - DRF01 - SysAid 34159 corrected to have the correct check number on the email
+
+* End modification history
+*
+*******************************************
+
+*Notes:
+**The expected download will have 1 line for each Check #
+
+*If the dollar amount is negative, it means the check is voided.
+*Otherwise, the check has cleared
+
+* Format of file is;
+*   Bank Code (send us the F2 and we will translate to F)
+*   Check #
+*   Cleared Date
+*   Check Amount (Negative of original Check Amount means ?Void?)
+************************************************************************
+      PROMPT ''
+      PROG.NAME = 'SAGE.CHECK.CLEAR.VOID'
+      PROG.DESC = 'Post Sage Voids and Cleared Checks'
+      PACK.NAME = 'Freight Billing'
+      CO.NAME='AFS, LLC'
+      FATAL.ERRORS = ''
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,'',PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+      OPEN '','BCTRL' TO F.BCTRL ELSE
+         FATAL.ERRORS<-1> = 'Cannot open BCTRL file. Stopping....'
+      END
+      OPEN '','FB.TABLES' TO F.TABLES ELSE
+         FATAL.ERRORS<-1> = 'Cannot open FB.TABLES file. Stopping....'
+      END
+      OPEN '','SAGE.UV.IN' TO F.IN ELSE
+         FATAL.ERRORS<-1> = 'Cannot open SAGE.UV.IN file. Stopping....'
+      END
+      OPEN '','SAGE.UV.IN.HIST' TO F.IN.HIST ELSE
+         FATAL.ERRORS<-1> = 'Cannot open SAGE.UV.IN.HIST file. Stopping....'
+      END
+      OPEN '','SAGE.UV.IN.CHK.CLEARING.NEEDED' TO F.IN.CHK.CLEARING ELSE
+         FATAL.ERRORS<-1> = 'Cannot open SAGE.UV.IN.CHK.CLEARING.NEEDED file. Stopping....'
+      END
+      OPEN '','FB.CHECK.DATE.XREF' TO F.CHECK.DATE.XREF ELSE
+         FATAL.ERRORS<-1> = 'Cannot open FB.CHECK.DATE.XREF file. Stopping....'
+      END
+      OPEN '','FB.CHECKS.HDR' TO F.CHECKS.HDR ELSE
+         FATAL.ERRORS<-1> = 'Cannot open FB.CHECKS.HDR file. Stopping....'
+      END
+      OPEN '','FB.CHECKS.DTL' TO F.CHECKS.D ELSE
+         FATAL.ERRORS<-1> = 'Cannot open FB.CHECKS.DTL file. Stopping....'
+      END
+      OPEN '','FB.BILLS.CRX' TO F.CRX ELSE
+         FATAL.ERRORS<-1> = 'Cannot open FB.BILLS.CRX file. Stopping....'
+      END
+      OPEN '','FB.VOIDS.HDR' TO F.VOIDS ELSE
+         FATAL.ERRORS<-1> = "Cannot open FB.VOIDS.HDR. Stopping...."
+      END
+      OPEN '','FB.VOIDS.DTL' TO F.VOIDS.D ELSE
+         FATAL.ERRORS<-1> = "Cannot open FB.VOIDS.DTL. Stopping...."
+      END
+      OPEN '','FB.OPEN.BILLS' TO F.OPEN.BILLS ELSE
+         FATAL.ERRORS<-1> = 'Cannot open FB.OPEN.BILLS file. Stopping....'
+      END
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         FATAL.ERRORS<-1> = 'Cannot open CLIENTS file. Stopping....'
+      END
+      OPEN '','CARRIERS' TO F.CARRIERS ELSE
+         FATAL.ERRORS<-1> = 'Cannot open CLIENTS file. Stopping....'
+      END
+      OPEN '','SAGE.VOIDED.CHECKS' TO F.SAGE.VOIDED.CHECKS ELSE
+         FATAL.ERRORS<-1> = 'Cannot open SAGE.VOIDED.CHECKS file. Stopping....'
+      END
+      OPEN '','AUDIT.LOG.MULT' TO F.AUDIT.LOG ELSE ABORT
+
+      CALL GET.USER(USER)
+* Begin GRB01
+      VIN1=""
+      VIN1<1> = PROG.NAME
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "S"
+      CALL PROGTRACK(VIN1,VOUT1)
+* End GRB01
+      LOCK.CNT = 0
+      TESTING = 0
+      DEBUGGING = 0
+*******************************************************************************************
+STATUS.LOCK:
+*******************************************************************************************
+      READU STATUS.REC FROM F.TABLES, 'SAGE.IMPORT.STATUS' LOCKED
+
+         CUR.TIME = TIME()
+         BEGIN CASE
+            CASE CUR.TIME >= 61200 OR CUR.TIME <= 28800
+               IF LOCK.CNT = 0 OR LOCK.CNT = 60 THEN
+                  EXECUTE 'BBSEND GREGB FB.TABLES SAGE.IMPORT.STATUS is locked in SAGE.CHECK.CLEAR.VOID'
+                  EXECUTE 'BBSEND DAVID FB.TABLES SAGE.IMPORT.STATUS is locked in SAGE.CHECK.CLEAR.VOID'
+               END
+               IF LOCK.CNT => 120 THEN
+                  EXECUTE 'BBSEND GREGB FB.TABLES SAGE.IMPORT.STATUS was locked for 10 minutes in SAGE.CHECK.CLEAR.VOID and has aborted.'
+                  EXECUTE 'BBSEND DAVID FB.TABLES SAGE.IMPORT.STATUS was locked for 10 minutes in SAGE.CHECK.CLEAR.VOID and has aborted.'
+                  STOP
+               END
+            CASE LOCK.CNT = 0
+               EXECUTE 'BBSEND GREGB FB.TABLES SAGE.IMPORT.STATUS is locked in SAGE.CHECK.CLEAR.VOID'
+               EXECUTE 'BBSEND DAVID FB.TABLES SAGE.IMPORT.STATUS is locked in SAGE.CHECK.CLEAR.VOID'
+            CASE 1
+         END CASE
+
+         EXECUTE 'SLEEP 5'
+         LOCK.CNT += 1
+         GOTO STATUS.LOCK
+      END THEN
+         MODE = STATUS.REC<1>
+         BEGIN CASE
+            CASE MODE = 'VOID'
+               F.FROM = F.IN
+               FROM.FILE.NAME = 'SAGE.UV.IN'
+               F.TO = F.IN.CHK.CLEARING
+               TO.FILE.NAME = 'SAGE.UV.IN.CHK.CLEARING.NEEDED'
+
+            CASE MODE = 'CLEARING'
+               F.FROM = F.IN.CHK.CLEARING
+               FROM.FILE.NAME = 'SAGE.UV.IN.CHK.CLEARING.NEEDED'
+               F.TO = F.IN.HIST
+               TO.FILE.NAME = 'SAGE.UV.IN.HIST'
+
+            CASE 1
+               FATAL.ERRORS = 'FB.TABLES SAGE.IMPORT.STATUS field 1 of ':STATUS.REC<1>:' is not "VOID" OR "CLEARING" '
+         END CASE
+      END ELSE
+         FATAL.ERRORS = 'FB.TABLES SAGE.IMPORT.STATUS is missing'
+      END
+      IF FATAL.ERRORS # '' THEN
+*If a file couldn't be opened, send an email saying so and then STOP
+         ERRORS.EMAIL.SUBJECT = 'Download from SAGE failed because file(s) could not be opened.'
+         GOSUB SEND.EMAIL
+         RELEASE F.TABLES, 'SAGE.IMPORT.STATUS'
+         GO THE.END
+      END
+
+      READ DBCTRL FROM F.BCTRL,USER ELSE DBCTRL = ''
+      IF DBCTRL<14>='A' THEN
+         USER.TYPE='A'
+      END ELSE
+         USER.TYPE=''
+      END
+      USER.DPT=DBCTRL<15>
+      INT.TODAY = DATE()
+      TAB.CHAR = CHAR(009)
+      PREV.CLIENT = '&$#'
+      INT.TODAY = DATE()
+      VERSION = 0
+      SOFT.ERRORS = ''
+      AVIN = ''
+      AVIN<1> = 'AFS'                    ; * System Name for Audit Log file
+      AVIN<2> = PROG.NAME
+      AVIN<3> = USER
+
+*Begin Part 1. Loop thru all lines reading everything that needs to be read to verify that all
+*necessary records are there. Report all errors that can be identified.
+
+      ERRORS.EMAIL.SUBJECT = 'Check Clearing and Void Download from SAGE Part 1 had errors.'
+
+      IF DEBUGGING THEN DEBUG
+      STMT = 'SSELECT ':FROM.FILE.NAME:' WITH @ID LIKE ...Cleared_Cks... AND LIKE ....txt'
+
+      EXECUTE STMT CAPTURING JUNK
+      RECORDS.SELECTED = @SELECTED
+
+      IF RECORDS.SELECTED > 0 THEN
+         EOR = 0
+         LOOP
+            READNEXT IMPORT.ID ELSE EOR = 1
+         UNTIL EOR DO
+            CRT IMPORT.ID
+            SOFT.ERRORS = ''
+            DATE.NAME = FIELD(IMPORT.ID, '.', 1)
+            FILE.EXT = FIELD(IMPORT.ID, '.', 2)
+
+            READ TEST FROM F.IN.HIST, IMPORT.ID THEN
+               FATAL.ERROR = 1
+               FATAL.ERRORS<-1> = IMPORT.ID:' already exists in SAGE.UV.IN.HIST. Stopping...'
+               GOSUB SEND.EMAIL
+               GO THE.END
+            END
+            READ CHECK.IMPORT FROM F.FROM, IMPORT.ID THEN
+               CHECK.IMPORT = CHANGE(CHECK.IMPORT, '"', '')
+               LINE.CNT = DCOUNT(CHECK.IMPORT, @FM)
+               FOR LC = 1 TO LINE.CNT
+                  INFO = CHECK.IMPORT<LC>
+                  INFO = CHANGE(INFO, TAB.CHAR, @VM)
+
+                  SAGE.BANK.CODE = INFO<1, 1>
+                  BANK.ID = SAGE.BANK.CODE
+                  IF SAGE.BANK.CODE = 'F2' THEN BANK.ID = 'F'
+                  IF SAGE.BANK.CODE = 'FW' THEN BANK.ID = 'F'
+                  IF SAGE.BANK.CODE = 'R3' THEN BANK.ID = 'R'
+                  CHECK.NUM.IN = INFO<1, 2>
+                  CHECK.NUM = STR('0', 6 - LEN(CHECK.NUM.IN)):CHECK.NUM.IN
+                  CHECK.ID = CHECK.NUM:'*':BANK.ID
+                  CLEARED.DATE = INFO<1, 3>
+                  ICONV.CLEARED.DATE = ICONV(CLEARED.DATE, 'D4-')
+                  CHECK.AMT = INFO<1, 4>
+                  ICONV.CHECK.AMT = ICONV(CHECK.AMT, 'MD2')
+                  VOIDING = 0
+                  IF CHECK.AMT < 0 THEN
+                     VOIDING = 1
+                     ICONV.CHECK.AMT = ICONV.CHECK.AMT * -1
+                  END
+                  VOID.REC = ''
+                  CHECK.VOIDED = 0
+                  READ VOID.REC FROM F.SAGE.VOIDED.CHECKS, CHECK.ID THEN
+                     CHECK.VOIDED = 1
+                  END
+                  BEGIN CASE
+                     CASE MODE = 'VOID' AND VOIDING
+
+                     CASE MODE = 'CLEARING' AND CHECK.VOIDED AND NOT(VOIDING)
+*This check indicates it is supposed to have been voided because it is in SAGE.VOIDED.CHECKS.
+*But now, we are apparently getting a line that indicates the Check has cleared the bank. A voided check should never clear
+*the bank. We presume there was bad data somewhere along the line....either Universe got a void for this check that it
+*shouldn't have or it really was voided but now Universe is getting a Cleared Date. Either way, stop the loading of the
+*information and report it.
+                        FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - ':CHECK.ID:' indicates check should have cleared the bank but check indicates it was voided.'
+                        GOTO NEXT.CHECK.NUM
+                     CASE MODE = 'CLEARING' AND VOIDING
+                        GOTO NEXT.CHECK.NUM
+                     CASE MODE = 'CLEARING'
+*Allow Clearing to happen
+
+                     CASE 1
+*The activity necessary for the check on this line is for the 'other' mode. So skip to the next line.
+                        GOTO NEXT.CHECK.NUM
+
+                  END CASE
+                  PRO.ID = ''
+                  PRO.REC = ''
+                  READ CHECK.REC FROM F.CHECKS.HDR, CHECK.ID THEN
+                     IF CHECK.REC<1> = CHECK.NUM THEN
+                        IF MODE = 'VOID' THEN
+                           IF VOIDING AND ICONV.CHECK.AMT = CHECK.REC<4> THEN
+                              VOID.DATE = INFO<1, 3>
+                              DTL.CNT = CHECK.REC<25>
+                              FOR DC = 1 TO DTL.CNT
+                                 PRO.ID = ''
+                                 PRO.REC = ''
+                                 DTL.ID = CHECK.ID:'*':DC
+*No updates are necessary for FB.CHECKS.DTL
+                                 READ DTL.REC FROM F.CHECKS.D, DTL.ID THEN
+                                    PRO.ID = DTL.REC<1>
+                                    CLIENT = DTL.REC<3>
+                                    PROCEED = 1
+                                    READ CLIENT.REC FROM F.CLIENTS, CLIENT ELSE
+                                       FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Cannot read ':CLIENT:' from CLIENTS file.'
+                                       PROCEED = 0
+                                    END
+                                    CARRIER = FIELD(PRO.ID, '*', 1)
+                                    READ CARRIER.REC FROM F.CARRIERS, CARRIER ELSE
+                                       FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Cannot read ':CARRIER:' from CARRIERS file....Stopping'
+                                       PROCEED = 0
+                                    END
+
+                                    OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS.HIST THEN
+                                       PROCESS.CLIENT = 1
+
+                                       IF DEBUGGING THEN DEBUG
+                                       READ PRO.REC FROM F.BILLS.HIST,PRO.ID THEN
+
+                                          IF PRO.REC<8> # DTL.REC<2> THEN
+                                             FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - The amount in FB.BILLS.HIST,':CLIENT:' ':PRO.ID:' field 8 of ':OCONV(PRO.REC<8>, 'MD2'):' is not ':OCONV(DTL.REC<2>, 'MD2')
+                                          END
+                                          IF PRO.REC<13> # '' THEN
+                                             IF PRO.REC<13> # ICONV.CHECK.AMT THEN
+                                                FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - The amount in FB.BILLS.HIST,':CLIENT:' ':PRO.ID:' field 13 of ':OCONV(PRO.REC<13>, 'MD2'):' is not ':OCONV(ICONV.CHECK.AMT, 'MD2')
+                                             END
+                                          END
+                                       END ELSE
+                                          FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Cannot read ':PRO.ID:' from FB.BILLS.HIST file.'
+                                       END
+
+                                       READ CRX.REC FROM F.CRX,PRO.ID ELSE
+                                          FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Cannot read ':PRO.ID:' from FB.BILLS.CRX file.'
+                                       END
+
+                                       IF CRX.REC<8> # DTL.REC<2> THEN
+                                          FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - The amount in FB.BILLS.CRX ':PRO.ID:' field 8 of ':OCONV(PRO.REC<8>, 'MD2'):'  is not ':OCONV(DTL.REC<2>, 'MD2')
+                                       END
+                                       IF CRX.REC<13> # '' THEN
+                                          IF CRX.REC<13> # ICONV.CHECK.AMT THEN
+                                             FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - The amount in FB.BILLS.CRX ':PRO.ID:' field 13 of ':OCONV(PRO.REC<13>, 'MD2'):'  is not ':OCONV(ICONV.CHECK.AMT, 'MD2')
+                                          END
+                                       END
+                                    END ELSE
+                                       FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Cannot open FB.BILLS.HIST,':CLIENT:' at program line 282'
+                                    END
+                                 END ELSE
+                                    FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Cannot read ':DTL.ID:' from FB.CHECKS.DTL file.'
+                                 END
+                              NEXT DC
+                           END ELSE
+                              IF VOIDING THEN
+                                 FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - ':CHECK.ID:' is being voided but the amount in the download of ':CHECK.AMT:' is not the Amount in field 4 of ':OCONV(CHECK.REC<4>, 'MD2')
+                              END
+                           END
+                        END ELSE
+*MODE = CLEARING
+                           IF ICONV.CLEARED.DATE # CHECK.REC<2> THEN
+                              FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Check # ':CHECK.NUM:' Cleared Date of ':OCONV(ICONV.CLEARED.DATE, 'D2/'):' does not match field 2 of FB.CHECKS.HDR which is ':OCONV(CHECK.REC<2>, 'D2/')
+                           END
+                           IF ICONV.CHECK.AMT # CHECK.REC<4> THEN
+                              FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Check # ':CHECK.NUM:' Check Amount of ':OCONV(ICONV.CHECK.AMT, 'MD2'):' does not match field 4 of FB.CHECKS.HDR which is ':OCONV(CHECK.REC<4>, 'MD2')
+                           END
+                        END
+                     END ELSE
+                        FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Check # ':CHECK.NUM:' does not match field 1 of FB.CHECKS.HDR which is ':CHECK.REC<1>
+                     END
+                  END ELSE
+                     IF MODE # 'VOID' THEN
+                        FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Cannot read ':CHECK.ID:' from FB.CHECKS.HDR file.'
+                     END
+                  END
+*******************************************************************************************
+NEXT.CHECK.NUM:
+*******************************************************************************************
+               NEXT LC
+            END ELSE
+               FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Cannot read ':IMPORT.ID:' from SAGE.UV.IN.'
+            END
+            IF FATAL.ERRORS # '' THEN
+               GOSUB SEND.EMAIL
+               RELEASE F.TABLES, 'SAGE.IMPORT.STATUS'
+               GO THE.END
+            END
+*If Part 1 finished with no errors, begin Part 2 which does the actual updates
+
+            SKIP.CHECK.ID = ''
+            IF DEBUGGING THEN DEBUG
+            CHECK.IMPORT = CHANGE(CHECK.IMPORT, '"', '')
+            LINE.CNT = DCOUNT(CHECK.IMPORT, @FM)
+            FOR LC = 1 TO LINE.CNT
+               INFO = CHECK.IMPORT<LC>
+               INFO = CHANGE(INFO, TAB.CHAR, @VM)
+
+               SAGE.BANK.CODE = INFO<1, 1>
+               BANK.ID = SAGE.BANK.CODE
+               IF SAGE.BANK.CODE = 'F2' THEN BANK.ID = 'F'
+               IF SAGE.BANK.CODE = 'FW' THEN BANK.ID = 'F'
+               IF SAGE.BANK.CODE = 'R3' THEN BANK.ID = 'R'
+               CHECK.NUM.IN = INFO<1, 2>
+               CHECK.NUM = STR('0', 6 - LEN(CHECK.NUM.IN)):CHECK.NUM.IN
+               CHECK.ID = CHECK.NUM:'*':BANK.ID
+               IF CHECK.ID = SKIP.CHECK.ID THEN
+                  GOTO SKIP.LINE
+               END
+               CLEARED.DATE = INFO<1, 3>
+               ICONV.CLEARED.DATE = ICONV(CLEARED.DATE, 'D4-')
+               CHECK.AMT = INFO<1, 4>
+               ICONV.CHECK.AMT = ICONV(CHECK.AMT, 'MD2')
+               VOIDING = 0
+               IF CHECK.AMT < 0 THEN VOIDING = 1
+               READ VOID.REC FROM F.SAGE.VOIDED.CHECKS, CHECK.ID THEN
+                  CHECK.VOIDED = 1
+               END
+               BEGIN CASE
+                  CASE MODE = 'VOID' AND VOIDING
+                  CASE MODE = 'CLEARING' AND NOT(VOIDING)
+                  CASE 1
+*The activity necessary for the check on this line is for the 'other' mode. So skip to the next line.
+                     GOTO SKIP.LINE
+               END CASE
+
+*To find the Client #, we have to read the FB.CHECKS.HDR record,
+*then loop thru the FB.CHECKS.DET files to get the Client from field 3
+*and the FB.BILLS.HIST ID from field 1
+*******************************************************************************************
+CHECK.READ.LOCK:
+*******************************************************************************************
+               IF DEBUGGING THEN DEBUG
+               PRO.ID = ''
+               PRO.REC = ''
+               BILL.ID = ''
+               BILL.REC = ''
+               TEST.PRO.REC = ''
+               OLD.CHECK.REC = ''
+               READU CHECK.REC FROM F.CHECKS.HDR, CHECK.ID LOCKED
+                  WL.VIN = STATUS()
+                  WL.VOUT = ''
+                  CALL WHOS.LOCKING(WL.VIN, WL.VOUT)
+                  READ TDBCTRL FROM F.BCTRL, WL.VOUT<1> ELSE TDBCTRL = ''
+*                             CALL ELINE(TDBCTRL<13>:' has ':PRO.ID:' locked in FB.CHECKS.HDR')
+                  CRT TDBCTRL<13>:' has ':PRO.ID:' locked in FB.CHECKS.HDR'
+                  EXECUTE 'SLEEP 2'
+                  GOTO CHECK.READ.LOCK
+
+               END THEN
+                  OLD.CHECK.REC = CHECK.REC
+                  IF CHECK.REC<1> = CHECK.NUM THEN
+                     IF MODE = 'VOID' THEN
+                        IF VOIDING AND ICONV.CHECK.AMT * -1 = CHECK.REC<4> THEN
+                           CHECK.REC<4> = 0
+                           CHECK.REC<7> = 'Void'
+                           DTL.CNT = CHECK.REC<25>
+                           IF NOT(TESTING) THEN
+                              DEL.ID=CHECK.ID:'*':DATE():'*':TIME():'*':USER
+                              WRITE CHECK.REC ON F.VOIDS, DEL.ID
+                           END
+*The voiding is being done from last Check Detail Sequence number to 1st.
+                           FOR DC = DTL.CNT TO 1 STEP - 1
+                              PRO.ID = ''
+                              PRO.REC = ''
+                              BILL.ID = ''
+                              BILL.REC = ''
+                              TEST.PRO.REC = ''
+
+                              DTL.ID = CHECK.ID:'*':DC
+*No updates are necessary for FB.CHECKS.DTL
+                              READ DTL.REC FROM F.CHECKS.D, DTL.ID THEN
+                                 PRO.ID = DTL.REC<1>
+                                 CLIENT = DTL.REC<3>
+                                 PROCEED = 1
+                                 READ CLIENT.REC FROM F.CLIENTS, CLIENT ELSE
+                                    FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Cannot read ':CLIENT:' from CLIENTS file....Stopping'
+                                    PROCEED = 0
+                                    GOSUB SEND.EMAIL
+                                    GO THE.END
+                                 END
+                                 CARRIER = FIELD(PRO.ID, '*', 1)
+                                 READ CARRIER.REC FROM F.CARRIERS, CARRIER ELSE
+                                    FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Cannot read ':CARRIER:' from CARRIERS file....Stopping'
+                                    PROCEED = 0
+                                    GOSUB SEND.EMAIL
+                                    GO THE.END
+                                 END
+
+                                 IF PROCEED THEN
+                                    OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS.HIST THEN
+                                       OPEN '','FB.OPEN.DATE.XREF,':CLIENT TO F.DATE.XREF THEN
+                                          PROCESS.CLIENT = 1
+*******************************************************************************************
+HIST.READ.LOCK:
+*******************************************************************************************
+                                          IF DEBUGGING THEN DEBUG
+                                          READU PRO.REC FROM F.BILLS.HIST,PRO.ID LOCKED
+                                             WL.VIN = STATUS()
+                                             WL.VOUT = ''
+                                             CALL WHOS.LOCKING(WL.VIN, WL.VOUT)
+                                             READ TDBCTRL FROM F.BCTRL, WL.VOUT<1> ELSE TDBCTRL = ''
+                                             CRT TDBCTRL<13>:' has ':PRO.ID:' locked in FB.BILLS.HIST,':CLIENT
+                                             EXECUTE 'SLEEP 2'
+                                             GOTO HIST.READ.LOCK
+                                          END THEN
+                                             OLD.PRO.REC = PRO.REC
+                                             IF PRO.REC<8> = DTL.REC<2> AND (PRO.REC<13> = ICONV.CHECK.AMT * -1 OR PRO.REC<13> = '') THEN
+                                                PRO.REC<13> = ''
+                                                PRO.REC<14> = ''
+                                                PRO.REC<15> = ''
+                                                PRO.REC<133> = ''
+                                                PRO.REC<134> = ''
+                                                PRO.REC<135> = ''
+                                                PRO.REC<216> = ''
+*******************************************************************************************
+CRX.READ.LOCK:
+*******************************************************************************************
+                                                IF DEBUGGING THEN DEBUG
+                                                UPD.CRX = 0
+                                                READU CRX.REC FROM F.CRX,PRO.ID LOCKED
+                                                   WL.VIN = STATUS()
+                                                   WL.VOUT = ''
+                                                   CALL WHOS.LOCKING(WL.VIN, WL.VOUT)
+                                                   READ TDBCTRL FROM F.BCTRL, WL.VOUT<1> ELSE TDBCTRL = ''
+                                                   CRT TDBCTRL<13>:' has ':PRO.ID:' locked in FB.BILLS.HIST,':CLIENT
+                                                   EXECUTE 'SLEEP 2'
+                                                   GOTO CRX.READ.LOCK
+                                                END THEN
+                                                   IF DEBUGGING THEN DEBUG
+                                                   IF CRX.REC<1> = CLIENT THEN
+                                                      IF CRX.REC<8> = DTL.REC<2> AND (CRX.REC<13> = ICONV.CHECK.AMT * -1 OR CRX.REC<13> = '') THEN
+                                                         CRX.REC<13> = ''
+                                                         CRX.REC<14> = ''
+                                                         CRX.REC<15> = ''
+                                                         UPD.CRX = 1
+                                                      END ELSE
+*Make sure this is checked for in Pass 1
+                                                         FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - The amount in FB.BILLS.CRX ':PRO.ID:' field 13 is not ':ICONV.CHECK.AMT * -1:'....Stopping'
+                                                         GOSUB SEND.EMAIL
+                                                         GO THE.END
+                                                      END
+                                                   END
+                                                END ELSE
+                                                   FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Cannot read ':PRO.ID:' from FB.BILLS.CRX file....Stopping'
+                                                   GOSUB SEND.EMAIL
+                                                   GO THE.END
+                                                END
+                                                IF TESTING THEN        ; *  ???????
+                                                   ID.READ = PRO.ID    ; *  ???????
+                                                   ID.WRITTEN = PRO.ID           ; *  ???????
+                                                   REC1 = OLD.PRO.REC  ; *  ???????
+                                                   REC2 = PRO.REC      ; *  ???????
+                                                   GOSUB COMPARE.RECORDS         ; *  ???????
+                                                END
+                                                IF NOT(TESTING) THEN
+                                                   DEL.DTL.ID = CHECK.ID:'*':DC:"*":DATE():'*':TIME():'*':USER
+                                                   WRITE DTL.REC ON F.VOIDS.D, DEL.DTL.ID
+                                                   DELETE F.CHECKS.D, DTL.ID
+                                                   WRITE PRO.REC ON F.BILLS.HIST, PRO.ID
+                                                   AVIN<4> = 'FBH.':CLIENT
+                                                   AVIN<5> = PRO.ID
+                                                   AVOUT = ''
+                                                   CALL UPD.AUDIT.LOG(AVIN, AVOUT, OLD.PRO.REC, PRO.REC, F.AUDIT.LOG)
+                                                   WRITE PRO.REC ON F.OPEN.BILLS, CLIENT:'*':PRO.ID
+
+*Update the web with the now removed check information
+                                                   SQLVIN=''
+                                                   SQLVIN<1>=USER
+                                                   SQLVIN<2>=CLIENT
+                                                   SQLVIN<3>=PRO.ID
+                                                   SQLVIN<4>=''        ; * The Cleared Date is now null
+                                                   SQLVOUT=''
+                                                   CALL UPD.SQL.FBPYMT.SUB(SQLVIN,SQLVOUT,PRO.REC)
+
+                                                   IF UPD.CRX THEN
+                                                      WRITE CRX.REC ON F.CRX, PRO.ID
+                                                   END
+                                                END
+                                             END ELSE
+                                                FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - The amount in FB.BILLS.HIST,':CLIENT:' ':PRO.ID:' field 13 is not ':ICONV.CHECK.AMT * -1:'....Stopping'
+                                                GOSUB SEND.EMAIL
+                                                GO THE.END
+                                             END
+
+                                          END ELSE
+                                             FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Cannot read ':PRO.ID:'from FB.BILLS.HIST,':CLIENT:'....Stopping'
+                                             GOSUB SEND.EMAIL
+                                             GO THE.END
+                                          END
+                                          RELEASE F.BILLS.HIST, PRO.ID
+                                          RELEASE F.OPEN.BILLS, CLIENT:'*':PRO.ID
+                                          RELEASE F.CRX, PRO.ID
+                                       END ELSE
+                                          FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Cannot open FB.OPEN.DATE.XREF,':CLIENT:'....Stopping'
+                                          GOSUB SEND.EMAIL
+                                          GO THE.END
+                                       END
+                                    END ELSE
+                                       FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Cannot open FB.BILLS.HIST,':CLIENT:' at program line 512....Stopping'
+                                       GOSUB SEND.EMAIL
+                                       GO THE.END
+                                    END
+                                 END
+                              END ELSE
+                                 FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Cannot read ':DTL.ID:' from FB.CHECKS.DTL file....Stopping'
+                                 GOSUB SEND.EMAIL
+                                 GO THE.END
+                              END
+                              CLOSE F.BILLS.HIST
+                              CLOSE FB.ACCESS
+                           NEXT DC
+
+                           IF NOT(TESTING) THEN
+                              IF DEBUGGING THEN DEBUG
+                              DELETE F.CHECKS.HDR, CHECK.ID
+*This snippet is from FB.5.7 lines 705 - 709 when option 'V' (void) was chosen and just after the WRITE to FB.CHECKS.HDR
+                              READU XREF.REC FROM F.CHECK.DATE.XREF,VOID.DATE:'*V' ELSE XREF.REC=''
+                              LOCATE(CHECK.ID,XREF.REC;SSPOS) ELSE
+                                 XREF.REC<-1>=CHECK.ID
+                                 WRITE XREF.REC ON F.CHECK.DATE.XREF,VOID.DATE:'*V'
+                              END
+* The check existed on Universe but has just been voided so put a '2' in field 1 of SAGE.VOIDED.CHECKS to indicate the check has been voided.
+                              VOID.REC = ''
+                              READ VOID.REC FROM F.SAGE.VOIDED.CHECKS, CHECK.ID ELSE
+                                 WRITE '2' ON F.SAGE.VOIDED.CHECKS, CHECK.ID
+                                 AVIN<4> = 'SAGE.VOIDED.CHECKS'
+                                 AVIN<5> = CHECK.ID
+                                 AVOUT = ''
+                                 CALL UPD.AUDIT.LOG(AVIN, AVOUT, VOID.REC, '2', F.AUDIT.LOG)
+                              END
+                           END
+                        END ELSE
+                           IF VOIDING THEN
+                              FATAL.ERRORS<-1> = CHECK.ID:' is being voided but the amount in the download of ':CHECK.AMT:' is not the Amount in field 4 of ':OCONV(CHECK.REC<4>, 'MD2')
+                              GOSUB SEND.EMAIL
+                              GO THE.END
+                           END ELSE
+*The logic for updating the Cleared Date is here
+                              IF ICONV.CHECK.AMT = CHECK.REC<4> AND NOT(VOIDING) AND (CHECK.REC<5> = '' OR CHECK.REC<5> # '' AND CHECK.REC<5> = ICONV.CLEARED.DATE) AND ICONV.CLEARED.DATE # '' THEN
+                                 CHECK.REC<5> = ICONV.CLEARED.DATE
+                                 CHECK.REC<6> = ICONV.CHECK.AMT
+                                 CHECK.REC<21> = ICONV.CLEARED.DATE
+                                 IF NOT(TESTING) THEN
+*Before writing the FB.CHECKS.HDR record, we are going to push the Payment info to SQL.
+                                    DTL.CNT = CHECK.REC<25>
+                                    IF DTL.CNT >= 1 THEN
+* Operational checks and checks to Credit Card companies have no detail lines.
+                                       FOR DC = 1 TO DTL.CNT
+                                          DTL.ID = CHECK.ID:'*':DC
+                                          READ DTL.REC FROM F.CHECKS.D, DTL.ID THEN
+                                             BILL.ID = DTL.REC<1>
+                                             CLIENT.ID = DTL.REC<3>
+                                             OPEN '','FB.BILLS.HIST,':CLIENT.ID TO F.BILLS.HIST THEN
+*This clause taken from FBBP UPD.SQL.FBPYMT.PX but some of the variable names are different
+                                                READ BILL.REC FROM F.BILLS.HIST, BILL.ID THEN
+                                                   SQLVIN=''
+                                                   SQLVIN<1>=USER
+                                                   SQLVIN<2>=CLIENT.ID
+                                                   SQLVIN<3>=BILL.ID
+                                                   SQLVIN<4>=ICONV.CLEARED.DATE
+                                                   SQLVOUT=''
+                                                   CALL UPD.SQL.FBPYMT.SUB(SQLVIN,SQLVOUT,BILL.REC)
+                                                END ELSE
+                                                   CRT 'Cant read FB.BILLS.HIST,':CLIENT:' ':BILL.ID
+                                                END
+                                                CLOSE F.BILLS.HIST
+                                             END ELSE
+                                                CRT 'Cant open FB.BILLS.HIST,':CLIENT
+                                             END
+                                          END ELSE
+                                             CRT 'CANT READ FB.CHECKS.DTL ':DTL.ID
+                                          END
+
+                                       NEXT DC
+                                    END
+
+                                    AVIN<4> = 'FB.CHECKS.HDR'
+                                    AVIN<5> = CHECK.ID
+                                    AVOUT = ''
+                                    CALL UPD.AUDIT.LOG(AVIN, AVOUT, OLD.CHECK.REC, CHECK.REC, F.AUDIT.LOG)
+                                    WRITE CHECK.REC ON F.CHECKS.HDR, CHECK.ID
+                                 END
+                              END ELSE
+                                 BEGIN CASE
+                                    CASE ICONV.CHECK.AMT # CHECK.REC<4>
+                                       FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Check # ':CHECK.NUM:' Import Check Amt of ':CHECK.AMT:' does not match Check Amt of ':OCONV(CHECK.REC<4>, 'MD2'):'...Stopping...'
+                                    CASE ICONV.CLEARED.DATE = ''
+                                       FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Check # ':CHECK.NUM:' has no Cleared Date in the Import...Stopping...'
+                                    CASE CHECK.REC<5> # '' AND CHECK.REC<5> # ICONV.CLEARED.DATE
+                                       FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Check # ':CHECK.NUM:' Check has a Cleared Date of ':OCONV(CHECK.REC<5>, 'D2/'):' but Import has a Cleared Date of ':CLEARED.DATE:'...Stopping...'
+                                    CASE CHECK.REC<21> # '' AND CHECK.REC<21> # ICONV.CLEARED.DATE
+                                       FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Check # ':CHECK.NUM:' Check has a Cleared Date of ':OCONV(CHECK.REC<21>, 'D2/'):' but Import has a Cleared Date of ':CLEARED.DATE:'...Stopping...'
+                                    CASE 1
+
+                                 END CASE
+                              END
+
+                           END
+                        END
+                     END ELSE
+                        IF MODE = 'CLEARING' THEN
+
+                           IF NOT(INDEX(IMPORT.ID, 'F2', 1)) AND NOT(INDEX(IMPORT.ID, 'FW', 1)) AND NOT(INDEX(IMPORT.ID, 'R3', 1)) THEN
+                              IF ICONV.CHECK.AMT AND NOT(VOIDING) AND CHECK.REC<21> = '' AND ICONV.CLEARED.DATE # '' THEN
+                                 CHECK.REC<21> = ICONV.CLEARED.DATE
+                                 IF NOT(TESTING) THEN
+                                    AVIN<4> = 'FB.CHECKS.HDR'
+                                    AVIN<5> = CHECK.ID
+                                    AVOUT = ''
+                                    CALL UPD.AUDIT.LOG(AVIN, AVOUT, OLD.CHECK.REC, CHECK.REC, F.AUDIT.LOG)
+                                    WRITE CHECK.REC ON F.CHECKS.HDR, CHECK.ID
+                                 END
+                              END
+                           END ELSE
+*Cleared Dates for ACH's are handled at the time the Check Information was imported. This file completed normally so move
+*it to SAGE.UV.IN.HIST so that it won't get picked up by the Cleared routine.
+
+*Normally, the logic shouldn't get here because of code in VOID mode that moves the F2 Cleared file to History. This code is here in case someone or something moves an F2 void file
+                              WRITE CHECK.IMPORT ON F.IN.HIST, IMPORT.ID:'*duplicate*':DATE():'*':TIME()
+                              DELETE F.IN, IMPORT.ID
+                           END
+                        END
+                     END
+                  END ELSE
+                     FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Check # ':CHECK.NUM:' does not match field 1 of FB.CHECKS.HDR which is ':CHECK.REC<1>:' Stopping...'
+                     GOSUB SEND.EMAIL
+                     GO THE.END
+                  END
+               END ELSE
+*A check header record doesn't exist. This could be for 3 known reasons;
+* 1. Universe has never heard of this check till now.
+* 2. The check was voided.
+* 3. SAGE.CHECK.IMPORT aborted during the importing of that particular check, or the next one. If there are FB.CHECK.DTL records, it is probably this.
+
+*To get here, we have a void file with a Check # in it that doesn't exist in FB.CHECKS.HDR. Look for evidence that Freight Bills for this check has been imported.
+
+                  CHECK.EXISTS.IN.UV = 0           ; * This means that the check # has at least 1 FB.CHECKS.DTL record OR is in at least 1 Freight Bill even though the FB.CHECKS.HDR record does not exist.
+                  DTL.ID = CHECK.ID:'*':1
+                  READ TEST.DTL.REC FROM F.CHECKS.D, DTL.ID THEN
+                     CHECK.EXISTS.IN.UV = 1
+                     PRO.ID = DTL.REC<1>
+                     CLIENT = DTL.REC<3>
+                     CRT '653 DC=':DC:' - DTL.ID=':DTL.ID:' - PRO.ID=':PRO.ID
+                     OPEN '','FB.BILLS.HIST,':CLIENT TO F.BILLS.HIST THEN
+                        READ TEST.PRO.REC FROM F.BILLS.HIST,PRO.ID THEN
+                           TEST.PRO.REC.14 = TEST.PRO.REC<14>
+                           BEGIN CASE
+                              CASE TEST.PRO.REC.14 = ''
+
+                              CASE TEST.PRO.REC.14 = CHECK.ID
+                                 FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Cannot read ':CHECK.ID:' from FB.CHECKS.HDR file....Stopping'
+                                 GOSUB SEND.EMAIL
+                                 GO THE.END
+
+                              CASE TEST.PRO.REC.14 # ''
+                                 FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Cannot read ':CHECK.ID:' from FB.CHECKS.HDR file And FB ':PRO.ID:' has a Check # of ':TEST.PRO.REC.14:'...Stopping'
+                                 GOSUB SEND.EMAIL
+                                 GO THE.END
+                              CASE 1
+                           END CASE
+                        END ELSE
+                           FATAL.ERRORS<-1> = 'Line # ':LC 'R#4':' - Cannot open FB.BILLS.HIST,':CLIENT:' at Program line 676....Stopping'
+                           GOSUB SEND.EMAIL
+                           GO THE.END
+                        END
+                     END
+                     CLOSE F.BILLS.HIST
+                  END
+                  IF MODE = 'VOID' THEN
+*There are no signs of this Check # on Universe. Update the SAGE.VOIDED.CHECKS file with a 0 so that
+* Universe knows that this check # is expected to be imported today and is supposed to be voided so that SAGE.CHECK.IMPORT
+*can skip importing that Check #.
+                     VOID.REC = ''
+                     READ VOID.REC FROM F.SAGE.VOIDED.CHECKS, CHECK.ID ELSE
+                        WRITE '0' ON F.SAGE.VOIDED.CHECKS, CHECK.ID
+                        AVIN<4> = 'SAGE.VOIDED.CHECKS'
+                        AVIN<5> = CHECK.ID
+                        AVOUT = ''
+                        CALL UPD.AUDIT.LOG(AVIN, AVOUT, VOID.REC, '0', F.AUDIT.LOG)
+                     END
+                  END
+               END
+SKIP.LINE:
+            NEXT LC
+            IF FATAL.ERRORS = '' THEN
+               IF NOT(TESTING) THEN
+
+                  IF INDEX(IMPORT.ID, 'F2', 1) OR INDEX(IMPORT.ID, 'FW', 1) AND NOT(INDEX(IMPORT.ID, 'R3', 1)) THEN
+*Cleared Dates for ACH's are handled at the time the Check Information is imported. This file completed normally so move
+*it to SAGE.UV.IN.HIST so that it won't get picked up by the Cleared routine.
+                     WRITE CHECK.IMPORT ON F.IN.HIST, IMPORT.ID
+                     DELETE F.IN, IMPORT.ID
+                  END ELSE
+                     WRITE CHECK.IMPORT ON F.TO, IMPORT.ID
+                     DELETE F.FROM, IMPORT.ID
+                  END
+               END
+            END
+            GOSUB SEND.EMAIL
+         REPEAT
+      END ELSE
+         VIN = ''
+         VOUT = ''
+         VIN<1> = 'nmeddaugh@afs.net':@VM:'david@afs.net'
+         VIN<1,-1> = 'cbeasley@afs.net'
+       
+         VIN<4> = 'SAGE.CHECK.CLEAR.VOID@afs.net'
+         VIN<5> = 'No SAGE ':MODE:' files were found to process by SAGE.CHECK.CLEAR.VOID'
+         CALL SENDMAIL(VIN,VOUT)
+      END
+      IF MODE = 'VOID' THEN
+         WRITE 'IMPORT' ON F.TABLES, 'SAGE.IMPORT.STATUS'
+         RELEASE F.TABLES, 'SAGE.IMPORT.STATUS'
+         * Begin GRB01
+      VIN1=''
+      VIN1<1> = PROG.NAME
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "E"
+      CALL PROGTRACK(VIN1,VOUT1)
+* End GRB01
+         CHAIN 'SAGE.CHECK.IMPORT'
+      END ELSE
+         WRITE 'CUTBACKS' ON F.TABLES, 'SAGE.IMPORT.STATUS'
+         RELEASE F.TABLES, 'SAGE.IMPORT.STATUS'
+         * Begin GRB01
+      VIN1=''
+      VIN1<1> = PROG.NAME
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "E"
+      CALL PROGTRACK(VIN1,VOUT1)
+* End GRB01
+         CHAIN 'SAGE.CHECK.CUTBACKS'
+      END
+*******************************************************************
+THE.END:
+*******************************************************************
+* Begin GRB01
+      VIN1=''
+      VIN1<1> = PROG.NAME
+      VIN1<2> = USER
+      VIN1<3> = SYSTEM(18)
+      VIN1<4> = "E"
+      CALL PROGTRACK(VIN1,VOUT1)
+* End GRB01
+
+      STOP
+
+*******************************************************************************************
+SEND.EMAIL:
+*******************************************************************************************
+      IF DEBUGGING THEN DEBUG
+      VIN = ''
+      VOUT = ''
+      IF FATAL.ERRORS = '' THEN
+         VIN<1> = 'nmeddaugh@afs.net':@VM:'david@afs.net'
+         VIN<4> = 'SAGE.CHECK.CLEAR.VOID@afs.net'
+         VIN<5> = IMPORT.ID:' download from SAGE imported to Universe successfully'
+      END ELSE
+         VIN<1> = 'nmeddaugh@afs.net':@VM:'david@afs.net'
+         VIN<4> = 'SAGE.CHECK.CLEAR.VOID@afs.net'
+         VIN<5> = ERRORS.EMAIL.SUBJECT
+         FE.CNT = DCOUNT(FATAL.ERRORS, @FM)
+         FOR FEC = 1 TO FE.CNT
+            VIN<6, FEC> = FATAL.ERRORS<FEC>
+         NEXT FEC
+      END
+      CALL SENDMAIL(VIN,VOUT)
+
+      RETURN
+*******************************************************************************************
+COMPARE.RECORDS:
+*******************************************************************************************
+      CRT ID.READ 'L#40':ID.WRITTEN
+      OLD.FLD.CNT = DCOUNT(REC1, @FM)
+      NEW.FLD.CNT = DCOUNT(REC2, @FM)
+      FLD.CNT = OLD.FLD.CNT
+      IF NEW.FLD.CNT > OLD.FLD.CNT THEN
+         FLD.CNT = NEW.FLD.CNT
+      END
+      FOR FC = 1 TO FLD.CNT
+         IF REC1<FC> # REC2<FC> THEN
+            CRT FC 'R#3':REC1<FC> 'L#30':SPACE(7):REC2<FC> 'L#30'
+         END
+      NEXT FC
+
+      RETURN
+
+   END

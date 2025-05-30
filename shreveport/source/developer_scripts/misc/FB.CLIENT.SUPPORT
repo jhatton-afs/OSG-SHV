@@ -1,0 +1,308 @@
+* FREIGHT BILLING PACKAGE
+*---- PROGRAM: FB.CLIENT.SUPPORT
+* AUTHOR: NCG PRATT
+* DATE: 02/13/2009
+* DESCRIPTION: PROGRAM TO ENTER DETAILS RELATING TO INCOMING OR OUTGOING CLIENT SUPPORT CALLS.
+*
+      $INCLUDE PROG.ADMIN INC_OPTIONS
+      $INCLUDE FILE.DEFS INC_FB.AUDIT
+      $INCLUDE FILE.DEFS INC_CLIENTS
+
+* 030309 - NPR01 - T090253 - Highlight Client name based on ranking
+*
+      PROMPT''
+      CALL GET.USER(USER)
+      CALL CHANNEL(CH.NUM)
+      PROG.NAME='FB.CLIENT.SUPPORT'
+      PROG.DESC='Support Call Logging'
+      PACK.NAME='Freight Payment'
+      MASK.CHAR='-'
+       UPL.VIN = 'FBBP' ;  UPL.VIN<2> = 'FB.CLIENT.SUPPORT' ; UPL.VOUT = ''                    ;* NPR_UPL 04/23/2010
+       CALL UPD.PROGRAM.LOG(UPL.VIN,UPL.VOUT)                                                           ;* NPR_UPL 04/23/2010
+      TAB=CHAR(9)
+      ESC=CHAR(27)
+      CLIENT.ID=''
+      CARRIER.ID=''
+      USER.PWD=''
+      USER.TYPE='AFSCS'
+      USER.ID=''
+
+      CLIENT.MODE=0
+*
+      OPEN '','CLIENTS' TO F.CLIENTS ELSE
+         CALL OPEN.ABORT("CLIENTS",PROG.NAME)
+      END
+*
+      OPEN '','VOC' TO F.VOC ELSE
+         CALL ELINE('Unable to open VOC file - Call IS Department.')
+         GOTO ENDIT
+      END
+*
+      OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE
+         READ BILLDATA.REC FROM F.VOC,'BILLDATA' ELSE
+            CALL ELINE('Unable to open VOC BILLDATA.')
+            GOTO ENDIT
+         END
+         BILLDATA.REC<2>:='\':USER
+         WRITE BILLDATA.REC ON F.VOC,'BILLDATA.':USER ELSE
+            CALL ELINE('Your user name ':USER:' is not in the BILLDATA folder - Call IS Department.')
+            GOTO ENDIT
+         END
+         OPEN '','BILLDATA.':USER TO F.BILLDATA ELSE
+            CALL ELINE('Unable to open BILLDATA.':USER:'.')
+            GOTO ENDIT
+         END
+      END
+*
+      OPEN '','FB.CLIENT.SUPPORT' TO F.CLIENT.SUPPORT ELSE
+         CALL OPEN.ABORT("FB.CLIENT.SUPPORT",PROG.NAME)
+      END
+*
+*----
+* MAIN PROCESSING
+*
+*---- Enter client number
+*
+      CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+*
+50:
+*
+      CLIENT.ID  = ''
+      IN.OUT     = ''
+      SPOKE.TO   = ''
+      PHONE.DET  = ''
+      REASON     = ''
+      HLA = '' ; HLB = ''             ;* NPR01
+*
+      GOSUB GET.SCREEN.DSP
+
+      PRINT SCREEN.DSP:
+*
+      IF CLIENT.MODE THEN GOTO 55
+      SEQ.FLAG = 0
+      HELP = "Enter the client number [X] = Exit [EX] = Exit"
+      IF CLIENT.ID = '' THEN MASK = '#####' ELSE MASK = CLIENT.ID
+*
+      CALL GEN.IN(11,4,MASK,'',Q,0,20,'','',2,-5,4,1,QI,HELP,0,23)
+*
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'EX' ! QI = 'X'
+            GOTO ENDIT
+         CASE QI = '' & CLIENT.ID = ''
+             CALL ELINE("Please a Client Number")
+             GOTO 50
+         CASE QI = ''
+            Q = CLIENT.ID
+         CASE NOT(QI MATCHES "0N")
+            VIN=0                        ; * Starting Chars In
+            VOUT=''
+            CALL SOUNDEX.DISPLAY.NEW(VIN,VOUT,QI,'BCUST','SDX.CLIENTS,NAME',2,ITEM.LIST)
+            PRINT SCREEN.DSP:
+            BEGIN CASE
+               CASE ITEM.LIST = ''
+                  IF CLIENT.MODE THEN GOTO ENDIT ELSE GOTO 50
+               CASE DCOUNT(ITEM.LIST<1>,@VM) GT 1
+                  IF CLIENT.MODE THEN GOTO ENDIT ELSE GOTO 50
+               CASE 1
+                  DATA ITEM.LIST<1>
+                  IF CLIENT.MODE THEN GOTO ENDIT ELSE GOTO 50
+            END CASE
+         CASE NUM(QI)
+            Q = QI'R%5'
+         CASE 1
+            IF CLIENT.MODE THEN GOTO ENDIT ELSE GOTO 50
+      END CASE
+
+*---- Get client name
+
+      IF CLIENT.ID # Q THEN CLIENT.ID = Q'R%5'
+55:***
+      MATREAD CLIENT.REC FROM F.CLIENTS,CLIENT.ID ELSE
+         CALL ELINE("ERROR - Client ":CLIENT.ID:" not on file.")
+         CLIENT.ID = ''
+         IF CLIENT.MODE THEN GOTO ENDIT ELSE GOTO 50
+      END
+
+      CLIENT.NAME = CL.NAME
+      CLIENT.CITY = CL.CITY
+      CLIENT.STATE = CL.ST
+      ZIP.LEN = CL.ZIP.FLAG
+*
+      HIN = CLIENT.REC(240)  ; HOUT = ""                              ;* NPR01  Highlight based on ranking
+      CALL CLIENT.HL(HIN,HOUT)   ; HLB = HOUT<1,1> ; HLA = HOUT<1,2>  ;* NPR01
+
+      CRT @(11,4):CLIENT.ID:' ':HLB:CLIENT.NAME:HLA:@(-4):            ;* NPR01
+
+*
+*---- Enter carrier
+*
+200:*** Incoming or Outgoing Phone call
+      
+      CRT @(11,6):IN.OUT
+
+      MASK = "I"
+      HELP = "Incoming or Outgoing Phone call?. [X]=Back [EX]=Exit, [I]ncoming, [O]utgoing"
+      CALL GEN.IN(0,6,'In/Out','',Q,0,1,'','',0,11,6,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'X'
+            CRT @(11,6):@(-4)
+            GOTO 50
+         CASE QI = 'EX'
+            GOTO ENDIT
+         CASE QI = '' & IN.OUT = ''
+             Q = 'I'
+         CASE QI = ''
+            Q = IN.OUT
+         CASE QI = "I" OR QI = "O"
+            Q = QI
+         CASE 1
+            GOTO 200
+      END CASE
+*
+      IN.OUT = Q
+
+*
+      CRT @(11,6):IN.OUT
+*
+
+300 *
+
+      MASK = ""
+      HELP = "Phone Number [X]=Back [EX]=Exit"
+      CALL GEN.IN(0,8,'Phone # ','',Q,0,70,'','',0,11,8,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'X'
+            CRT @(11,8):@(-4)
+            GOTO 200
+         CASE QI = 'EX'
+            GOTO ENDIT
+         CASE QI = '' & PHONE.DET = ''
+             CALL ELINE("Please enter Phone Number of who you spoke to")
+             GOTO 300
+         CASE QI = ''
+            Q = PHONE.DET
+         CASE QI NE ""
+            Q = QI
+         CASE 1
+            GOTO 300
+      END CASE
+*
+      PHONE.DET = ICONV(Q,"MCT")
+
+*
+      CRT @(11,8):PHONE.DET
+*
+400 *
+
+      MASK = ""
+      HELP = "Person Spoken to. [X]=Back [EX]=Exit"
+      CALL GEN.IN(0,10,'Spoke to','',Q,0,70,'','',0,11,10,0,QI,HELP,0,23)
+      QI = OCONV(QI,'MCU')
+      BEGIN CASE
+         CASE QI = 'X'
+            CRT @(11,10):@(-4)
+            GOTO 300
+         CASE QI = 'EX'
+            GOTO ENDIT
+         CASE QI = '' & SPOKE.TO = ''
+             CALL ELINE("Please enter who you spoke to")
+             GOTO 400
+         CASE QI = ''
+            Q = SPOKE.TO
+         CASE QI NE ""
+            Q = QI
+         CASE 1
+            GOTO 400
+      END CASE
+*
+      SPOKE.TO = ICONV(Q,"MCT")
+
+*
+      CRT @(11,10):SPOKE.TO
+*
+500 *
+
+
+      GOSUB ENTER.REASON
+
+*
+      HELP="Update  Y for Yes or N for No."
+      MASK='File/Update info [Y]es/ENTER or [N]o '
+      CALL GEN.IN(0,22,MASK,'','',0,1,'','',2,LEN(MASK) + 1,22,1,QI,HELP,0,23)
+      QI=OCONV(QI,'MCU')
+*
+      IF QI = "Y" OR QI = "" THEN
+         ID.LOG = CLIENT.ID:"*":USER:"*":DATE():"*":TIME()
+         SUP.REC = IN.OUT
+         SUP.REC<2> = PHONE.DET
+         SUP.REC<3> = SPOKE.TO
+         SUP.REC<4> = REASON
+         WRITE SUP.REC ON F.CLIENT.SUPPORT, ID.LOG
+      END
+*
+GOTO 50
+*
+GET.SCREEN.DSP:***
+*
+*---- Display screen to send to subroutine
+*
+CALL AFS.SCR.HEAD(CO.ID,FILE.ID,PERIOD,PROG.NAME,PROG.DESC,PACK.NAME,CO.NAME,TIME.DATE,1)
+
+SCREEN.DSP = ""
+SCREEN.DSP := @(0 , 4):'Client   : '
+SCREEN.DSP := @(0 , 6):'In/Out   : '
+SCREEN.DSP := @(0 , 8):'Phone #  : '
+SCREEN.DSP := @(0 ,10):'Spoke to : '
+SCREEN.DSP := @(0 ,12):'Reason   : '
+*
+RETURN
+*
+ENTER.REASON:* Check for and allow entry of reason for call
+*
+
+      ROW=13
+
+      LOOP
+         ROW=ROW+1
+      UNTIL ROW=21 DO
+9000:     POS=ROW-13
+         HELP="Enter line #. ' '=Clear 'X'=Back one line 'EX'=Exit"
+         MASK=REASON<1,POS>:STR('-',79-LEN(REASON<1,POS>))
+         CALL GEN.IN(0,ROW,MASK,'',Q,0,79,'','',2,-79,ROW,1,QI,HELP,0,23)
+         QI=OCONV(QI,'MCU')
+         BEGIN CASE
+            CASE QI='X'
+               ROW=ROW-1
+               IF ROW LE 14 THEN ROW=14
+               GOTO 9000
+            CASE QI='EX'
+               POS=19
+               LOOP
+                  POS=POS-1
+               UNTIL REASON<1,POS> NE '' ! POS=0 DO
+                  REASON=DELETE(REASON,1,POS,0)
+               REPEAT
+               GO 9900
+            CASE QI = '' AND REASON<1,POS> = ''
+               GO 9900
+            CASE QI=' '
+               REASON<1,POS>=''
+            CASE QI NE ''
+               REASON<1,POS>=Q
+               CRT @(0,ROW):REASON<1,POS>'L#79'
+            CASE 1
+               CRT @(0,ROW):REASON<1,POS>'L#79'
+         END CASE
+      REPEAT
+*
+9900 :
+*
+RETURN
+*
+ENDIT :
+*
+CHAIN "AFS"
+STOP
